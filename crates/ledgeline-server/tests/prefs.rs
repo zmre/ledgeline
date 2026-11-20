@@ -34,8 +34,9 @@
 //! No test requires a real `hledger`: every resolution test points at a shell
 //! stub written into a tempdir.
 
-#[path = "../src/app_dirs.rs"]
-mod app_dirs;
+// `app_dirs` is the shared shell's (`ledgeline_shell::app_dirs`); naming it
+// here is what lets `crate::app_dirs` inside the two sources below resolve.
+use ledgeline_shell::app_dirs;
 
 #[path = "../src/prefs.rs"]
 mod prefs;

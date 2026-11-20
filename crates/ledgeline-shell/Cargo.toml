@@ -1,0 +1,92 @@
+[package]
+name = "ledgeline-shell"
+description = "The desktop and local-server shell shared by Ledgeline's apps: access token and Host guard, CSP, embedded SPA serving, app directories, recents, and the wry/tao GUI boot pieces."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["hledger", "accounting", "desktop", "webview"]
+categories = ["gui", "web-programming::http-server"]
+# Published alongside `ledgeline-core` and `ledgeline`, which depends on it;
+# `scripts/release.sh` keeps its `[workspace.dependencies]` version in step.
+
+[features]
+# The desktop GUI pieces (`gui`): wry/tao/muda/rfd and the platform glue each
+# of them needs. Off by default, so a sandboxed host (the iOS/FFI build, via
+# `ledgeline --no-default-features`) compiles only the server half. An app's
+# own `gui` feature turns this on.
+default = []
+gui = [
+    "dep:wry",
+    "dep:tao",
+    "dep:muda",
+    "dep:rfd",
+    "dep:url",
+    "dep:tokio",
+    "dep:gtk",
+    "dep:webkit2gtk",
+    "dep:objc2-core-foundation",
+    "dep:objc2-core-services",
+]
+
+[dependencies]
+ledgeline-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+axum = "0.8"
+# `catch-panic` turns a handler panic into a 500 instead of a dropped connection
+# (SEC-2); `set-header` carries the security headers (SEC-7); `cors` is only
+# reachable through the opt-in `--allow-origin` allowlist (SEC-1).
+tower-http = { version = "0.7", features = ["catch-panic", "cors", "set-header"] }
+# Local-access control (SEC-1): `getrandom` is the OS CSPRNG behind the
+# per-process bearer token; `sha2` + `base64` compute the CSP script hashes.
+getrandom = { version = "0.4", features = ["std"] }
+sha2 = "0.11"
+base64 = "0.23"
+# The embedded SPA: an app derives `RustEmbed` over its own build folder and
+# hands the type to `spa::fallback`.
+rust-embed = { version = "8", features = ["interpolate-folder-path"] }
+mime_guess = "2"
+# The per-user config directory for `AppDirs::from_env` and the recents store.
+dirs = "7"
+
+# The GUI stack (the `gui` feature). On macOS wry links the system WKWebView;
+# Linux needs webkitgtk (see flake.nix). The same versions as the apps that
+# use them, so cargo unifies them.
+wry = { version = "0.57", optional = true }
+tao = { version = "0.37", optional = true }
+muda = { version = "0.21", optional = true }
+rfd = { version = "0.17", optional = true }
+url = { version = "2", optional = true }
+# The GUI boot binds the in-process server on the app's runtime.
+tokio = { version = "1", features = ["net", "sync"], optional = true }
+
+# "Make <App> the Default for <Documents>" (`gui::file_assoc`) calls Launch
+# Services directly. Both crates are already in the tree (notify's FSEvents
+# backend links them), so this adds no crate to Cargo.lock.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-foundation = { version = "0.3", optional = true, default-features = false, features = [
+    "std",
+    "CFString",
+    "CFURL",
+] }
+objc2-core-services = { version = "0.3", optional = true, default-features = false, features = [
+    "std",
+    "libc",
+    "LaunchServices",
+    "LSInfo",
+    "LSConstants",
+] }
+
+# Linux hides the in-window GtkMenuBar by default (F10 toggles it), which needs
+# `gtk::Settings` and `gtk::Widget`, and terminates the WebKit web process on
+# quit (`webkit2gtk`). Both are already in the tree via tao/muda/wry.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { version = "0.18", optional = true }
+webkit2gtk = { version = "2.0", optional = true }
+
+[dev-dependencies]
+# Isolated temp dirs for the recents-store and app-dirs unit tests.
+tempfile = "3"

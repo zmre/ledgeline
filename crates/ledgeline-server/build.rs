@@ -2,7 +2,8 @@
 //!
 //! # Why `spa/` and not `../../web/build`
 //!
-//! `spa.rs` embeds `$CARGO_MANIFEST_DIR/spa` via `rust-embed`. Pointing
+//! `lib.rs` embeds `$CARGO_MANIFEST_DIR/spa` via `rust-embed` (served by
+//! `ledgeline_shell::spa`). Pointing
 //! rust-embed at `../../web/build` directly — which is what this crate used to
 //! do — works fine inside the workspace and makes the crate **unpublishable**:
 //! `cargo package` refuses to include files outside the package root, so the

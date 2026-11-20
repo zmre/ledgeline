@@ -25,8 +25,7 @@
 //!   `fetch("http://127.0.0.1:<port>/")` from any page on that origin — another
 //!   Vite project, a malicious dev dependency — read it and had full read/write
 //!   on the journal with no interaction (SEC-12). The layer is now a
-//!   `route_layer` over the explicit routes only; see
-//!   [`crate::router_with_security`].
+//!   `route_layer` over the explicit routes only; see [`protect`].
 //! * **DNS rebinding.** [`host_guard`] rejects any request whose `Host` is not a
 //!   loopback name on the port we actually bound, so re-pointing
 //!   `attacker.example.com` at `127.0.0.1` buys nothing.
@@ -40,8 +39,9 @@
 //! * **Anyone who can read the `--server` terminal.** Headless mode prints the
 //!   launch URL, token included, because something else has to drive it.
 //! * **Anything at all once `--host` is pointed off loopback.** That path is
-//!   gated on an explicitly configured `LEDGELINE_TOKEN` and turns the `Host`
-//!   guard off, because the legitimate `Host` values are then unknowable.
+//!   gated on an explicitly configured token (`$LEDGELINE_TOKEN` for Ledgeline,
+//!   [`AppIdentity::token_env`] in general) and turns the `Host` guard off,
+//!   because the legitimate `Host` values are then unknowable.
 //!
 //! ## Closed: another local process scraping the token from `GET /`
 //!
@@ -53,7 +53,7 @@
 //! token now appears in no response body at all:
 //!
 //! * the GUI hands it to its WebView out of band, with wry's initialization
-//!   script, guarded to our exact origin (`gui.rs`);
+//!   script, guarded to our exact origin ([`token_init_script`]);
 //! * `--server` prints a launch URL with the token in its `#token=` fragment,
 //!   which a browser never puts on the wire; the SPA moves it into
 //!   `sessionStorage` and strips it from the address bar.
@@ -65,7 +65,7 @@
 //! `hledgerPath` there names the binary spawned on every import. So a token
 //! scraped once bought arbitrary CODE EXECUTION as the user, surviving restarts,
 //! from which the journal's permissions follow trivially (SEC-14).
-//! `prefs::check_storable` refuses a group- or world-writable binary and runs
+//! Ledgeline's `prefs::check_storable` refuses a group- or world-writable binary and runs
 //! the candidate before persisting it. Read that narrowly:
 //!
 //! * it removes the PERSISTENT half for anything that is not plausibly hledger
@@ -84,24 +84,31 @@
 //!
 //! The token is per-process and never persisted: restarting the app invalidates
 //! it, and no other process is told what it is.
+//!
+//! # Shared by every app on the shell
+//!
+//! Nothing here is Ledgeline's alone. An app names its token variable and its
+//! SPA's globals in an [`AppIdentity`], adds any request headers its uploads
+//! carry to the CORS allowlist ([`Security::cors_layer`]), and puts the whole
+//! posture on its router with [`protect`] (the explicit routes) and [`harden`]
+//! (everything).
 
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::Router;
 use axum::extract::{Request, State};
 use axum::http::{HeaderName, HeaderValue, Method, StatusCode, header};
-use axum::middleware::Next;
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use sha2::{Digest, Sha256};
+use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::set_header::SetResponseHeaderLayer;
 
-use crate::import_api::{FILENAME_HEADER, STATEMENT_HEADER};
-
-/// Environment variable holding a caller-chosen token. Set it when a
-/// cross-origin client (vite dev, the Playwright e2e harness) has to know the
-/// token before the server starts; leave it unset and one is generated.
-pub const TOKEN_ENV: &str = "LEDGELINE_TOKEN";
+use crate::AppIdentity;
 
 /// Entropy in a generated token: 256 bits, hex-encoded to 64 characters.
 const TOKEN_BYTES: usize = 32;
@@ -137,9 +144,15 @@ pub enum SecurityError {
     #[error("generating an access token: {0}")]
     Random(#[from] getrandom::Error),
     #[error(
-        "${TOKEN_ENV} must be {MIN_TOKEN_LEN}–{MAX_TOKEN_LEN} characters of [A-Za-z0-9._-] (it is embedded in a script and a URL, so the character set is restricted)"
+        "an access token must be {MIN_TOKEN_LEN}–{MAX_TOKEN_LEN} characters of [A-Za-z0-9._-] (it is embedded in a script and a URL, so the character set is restricted)"
     )]
     MalformedToken,
+    /// [`MalformedToken`](Self::MalformedToken), from the environment
+    /// variable `var` ([`token_from_env_or_random`]).
+    #[error(
+        "${var} must be {MIN_TOKEN_LEN}–{MAX_TOKEN_LEN} characters of [A-Za-z0-9._-] (it is embedded in a script and a URL, so the character set is restricted)"
+    )]
+    MalformedEnvToken { var: &'static str },
     #[error("--allow-origin {origin}: not a usable origin (expected e.g. http://localhost:5173)")]
     BadOrigin { origin: String },
 }
@@ -204,19 +217,24 @@ impl AccessToken {
 /// the token deliberately.
 pub struct ProcessToken {
     pub token: AccessToken,
-    /// `true` when the value came from `$LEDGELINE_TOKEN` rather than the CSPRNG.
+    /// `true` when the value came from the app's token variable
+    /// ([`AppIdentity::token_env`]) rather than the CSPRNG.
     pub from_env: bool,
 }
 
-/// `$LEDGELINE_TOKEN` when set and non-empty, otherwise a fresh random token.
+/// `$<var>` when set and non-empty, otherwise a fresh random token. `var` is
+/// the app's [`AppIdentity::token_env`]: set it when a cross-origin client
+/// (vite dev, the Playwright e2e harness) has to know the token before the
+/// server starts.
 ///
 /// # Errors
-/// [`SecurityError::MalformedToken`] if the environment value is not a
+/// [`SecurityError::MalformedEnvToken`] if the environment value is not a
 /// well-formed token, or [`SecurityError::Random`] if entropy is unavailable.
-pub fn token_from_env_or_random() -> Result<ProcessToken, SecurityError> {
-    match std::env::var(TOKEN_ENV).ok().filter(|raw| !raw.is_empty()) {
+pub fn token_from_env_or_random(var: &'static str) -> Result<ProcessToken, SecurityError> {
+    match std::env::var(var).ok().filter(|raw| !raw.is_empty()) {
         Some(raw) => Ok(ProcessToken {
-            token: AccessToken::parse(&raw)?,
+            token: AccessToken::parse(&raw)
+                .map_err(|_| SecurityError::MalformedEnvToken { var })?,
             from_env: true,
         }),
         None => Ok(ProcessToken {
@@ -241,9 +259,10 @@ pub struct Security {
 impl Security {
     /// No token, no `Host` guard, no CORS.
     ///
-    /// This is the shape [`crate::app`] and [`crate::router_with_state`] use so
-    /// the `tower::oneshot` test harnesses can drive routes directly. **Never
-    /// use it for a socket-bound server** — see [`crate::router_with_security`].
+    /// This is the shape an app's in-process test router uses (Ledgeline's
+    /// `app` and `router_with_state`) so the `tower::oneshot` harnesses can
+    /// drive routes directly. **Never use it for a socket-bound server** — see
+    /// [`protect`] and [`harden`].
     #[must_use]
     pub fn open() -> Self {
         Self {
@@ -329,7 +348,13 @@ impl Security {
     /// The CORS layer for the allowlisted origins, or `None` (the default) when
     /// there are none — in which case no CORS layer is installed at all and the
     /// server is same-origin only.
-    pub(crate) fn cors_layer(&self) -> Option<CorsLayer> {
+    ///
+    /// `extra_headers` are request headers beyond `Authorization`,
+    /// `Content-Type` and `Accept` that the app's own client sends (Ledgeline's
+    /// statement upload names its file in one); an allowlisted origin's
+    /// preflight for any other header is refused.
+    #[must_use]
+    pub fn cors_layer(&self, extra_headers: &[HeaderName]) -> Option<CorsLayer> {
         if self.origins.is_empty() {
             return None;
         }
@@ -348,24 +373,22 @@ impl Security {
                 // false keeps an allowlisted dev origin from riding along on any
                 // ambient authority.
                 .allow_credentials(false)
-                .allow_headers([
-                    header::AUTHORIZATION,
-                    header::CONTENT_TYPE,
-                    header::ACCEPT,
-                    // File uploads (`POST /api/import/stage`) carry the name here,
-                    HeaderName::from_static(FILENAME_HEADER),
-                    // and which account of a multi-account file to read.
-                    HeaderName::from_static(STATEMENT_HEADER),
-                ])
+                .allow_headers(
+                    [header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT]
+                        .into_iter()
+                        .chain(extra_headers.iter().cloned())
+                        .collect::<Vec<_>>(),
+                )
                 .max_age(PREFLIGHT_MAX_AGE),
         )
     }
 }
 
-/// The initialization script that hands the WebView its access token.
+/// The initialization script that hands the WebView its access token, as the
+/// `window` global the app's SPA reads ([`AppIdentity::token_global`]).
 ///
-/// Shared by the desktop GUI (wry's initialization script, `gui.rs`) and a
-/// mobile host (a `WKUserScript` at document start — see `ledgeline-ffi`).
+/// Shared by the desktop GUI (wry's initialization script, the `gui` module) and
+/// a mobile host (a `WKUserScript` at document start — see `ledgeline-ffi`).
 ///
 /// This is how the token reaches the SPA WITHOUT appearing in any response body:
 /// the shell is served unauthenticated, so anything that can reach loopback can
@@ -380,11 +403,13 @@ impl Security {
 /// raw. [`AccessToken::parse`] already restricts the token to a safe character
 /// set, and the origin is ours, so this is belt and braces — but it costs
 /// nothing and does not depend on either staying true.
-pub fn token_init_script(origin: &str, token: &AccessToken) -> String {
+#[must_use]
+pub fn token_init_script(app: &AppIdentity, origin: &str, token: &AccessToken) -> String {
     let literal = |value: &str| serde_json::Value::from(value).to_string();
     format!(
-        "if (window.location.origin === {origin}) {{ window.__LEDGELINE_TOKEN__ = {token}; }}",
+        "if (window.location.origin === {origin}) {{ window.{global} = {token}; }}",
         origin = literal(origin),
+        global = app.token_global,
         token = literal(token.as_str()),
     )
 }
@@ -396,7 +421,7 @@ pub fn token_init_script(origin: &str, token: &AccessToken) -> String {
 /// sends `Host: attacker.example.com`, which never matches. Applied to the WHOLE
 /// router (the SPA shell included) so a rebound page cannot even fetch the
 /// shell.
-pub(crate) async fn host_guard(
+pub async fn host_guard(
     State(security): State<Security>,
     request: Request,
     next: Next,
@@ -434,7 +459,7 @@ pub(crate) async fn host_guard(
 /// Installed with `route_layer`, so it covers exactly the wire and `/api` routes
 /// and never the SPA shell or its static assets — which must stay reachable for
 /// the browser to bootstrap at all.
-pub(crate) async fn token_guard(
+pub async fn token_guard(
     State(security): State<Security>,
     request: Request,
     next: Next,
@@ -470,30 +495,32 @@ fn bearer_token(value: &str) -> Option<&str> {
 
 /// `Cache-Control: no-store` — "do not write this anywhere".
 ///
-/// The canonical spelling for this crate. JSON routes go through
+/// The canonical spelling for every app on the shell. JSON routes go through
 /// [`no_store_json`]; anything that needs the header and is not returning
 /// `Json` (e.g. the HTML shell in [`spa`](crate::spa)) uses this value
 /// directly rather than a fresh copy of the literal.
-pub(crate) fn no_store() -> HeaderValue {
+#[must_use]
+pub fn no_store() -> HeaderValue {
     HeaderValue::from_static("no-store")
 }
 
 /// A JSON response marked [`no_store`], with no `ETag` — the one helper every
-/// `*_api` module uses for reads that are not derived from the journal
-/// snapshot (import, rules, aliases, budget, prices, projections, accounts,
-/// QB-journal, profiles, benchmarks).
+/// Ledgeline `*_api` module uses for reads that are not derived from the
+/// journal snapshot (import, rules, aliases, budget, prices, projections,
+/// accounts, QB-journal, profiles, benchmarks).
 ///
 /// The `ETag` is a single per-journal generation counter shared by every read
 /// route, so there is no third option for these: tagging them would either
 /// invalidate the SPA's cached `/transactions` body for a change that affects
 /// no transaction, or hand out a stale document under a fresh tag.
-pub(crate) fn no_store_json<T: serde::Serialize>(body: T) -> Response {
+pub fn no_store_json<T: serde::Serialize>(body: T) -> Response {
     ([(header::CACHE_CONTROL, no_store())], axum::Json(body)).into_response()
 }
 
 /// The Content-Security-Policy for every response that carries no inline script
 /// (JSON, static assets, errors).
-pub(crate) fn base_csp() -> HeaderValue {
+#[must_use]
+pub fn base_csp() -> HeaderValue {
     csp_value("")
 }
 
@@ -503,7 +530,8 @@ pub(crate) fn base_csp() -> HeaderValue {
 /// Computed from the served bytes rather than baked in, so it stays correct
 /// across SPA rebuilds (SvelteKit's bootstrap script changes every build) and
 /// across the token we inject into it.
-pub(crate) fn shell_csp(html: &str) -> HeaderValue {
+#[must_use]
+pub fn shell_csp(html: &str) -> HeaderValue {
     let hashes = inline_script_hashes(html)
         .iter()
         .map(|hash| format!(" '{hash}'"))
@@ -543,12 +571,126 @@ fn inline_script_hashes(html: &str) -> Vec<String> {
 }
 
 /// The `sha256-<base64>` source expression for one inline script's exact text.
-pub(crate) fn csp_sha256(script: &str) -> String {
+#[must_use]
+pub fn csp_sha256(script: &str) -> String {
     let digest = Sha256::digest(script.as_bytes());
     format!(
         "sha256-{}",
         base64::engine::general_purpose::STANDARD.encode(digest)
     )
+}
+
+/// Is `host` a loopback address (or the `localhost` name)? Anything else — a LAN
+/// address, or the `0.0.0.0` / `::` wildcards — publishes the app's data beyond
+/// this machine.
+#[must_use]
+pub fn is_loopback_host(host: &str) -> bool {
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    bare.eq_ignore_ascii_case("localhost")
+        || bare
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+/// The access-control decisions taken at startup, before the socket is bound.
+///
+/// Split from [`Security`] itself because the `Host` guard has to name the port
+/// we ACTUALLY bound, and `--port 0` (the GUI's default) only reveals that at
+/// bind time — so the plan is made early and [`SecurityPlan::build`] finishes it.
+pub struct SecurityPlan {
+    token: AccessToken,
+    /// Whether the bind host resolved to loopback; drives the `Host` guard.
+    loopback: bool,
+    /// Exact origins from `--allow-origin`, validated by [`build`](Self::build).
+    origins: Vec<String>,
+}
+
+impl SecurityPlan {
+    /// A plan for serving `token` on `host`, opening the API to `origins`.
+    #[must_use]
+    pub fn new(token: AccessToken, host: &str, origins: Vec<String>) -> Self {
+        Self {
+            token,
+            loopback: is_loopback_host(host),
+            origins,
+        }
+    }
+
+    /// Whether the bind host is loopback. Anything else should be refused
+    /// unless the operator chose the token deliberately (SEC-9).
+    #[must_use]
+    pub fn is_loopback(&self) -> bool {
+        self.loopback
+    }
+
+    /// Finish the plan now that `port` is known.
+    ///
+    /// # Errors
+    /// [`SecurityError::BadOrigin`] for an unusable `--allow-origin` entry.
+    pub fn build(&self, port: u16) -> Result<Security, SecurityError> {
+        let base = if self.loopback {
+            Security::local(self.token.clone(), port)
+        } else {
+            Security::any_host(self.token.clone())
+        };
+        base.allow_origins(&self.origins)
+    }
+}
+
+/// Put the token guard and the CORS allowlist on every route registered on
+/// `router` so far — call it after the last API route and BEFORE the SPA
+/// fallback, which must stay reachable without a token.
+///
+/// Both are `route_layer`s, never `layer`s: they reach exactly the explicit
+/// routes, so the fallback (the SPA shell, its assets, deep links) is served
+/// same-origin only and never carries a CORS header (SEC-12). The CORS layer
+/// wraps the token guard, which is required: a preflight carries no
+/// `Authorization` and must be answered rather than refused. The default
+/// posture is no CORS layer at all, so a browser refuses to hand any
+/// cross-origin page the responses (SEC-1). `cors_headers` are the app's extra
+/// request headers ([`Security::cors_layer`]).
+pub fn protect<S>(router: Router<S>, security: &Security, cors_headers: &[HeaderName]) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    let router = router.route_layer(middleware::from_fn_with_state(
+        security.clone(),
+        token_guard,
+    ));
+    match security.cors_layer(cors_headers) {
+        Some(cors) => router.route_layer(cors),
+        None => router,
+    }
+}
+
+/// The layers every response passes through, applied to the WHOLE router (the
+/// SPA shell included): the `Host` guard (anti-DNS-rebinding), a handler panic
+/// as a `500` rather than a dropped connection (SEC-2), `nosniff`,
+/// `no-referrer`, and the base CSP for any response without its own (SEC-7) —
+/// `if_not_present`, so the SPA shell's policy, which additionally hashes the
+/// inline scripts it just rendered, is left alone.
+///
+/// Call it last, after the fallback and any app-specific layers that belong
+/// inside the guard (Ledgeline's compression).
+pub fn harden<S>(router: Router<S>, security: Security) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    router
+        .layer(middleware::from_fn_with_state(security, host_guard))
+        .layer(CatchPanicLayer::new())
+        .layer(SetResponseHeaderLayer::overriding(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("no-referrer"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::CONTENT_SECURITY_POLICY,
+            base_csp(),
+        ))
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -617,13 +759,74 @@ mod tests {
 
     #[test]
     fn no_allowed_origins_means_no_cors_layer() {
-        assert!(Security::local(sample_token(), 5000).cors_layer().is_none());
+        assert!(
+            Security::local(sample_token(), 5000)
+                .cors_layer(&[])
+                .is_none()
+        );
         assert!(
             Security::local(sample_token(), 5000)
                 .allow_origins(&["http://localhost:4173"])
                 .expect("valid origin")
-                .cors_layer()
+                .cors_layer(&[])
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn loopback_hosts_are_recognised_and_nothing_else_is() {
+        for host in [
+            "127.0.0.1",
+            "localhost",
+            "LOCALHOST",
+            "::1",
+            "[::1]",
+            "127.0.0.2",
+        ] {
+            assert!(is_loopback_host(host), "{host}");
+        }
+        for host in [
+            "0.0.0.0",
+            "::",
+            "192.168.1.5",
+            "example.com",
+            "localhost.evil",
+        ] {
+            assert!(!is_loopback_host(host), "{host}");
+        }
+    }
+
+    #[test]
+    fn an_env_token_names_its_variable_when_malformed() {
+        let error = SecurityError::MalformedEnvToken {
+            var: "LEDGELINE_TOKEN",
+        };
+        assert!(
+            error
+                .to_string()
+                .starts_with("$LEDGELINE_TOKEN must be 16–128 characters"),
+            "{error}"
+        );
+    }
+
+    /// The token goes to the WebView by initialization script, and only to a
+    /// document on our exact origin — the script itself runs on every document
+    /// the main frame loads.
+    #[test]
+    fn the_token_script_is_guarded_by_our_exact_origin() {
+        let app = AppIdentity {
+            name: "Ledgeline",
+            bundle_id: "com.zmre.ledgeline",
+            log_prefix: "ledgeline",
+            token_env: "LEDGELINE_TOKEN",
+            token_global: "__LEDGELINE_TOKEN__",
+            embedded_global: "__LEDGELINE_EMBEDDED__",
+        };
+        let script = token_init_script(&app, "http://127.0.0.1:5000", &sample_token());
+        assert_eq!(
+            script,
+            "if (window.location.origin === \"http://127.0.0.1:5000\") \
+             { window.__LEDGELINE_TOKEN__ = \"token-for-unit-tests\"; }"
         );
     }
 

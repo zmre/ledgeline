@@ -69,19 +69,19 @@ keychain = ["dep:keyring"]
 test-fakes = []
 gui = [
     "watcher",
+    "ledgeline-shell/gui",
     "dep:wry",
     "dep:tao",
     "dep:muda",
     "dep:rfd",
     "dep:url",
-    "dep:gtk",
-    "dep:webkit2gtk",
-    "dep:objc2-core-foundation",
-    "dep:objc2-core-services",
 ]
 
 [dependencies]
 ledgeline-core = { workspace = true }
+# The token and Host guard, CSP, SPA embed, app dirs, recents and the GUI boot
+# pieces, shared with the invoicer. Its `gui` feature follows ours.
+ledgeline-shell = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -118,10 +118,10 @@ tower-http = { version = "0.7", features = [
     "cors",
     "set-header",
 ] }
-# Local-access control (SEC-1): `getrandom` is the OS CSPRNG behind the
-# per-process bearer token; `sha2` + `base64` compute the CSP script hashes.
+# `getrandom` is the OS CSPRNG behind the random names and seeds the server
+# makes; `base64` encodes SimpleFIN's Basic auth. (The bearer token and the
+# CSP hashes are `ledgeline-shell`'s.)
 getrandom = { version = "0.4", features = ["std"] }
-sha2 = "0.11"
 base64 = "0.23"
 # Bank sync's schedule is in the user's local time ("due after 07:00",
 # dates of non-midnight epochs): the local UTC offset, nothing more. Already in
@@ -131,7 +131,6 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # and headless builds, so none of these are feature-gated.
 clap = { version = "4", features = ["derive"] }
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }
-mime_guess = "2"
 arc-swap = "1"
 # Live reload (the `watcher` feature): a file watcher over the journal's real
 # directories. A host without one polls `AppState::refresh()` instead.
@@ -157,25 +156,6 @@ rfd = { version = "0.17", optional = true }
 # in the tree as a tao dependency, so cargo unifies it and it costs no new build.
 url = { version = "2", optional = true }
 
-# Ledgeline ▸ "Make Ledgeline the Default for Journal Files" (`gui_file_assoc.rs`)
-# calls Launch Services directly: `LSRegisterURL` and
-# `LSSetDefaultRoleHandlerForContentType`. Both crates are ALREADY in the tree
-# (notify's FSEvents backend links them), so cargo unifies them and this adds no
-# crate to Cargo.lock — only the LaunchServices features we call.
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2-core-foundation = { version = "0.3", optional = true, default-features = false, features = [
-    "std",
-    "CFString",
-    "CFURL",
-] }
-objc2-core-services = { version = "0.3", optional = true, default-features = false, features = [
-    "std",
-    "libc",
-    "LaunchServices",
-    "LSInfo",
-    "LSConstants",
-] }
-
 # Plan 43 bank sync: the OS keychain (the `keychain` feature). keyring 3 with
 # only the native store per platform: Security.framework on macOS, the Secret
 # Service over zbus (pure Rust, `crypto-rust`, `async-io` so it never needs to
@@ -199,17 +179,6 @@ optional = true
 default-features = false
 features = ["windows-native"]
 
-# Linux hides the in-window GtkMenuBar by default (F10 toggles it), which needs
-# to name `gtk::Settings` and `gtk::Widget` directly. gtk 0.18 is ALREADY in the
-# tree via tao/muda/webkit2gtk, so cargo unifies it and this adds no crate to the
-# graph — only a direct path to types we were already linking.
-[target.'cfg(target_os = "linux")'.dependencies]
-gtk = { version = "0.18", optional = true }
-# Needed for `terminate_web_process()` on shutdown — see `stop_web_process` in
-# gui.rs. Like `gtk`, this is ALREADY in the tree (wry links it), so cargo
-# unifies it and this adds no crate to the graph.
-webkit2gtk = { version = "2.0", optional = true }
-
 # `setrlimit` for the workbook worker (`workbook_sandbox`): safe, where `libc`'s
 # is `unsafe`. Already in the tree (via tempfile, and wayland on Linux), so this
 # adds no crate to Cargo.lock — only the `process` feature.
@@ -228,5 +197,9 @@ http-body-util = "0.1"
 # Already in the tree via calamine (same major, same feature), so this adds no
 # crate to Cargo.lock.
 zip = { version = "9", default-features = false, features = ["deflate"] }
-# Isolated temp dirs for the recents-store unit tests.
+# Isolated temp dirs for the store unit tests.
 tempfile = "3"
+# `tests/spa_shell_csp.rs` re-derives the shell's script hashes independently
+# of `ledgeline-shell`, which owns the production ones. Same version, so no new
+# crate.
+sha2 = "0.11"

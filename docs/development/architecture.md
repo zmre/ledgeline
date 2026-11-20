@@ -14,9 +14,11 @@ The short version: **`ledgeline-core` is the product.** It reads journals, edits
 ```
 hosts      desktop (wry window)   headless (--server)   iOS (ledgeline-ffi, in-process)
               │                       │                        │
-server     ledgeline-server: axum router, snapshots, AppState, AppDirs
+server     ledgeline-server: axum router, snapshots, AppState
               │   features: gui · watcher · external-tools
-core       ledgeline-core: vault · parse/edit · reports · view · display
+shell      ledgeline-shell: token + Host guard · CSP · SPA embed · AppDirs · recents · GUI boot
+              │   features: gui
+core       ledgeline-core: vault · parse/edit · reports · view · display · ui_prefs
 ```
 
 ## Core: `crates/ledgeline-core`
@@ -32,6 +34,7 @@ A plain library with no platform `cfg`s, no clock reads in report code, no HTTP,
 | Journal view | `view/` | The windowed journal: filter, sort, search text, summary, charts, local checks, cash balances. |
 | Classification and display | `reports/account_types.rs`, `reports/account_class.rs`, `display.rs` | One resolver for account types and terms (declared, else inferred), the sign rule for entered amounts (`signed_entry`: revenue is entered positive and written negative), and the number formatter the UI uses. |
 | Projections | `projections.rs` | The what-if engine, the scenario model, and the section a scenario line belongs in (`line_section`). |
+| UI preferences | `ui_prefs.rs`, `ui_prefs/ledgeline.rs` | The settings-files data model (plan 38/39): per-key merge of `ledgeline.toml [ui]` over `ui-prefs.toml` over the defaults, save routing, the theme pin, `edit_ledger_text`. Generic over a `Schema` each app registers; `theme` and `uiScale` are common to all of them. |
 
 Pure functions that used to live in TypeScript were ported here with golden fixtures captured from the TypeScript first; see `fixtures/journal-view/`, `fixtures/journal-meta/`, `fixtures/display-format/`, `fixtures/budget-summary/` and `fixtures/projections-signs/`, and the `*_golden.rs` tests that read them.
 
@@ -41,16 +44,25 @@ An axum `Router` over an `AppState`. The library is what every host links; `main
 
 - **Snapshots.** `AppState` holds the current parsed journal as an immutable `Snapshot` (with lazily built, memoized views such as the sort order and search text). A reload builds a new snapshot and swaps it in; requests in flight keep the one they started with. `GET /api/journal` reports the snapshot `generation`, and the journal-view routes carry an `ETag` derived from it.
 - **Entry points.** `AppState::from_vault(Arc<dyn Vault>, VaultPath)` is the general constructor; `from_journal_path` builds a `LocalVault` and delegates. `reload()` re-parses; `refresh()` is a vault-based content check for hosts with no file watcher.
-- **`AppDirs`.** Config, cache and temp directories and the `hledger` binary are injected rather than looked up, so a sandboxed host can point them inside its container. Recents store an opaque location token.
+- **`AppDirs`** (from `ledgeline-shell`). Config, cache and temp directories and the `hledger` binary are injected rather than looked up, so a sandboxed host can point them inside its container. Recents store an opaque location token.
 - **Routes.** `reports_api.rs` (reports, budget), `journal_api.rs` (the windowed journal), `budget_api.rs`, `projections_api.rs`, `edit_api.rs`, `import_api.rs` and the rest. The hledger-web-compatible routes (`/version`, `/transactions`, `/prices`, …) remain for external tools, with their parity tests.
 - **Cargo features.**
   - `gui` (default): the wry/tao desktop window, menus and file dialogs.
   - `watcher` (default): live reload from a `notify` file watcher. Without it, the host calls `refresh()`.
   - `external-tools` (default): running `hledger` as a subprocess. It needs a real path (`Vault::local_path`); without the feature the features that use it report that this build cannot run it.
 
+## Shell: `crates/ledgeline-shell`
+
+What sits between "a router plus a built SPA" and "a hardened local server in a desktop window", shared by Ledgeline and the invoicer. An app describes itself once in an `AppIdentity` (name, bundle id, its token variable and the SPA's two `window` globals; Ledgeline's is `ledgeline::APP`).
+
+- **`security`.** The bearer token, the `Host` guard, the CORS allowlist and the security headers, with `protect` (token + CORS over the explicit routes) and `harden` (everything else) to put them on a router; `SecurityPlan` for the bind posture.
+- **`spa`.** `spa::fallback::<E>(&APP)` serves a `RustEmbed`-ed SPA with the embedded marker and a per-response CSP.
+- **`app_dirs`, `recents`.** One config directory for every app, so recents and `ui-prefs.toml` are shared.
+- **`gui`** (feature). `spawn_server`, `AppMenu`, `RecentMenu`, `build_window`, `build_webview` and the Linux and macOS glue; an app's own `gui` module strings them together around its state.
+
 ## Hosts
 
-- **Desktop** (`ledgeline`, default features). `gui.rs` binds axum to an ephemeral loopback port and opens a wry webview at it. The SPA is embedded in the binary.
+- **Desktop** (`ledgeline`, default features). `gui.rs` binds axum to an ephemeral loopback port and opens a wry webview at it, through the boot pieces in `crates/ledgeline-shell` (shared with the invoicer). The SPA is embedded in the binary.
 - **Headless** (`ledgeline --server`, or a build with `--no-default-features --features watcher,external-tools`). The same router on a fixed port, token-guarded, for a browser or another client.
 - **iOS** (`crates/ledgeline-ffi`, `mobile` feature). No socket: `LedgelineApp::handle(method, url, headers, body)` runs the router in-process (`Router::oneshot`) behind the app's custom-scheme handler. Storage is a `CoordinatedVault` that writes through a Swift `FileCoordinator` (conditionally, against the expected revision), detects iCloud placeholder files and fails fast with `NotDownloaded` instead of blocking. The `mobile` feature builds the server without `gui`, `watcher` or `external-tools`. UniFFI exports are compiled on Apple targets only, so the crate builds and tests everywhere. The Swift shell lives in `apple/ios` (plan 42) and shows the same SPA in native mode, below.
 

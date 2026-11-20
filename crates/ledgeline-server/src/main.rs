@@ -17,7 +17,6 @@
 #[cfg(feature = "gui")]
 mod gui;
 
-use std::net::IpAddr;
 #[cfg(feature = "watcher")]
 use std::path::Path;
 use std::path::PathBuf;
@@ -29,9 +28,10 @@ use std::time::Duration;
 
 use clap::Parser;
 use ledgeline::{
-    AppDirs, AppState, ProcessToken, Security, SecurityError, TOKEN_ENV, router_with_security,
+    AppDirs, AppState, ProcessToken, SecurityError, TOKEN_ENV, router_with_security,
     token_from_env_or_random,
 };
+use ledgeline_shell::security::SecurityPlan;
 #[cfg(feature = "watcher")]
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
@@ -445,42 +445,6 @@ fn server_journal(cli: &Cli, app_dirs: &AppDirs) -> PathBuf {
     resolve_journal(cli, app_dirs).unwrap_or_else(|| PathBuf::from(DEFAULT_FIXTURE))
 }
 
-/// Is `host` a loopback address (or the `localhost` name)? Anything else — a LAN
-/// address, or the `0.0.0.0` / `::` wildcards — publishes the journal beyond this
-/// machine.
-fn is_loopback_host(host: &str) -> bool {
-    let bare = host.trim_start_matches('[').trim_end_matches(']');
-    bare.eq_ignore_ascii_case("localhost")
-        || bare
-            .parse::<IpAddr>()
-            .is_ok_and(|address| address.is_loopback())
-}
-
-/// The access-control decisions taken at startup, before the socket is bound.
-///
-/// Split from [`Security`] itself because the `Host` guard has to name the port
-/// we ACTUALLY bound, and `--port 0` (the GUI's default) only reveals that at
-/// bind time — so the plan is made early and [`SecurityPlan::build`] finishes it.
-pub(crate) struct SecurityPlan {
-    token: ledgeline::AccessToken,
-    /// Whether `--host` resolved to loopback; drives the `Host` guard.
-    loopback: bool,
-    /// Exact origins from `--allow-origin`, already validated.
-    origins: Vec<String>,
-}
-
-impl SecurityPlan {
-    /// Finish the plan now that `port` is known.
-    fn build(&self, port: u16) -> Result<Security, AppError> {
-        let base = if self.loopback {
-            Security::local(self.token.clone(), port)
-        } else {
-            Security::any_host(self.token.clone())
-        };
-        Ok(base.allow_origins(&self.origins)?)
-    }
-}
-
 /// SEC-9: mint this process's access token and decide the bind posture.
 ///
 /// A loopback bind gets the full treatment — token plus a `Host` guard pinned to
@@ -491,7 +455,14 @@ impl SecurityPlan {
 /// unknowable.
 pub(crate) fn plan_security(cli: &Cli) -> Result<(ProcessToken, SecurityPlan), AppError> {
     let process_token = token_from_env_or_random()?;
-    let loopback = is_loopback_host(&cli.host);
+    // The decisions are the shell's (`SecurityPlan`); refusing, warning and
+    // reporting them are this CLI's.
+    let plan = SecurityPlan::new(
+        process_token.token.clone(),
+        &cli.host,
+        cli.allow_origin.clone(),
+    );
+    let loopback = plan.is_loopback();
     if !loopback && !process_token.from_env {
         return Err(AppError::NonLoopbackBind {
             host: cli.host.clone(),
@@ -505,11 +476,6 @@ pub(crate) fn plan_security(cli: &Cli) -> Result<(ProcessToken, SecurityPlan), A
             host = cli.host
         );
     }
-    let plan = SecurityPlan {
-        token: process_token.token.clone(),
-        loopback,
-        origins: cli.allow_origin.clone(),
-    };
     // Surface a bad --allow-origin at startup rather than at the first request.
     plan.build(cli.port.unwrap_or(0))?;
     if !cli.allow_origin.is_empty() {

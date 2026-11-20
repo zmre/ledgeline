@@ -9,12 +9,12 @@
 //!
 //! 1. `ledgeline.toml` in the MAIN JOURNAL'S DIRECTORY, keys under `[ui]`. A
 //!    person writes this file by hand to give one ledger its own values. The
-//!    app creates it in one case only: the user asks to keep a [`PINNABLE`]
-//!    key for this ledger ([`pin`], plan 39).
-//! 2. `ui-prefs.toml` in the config directory ([`AppDirs::config_dir`]), the
+//!    app creates it in one case only: the user asks to keep a pinnable
+//!    key ([`Schema::pinnable`]) for this ledger ([`pin`], plan 39).
+//! 2. `ui-prefs.toml` in the app's config directory ([`Context::global_file`]), the
 //!    same keys at top level. The app's own file: it creates it on the first
 //!    save and edits it after.
-//! 3. The built-in defaults ([`SPECS`]).
+//! 3. The built-in defaults (the app's [`Schema`]).
 //!
 //! For each key the first layer that holds a USABLE value wins. A value that is
 //! present but unusable is reported as an [`Issue`] and the key falls through
@@ -52,7 +52,7 @@
 //! # Writes
 //!
 //! Both files are written through the pinned primitives
-//! (`ledgeline_core::pinned`, through the journal's vault for the ledger
+//! ([`crate::pinned`], through the journal's vault for the ledger
 //! file): `replace` against the revision just read, and for the global file
 //! `create_new_pinned` (exclusive, `O_NOFOLLOW`, owner-only) the first time. A
 //! write that loses a race re-reads and re-applies — a patch is a set of key
@@ -79,30 +79,42 @@
 //!   used to. For the e2e and live-contract harnesses, which run against
 //!   committed fixtures and rely on each browser context starting from its own
 //!   clean state.
+//!
+//! # One engine, one table per app
+//!
+//! This module is the data model only: the specs, the checks, the merge order,
+//! where a save goes and the theme pin. It knows nothing about a running
+//! server. Each app registers its own [`Schema`] — Ledgeline's is
+//! [`ledgeline::SCHEMA`] — and builds a [`Context`] per operation from its own
+//! state: which schema, the session, where its `ui-prefs.toml` lives and where
+//! the open ledger's `ledgeline.toml` is. [`THEME`] and [`UI_SCALE`] are common
+//! to every schema, so a books folder pinned to a theme opens in that theme
+//! whichever app opens it ([`BootAppearance`]).
+//!
+//! The files are shared, not partitioned: an app reads only the keys its schema
+//! names and keeps every other key on write, so two apps saving to one
+//! `ui-prefs.toml` never lose each other's settings.
 
 use std::collections::BTreeMap;
 use std::io::Read;
-use std::path::Path;
-use std::sync::{Mutex, PoisonError};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 
-use ledgeline_core::vault::{VaultError, VaultPath};
 use serde::Serialize;
 use serde_json::{Map, Value as Json};
 use toml_edit::{DocumentMut, InlineTable, Item, Table, TableLike};
 
-use crate::app_dirs::AppDirs;
-use crate::error::AppError;
-use crate::{AppState, JournalLocation};
+use crate::ledger_file::{self, LedgerEditError, LedgerFile};
+use crate::vault::{Vault, VaultError, VaultPath};
 
-/// Env switch for [`Storage::Browser`]. Any non-empty value turns it on.
-pub const UI_PREFS_IN_BROWSER_ENV: &str = "LEDGELINE_UI_PREFS_IN_BROWSER";
+pub mod ledgeline;
 
 /// The per-ledger override file, beside the main journal. Hand-made, or
 /// created by an explicit [`pin`].
-pub(crate) const LEDGER_FILE: &str = ledger_file::LEDGER_FILE;
+pub const LEDGER_FILE: &str = ledger_file::LEDGER_FILE;
 
 /// The global file, in the config directory: where saves normally go.
-pub(crate) const GLOBAL_FILE: &str = "ui-prefs.toml";
+pub const GLOBAL_FILE: &str = "ui-prefs.toml";
 
 /// The top of a [`GLOBAL_FILE`] the app creates.
 const GLOBAL_HEADER: &str = concat!(
@@ -122,7 +134,7 @@ const KEPT_NO_CONFIG_DIR: &str =
 const UI_TABLE: &str = "ui";
 
 /// The largest settings file read. Real ones are a few hundred bytes.
-pub(crate) const MAX_FILE_BYTES: u64 = ledger_file::MAX_FILE_BYTES;
+pub const MAX_FILE_BYTES: u64 = ledger_file::MAX_FILE_BYTES;
 
 /// The most benchmark lines kept. The catalog is a handful of symbols.
 const MAX_BENCHMARKS: usize = 32;
@@ -137,26 +149,11 @@ const WRITE_ATTEMPTS: usize = 3;
 /// tries is told so rather than silently ignored.
 const FORBIDDEN_LEDGER_KEYS: &[&str] = &["hledgerPath", "serverUrl", "serverToken"];
 
-/// The insights box's two views (`InsightsTab` in `settings.svelte.ts`).
-const INSIGHTS_TABS: &[&str] = &["activity", "balances"];
-
-/// What the Holdings pie can be divided by (`PIE_DIMENSIONS` in
-/// `web/src/lib/holdings/profileTypes.ts`).
-const PIE_DIMENSIONS: &[&str] = &[
-    "holding",
-    "assetClass",
-    "sector",
-    "industry",
-    "securityType",
-    "category",
-    "risk",
-];
-
 /// Theme ids (plan 39). A family id (`github`) follows the OS light/dark
 /// setting; a variant id (`github-dark`) pins one; dark-only families have one
 /// id. The SPA's `THEME_IDS` (`web/src/lib/settings/uiPrefs.ts`) is the same
 /// list.
-const THEMES: &[&str] = &[
+pub const THEMES: &[&str] = &[
     "default",
     "default-light",
     "default-dark",
@@ -181,44 +178,12 @@ const THEMES: &[&str] = &[
     "nord",
 ];
 
-/// The keys [`pin`] may write into [`LEDGER_FILE`]: what a person would want
-/// to tell one ledger from another by. The automatic price update keys (plan
-/// 41) are here because "fetch prices for my real books, but not for the
-/// sample ledger I demo with" is exactly a per-ledger choice.
-///
-/// The bank sync keys (plan 43) are here for the same reason: sync the real
-/// books automatically, not the demo ledger.
-const PINNABLE: &[&str] = &[
-    "theme",
-    "uiScale",
-    "autoPrices",
-    "autoPricesWeeks",
-    "autoSync",
-    "autoSyncEveryHours",
-    "syncSourceDir",
-    "syncKeepSourceDays",
-    "manualRemindDays",
-    "autoRecognize",
-];
-
-/// The sync keys, whose change wakes the sync scheduler.
-const SYNC_KEYS: &[&str] = &[
-    "autoSync",
-    "autoSyncEveryHours",
-    "syncSourceDir",
-    "syncKeepSourceDays",
-];
-
-/// `syncSourceDir`'s default: where fetched CSVs are kept, relative to the
-/// journal's folder.
-pub(crate) const DEFAULT_SYNC_SOURCE_DIR: &str = "imports/sync";
-
-/// The longest `syncSourceDir` kept.
+/// The longest [`Kind::RelDir`] value kept (Ledgeline's `syncSourceDir`).
 const MAX_REL_DIR_BYTES: usize = 255;
 
 /// What a key holds, how a value for it is checked, and its built-in default.
 #[derive(Debug, Clone, Copy)]
-enum Kind {
+pub enum Kind {
     /// `true`/`false`.
     Flag(bool),
     /// One string out of a closed set.
@@ -244,131 +209,75 @@ enum Kind {
 /// One preference. `key` is the wire name; a dotted key (`columns.date`) is a
 /// member of a group, nested on the wire and as a sub-table in the files.
 #[derive(Debug)]
-struct Spec {
-    key: &'static str,
-    kind: Kind,
+pub struct Spec {
+    pub key: &'static str,
+    pub kind: Kind,
 }
 
-/// Every preference, with the defaults `settings.svelte.ts` has always used.
-/// The bounds are the SPA's (`REVIEW_LIMIT_RANGE` and friends).
-const SPECS: &[Spec] = &[
-    flag("columns.date", true),
-    flag("columns.status", true),
-    flag("columns.description", true),
-    flag("columns.accounts", true),
-    flag("columns.amount", true),
-    flag("insightsOpen", true),
-    Spec {
-        key: "insightsTab",
-        kind: Kind::Choice {
-            allowed: INSIGHTS_TABS,
-            default: "activity",
-        },
-    },
-    flag("hideZeroBalances", true),
-    flag("flowsInOpen", true),
-    flag("flowsOutOpen", true),
-    flag("netWorthChartOpen", true),
-    flag("cashFlowChartOpen", true),
-    flag("budgetGapsOpen", false),
-    flag("startupMoreOpen", false),
-    Spec {
-        key: "holdingsPieDimension",
-        kind: Kind::Choice {
-            allowed: PIE_DIMENSIONS,
-            default: "holding",
-        },
-    },
-    Spec {
-        key: "lastProjectionId",
-        kind: Kind::FileId,
-    },
-    Spec {
-        key: "benchmarks",
-        kind: Kind::Tickers,
-    },
-    whole("reviewRecentLimit", 1, 1000, 50),
-    whole("reviewMaxDays", 0, 36500, 365),
-    flag("reviewMarkers", true),
-    whole("matchWindow", 1, 60, 10),
-    whole("matchLookback", 0, 36500, 365),
-    whole("matchTransitDays", 1, 365, 10),
-    Spec {
-        key: "theme",
-        kind: Kind::Choice {
-            allowed: THEMES,
-            default: "default",
-        },
-    },
-    // Whole percent. The SPA steps 70–200; the wider range is for hand edits.
-    whole("uiScale", 50, 300, 100),
-    // Plan 41: the engine's background price updater (`auto_prices`). Off
-    // until asked for — it makes network requests on the user's behalf.
-    flag("autoPrices", false),
-    // How many past Monday–Sunday weeks it backfills a missing weekly close
-    // for. 0 = the latest close only. A year is plenty; every extra week only
-    // makes the one request per symbol a little larger.
-    whole("autoPricesWeeks", 0, 52, 6),
-    // Plan 43: bank sync in the background. Off until asked for — it fetches
-    // from the bank feed and writes to the journal on the user's behalf.
-    flag("autoSync", false),
-    // The floor of 3 protects SimpleFIN's ~24-requests-a-day quota.
-    whole("autoSyncEveryHours", 3, 24, 6),
-    Spec {
-        key: "syncSourceDir",
-        kind: Kind::RelDir {
-            default: DEFAULT_SYNC_SOURCE_DIR,
-        },
-    },
-    // 0 = keep every fetched CSV forever, the default: nothing is deleted
-    // unless the user asks for it.
-    whole("syncKeepSourceDays", 0, 3650, 0),
-    // Days without a new transaction before a manually imported account's
-    // row turns amber on Imports → Accounts.
-    whole("manualRemindDays", 1, 3650, 35),
-    // Plan 45: post due recognition entries in the background. Off until
-    // asked for — it writes to the journal on the user's behalf.
-    flag("autoRecognize", false),
-    // Plan 45 D8: how the journal shows posted recognition entries.
-    Spec {
-        key: "recognitionRows",
-        kind: Kind::Choice {
-            allowed: &["group", "hide", "show"],
-            default: "group",
-        },
-    },
-    // Plan 45 D-settle: the invoice ↔ payment matcher, beside the match
-    // settings. 0 = no lookback limit; the tolerance is basis points of the
-    // invoice (300 = 3%, Q3).
-    whole("settlementLookbackDays", 0, 3650, 180),
-    whole("settlementToleranceBps", 0, 10_000, 300),
-    // How many days a payment may come BEFORE its invoice (a payroll draw,
-    // then its bill): 0–60, default 4.
-    whole("settlementLeadDays", 0, 60, 4),
-];
+/// An app's preferences: every key it reads and writes, in the order the wire
+/// lists them, and which of them [`pin`] may keep for one ledger.
+///
+/// Every schema includes [`THEME`] and [`UI_SCALE`] — the keys the desktop
+/// shell paints its first frame with ([`BootAppearance`]) — wherever it likes
+/// in its order. A schema's keys are its own: a key another app's schema names
+/// is neither read nor written by this one, and survives its saves.
+#[derive(Debug)]
+pub struct Schema {
+    pub specs: &'static [Spec],
+    /// Undotted keys of [`specs`](Self::specs) a person may want to tell one
+    /// ledger from another by.
+    pub pinnable: &'static [&'static str],
+}
 
-const fn flag(key: &'static str, default: bool) -> Spec {
+impl Schema {
+    /// The spec named `key`, if any.
+    #[must_use]
+    pub fn spec(&self, key: &str) -> Option<&'static Spec> {
+        self.specs.iter().find(|spec| spec.key == key)
+    }
+
+    /// Whether `key` is one of this schema's.
+    #[must_use]
+    pub fn has(&self, key: &str) -> bool {
+        self.spec(key).is_some()
+    }
+}
+
+/// The theme (plan 39): a family that follows the OS, or one variant. Common
+/// to every app's [`Schema`].
+pub const THEME: Spec = Spec {
+    key: "theme",
+    kind: Kind::Choice {
+        allowed: THEMES,
+        default: "default",
+    },
+};
+
+/// The interface scale, in whole percent. The SPA steps 70–200; the wider
+/// range is for hand edits. Common to every app's [`Schema`].
+pub const UI_SCALE: Spec = whole("uiScale", 50, 300, 100);
+
+/// A `true`/`false` key.
+#[must_use]
+pub const fn flag(key: &'static str, default: bool) -> Spec {
     Spec {
         key,
         kind: Kind::Flag(default),
     }
 }
 
-const fn whole(key: &'static str, min: i64, max: i64, default: i64) -> Spec {
+/// A whole-number key in `min..=max`.
+#[must_use]
+pub const fn whole(key: &'static str, min: i64, max: i64, default: i64) -> Spec {
     Spec {
         key,
         kind: Kind::Whole { min, max, default },
     }
 }
 
-/// The spec named `key`, if any.
-fn spec(key: &str) -> Option<&'static Spec> {
-    SPECS.iter().find(|spec| spec.key == key)
-}
-
 /// A checked preference value.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PrefValue {
+pub enum PrefValue {
     Flag(bool),
     Text(String),
     Whole(i64),
@@ -377,7 +286,7 @@ pub(crate) enum PrefValue {
 }
 
 /// A complete or partial set of values, by [`Spec::key`].
-type Values = BTreeMap<&'static str, PrefValue>;
+pub type Values = BTreeMap<&'static str, PrefValue>;
 
 impl Kind {
     fn default_value(self) -> PrefValue {
@@ -512,7 +421,10 @@ fn check_file_id(text: &str) -> Result<Option<String>, &'static str> {
 
 /// A folder relative to the journal's folder, as [`Kind::RelDir`] accepts
 /// it, with a trailing `/` dropped.
-pub(crate) fn check_rel_dir(text: &str) -> Result<String, &'static str> {
+///
+/// # Errors
+/// Why `text` is not such a folder.
+pub fn check_rel_dir(text: &str) -> Result<String, &'static str> {
     let trimmed = text.trim_end_matches('/');
     if trimmed.is_empty() || trimmed.len() > MAX_REL_DIR_BYTES {
         return Err("must be a folder inside the journal's folder");
@@ -584,13 +496,13 @@ impl PrefValue {
 /// Something in a settings file that was not used as written. Fixed phrases
 /// only: no value from the file and no path is echoed back.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct Issue {
+pub struct Issue {
     /// [`LEDGER_FILE`] or [`GLOBAL_FILE`].
-    pub(crate) file: &'static str,
+    pub file: &'static str,
     /// The key as written in that file (`ui.matchWindow`), or `None` for the
     /// whole file.
-    pub(crate) key: Option<String>,
-    pub(crate) message: &'static str,
+    pub key: Option<String>,
+    pub message: &'static str,
 }
 
 impl Issue {
@@ -628,11 +540,12 @@ fn lookup<'a>(table: &'a dyn TableLike, key: &str) -> Option<&'a Item> {
 
 /// Every spec'd key in `table`, checked. `prefix` is how the file spells the
 /// table's path (`"ui."` in [`LEDGER_FILE`]), for the issues.
-fn read_layer(table: &dyn TableLike, file: &'static str, prefix: &str) -> Layer {
+fn read_layer(schema: &Schema, table: &dyn TableLike, file: &'static str, prefix: &str) -> Layer {
     let mut layer = Layer::default();
     // A group spelled as a scalar (`columns = true`) has no members to read;
     // say so once, rather than once per member.
-    let mut groups: Vec<&str> = SPECS
+    let mut groups: Vec<&str> = schema
+        .specs
         .iter()
         .filter_map(|spec| spec.key.split_once('.').map(|(group, _)| group))
         .collect();
@@ -649,7 +562,7 @@ fn read_layer(table: &dyn TableLike, file: &'static str, prefix: &str) -> Layer 
             ));
         }
     }
-    for spec in SPECS {
+    for spec in schema.specs {
         let Some(item) = lookup(table, spec.key) else {
             continue;
         };
@@ -676,14 +589,14 @@ fn read_layer(table: &dyn TableLike, file: &'static str, prefix: &str) -> Layer 
 ///
 /// Read with the ordinary, symlink-following open: it is the user's own
 /// config, and dotfile managers (home-manager, stow) deliver it as a symlink.
-fn global_layer(dirs: &AppDirs) -> Layer {
-    let Some(path) = dirs.config_file(GLOBAL_FILE) else {
+fn global_layer(schema: &Schema, path: Option<&Path>) -> Layer {
+    let Some(path) = path else {
         return Layer::default();
     };
-    match read_global(&path) {
+    match read_global(path) {
         Ok(None) => Layer::default(),
         Ok(Some(text)) => match text.parse::<DocumentMut>() {
-            Ok(document) => read_layer(document.as_table(), GLOBAL_FILE, ""),
+            Ok(document) => read_layer(schema, document.as_table(), GLOBAL_FILE, ""),
             Err(_) => Layer {
                 values: Values::new(),
                 issues: vec![Issue::file(
@@ -720,29 +633,18 @@ fn read_global(path: &Path) -> Result<Option<String>, &'static str> {
     Ok(Some(text))
 }
 
-/// The ledger file as read: core's reader, shared with plan 45's `[books]`.
-use ledgeline_core::ledger_file::{self, LedgerEditError, LedgerFile};
-
-/// [`LEDGER_FILE`]'s place in the journal's vault.
-fn ledger_path(location: &JournalLocation) -> Result<VaultPath, AppError> {
-    location
-        .root_dir()
-        .child(LEDGER_FILE)
-        .map_err(|_| AppError::Internal(format!("{LEDGER_FILE} has no place beside the journal")))
-}
-
 /// Read [`LEDGER_FILE`] the way an untrusted file is read: capped, and never
-/// through a symlink ([`ledger_file::read`]).
-fn read_ledger(location: &JournalLocation, path: &VaultPath) -> LedgerFile {
-    ledger_file::read(&**location.vault(), path)
+/// through a symlink ([`ledger_file::read`], shared with plan 45's `[books]`).
+fn read_ledger(vault: &dyn Vault, path: &VaultPath) -> LedgerFile {
+    ledger_file::read(vault, path)
 }
 
 /// The `[ui]` values of a parsed ledger file.
-fn ledger_layer(document: &DocumentMut) -> Layer {
+fn ledger_layer(schema: &Schema, document: &DocumentMut) -> Layer {
     let mut layer = match document.get(UI_TABLE) {
         None => Layer::default(),
         Some(item) => match item.as_table_like() {
-            Some(table) => read_layer(table, LEDGER_FILE, "ui."),
+            Some(table) => read_layer(schema, table, LEDGER_FILE, "ui."),
             None => Layer {
                 values: Values::new(),
                 issues: vec![Issue::key(
@@ -789,8 +691,9 @@ fn ledger_sets(document: &DocumentMut, key: &str) -> bool {
 
 /// The spec keys a ledger file's `[ui]` table sets ([`ledger_sets`]), in spec
 /// order.
-fn local_keys(document: &DocumentMut) -> Vec<&'static str> {
-    SPECS
+fn local_keys(schema: &Schema, document: &DocumentMut) -> Vec<&'static str> {
+    schema
+        .specs
         .iter()
         .map(|spec| spec.key)
         .filter(|key| ledger_sets(document, key))
@@ -798,8 +701,9 @@ fn local_keys(document: &DocumentMut) -> Vec<&'static str> {
 }
 
 /// Every key's value from the first layer that has one, else its default.
-fn merge(layers: &[&Values]) -> Values {
-    SPECS
+fn merge(schema: &Schema, layers: &[&Values]) -> Values {
+    schema
+        .specs
         .iter()
         .map(|spec| {
             let value = layers
@@ -839,37 +743,41 @@ fn prefs_json(values: &Values) -> Json {
 
 /// A partial update: the keys a `PATCH /api/ui-prefs` body names, checked.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(crate) struct Patch {
+pub struct Patch {
     values: Values,
 }
 
 impl Patch {
-    /// Check a `PATCH` body: an object of wire keys (`columns` an object of
-    /// its members), every key known and every value valid.
+    /// Check a `PATCH` body against `schema`: an object of wire keys
+    /// (`columns` an object of its members), every key known and every value
+    /// valid.
     ///
     /// # Errors
-    /// [`AppError::BadRequest`] naming the first unknown key or bad value.
-    pub(crate) fn from_json(body: &Json) -> Result<Self, AppError> {
+    /// [`UiPrefsError::BadRequest`] naming the first unknown key or bad value.
+    pub fn from_json(schema: &Schema, body: &Json) -> Result<Self, UiPrefsError> {
         let object = body.as_object().ok_or_else(|| {
-            AppError::BadRequest("a UI preferences patch must be a JSON object".to_string())
+            UiPrefsError::BadRequest("a UI preferences patch must be a JSON object".to_string())
         })?;
         let mut values = Values::new();
         for (key, value) in object {
-            let is_group = SPECS.iter().any(|spec| {
+            let is_group = schema.specs.iter().any(|spec| {
                 spec.key
                     .split_once('.')
                     .is_some_and(|(group, _)| group == key)
             });
             if is_group {
                 let members = value.as_object().ok_or_else(|| {
-                    AppError::BadRequest(format!("UI preference {key} must be an object"))
+                    UiPrefsError::BadRequest(format!("UI preference {key} must be an object"))
                 })?;
                 for (leaf, member) in members {
-                    let spec = spec(&format!("{key}.{leaf}")).ok_or_else(|| unknown_key(leaf))?;
+                    let spec = schema
+                        .spec(&format!("{key}.{leaf}"))
+                        .ok_or_else(|| unknown_key(leaf))?;
                     values.insert(spec.key, checked(spec, member)?);
                 }
             } else {
-                let spec = spec(key)
+                let spec = schema
+                    .spec(key)
                     .filter(|spec| !spec.key.contains('.'))
                     .ok_or_else(|| unknown_key(key))?;
                 values.insert(spec.key, checked(spec, value)?);
@@ -879,17 +787,17 @@ impl Patch {
     }
 }
 
-fn checked(spec: &Spec, value: &Json) -> Result<PrefValue, AppError> {
+fn checked(spec: &Spec, value: &Json) -> Result<PrefValue, UiPrefsError> {
     spec.kind
         .check_json(value)
-        .map_err(|reason| AppError::BadRequest(format!("UI preference {} {reason}", spec.key)))
+        .map_err(|reason| UiPrefsError::BadRequest(format!("UI preference {} {reason}", spec.key)))
 }
 
 /// The `400` for a key no spec names. The key is echoed only when it is short
 /// and plainly a key, since it is client-supplied text.
-fn unknown_key(key: &str) -> AppError {
+fn unknown_key(key: &str) -> UiPrefsError {
     let plain = key.len() <= 64 && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-    AppError::BadRequest(if plain {
+    UiPrefsError::BadRequest(if plain {
         format!("unknown UI preference: {key}")
     } else {
         "unknown UI preference".to_string()
@@ -897,22 +805,12 @@ fn unknown_key(key: &str) -> AppError {
 }
 
 impl Patch {
-    /// Whether this sets either automatic price key, so the updater should
-    /// look again now rather than at its next hourly slot.
-    pub(crate) fn touches_auto_prices(&self) -> bool {
-        self.values.contains_key("autoPrices") || self.values.contains_key("autoPricesWeeks")
-    }
-
-    /// Whether the patch changes a bank sync setting, so the sync scheduler
-    /// should look again now.
-    pub(crate) fn touches_sync(&self) -> bool {
-        SYNC_KEYS.iter().any(|key| self.values.contains_key(key))
-    }
-
-    /// Whether the patch turns background recognition on or off (plan 45),
-    /// so the recognizer should look again now.
-    pub(crate) fn touches_auto_recognize(&self) -> bool {
-        self.values.contains_key("autoRecognize")
+    /// Whether this sets any of `keys` — so a background worker that reads
+    /// them (Ledgeline's [`ledgeline::AUTO_PRICE_KEYS`] and friends) should
+    /// look again now rather than at its next slot.
+    #[must_use]
+    pub fn sets_any(&self, keys: &[&str]) -> bool {
+        keys.iter().any(|key| self.values.contains_key(key))
     }
 
     fn is_empty(&self) -> bool {
@@ -935,15 +833,15 @@ impl Patch {
 /// positions survive. `file` and `prefix` name the table for the error.
 ///
 /// # Errors
-/// [`AppError::Conflict`] when a group (`columns`) exists but is not a table:
-/// rewriting it would destroy something a person wrote.
+/// [`UiPrefsError::Conflict`] when a group (`columns`) exists but is not a
+/// table: rewriting it would destroy something a person wrote.
 fn patch_table(
     table: &mut dyn TableLike,
     inline: bool,
     file: &str,
     prefix: &str,
     patch: &Patch,
-) -> Result<(), AppError> {
+) -> Result<(), UiPrefsError> {
     for (key, value) in &patch.values {
         match key.split_once('.') {
             Some((group, leaf)) => {
@@ -953,7 +851,7 @@ fn patch_table(
                     Item::Table(Table::new())
                 });
                 let members = item.as_table_like_mut().ok_or_else(|| {
-                    AppError::Conflict(format!(
+                    UiPrefsError::Conflict(format!(
                         "{prefix}{group} in {file} is not a table, so Ledgeline will not overwrite it"
                     ))
                 })?;
@@ -990,21 +888,21 @@ enum Attempt<T> {
 /// Run `attempt` until it is done, up to [`WRITE_ATTEMPTS`] times.
 fn with_retries<T>(
     file: &str,
-    mut attempt: impl FnMut() -> Result<Attempt<T>, AppError>,
-) -> Result<T, AppError> {
+    mut attempt: impl FnMut() -> Result<Attempt<T>, UiPrefsError>,
+) -> Result<T, UiPrefsError> {
     for _ in 0..WRITE_ATTEMPTS {
         if let Attempt::Done(done) = attempt()? {
             return Ok(done);
         }
     }
-    Err(AppError::Conflict(format!(
+    Err(UiPrefsError::Conflict(format!(
         "{file} kept changing while Ledgeline saved to it; nothing was written"
     )))
 }
 
 /// A write of `file` that failed outright. Names the error kind, never a path.
-fn write_failed(file: &str, kind: std::io::ErrorKind) -> AppError {
-    AppError::Internal(format!(
+fn write_failed(file: &str, kind: std::io::ErrorKind) -> UiPrefsError {
+    UiPrefsError::Internal(format!(
         "could not save {file} ({kind}); nothing was written"
     ))
 }
@@ -1015,16 +913,15 @@ fn write_failed(file: &str, kind: std::io::ErrorKind) -> AppError {
 ///
 /// The split is made on the bytes the write is pinned to, so a hand edit that
 /// lands mid-save is re-read and re-split rather than overwritten.
-fn write_ledger(location: &JournalLocation, patch: &Patch) -> Result<Patch, AppError> {
-    let Ok(path) = ledger_path(location) else {
+fn write_ledger(ledger: &LedgerSlot, patch: &Patch) -> Result<Patch, UiPrefsError> {
+    let LedgerSlot::At { vault, path } = ledger else {
         return Ok(patch.clone());
     };
-    let vault = location.vault();
     with_retries(LEDGER_FILE, || {
         let LedgerFile::Present {
             mut document,
             revision,
-        } = read_ledger(location, &path)
+        } = read_ledger(&**vault, path)
         else {
             return Ok(Attempt::Done(patch.clone()));
         };
@@ -1035,11 +932,11 @@ fn write_ledger(location: &JournalLocation, patch: &Patch) -> Result<Patch, AppE
         let ui = document
             .get_mut(UI_TABLE)
             .and_then(Item::as_table_like_mut)
-            .ok_or_else(|| AppError::Internal(format!("{LEDGER_FILE} lost its [ui] table")))?;
+            .ok_or_else(|| UiPrefsError::Internal(format!("{LEDGER_FILE} lost its [ui] table")))?;
         // Every local key already exists, so no group is created here and
         // `inline` only matters for the type of a group never inserted.
         patch_table(ui, false, LEDGER_FILE, "ui.", &local)?;
-        match vault.replace(&path, document.to_string().as_bytes(), &revision) {
+        match vault.replace(path, document.to_string().as_bytes(), &revision) {
             Ok(_) => Ok(Attempt::Done(rest)),
             // Lost a race: re-read. A symlink that appeared is caught by the
             // read as `Unusable`, and its keys go to the global file.
@@ -1066,35 +963,34 @@ fn is_symlink(path: &Path) -> bool {
 /// module docs.
 ///
 /// # Errors
-/// [`AppError::Conflict`] when the file exists but cannot be safely rewritten
-/// (too large, not TOML, not a regular file, a group that is not a table);
-/// [`AppError::Internal`] when the write itself fails.
-fn write_global(dirs: &AppDirs, patch: &Patch) -> Result<GlobalSave, AppError> {
-    let Some(path) = dirs.config_file(GLOBAL_FILE) else {
+/// [`UiPrefsError::Conflict`] when the file exists but cannot be safely
+/// rewritten (too large, not TOML, not a regular file, a group that is not a
+/// table); [`UiPrefsError::Internal`] when the write itself fails.
+fn write_global(path: Option<&Path>, patch: &Patch) -> Result<GlobalSave, UiPrefsError> {
+    let Some(path) = path else {
         return Ok(GlobalSave::Kept(KEPT_NO_CONFIG_DIR));
     };
     let refuse = |reason: &str| {
-        AppError::Conflict(format!(
+        UiPrefsError::Conflict(format!(
             "{GLOBAL_FILE} {reason}, so Ledgeline will not overwrite it"
         ))
     };
     with_retries(GLOBAL_FILE, || {
-        if is_symlink(&path) {
+        if is_symlink(path) {
             return Ok(Attempt::Done(GlobalSave::Kept(KEPT_SYMLINK)));
         }
         // Without following a link, so the bytes edited are the bytes replaced.
-        match ledgeline_core::pinned::read_pinned_capped(&path, MAX_FILE_BYTES) {
+        match crate::pinned::read_pinned_capped(path, MAX_FILE_BYTES) {
             Ok((bytes, pin)) => {
                 let mut document = String::from_utf8(bytes)
                     .ok()
                     .and_then(|text| text.parse::<DocumentMut>().ok())
                     .ok_or_else(|| refuse("is not valid TOML"))?;
                 patch_table(document.as_table_mut(), false, GLOBAL_FILE, "", patch)?;
-                match ledgeline_core::pinned::replace(&path, document.to_string().as_bytes(), &pin)
-                {
+                match crate::pinned::replace(path, document.to_string().as_bytes(), &pin) {
                     Ok(_) => Ok(Attempt::Done(GlobalSave::Written)),
-                    Err(ledgeline_core::pinned::WriteError::Changed) => Ok(Attempt::Retry),
-                    Err(ledgeline_core::pinned::WriteError::Io(error)) => {
+                    Err(crate::pinned::WriteError::Changed) => Ok(Attempt::Retry),
+                    Err(crate::pinned::WriteError::Io(error)) => {
                         Err(write_failed(GLOBAL_FILE, error.kind()))
                     }
                 }
@@ -1109,7 +1005,7 @@ fn write_global(dirs: &AppDirs, patch: &Patch) -> Result<GlobalSave, AppError> {
                 // The header is prepended as text: `toml_edit` keeps a
                 // comment-only document's comment as trailing decor.
                 let text = format!("{GLOBAL_HEADER}{document}");
-                match ledgeline_core::pinned::create_new_pinned(&path, text.as_bytes()) {
+                match crate::pinned::create_new_pinned(path, text.as_bytes()) {
                     Ok(_) => Ok(Attempt::Done(GlobalSave::Written)),
                     // Something appeared under the name: re-read it.
                     Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -1123,7 +1019,7 @@ fn write_global(dirs: &AppDirs, patch: &Patch) -> Result<GlobalSave, AppError> {
             }
             // A symlink swapped in since the check above lands here too.
             Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {
-                if is_symlink(&path) {
+                if is_symlink(path) {
                     Ok(Attempt::Done(GlobalSave::Kept(KEPT_SYMLINK)))
                 } else {
                     Err(refuse("is not a regular file"))
@@ -1138,10 +1034,24 @@ fn write_global(dirs: &AppDirs, patch: &Patch) -> Result<GlobalSave, AppError> {
 // Session state and the two operations
 // ---------------------------------------------------------------------------
 
+/// Why an operation was refused, as the HTTP layer maps it: a client mistake
+/// (`400`), a file that cannot be safely written or a missing ledger (`409`),
+/// or a write that failed outright (`500`). Messages name files and keys,
+/// never a path or a value read from a file.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum UiPrefsError {
+    #[error("{0}")]
+    BadRequest(String),
+    #[error("{0}")]
+    Conflict(String),
+    #[error("{0}")]
+    Internal(String),
+}
+
 /// Where this session's UI preferences are kept. See the module docs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum Storage {
+pub enum Storage {
     Files,
     Browser,
 }
@@ -1149,7 +1059,7 @@ pub(crate) enum Storage {
 /// The `GET`/`PATCH /api/ui-prefs` body.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct WireUiPrefs {
+pub struct WireUiPrefs {
     /// Every preference's effective value.
     prefs: Json,
     storage: Storage,
@@ -1160,6 +1070,14 @@ pub(crate) struct WireUiPrefs {
     issues: Vec<Issue>,
 }
 
+impl WireUiPrefs {
+    /// Every preference's effective value, groups nested, as on the wire.
+    #[must_use]
+    pub fn prefs(&self) -> &Json {
+        &self.prefs
+    }
+}
+
 /// Saves that could not go to [`GLOBAL_FILE`], and why.
 #[derive(Debug, Default)]
 struct Kept {
@@ -1167,9 +1085,10 @@ struct Kept {
     reason: Option<&'static str>,
 }
 
-/// Per-[`AppState`] UI-preferences state, shared by every clone.
+/// Per-app-session UI-preferences state, shared by every clone of the app's
+/// state.
 #[derive(Debug, Default)]
-pub(crate) struct UiPrefsSession {
+pub struct UiPrefsSession {
     /// [`Storage::Browser`] was asked for.
     browser: bool,
     /// Held across every save, so two never interleave; holds the saves that
@@ -1179,16 +1098,73 @@ pub(crate) struct UiPrefsSession {
 
 impl UiPrefsSession {
     /// A session that leaves UI preferences to the browser.
-    pub(crate) fn browser() -> Self {
+    #[must_use]
+    pub fn browser() -> Self {
         Self {
             browser: true,
             kept: Mutex::default(),
         }
     }
 
+    /// Whether this session leaves UI preferences to the browser.
+    #[must_use]
+    pub fn is_browser(&self) -> bool {
+        self.browser
+    }
+
     fn kept(&self) -> std::sync::MutexGuard<'_, Kept> {
         self.kept.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+/// Where the open ledger's [`LEDGER_FILE`] is, for one operation.
+#[derive(Debug, Clone)]
+pub enum LedgerSlot {
+    /// No journal file is open.
+    NoLedger,
+    /// A journal is open, but its folder has no place for the file.
+    Unplaceable,
+    /// The file's place in the journal's vault (it may not exist).
+    At {
+        vault: Arc<dyn Vault>,
+        path: VaultPath,
+    },
+}
+
+impl LedgerSlot {
+    /// [`LEDGER_FILE`] in `dir` (the main journal's folder) of `vault`.
+    #[must_use]
+    pub fn beside(vault: Arc<dyn Vault>, dir: &VaultPath) -> Self {
+        match dir.child(LEDGER_FILE) {
+            Ok(path) => Self::At { vault, path },
+            Err(_) => Self::Unplaceable,
+        }
+    }
+
+    /// The vault and path, refusing [`Unplaceable`](Self::Unplaceable) as an
+    /// internal error and [`NoLedger`](Self::NoLedger) with `no_ledger`.
+    fn require(&self, no_ledger: &str) -> Result<(&dyn Vault, &VaultPath), UiPrefsError> {
+        match self {
+            Self::At { vault, path } => Ok((&**vault, path)),
+            Self::Unplaceable => Err(UiPrefsError::Internal(format!(
+                "{LEDGER_FILE} has no place beside the journal"
+            ))),
+            Self::NoLedger => Err(UiPrefsError::Conflict(no_ledger.to_string())),
+        }
+    }
+}
+
+/// Everything one operation needs, built by the app from its own state.
+#[derive(Debug)]
+pub struct Context<'a> {
+    /// The app's preferences.
+    pub schema: &'a Schema,
+    /// The session (browser mode, saves kept in memory, the save lock).
+    pub session: &'a UiPrefsSession,
+    /// The global [`GLOBAL_FILE`], `None` when the app has no config folder.
+    pub global_file: Option<PathBuf>,
+    /// The open ledger's [`LEDGER_FILE`].
+    pub ledger: LedgerSlot,
 }
 
 /// Families with both a light and a dark variant, as `(family, light, dark)`
@@ -1217,7 +1193,8 @@ pub struct BootAppearance {
 
 impl BootAppearance {
     /// From a theme pref and a scale; an unknown theme reads as `default`.
-    fn from_pref(theme: &str, scale: i64) -> Self {
+    #[must_use]
+    pub fn from_pref(theme: &str, scale: i64) -> Self {
         let family = THEME_FAMILY_VARIANTS
             .iter()
             .find(|(family, _, _)| *family == theme)
@@ -1231,123 +1208,43 @@ impl BootAppearance {
         };
         Self { light, dark, scale }
     }
-}
 
-/// The effective theme and scale for `state`'s current journal, for the
-/// desktop app's first paint. Reads only, like [`current`].
-pub fn boot_appearance(state: &AppState) -> BootAppearance {
-    let wire = current(state);
-    let theme = wire
-        .prefs
-        .get("theme")
-        .and_then(Json::as_str)
-        .unwrap_or("default");
-    let scale = wire
-        .prefs
-        .get("uiScale")
-        .and_then(Json::as_i64)
-        .unwrap_or(100);
-    BootAppearance::from_pref(theme, scale)
-}
-
-/// The automatic price updater's two settings, effective for `state`'s
-/// current journal (the ledger's `ledgeline.toml` over `ui-prefs.toml` over
-/// the defaults, like every other key). Reads only, like [`current`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct AutoPricePrefs {
-    pub(crate) enabled: bool,
-    /// Already clamped to `0..=52` by the spec.
-    pub(crate) weeks: u32,
-}
-
-/// See [`AutoPricePrefs`]. In browser mode — the e2e and live-contract
-/// harnesses — this is the default, off, so those never reach the network.
-pub(crate) fn auto_price_prefs(state: &AppState) -> AutoPricePrefs {
-    let wire = current(state);
-    AutoPricePrefs {
-        enabled: wire
-            .prefs
-            .get("autoPrices")
-            .and_then(Json::as_bool)
-            .unwrap_or(false),
-        weeks: wire
-            .prefs
-            .get("autoPricesWeeks")
-            .and_then(Json::as_u64)
-            .and_then(|weeks| u32::try_from(weeks).ok())
-            .unwrap_or(0),
-    }
-}
-
-/// Bank sync's four settings, effective for `state`'s current journal. In
-/// browser mode — the e2e and live-contract harnesses — these are the
-/// defaults, so auto-sync is off and nothing reaches the network unasked.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SyncSettings {
-    pub(crate) auto_sync: bool,
-    /// Clamped to `3..=24` by the spec.
-    pub(crate) every_hours: u32,
-    /// Checked by [`check_rel_dir`]; still resolved inside the journal's
-    /// folder before use.
-    pub(crate) source_dir: String,
-    /// `0` = keep forever.
-    pub(crate) keep_days: u32,
-    /// `manualRemindDays`: a manual account's row turns amber after this
-    /// many days with no new transaction.
-    pub(crate) remind_days: u32,
-}
-
-/// Whether `autoRecognize` (plan 45) is on for `state`'s journal. Off in
-/// browser mode, like every background writer.
-pub(crate) fn auto_recognize(state: &AppState) -> bool {
-    current(state)
-        .prefs
-        .get("autoRecognize")
-        .and_then(Json::as_bool)
-        .unwrap_or(false)
-}
-
-/// See [`SyncSettings`].
-pub(crate) fn sync_settings(state: &AppState) -> SyncSettings {
-    let wire = current(state);
-    let whole = |key: &str, default: u32| {
-        wire.prefs
-            .get(key)
-            .and_then(Json::as_u64)
-            .and_then(|n| u32::try_from(n).ok())
-            .unwrap_or(default)
-    };
-    SyncSettings {
-        auto_sync: wire
-            .prefs
-            .get("autoSync")
-            .and_then(Json::as_bool)
-            .unwrap_or(false),
-        every_hours: whole("autoSyncEveryHours", 6),
-        source_dir: wire
-            .prefs
-            .get("syncSourceDir")
+    /// From effective preferences ([`WireUiPrefs::prefs`]): the common
+    /// [`THEME`] and [`UI_SCALE`] keys, every schema's.
+    #[must_use]
+    pub fn from_prefs(prefs: &Json) -> Self {
+        let theme = prefs
+            .get(THEME.key)
             .and_then(Json::as_str)
-            .unwrap_or(DEFAULT_SYNC_SOURCE_DIR)
-            .to_string(),
-        keep_days: whole("syncKeepSourceDays", 0),
-        remind_days: whole("manualRemindDays", 35),
+            .unwrap_or("default");
+        let scale = prefs
+            .get(UI_SCALE.key)
+            .and_then(Json::as_i64)
+            .unwrap_or(100);
+        Self::from_pref(theme, scale)
     }
+}
+
+/// The effective theme and scale, for the desktop app's first paint. Reads
+/// only, like [`current`].
+#[must_use]
+pub fn boot_appearance(ctx: &Context<'_>) -> BootAppearance {
+    BootAppearance::from_prefs(current(ctx).prefs())
 }
 
 /// The open ledger's `ledgeline.toml`, as text: `Ok(None)` when there is no
 /// ledger or no file. Read the way every other read of it is — pinned, capped,
-/// never through a symlink. For the bank sync links under `[sync]`.
+/// never through a symlink. For Ledgeline's bank sync links under `[sync]`.
 ///
 /// # Errors
-/// [`AppError::Conflict`] when the file exists but is unusable (symlinked,
-/// oversized, not TOML), with the reason.
-pub(crate) fn ledger_text(state: &AppState) -> Result<Option<String>, AppError> {
-    let Some(location) = state.snapshot().storage() else {
+/// [`UiPrefsError::Conflict`] when the file exists but is unusable
+/// (symlinked, oversized, not TOML), with the reason.
+pub fn ledger_text(ctx: &Context<'_>) -> Result<Option<String>, UiPrefsError> {
+    if matches!(ctx.ledger, LedgerSlot::NoLedger) {
         return Ok(None);
-    };
-    let path = ledger_path(&location)?;
-    match read_ledger(&location, &path) {
+    }
+    let (vault, path) = ctx.ledger.require("")?;
+    match read_ledger(vault, path) {
         LedgerFile::Missing => Ok(None),
         LedgerFile::Present { document, .. } => Ok(Some(document.to_string())),
         LedgerFile::Unusable(reason) => Err(refuse_ledger(reason)),
@@ -1357,84 +1254,77 @@ pub(crate) fn ledger_text(state: &AppState) -> Result<Option<String>, AppError> 
 /// Rewrite the open ledger's `ledgeline.toml` with `edit` (old text → new
 /// text), under the same lock and through the same pinned writer as [`pin`],
 /// re-reading and re-applying when another writer got there first. Bank
-/// sync's `[sync]` writers (`feeds::config`) are the only callers.
+/// sync's `[sync]` writers (`feeds::config`) are Ledgeline's only callers.
 ///
-/// **May create the file** when it is missing: linking a bank account is an
-/// explicit user action, the documented second exception to "never
-/// auto-created" (plan 43 §3.6). An unusable file is never written.
+/// **May create the file** when it is missing, with `header` at its top:
+/// linking a bank account is an explicit user action, the documented second
+/// exception to "never auto-created" (plan 43 §3.6). An unusable file is never
+/// written.
 ///
 /// Not refused in browser mode: `[sync]` is not a view setting, and the e2e
 /// harness links accounts like a user would.
 ///
 /// # Errors
-/// [`AppError::Conflict`] with no ledger, an unusable file, or a write that
-/// keeps losing races; whatever `edit` returns; [`AppError::Internal`] when
-/// the write fails.
-pub(crate) fn edit_ledger_text(
-    state: &AppState,
-    edit: impl Fn(&str) -> Result<String, AppError>,
-) -> Result<(), AppError> {
-    let location = state.snapshot().storage().ok_or_else(|| {
-        AppError::Conflict("no ledger file is open, so there is no ledgeline.toml".to_string())
-    })?;
-    let path = ledger_path(&location)?;
-    let session = state.ui_prefs();
+/// [`UiPrefsError::Conflict`] with no ledger, an unusable file, or a write
+/// that keeps losing races; whatever `edit` returns; [`UiPrefsError::Internal`]
+/// when the write fails. All of them as `E`.
+pub fn edit_ledger_text<E: From<UiPrefsError>>(
+    ctx: &Context<'_>,
+    header: &str,
+    edit: impl Fn(&str) -> Result<String, E>,
+) -> Result<(), E> {
+    let (vault, path) = ctx
+        .ledger
+        .require("no ledger file is open, so there is no ledgeline.toml")?;
     // Held across the write, so a view-settings save never interleaves.
-    let _kept = session.kept();
+    let _kept = ctx.session.kept();
     // The header goes first: `toml_edit` keeps a comment-only document as
     // trailing text, after any table the edit adds.
-    ledger_file::edit(&**location.vault(), &path, LEDGER_SYNC_HEADER, edit)
+    ledger_file::edit(vault, path, header, edit)
         .map(|_| ())
         .map_err(|error| match error {
             LedgerEditError::Edit(error) => error,
-            LedgerEditError::Unusable(reason) => refuse_ledger(reason),
-            LedgerEditError::KeptChanging => AppError::Conflict(format!(
+            LedgerEditError::Unusable(reason) => refuse_ledger(reason).into(),
+            LedgerEditError::KeptChanging => UiPrefsError::Conflict(format!(
                 "{LEDGER_FILE} kept changing while Ledgeline saved to it; nothing was written"
-            )),
-            LedgerEditError::Write(kind) => write_failed(LEDGER_FILE, kind),
+            ))
+            .into(),
+            LedgerEditError::Write(kind) => write_failed(LEDGER_FILE, kind).into(),
         })
 }
 
-/// The top of a [`LEDGER_FILE`] that linking a bank account creates.
-const LEDGER_SYNC_HEADER: &str = concat!(
-    "# Ledgeline settings for this ledger. [sync] lists the bank accounts\n",
-    "# Ledgeline syncs into it; credentials are never stored here. [ui] keys\n",
-    "# override ui-prefs.toml while this ledger is open. Docs: \"Settings files\".\n",
-    "\n",
-);
-
-/// The effective preferences for `state`'s current journal. Reads only:
-/// nothing is created or written.
-pub(crate) fn current(state: &AppState) -> WireUiPrefs {
-    let session = state.ui_prefs();
+/// The effective preferences. Reads only: nothing is created or written.
+#[must_use]
+pub fn current(ctx: &Context<'_>) -> WireUiPrefs {
+    let (schema, session) = (ctx.schema, ctx.session);
     if session.browser {
-        return browser_answer(&Values::new());
+        return browser_answer(schema, &Values::new());
     }
-    let global = global_layer(state.app_dirs());
-    let (ledger, local_keys) = state
-        .snapshot()
-        .storage()
-        .and_then(|location| ledger_path(&location).ok().map(|path| (location, path)))
-        .map_or_else(
-            || (Layer::default(), Vec::new()),
-            |(location, path)| match read_ledger(&location, &path) {
-                LedgerFile::Missing => (Layer::default(), Vec::new()),
-                LedgerFile::Present { document, .. } => {
-                    (ledger_layer(&document), local_keys(&document))
-                }
-                LedgerFile::Unusable(reason) => (
-                    Layer {
-                        values: Values::new(),
-                        issues: vec![Issue::file(LEDGER_FILE, reason)],
-                    },
-                    Vec::new(),
-                ),
-            },
-        );
+    let global = global_layer(schema, ctx.global_file.as_deref());
+    let (ledger, local_keys) = match &ctx.ledger {
+        LedgerSlot::At { vault, path } => match read_ledger(&**vault, path) {
+            LedgerFile::Missing => (Layer::default(), Vec::new()),
+            LedgerFile::Present { document, .. } => (
+                ledger_layer(schema, &document),
+                local_keys(schema, &document),
+            ),
+            LedgerFile::Unusable(reason) => (
+                Layer {
+                    values: Values::new(),
+                    issues: vec![Issue::file(LEDGER_FILE, reason)],
+                },
+                Vec::new(),
+            ),
+        },
+        LedgerSlot::NoLedger | LedgerSlot::Unplaceable => (Layer::default(), Vec::new()),
+    };
     let kept = session.kept();
     let kept_issue = kept.reason.map(|reason| Issue::file(GLOBAL_FILE, reason));
     WireUiPrefs {
-        prefs: prefs_json(&merge(&[&ledger.values, &kept.values, &global.values])),
+        prefs: prefs_json(&merge(
+            schema,
+            &[&ledger.values, &kept.values, &global.values],
+        )),
         storage: Storage::Files,
         local_keys,
         issues: ledger
@@ -1451,24 +1341,21 @@ pub(crate) fn current(state: &AppState) -> WireUiPrefs {
 /// values.
 ///
 /// # Errors
-/// [`AppError::Conflict`] when a file that should take the save cannot be
-/// safely rewritten; [`AppError::Internal`] when the write itself fails. The
-/// ledger file is written first, so a failure at the global file can leave
+/// [`UiPrefsError::Conflict`] when a file that should take the save cannot be
+/// safely rewritten; [`UiPrefsError::Internal`] when the write itself fails.
+/// The ledger file is written first, so a failure at the global file can leave
 /// the ledger's share saved.
-pub(crate) fn apply(state: &AppState, patch: &Patch) -> Result<WireUiPrefs, AppError> {
-    let session = state.ui_prefs();
+pub fn apply(ctx: &Context<'_>, patch: &Patch) -> Result<WireUiPrefs, UiPrefsError> {
+    let session = ctx.session;
     if session.browser {
-        return Ok(browser_answer(&patch.values));
+        return Ok(browser_answer(ctx.schema, &patch.values));
     }
     if !patch.is_empty() {
         // Released before `current`, which takes it again.
         let mut kept = session.kept();
-        let global = match state.snapshot().storage() {
-            Some(location) => write_ledger(&location, patch)?,
-            None => patch.clone(),
-        };
+        let global = write_ledger(&ctx.ledger, patch)?;
         if !global.is_empty() {
-            match write_global(state.app_dirs(), &global)? {
+            match write_global(ctx.global_file.as_deref(), &global)? {
                 // A key that reached the file no longer needs its session copy.
                 GlobalSave::Written => {
                     kept.values
@@ -1484,13 +1371,13 @@ pub(crate) fn apply(state: &AppState, patch: &Patch) -> Result<WireUiPrefs, AppE
             }
         }
     }
-    Ok(current(state))
+    Ok(current(ctx))
 }
 
-/// A `POST /api/ui-prefs/pin` body, checked: pin one [`PINNABLE`] key to the
-/// open ledger, or unpin it.
+/// A `POST /api/ui-prefs/pin` body, checked: pin one of the schema's
+/// [pinnable](Schema::pinnable) keys to the open ledger, or unpin it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Pin {
+pub struct Pin {
     key: &'static str,
     pinned: bool,
 }
@@ -1499,9 +1386,9 @@ impl Pin {
     /// Check a pin body: `{"key": "theme", "pinned": true}`, nothing else.
     ///
     /// # Errors
-    /// [`AppError::BadRequest`] for any other shape, or a key that is not
-    /// [`PINNABLE`].
-    pub(crate) fn from_json(body: &Json) -> Result<Self, AppError> {
+    /// [`UiPrefsError::BadRequest`] for any other shape, or a key that is not
+    /// one of `schema`'s pinnable keys.
+    pub fn from_json(schema: &Schema, body: &Json) -> Result<Self, UiPrefsError> {
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Body {
@@ -1509,18 +1396,19 @@ impl Pin {
             pinned: bool,
         }
         let body: Body = serde_json::from_value(body.clone()).map_err(|_| {
-            AppError::BadRequest(
+            UiPrefsError::BadRequest(
                 "a pin must be {\"key\": <a UI preference>, \"pinned\": true or false}".to_string(),
             )
         })?;
-        let key = PINNABLE
+        let key = schema
+            .pinnable
             .iter()
             .copied()
             .find(|key| *key == body.key)
             .ok_or_else(|| {
-                AppError::BadRequest(format!(
+                UiPrefsError::BadRequest(format!(
                     "only {} can be kept for one ledger",
-                    PINNABLE.join(", ")
+                    schema.pinnable.join(", ")
                 ))
             })?;
         Ok(Self {
@@ -1542,9 +1430,9 @@ const LEDGER_HEADER: &str = concat!(
 /// by removing the key from `[ui]` (the file is kept, even empty). Answers
 /// with the effective values after, like [`apply`].
 ///
-/// This is the one place the app creates [`LEDGER_FILE`], and only because
-/// the user asked to keep a setting for this ledger. Once a key is pinned the
-/// ordinary save routing sends its later changes there.
+/// This is the one place the app creates [`LEDGER_FILE`] for a view setting,
+/// and only because the user asked to keep a setting for this ledger. Once a
+/// key is pinned the ordinary save routing sends its later changes there.
 ///
 /// Pinning a key the file already sets to a usable value, or unpinning one it
 /// does not set, writes nothing. An existing file that is symlinked, too large
@@ -1552,45 +1440,41 @@ const LEDGER_HEADER: &str = concat!(
 /// no key.
 ///
 /// # Errors
-/// [`AppError::Conflict`] in browser mode, with no ledger open, or when the
-/// ledger file cannot be safely written (see above, or a `[ui]`/key that is
-/// not what a pin expects); [`AppError::Internal`] when the write fails.
-pub(crate) fn pin(state: &AppState, pin: Pin) -> Result<WireUiPrefs, AppError> {
-    let session = state.ui_prefs();
+/// [`UiPrefsError::Conflict`] in browser mode, with no ledger open, or when
+/// the ledger file cannot be safely written (see above, or a `[ui]`/key that
+/// is not what a pin expects); [`UiPrefsError::Internal`] when the write fails.
+pub fn pin(ctx: &Context<'_>, pin: Pin) -> Result<WireUiPrefs, UiPrefsError> {
+    let session = ctx.session;
     if session.browser {
-        return Err(AppError::Conflict(
+        return Err(UiPrefsError::Conflict(
             "view settings are kept in this browser, so none can be kept for one ledger"
                 .to_string(),
         ));
     }
-    let location = state.snapshot().storage().ok_or_else(|| {
-        AppError::Conflict(
-            "no ledger file is open, so there is no ledgeline.toml to keep a setting in"
-                .to_string(),
-        )
-    })?;
-    let path = ledger_path(&location)?;
+    let (vault, path) = ctx
+        .ledger
+        .require("no ledger file is open, so there is no ledgeline.toml to keep a setting in")?;
     {
         // Held across the write, so a save never interleaves with it.
         let kept = session.kept();
         if pin.pinned {
             // What the key is now without the ledger's file. When the file
             // has a usable value, that is already the effective one.
-            let global = global_layer(state.app_dirs());
-            let value = merge(&[&kept.values, &global.values])
+            let global = global_layer(ctx.schema, ctx.global_file.as_deref());
+            let value = merge(ctx.schema, &[&kept.values, &global.values])
                 .remove(pin.key)
-                .ok_or_else(|| AppError::Internal(format!("{} has no spec", pin.key)))?;
-            pin_ledger(&location, &path, pin.key, &value)?;
+                .ok_or_else(|| UiPrefsError::Internal(format!("{} has no spec", pin.key)))?;
+            pin_ledger(ctx.schema, vault, path, pin.key, &value)?;
         } else {
-            unpin_ledger(&location, &path, pin.key)?;
+            unpin_ledger(vault, path, pin.key)?;
         }
     }
-    Ok(current(state))
+    Ok(current(ctx))
 }
 
 /// The `409` for a [`LEDGER_FILE`] a pin will not write.
-fn refuse_ledger(reason: &str) -> AppError {
-    AppError::Conflict(format!(
+fn refuse_ledger(reason: &str) -> UiPrefsError {
+    UiPrefsError::Conflict(format!(
         "{LEDGER_FILE} {reason}, so Ledgeline will not write to it"
     ))
 }
@@ -1598,16 +1482,16 @@ fn refuse_ledger(reason: &str) -> AppError {
 /// Set `key` to `value` in [`LEDGER_FILE`]'s `[ui]`, creating the file or the
 /// table as needed. See [`pin`].
 fn pin_ledger(
-    location: &JournalLocation,
+    schema: &Schema,
+    vault: &dyn Vault,
     path: &VaultPath,
     key: &'static str,
     value: &PrefValue,
-) -> Result<(), AppError> {
-    let vault = location.vault();
+) -> Result<(), UiPrefsError> {
     let patch = Patch {
         values: Values::from([(key, value.clone())]),
     };
-    with_retries(LEDGER_FILE, || match read_ledger(location, path) {
+    with_retries(LEDGER_FILE, || match read_ledger(vault, path) {
         LedgerFile::Missing => {
             let mut document = DocumentMut::new();
             let mut ui = Table::new();
@@ -1630,7 +1514,7 @@ fn pin_ledger(
             mut document,
             revision,
         } => {
-            if ledger_layer(&document).values.contains_key(key) {
+            if ledger_layer(schema, &document).values.contains_key(key) {
                 return Ok(Attempt::Done(()));
             }
             if !document.contains_key(UI_TABLE) {
@@ -1658,10 +1542,7 @@ fn pin_ledger(
                 )));
             }
             patch_table(ui, false, LEDGER_FILE, "ui.", &patch)?;
-            match location
-                .vault()
-                .replace(path, document.to_string().as_bytes(), &revision)
-            {
+            match vault.replace(path, document.to_string().as_bytes(), &revision) {
                 Ok(_) => Ok(Attempt::Done(())),
                 Err(VaultError::Changed { .. }) => Ok(Attempt::Retry),
                 Err(error) => Err(write_failed(LEDGER_FILE, error.kind())),
@@ -1675,15 +1556,15 @@ fn pin_ledger(
 /// unusable, is left alone. The key's own line goes, with any comment lines
 /// directly above it.
 fn unpin_ledger(
-    location: &JournalLocation,
+    vault: &dyn Vault,
     path: &VaultPath,
     key: &'static str,
-) -> Result<(), AppError> {
+) -> Result<(), UiPrefsError> {
     with_retries(LEDGER_FILE, || {
         let LedgerFile::Present {
             mut document,
             revision,
-        } = read_ledger(location, path)
+        } = read_ledger(vault, path)
         else {
             return Ok(Attempt::Done(()));
         };
@@ -1693,10 +1574,7 @@ fn unpin_ledger(
         if let Some(ui) = document.get_mut(UI_TABLE).and_then(Item::as_table_like_mut) {
             ui.remove(key);
         }
-        match location
-            .vault()
-            .replace(path, document.to_string().as_bytes(), &revision)
-        {
+        match vault.replace(path, document.to_string().as_bytes(), &revision) {
             Ok(_) => Ok(Attempt::Done(())),
             Err(VaultError::Changed { .. }) => Ok(Attempt::Retry),
             Err(error) => Err(write_failed(LEDGER_FILE, error.kind())),
@@ -1705,9 +1583,9 @@ fn unpin_ledger(
 }
 
 /// [`Storage::Browser`]'s answer: the defaults under `overrides`, from no file.
-fn browser_answer(overrides: &Values) -> WireUiPrefs {
+fn browser_answer(schema: &Schema, overrides: &Values) -> WireUiPrefs {
     WireUiPrefs {
-        prefs: prefs_json(&merge(&[overrides])),
+        prefs: prefs_json(&merge(schema, &[overrides])),
         storage: Storage::Browser,
         local_keys: Vec::new(),
         issues: Vec::new(),
@@ -1716,8 +1594,12 @@ fn browser_answer(overrides: &Values) -> WireUiPrefs {
 
 #[cfg(test)]
 mod tests {
+    use super::ledgeline::{AUTO_PRICE_KEYS, AUTO_RECOGNIZE_KEYS, PINNABLE, SYNC_KEYS};
     use super::*;
     use serde_json::json;
+
+    /// Ledgeline's schema: the one these tests pin the engine's behaviour to.
+    const S: &Schema = &ledgeline::SCHEMA;
 
     #[test]
     fn boot_appearance_resolves_families_variants_and_unknowns() {
@@ -1756,6 +1638,37 @@ mod tests {
     }
 
     #[test]
+    fn ledgelines_schema_carries_the_common_keys_and_pins_only_its_own() {
+        for common in [THEME.key, UI_SCALE.key] {
+            assert!(S.has(common), "{common}");
+            assert!(S.pinnable.contains(&common), "{common}");
+        }
+        for key in S.pinnable {
+            assert!(S.has(key), "{key}");
+        }
+        let mut keys: Vec<&str> = S.specs.iter().map(|spec| spec.key).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), S.specs.len(), "a key is listed twice");
+    }
+
+    #[test]
+    fn boot_appearance_reads_the_common_keys_from_effective_prefs() {
+        assert_eq!(
+            BootAppearance::from_prefs(&json!({"theme": "nord", "uiScale": 125})),
+            BootAppearance {
+                light: "nord",
+                dark: "nord",
+                scale: 125
+            }
+        );
+        assert_eq!(
+            BootAppearance::from_prefs(&json!({})),
+            BootAppearance::from_pref("default", 100)
+        );
+    }
+
+    #[test]
     fn every_theme_family_names_known_variants() {
         for (family, light, dark) in THEME_FAMILY_VARIANTS {
             for id in [family, light, dark] {
@@ -1769,11 +1682,11 @@ mod tests {
     }
 
     fn effective(ledger: &str, global: &str) -> (Json, Vec<Issue>) {
-        let ledger = ledger_layer(&parse(ledger));
-        let global = read_layer(parse(global).as_table(), GLOBAL_FILE, "");
+        let ledger = ledger_layer(S, &parse(ledger));
+        let global = read_layer(S, parse(global).as_table(), GLOBAL_FILE, "");
         let issues = ledger.issues.into_iter().chain(global.issues).collect();
         (
-            prefs_json(&merge(&[&ledger.values, &global.values])),
+            prefs_json(&merge(S, &[&ledger.values, &global.values])),
             issues,
         )
     }
@@ -1831,7 +1744,7 @@ mod tests {
             assert_eq!(prefs["theme"], *id);
             let (prefs, _) = effective("", &format!("theme = \"{id}\"\n"));
             assert_eq!(prefs["theme"], *id);
-            assert!(Patch::from_json(&json!({"theme": id})).is_ok(), "{id}");
+            assert!(Patch::from_json(S, &json!({"theme": id})).is_ok(), "{id}");
         }
     }
 
@@ -1870,13 +1783,13 @@ mod tests {
             );
         }
         for ok in [50, 70, 100, 300] {
-            assert!(Patch::from_json(&json!({"uiScale": ok})).is_ok(), "{ok}");
+            assert!(Patch::from_json(S, &json!({"uiScale": ok})).is_ok(), "{ok}");
         }
         for bad in [json!(49), json!(301), json!(1.5), json!("100"), json!(null)] {
             assert!(
                 matches!(
-                    Patch::from_json(&json!({"uiScale": bad})),
-                    Err(AppError::BadRequest(_))
+                    Patch::from_json(S, &json!({"uiScale": bad})),
+                    Err(UiPrefsError::BadRequest(_))
                 ),
                 "{bad}"
             );
@@ -1884,8 +1797,8 @@ mod tests {
         for bad in [json!("Default"), json!("light"), json!(""), json!(null)] {
             assert!(
                 matches!(
-                    Patch::from_json(&json!({"theme": bad})),
-                    Err(AppError::BadRequest(_))
+                    Patch::from_json(S, &json!({"theme": bad})),
+                    Err(UiPrefsError::BadRequest(_))
                 ),
                 "{bad}"
             );
@@ -1895,14 +1808,14 @@ mod tests {
     #[test]
     fn only_the_pinnable_keys_can_be_pinned() {
         assert_eq!(
-            Pin::from_json(&json!({"key": "theme", "pinned": true})).expect("pin"),
+            Pin::from_json(S, &json!({"key": "theme", "pinned": true})).expect("pin"),
             Pin {
                 key: "theme",
                 pinned: true
             }
         );
         assert_eq!(
-            Pin::from_json(&json!({"key": "uiScale", "pinned": false})).expect("unpin"),
+            Pin::from_json(S, &json!({"key": "uiScale", "pinned": false})).expect("unpin"),
             Pin {
                 key: "uiScale",
                 pinned: false
@@ -1910,7 +1823,7 @@ mod tests {
         );
         for key in ["autoPrices", "autoPricesWeeks"] {
             assert!(
-                Pin::from_json(&json!({"key": key, "pinned": true})).is_ok(),
+                Pin::from_json(S, &json!({"key": key, "pinned": true})).is_ok(),
                 "{key}"
             );
         }
@@ -1924,13 +1837,13 @@ mod tests {
             json!(["theme"]),
         ] {
             assert!(
-                matches!(Pin::from_json(&bad), Err(AppError::BadRequest(_))),
+                matches!(Pin::from_json(S, &bad), Err(UiPrefsError::BadRequest(_))),
                 "{bad} must be refused"
             );
         }
         for key in PINNABLE {
             assert!(
-                spec(key).is_some_and(|spec| !spec.key.contains('.')),
+                S.spec(key).is_some_and(|spec| !spec.key.contains('.')),
                 "{key}"
             );
         }
@@ -1972,13 +1885,13 @@ mod tests {
             assert_eq!(prefs["syncSourceDir"], "imports/sync", "{hostile:?}");
             assert_eq!(issues.len(), 1, "{hostile:?}: {issues:?}");
         }
-        assert!(Patch::from_json(&json!({"syncSourceDir": "../x"})).is_err());
-        assert!(Patch::from_json(&json!({"autoSyncEveryHours": 2})).is_err());
-        let patch = Patch::from_json(&json!({"syncSourceDir": "x/y"})).expect("ok");
-        assert!(patch.touches_sync() && !patch.touches_auto_prices());
-        assert!(!patch.touches_auto_recognize());
-        let patch = Patch::from_json(&json!({"autoRecognize": true})).expect("ok");
-        assert!(patch.touches_auto_recognize() && !patch.touches_sync());
+        assert!(Patch::from_json(S, &json!({"syncSourceDir": "../x"})).is_err());
+        assert!(Patch::from_json(S, &json!({"autoSyncEveryHours": 2})).is_err());
+        let patch = Patch::from_json(S, &json!({"syncSourceDir": "x/y"})).expect("ok");
+        assert!(patch.sets_any(SYNC_KEYS) && !patch.sets_any(AUTO_PRICE_KEYS));
+        assert!(!patch.sets_any(AUTO_RECOGNIZE_KEYS));
+        let patch = Patch::from_json(S, &json!({"autoRecognize": true})).expect("ok");
+        assert!(patch.sets_any(AUTO_RECOGNIZE_KEYS) && !patch.sets_any(SYNC_KEYS));
     }
 
     #[test]
@@ -1993,8 +1906,8 @@ mod tests {
         let (prefs, _) = effective("", "autoPricesWeeks = 0\n");
         assert_eq!(prefs["autoPrices"], false);
         assert_eq!(prefs["autoPricesWeeks"], 0);
-        assert!(Patch::from_json(&json!({"autoPricesWeeks": 53})).is_err());
-        assert!(Patch::from_json(&json!({"autoPrices": "yes"})).is_err());
+        assert!(Patch::from_json(S, &json!({"autoPricesWeeks": 53})).is_err());
+        assert!(Patch::from_json(S, &json!({"autoPrices": "yes"})).is_err());
     }
 
     #[test]
@@ -2113,9 +2026,9 @@ unknownKey = { deep = [1, 2] }
     #[test]
     fn a_non_table_ui_is_reported_and_sets_no_key() {
         let document = parse("ui = 5\n");
-        assert_eq!(ledger_layer(&document).issues.len(), 1);
-        assert!(local_keys(&document).is_empty());
-        assert!(local_keys(&parse("[ui]\n")).is_empty());
+        assert_eq!(ledger_layer(S, &document).issues.len(), 1);
+        assert!(local_keys(S, &document).is_empty());
+        assert!(local_keys(S, &parse("[ui]\n")).is_empty());
     }
 
     #[test]
@@ -2125,21 +2038,24 @@ unknownKey = { deep = [1, 2] }
              [ui.reviewMaxDays]\nx = 1\n[ui.columns]\nstatus = false\n",
         );
         assert_eq!(
-            local_keys(&document),
+            local_keys(S, &document),
             ["columns.status", "insightsTab", "matchWindow"],
             "a bad value still counts; a table, a root key and an absent leaf do not"
         );
         let inline = parse("ui = { matchWindow = 5, columns = { date = true } }\n");
-        assert_eq!(local_keys(&inline), ["columns.date", "matchWindow"]);
+        assert_eq!(local_keys(S, &inline), ["columns.date", "matchWindow"]);
     }
 
     #[test]
     fn a_patch_splits_by_key_and_by_leaf() {
-        let patch = Patch::from_json(&json!({
-            "matchWindow": 7,
-            "matchLookback": 9,
-            "columns": {"status": false, "date": false},
-        }))
+        let patch = Patch::from_json(
+            S,
+            &json!({
+                "matchWindow": 7,
+                "matchLookback": 9,
+                "columns": {"status": false, "date": false},
+            }),
+        )
         .expect("patch");
         let (local, rest) = patch.split(|key| ["matchWindow", "columns.status"].contains(&key));
         assert_eq!(
@@ -2154,12 +2070,15 @@ unknownKey = { deep = [1, 2] }
 
     #[test]
     fn a_patch_is_strict() {
-        let ok = Patch::from_json(&json!({
-            "columns": {"date": false},
-            "lastProjectionId": null,
-            "benchmarks": ["SPY", "SPY"],
-            "matchWindow": 60,
-        }))
+        let ok = Patch::from_json(
+            S,
+            &json!({
+                "columns": {"date": false},
+                "lastProjectionId": null,
+                "benchmarks": ["SPY", "SPY"],
+                "matchWindow": 60,
+            }),
+        )
         .expect("valid patch");
         assert_eq!(ok.values.len(), 4);
         assert_eq!(
@@ -2180,7 +2099,7 @@ unknownKey = { deep = [1, 2] }
             json!({"columns.date": false}),
         ] {
             assert!(
-                matches!(Patch::from_json(&bad), Err(AppError::BadRequest(_))),
+                matches!(Patch::from_json(S, &bad), Err(UiPrefsError::BadRequest(_))),
                 "{bad} must be refused"
             );
         }
@@ -2204,11 +2123,14 @@ date = true # keep me
 x = 1
 ";
         let mut document = parse(original);
-        let patch = Patch::from_json(&json!({
-            "matchWindow": 7,
-            "columns": {"date": false, "amount": false},
-            "insightsOpen": false,
-        }))
+        let patch = Patch::from_json(
+            S,
+            &json!({
+                "matchWindow": 7,
+                "columns": {"date": false, "amount": false},
+                "insightsOpen": false,
+            }),
+        )
         .expect("patch");
         let ui = document["ui"].as_table_like_mut().expect("[ui]");
         patch_table(ui, false, LEDGER_FILE, "ui.", &patch).expect("patched");
@@ -2236,15 +2158,17 @@ x = 1
     #[test]
     fn a_global_document_takes_keys_at_its_root_and_groups_as_tables() {
         let mut document = parse("# mine\nmatchWindow = 3 # narrow\n");
-        let patch =
-            Patch::from_json(&json!({"reviewMarkers": false, "columns": {"status": false}}))
-                .expect("patch");
+        let patch = Patch::from_json(
+            S,
+            &json!({"reviewMarkers": false, "columns": {"status": false}}),
+        )
+        .expect("patch");
         patch_table(document.as_table_mut(), false, GLOBAL_FILE, "", &patch).expect("patched");
         assert_eq!(
             document.to_string(),
             "# mine\nmatchWindow = 3 # narrow\nreviewMarkers = false\n\n[columns]\nstatus = false\n"
         );
-        let layer = read_layer(document.as_table(), GLOBAL_FILE, "");
+        let layer = read_layer(S, document.as_table(), GLOBAL_FILE, "");
         assert!(layer.issues.is_empty());
         assert_eq!(layer.values.len(), 3);
     }
@@ -2252,11 +2176,11 @@ x = 1
     #[test]
     fn an_inline_table_is_patched_inline() {
         let mut document = parse("ui = { matchWindow = 5, columns = { date = true } }\n");
-        let patch = Patch::from_json(&json!({"columns": {"date": false}, "matchWindow": 6}))
+        let patch = Patch::from_json(S, &json!({"columns": {"date": false}, "matchWindow": 6}))
             .expect("patch");
         let ui = document["ui"].as_table_like_mut().expect("ui");
         patch_table(ui, true, LEDGER_FILE, "ui.", &patch).expect("patched");
-        let layer = ledger_layer(&parse(&document.to_string()));
+        let layer = ledger_layer(S, &parse(&document.to_string()));
         assert_eq!(
             layer.values.get("columns.date"),
             Some(&PrefValue::Flag(false))
@@ -2266,17 +2190,17 @@ x = 1
 
     #[test]
     fn a_non_table_group_is_never_overwritten() {
-        let patch = Patch::from_json(&json!({"columns": {"date": false}})).expect("patch");
+        let patch = Patch::from_json(S, &json!({"columns": {"date": false}})).expect("patch");
         let mut document = parse("columns = 3\n");
         assert!(matches!(
             patch_table(document.as_table_mut(), false, GLOBAL_FILE, "", &patch),
-            Err(AppError::Conflict(_))
+            Err(UiPrefsError::Conflict(_))
         ));
     }
 
     #[test]
     fn every_spec_default_survives_a_toml_round_trip() {
-        for spec in SPECS {
+        for spec in S.specs {
             let value = spec.kind.default_value();
             let item = Item::Value(value.to_toml());
             let (back, note) = spec.kind.check_toml(&item).expect("default reads back");
