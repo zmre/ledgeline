@@ -323,14 +323,40 @@ blank cell falls back through these defaults, in order:
 
 1. **Adjustment rows** take the account(s) of the row they apply to. For a
    percentage of a subtotal, that means pro rata across the subtotal's
-   accounts. If `[invoicer] discount-account` is set, discounts go there
-   instead.
+   **revenue lines**, meaning the lines that come from item rows (an item
+   plus the adjustments targeting it, deferred items included). Tax,
+   deposit and other rows with their own account never share a discount.
+   If `[invoicer] discount-account` is set, negative adjustments go there
+   instead (decided 2026-11-19).
 2. The row's catalog item (§3.6).
 3. The customer's `revenue_account`.
 4. `[invoicer] revenue-account`.
 5. The single account typed `R` or carrying `kpi: revenue`.
 
 If none of these resolves, the row is an error the editor shows.
+
+**Edge rules.** These were settled while building the engine (2026-11-19),
+and the table engine's goldens pin them:
+
+- **Headers.** Two columns that map to the same role are a header error.
+  `Item` is a description header; catalog codes use `Code` or `SKU`.
+- **Fixed adjustment vs. item.** A row with no quantity and no rate is a
+  fixed adjustment only if its amount carries an explicit sign (`-$5,000`,
+  `+$12`). Otherwise it is an item, as written (`Shipping | | | $12`).
+- **Percent signs** are optional on adjustment rates (`8.25` and `8.25%` are
+  the same).
+- **Percentage base.** A percentage applies to its target's own amount (not
+  net of earlier discounts) or to the total's amount. Spacers and fixed
+  adjustments are skipped when finding the target.
+- **Totals** are bold cells, in any column except Amount and books, whose
+  text is a subtotal or total word. A total sums every non-total row above
+  it. Rows below the final total are allowed in the document but refused
+  at booking.
+- **Writing amounts.** The sign goes before the symbol (`-$250.00`). A cell
+  whose value already matches keeps its text, and hand-written amounts are
+  never re-rounded.
+- **Cells.** Non-blank cells beyond the header's width are an error, since
+  GFM would silently drop them.
 
 **Hiding it.** Every invoice template ships this CSS, and anyone using a
 different renderer can paste it:
@@ -528,7 +554,7 @@ title: Catalog
 type: catalog
 ---
 
-| Item     | Description              | Unit | Rate   | *Account*                                                    |
+| Code     | Description              | Unit | Rate   | *Account*                                                    |
 |:---------|:-------------------------|:-----|-------:|:-------------------------------------------------------------|
 | ARCH     | Senior architect hours   | h    | $800   | revenue:consulting                                           |
 | JR       | Junior engineer          | h    | $200   | revenue:consulting:delivery                                  |
@@ -639,8 +665,8 @@ For the invoice in §3.2, in accrual books:
 ```
 
 - **One posting per resolved account.** Each item row nets its own
-  adjustments ($8,000 − $800). Pro-rata subtotal adjustments are spread by
-  amount and rounded, with the remainder going to the largest posting.
+  adjustments ($8,000 − $800). Pro-rata subtotal adjustments are spread over
+  the revenue lines (§3.3) by amount and rounded, with the remainder going to the largest posting.
   Postings with the same account and the same deferral merge. So the journal
   stays readable while each line still carries `customer:`.
 - **Tags.**

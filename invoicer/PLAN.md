@@ -280,8 +280,8 @@ benches against their baseline, clippy `-D warnings`, and fmt.
 **2b. Invoicer booking** (`invoicer_core::books`):
 - Invoice → `DocumentSpec`:
   - one posting per resolved account (and deferral), with adjustments netted;
-  - pro-rata split for subtotal adjustments, with the remainder to the
-    largest posting;
+  - pro-rata split for subtotal adjustments over revenue (item-derived)
+    lines only, with the remainder to the largest posting;
   - header tags `invoice`, `document`, `due` and `reference`, with commas
     sanitized;
   - `item:` on each posting.

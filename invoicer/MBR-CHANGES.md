@@ -235,6 +235,17 @@ full read, or at least report a frontmatter error instead of truncating.
 Invoices with many custom fields, or a customer with many contacts, can pass
 8 KB.
 
+## M10 (P1). Preview an unsaved template
+
+**Today.** After #389, `Renderer::render_source` renders an unsaved *note*,
+but always reads the note's page template from disk.
+
+**Want.** A way to render with unsaved template text, for the invoicer's
+template editor (live preview while editing the `.html`). For example
+`Renderer::render_source_with_template(rel, source, template_rel, template_source)`,
+or an overlay map of `path → unsaved contents` consulted before disk.
+Partials included by the template keep coming from disk.
+
 ## Not needed (decided against)
 
 - **A base-path mount for `Server.router`.** The invoicer mounts MBR at the
