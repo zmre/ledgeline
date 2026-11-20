@@ -163,7 +163,7 @@ waiting on Apple: there are two notarization round trips (the app, then the DMG)
 | Location | Kept in step by | What a stale value does |
 | --- | --- | --- |
 | `Cargo.toml` `[workspace.package] version` | **source of truth** | — |
-| `Cargo.toml` `[workspace.dependencies] ledgeline-core.version` | `release.sh set` | Nothing locally — `path` wins inside the workspace. Breaks `cargo publish`, at the end of a release |
+| `Cargo.toml` `[workspace.dependencies] ledgeline-core.version` and `ledgeline-shell.version` | `release.sh set` | Nothing locally — `path` wins inside the workspace. Breaks `cargo publish`, at the end of a release |
 | `Cargo.lock` | `cargo update --workspace` | Fails `--locked` builds in CI |
 | `web/package.json` | `release.sh set` | Nothing at all. It had already drifted to `0.0.1` against a `0.1.0` workspace before this script existed |
 | The git tag | you | Publishes `Ledgeline-0.2.0.dmg` containing an app that reports `0.1.0` in About and in every crash report forever — `Info.plist` is substituted from `Cargo.toml`, not from the tag |
@@ -288,12 +288,13 @@ cargo install ledgeline --no-default-features --features watcher,external-tools
 cargo install ledgeline
 ```
 
-Two crates go up: `ledgeline` (the binary, in `crates/ledgeline-server/`) and
-`ledgeline-core` (the engine it depends on). The package name and the directory
-name differ on purpose — cargo does not tie them together, and `ledgeline` is
-what a user types. Core has to be published even though nobody installs it
-directly: `cargo publish` rejects a package whose dependency is not on the
-registry, so it goes first.
+Three crates go up: `ledgeline` (the binary, in `crates/ledgeline-server/`),
+`ledgeline-core` (the engine it depends on) and `ledgeline-shell` (the
+desktop/server shell it shares with the invoicer). The package name and the
+directory name differ on purpose — cargo does not tie them together, and
+`ledgeline` is what a user types. Core and the shell have to be published even
+though nobody installs them directly: `cargo publish` rejects a package whose
+dependency is not on the registry, so they go first, core then shell.
 
 ### The one secret
 
@@ -305,12 +306,17 @@ runs *after* the DMG job on purpose: a crates.io release cannot be withdrawn,
 only yanked, so publishing before the DMG is known good would permanently attach
 a version number to a release that never shipped.
 
-Scope the CI token to **`publish-update`**, restricted to `ledgeline` and
-`ledgeline-core`. That is deliberately not enough to create a crate: a token that
+Scope the CI token to **`publish-update`**, restricted to `ledgeline`,
+`ledgeline-core` and `ledgeline-shell`. That is deliberately not enough to create a crate: a token that
 can `publish-new` can claim *any* unclaimed name on crates.io, and this one lives
 in a CI system that runs on every tag.
 
-### Bootstrapping the two names, once
+### Bootstrapping a name, once
+
+`ledgeline-shell` joined after `ledgeline` and `ledgeline-core` were already on
+the registry: it needs this bootstrap (and adding to the CI token's crate list)
+before the first release that depends on it, or that release's publish step
+fails at `cargo publish -p ledgeline-shell`.
 
 `publish-update` cannot make the first upload — the crate has to exist first. So
 the very first version of each crate is published by hand, from a machine, with a
@@ -340,6 +346,7 @@ grep -q "SPA not built" crates/ledgeline-server/spa/index.html \
 #    `--allow-dirty` because `spa/` is git-ignored by design.
 export CARGO_REGISTRY_TOKEN=<a publish-new token>
 cargo publish -p ledgeline-core --allow-dirty
+cargo publish -p ledgeline-shell --allow-dirty
 cargo publish -p ledgeline --allow-dirty
 ```
 
@@ -357,7 +364,7 @@ fail loudly on that one run.
 
 Worth knowing, because it is easy to undo by accident:
 
-- **`spa.rs` embeds `$CARGO_MANIFEST_DIR/spa`, not `../../web/build`.**
+- **`lib.rs` embeds `$CARGO_MANIFEST_DIR/spa`, not `../../web/build`.**
   `cargo package` refuses to include files outside the package root, so the old
   path made the crate unpublishable — it would have shipped with no UI.
 - **`build.rs` has three cases** (workspace / published crate / neither). The
@@ -370,8 +377,8 @@ Worth knowing, because it is easy to undo by accident:
   publishing. A placeholder packages exactly as happily as the real thing — same
   filename, same manifest, no warning — and the result would be an unyankable
   version whose entire UI is an error page.
-- **`ledgeline-core` carries a `version` in the workspace dependency table.**
-  `cargo publish` rejects a path dependency without one.
+- **`ledgeline-core` and `ledgeline-shell` carry a `version` in the workspace
+  dependency table.** `cargo publish` rejects a path dependency without one.
 
 Rehearse the whole thing locally without publishing anything:
 
