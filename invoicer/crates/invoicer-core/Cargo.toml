@@ -1,0 +1,29 @@
+[package]
+name = "invoicer-core"
+description = "Ledgeline Invoicer core: invoice documents, the bill-table engine and the booking bridge."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+# See ledgeline-core: benches are named explicitly below.
+autobenches = false
+
+[dependencies]
+ledgeline-core = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+# `[invoicer.words]` is read out of `ledgeline.toml`. toml 0.9 is already in
+# Cargo.lock (through the server's build graph), so this adds no crate.
+toml = "0.9"
+# Column alignment by display width, so a CJK or emoji description still
+# lines up in a monospace editor. Already in Cargo.lock.
+unicode-width = "0.2"
+
+[dev-dependencies]
+proptest = { workspace = true }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[lib]
+bench = false
