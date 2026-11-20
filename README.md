@@ -10,7 +10,7 @@
 [![Latest release](https://img.shields.io/github/v/release/zmre/ledgeline?sort=semver)](https://github.com/zmre/ledgeline/releases/latest)
 [![crates.io](https://img.shields.io/crates/v/ledgeline.svg)](https://crates.io/crates/ledgeline)
 [![Manual](https://img.shields.io/badge/docs-manual-blue)](https://zmre.github.io/ledgeline/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-green.svg)](LICENSE)
 
 </div>
 
@@ -212,4 +212,6 @@ The Svelte app only presents what the API computes. All assets are built into th
 
 ## License
 
-[MIT](LICENSE)
+Copyright (c) 2026 Patrick Walsh. Licensed under the
+[GNU Affero General Public License v3.0 or later](LICENSE)
+(AGPL-3.0-or-later).

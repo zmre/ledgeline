@@ -256,7 +256,7 @@
           meta = {
             description = "Ledgeline — local hledger GUI (axum server + wry/tao webview) with embedded SPA";
             homepage = "https://github.com/zmre/ledgeline";
-            license = lib.licenses.mit;
+            license = lib.licenses.agpl3Plus;
             mainProgram = "ledgeline";
             platforms = lib.platforms.unix;
           };
