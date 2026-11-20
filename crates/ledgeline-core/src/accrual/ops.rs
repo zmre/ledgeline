@@ -264,6 +264,7 @@ impl Books {
             book,
             revision,
             documents: OnceLock::new(),
+            fingerprints: OnceLock::new(),
         })
     }
 
@@ -384,16 +385,12 @@ pub struct Loaded {
     path: VaultPath,
     book: RecognitionBook,
     revision: Option<Revision>,
-    /// The document index and its documents' fingerprints, built on first
-    /// use and dropped by every in-memory edit.
-    documents: OnceLock<LoadedDocuments>,
-}
-
-/// [`DocumentIndex`] plus each document's fingerprint, taken in one pass.
-#[derive(Debug)]
-struct LoadedDocuments {
-    index: DocumentIndex,
-    fingerprints: super::FxHashMap<usize, Fingerprint>,
+    /// The document index, built on first use and dropped by every
+    /// in-memory edit ([`Loaded::forget_documents`]).
+    documents: OnceLock<DocumentIndex>,
+    /// Every indexed document's fingerprint by position, taken in one pass
+    /// the first time one is asked for; dropped with the index.
+    fingerprints: OnceLock<super::FxHashMap<usize, Fingerprint>>,
 }
 
 impl std::fmt::Debug for Loaded {
@@ -607,7 +604,7 @@ impl Loaded {
     /// the in-memory editor.
     fn plan_save(&mut self, request: &SaveRequest) -> Result<SavePlan, OpsError> {
         self.check_expected(request.expected.as_ref())?;
-        self.documents.take();
+        self.forget_documents();
         if !is_iso_date(&request.today) {
             return Err(OpsError::BadDate(request.today.clone()));
         }
@@ -858,34 +855,38 @@ impl Loaded {
         .filter(|role| role.is_settlement())
     }
 
-    fn loaded_documents(&self) -> &LoadedDocuments {
-        self.documents.get_or_init(|| {
-            let journal = self.journal();
-            let index = DocumentIndex::build(journal, &AccrualRoles::of(journal));
-            let refs: Vec<PostingRef> = index
-                .iter()
-                .flat_map(|(_, _, refs)| refs.iter().copied())
-                .collect();
-            let tindices: Vec<Tindex> = refs.iter().map(|at| at.txn).collect();
-            // Every document's fingerprint in ONE pass over each file: one
-            // at a time rebuilds the file's line index per call.
-            let fingerprints = refs
-                .iter()
-                .zip(self.editor.transaction_fingerprints(&tindices))
-                .filter_map(|(at, fingerprint)| Some((at.position, fingerprint?)))
-                .collect();
-            LoadedDocuments {
-                index,
-                fingerprints,
-            }
-        })
+    /// Drop the document caches: the journal is about to change.
+    fn forget_documents(&mut self) {
+        self.documents.take();
+        self.fingerprints.take();
     }
 
     /// Every numbered invoice and bill in the books, built once per load
     /// (and again after an in-memory edit).
     #[must_use]
     pub fn documents(&self) -> &DocumentIndex {
-        &self.loaded_documents().index
+        self.documents.get_or_init(|| {
+            let journal = self.journal();
+            DocumentIndex::build(journal, &AccrualRoles::of(journal))
+        })
+    }
+
+    /// Every indexed document's fingerprint, by position.
+    fn document_fingerprints(&self) -> &super::FxHashMap<usize, Fingerprint> {
+        self.fingerprints.get_or_init(|| {
+            let refs: Vec<PostingRef> = self
+                .documents()
+                .iter()
+                .flat_map(|(_, _, refs)| refs.iter().copied())
+                .collect();
+            let tindices: Vec<Tindex> = refs.iter().map(|at| at.txn).collect();
+            // In ONE pass over each file: one at a time rebuilds the file's
+            // line index per call.
+            refs.iter()
+                .zip(self.editor.transaction_fingerprints(&tindices))
+                .filter_map(|(at, fingerprint)| Some((at.position, fingerprint?)))
+                .collect()
+        })
     }
 
     /// The booked invoice numbered `number` (L3): `invoice:` matched exactly
@@ -893,8 +894,8 @@ impl Loaded {
     /// reversal or a cash-books deposit. With the number used twice, the
     /// first in file order; [`documents`](Self::documents) lists duplicates.
     ///
-    /// The first call builds the index for every document; later calls are a
-    /// hash lookup and one transaction clone.
+    /// The first call builds the index and every document's fingerprint (one
+    /// pass each); later calls are a hash lookup and one transaction clone.
     #[must_use]
     pub fn find_document(&self, number: &str) -> Option<FoundDocument> {
         self.find_document_as(AccrualRole::Receivable, number)
@@ -904,13 +905,12 @@ impl Loaded {
     /// ([`AccrualRole::Receivable`]) or a bill ([`AccrualRole::Payable`]).
     #[must_use]
     pub fn find_document_as(&self, role: AccrualRole, number: &str) -> Option<FoundDocument> {
-        let loaded = self.loaded_documents();
-        let at = *loaded.index.get(role, number).first()?;
+        let at = *self.documents().get(role, number).first()?;
         let transaction = self.journal().transactions.get(at.position)?.clone();
         Some(FoundDocument {
             tindex: at.txn,
             position: at.position,
-            fingerprint: loaded.fingerprints.get(&at.position)?.clone(),
+            fingerprint: self.document_fingerprints().get(&at.position)?.clone(),
             transaction,
             settlement: at,
             role,
@@ -1123,7 +1123,7 @@ impl Loaded {
             comment_with("", &[(INVOICE_TAG, number), (VOID_TAG, date)]),
             postings,
         );
-        self.documents.take();
+        self.forget_documents();
         self.editor.apply_batch(&[(
             found.tindex,
             found.fingerprint.clone(),
@@ -1276,7 +1276,7 @@ impl Loaded {
                     .ok_or(OpsError::Stale)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        self.documents.take();
+        self.forget_documents();
         self.editor.apply_batch(&edits)?;
         self.editor.save()?;
         Ok(id)
@@ -1312,7 +1312,7 @@ impl Loaded {
             .transaction_source(request.tindex)
             .ok_or(OpsError::Stale)?;
         let planned = apply::plan(&journal, txn, request)?;
-        self.documents.take();
+        self.forget_documents();
         self.editor
             .apply_batch(&[(request.tindex, request.fingerprint.clone(), planned.ops)])?;
         let fingerprint = self
@@ -1367,7 +1367,7 @@ impl Loaded {
             .find(|(_, fingerprint)| fingerprint.as_ref() == Some(&undo.fingerprint))
             .map(|(tindex, _)| *tindex)
             .ok_or(OpsError::Stale)?;
-        self.documents.take();
+        self.forget_documents();
         self.editor.apply_batch(&[(
             tindex,
             undo.fingerprint.clone(),
@@ -1428,7 +1428,7 @@ impl Loaded {
         } else {
             Vec::new()
         };
-        self.documents.take();
+        self.forget_documents();
         let mut transactions = entries_to_post(&self.book, &open);
         let adjustments = match self.config.closed_through.as_deref() {
             Some(closed_through) => closed_adjustments(&self.book, &closed, today, closed_through),
@@ -1498,7 +1498,7 @@ impl Loaded {
         if links.is_empty() {
             return Ok(Vec::new());
         }
-        self.documents.take();
+        self.forget_documents();
         let journal = Arc::clone(self.editor.journal());
         let roles = AccrualRoles::of(&journal);
         // Once for the batch: a scan of the journal per pair is what made a
