@@ -250,7 +250,8 @@ fn check_extra_tags(
     Ok(())
 }
 
-fn posting(account: &str, amount: Amount, tags: &[(&str, String)]) -> Posting {
+/// A written posting on `account` with one `amount` and `tags` as its comment.
+pub(crate) fn posting(account: &str, amount: Amount, tags: &[(&str, String)]) -> Posting {
     let comment = if tags.is_empty() {
         String::new()
     } else {
@@ -766,7 +767,8 @@ mod tests {
             edit(&mut spec);
             build_document(&spec, &mut IdGenerator::avoiding(Vec::new())).err()
         };
-        let cases: [(&str, &dyn Fn(&mut DocumentSpec)); 10] = [
+        type Edit<'a> = &'a dyn Fn(&mut DocumentSpec);
+        let cases: [(&str, Edit<'_>); 10] = [
             ("comma", &|s| s.tags[2].1 = "PO 1, rev 2".into()),
             ("padded", &|s| s.tags[2].1 = " PO 1".into()),
             ("invoice on header", &|s| s.tags.push(tag("invoice", "9"))),

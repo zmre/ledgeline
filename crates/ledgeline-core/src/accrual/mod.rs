@@ -68,6 +68,7 @@
 
 pub mod book;
 pub mod books_config;
+pub mod documents;
 pub mod due;
 pub mod index;
 pub mod invoice;

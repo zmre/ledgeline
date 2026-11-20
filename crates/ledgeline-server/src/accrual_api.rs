@@ -794,9 +794,11 @@ impl<'a> WirePlan<'a> {
 fn ops_error(error: OpsError) -> AppError {
     let message = error.to_string();
     match error {
-        OpsError::ExternalChange | OpsError::Stale | OpsError::FileExists(_) => {
-            AppError::Conflict(message)
-        }
+        OpsError::ExternalChange
+        | OpsError::Stale
+        | OpsError::FileExists(_)
+        | OpsError::DuplicateDocument(_) => AppError::Conflict(message),
+        OpsError::DocumentNotFound(_) | OpsError::Refused(_) => AppError::BadRequest(message),
         OpsError::FutureDate { .. }
         | OpsError::BadDate(_)
         | OpsError::FileMissing(_)

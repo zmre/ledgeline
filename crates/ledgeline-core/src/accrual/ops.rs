@@ -32,22 +32,26 @@ use super::book::{
     heading, recognition_path,
 };
 use super::books_config::{self, BooksConfig, BooksError};
-use super::due::{DueSet, closed_adjustments, due, entries_to_post};
+use super::documents::{DocumentIndex, FoundDocument};
+use super::due::{DueSet, closed_adjustments, comment_with, due, entries_to_post, new_transaction};
 use super::index::RecognitionIndex;
-use super::invoice::{DocumentError, DocumentSpec, build_document};
+use super::invoice::{DocumentError, DocumentSpec, build_document_with, posting};
 use super::restate::{RestateError, Restatement, restatement};
 use super::schedule::{
     Period, PeriodPart, RuleRole, RuleText, Schedule, ScheduleError, ScheduleSpec, build,
 };
 use super::settle::{self, SettleError};
-use super::{AccrualGate, AccrualRoles, RECOGNITION_TAG, accrual_gate, is_iso_date};
+use super::{
+    AccrualGate, AccrualRole, AccrualRoles, INVOICE_TAG, RECOGNITION_TAG, VOID_TAG, accrual_gate,
+    is_iso_date,
+};
 use crate::edit::{EditError, EditOp, Fingerprint, InsertPosition, JournalEditor};
-use crate::matching::{IdGenerator, MatchIds, PostingRef};
+use crate::matching::{IdGenerator, MATCH_TAG, MatchIds, NOMATCH_TAG, PostingRef};
 use crate::model::{Journal, Tindex, Transaction};
 use crate::parse::JournalStyles;
 use crate::vault::{LocalVault, Revision, Vault, VaultError, VaultPath};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use thiserror::Error;
 
 /// The largest recognition file read: far beyond 5,000 schedules.
@@ -113,6 +117,17 @@ pub enum OpsError {
     /// A document couldn't be built.
     #[error(transparent)]
     Document(#[from] DocumentError),
+    /// No document is booked under this number.
+    #[error("no booked document is numbered {0}")]
+    DocumentNotFound(String),
+    /// The number is already booked (writing it again would double-book it),
+    /// or is booked more than once (which one to change is unclear).
+    #[error("document {0} is already booked; find it and re-book it instead")]
+    DuplicateDocument(String),
+    /// The books' rules refuse the change (a closed period, linked payments,
+    /// a schedule that would be dropped); the message says which.
+    #[error("{0}")]
+    Refused(String),
     /// Storage failed.
     #[error("storage: {0}")]
     Storage(String),
@@ -240,6 +255,7 @@ impl Books {
             path,
             book,
             revision,
+            documents: OnceLock::new(),
         })
     }
 
@@ -342,6 +358,15 @@ pub struct SettleLink {
     pub fee_account: Option<String>,
 }
 
+/// What [`Loaded::void_document`] wrote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Voided {
+    /// The reversing transaction.
+    pub transaction: Transaction,
+    /// The `match:` id joining it to the document.
+    pub link: String,
+}
+
 /// A ledger's books as read by [`Books::load`].
 pub struct Loaded {
     vault: Arc<dyn Vault>,
@@ -351,6 +376,16 @@ pub struct Loaded {
     path: VaultPath,
     book: RecognitionBook,
     revision: Option<Revision>,
+    /// The document index and its documents' fingerprints, built on first
+    /// use and dropped by every in-memory edit.
+    documents: OnceLock<LoadedDocuments>,
+}
+
+/// [`DocumentIndex`] plus each document's fingerprint, taken in one pass.
+#[derive(Debug)]
+struct LoadedDocuments {
+    index: DocumentIndex,
+    fingerprints: super::FxHashMap<usize, Fingerprint>,
 }
 
 impl std::fmt::Debug for Loaded {
@@ -564,6 +599,7 @@ impl Loaded {
     /// the in-memory editor.
     fn plan_save(&mut self, request: &SaveRequest) -> Result<SavePlan, OpsError> {
         self.check_expected(request.expected.as_ref())?;
+        self.documents.take();
         if !is_iso_date(&request.today) {
             return Err(OpsError::BadDate(request.today.clone()));
         }
@@ -767,16 +803,31 @@ impl Loaded {
     /// Write a document (invoice, bill or prepayment) and set up its
     /// schedules in one save. New ids come from [`Loaded::id_generator`].
     ///
+    /// `expected` is the [`generation`](Self::generation) the caller planned
+    /// against (L3): when the books aren't that any more, nothing is written.
+    /// A numbered invoice or bill whose number is already booked is refused,
+    /// so a retried send never books twice — re-book it instead.
+    ///
     /// # Errors
-    /// [`OpsError::Document`] for a spec that won't build; otherwise as
+    /// [`OpsError::Document`] for a spec that won't build;
+    /// [`OpsError::DuplicateDocument`] for a number already booked;
+    /// [`OpsError::Stale`] for a generation mismatch; otherwise as
     /// [`Loaded::save`].
     pub fn write_document(
         &mut self,
         document: &DocumentSpec,
         today: &str,
         create_file: bool,
+        expected: Option<&Generation>,
     ) -> Result<(Transaction, SavePlan), OpsError> {
-        let built = build_document(document, &mut self.id_generator())?;
+        self.check_expected(expected)?;
+        if let (Some(number), Some(role)) = (&document.number, self.settlement_role(document))
+            && !self.documents().get(role, number).is_empty()
+        {
+            return Err(OpsError::DuplicateDocument(number.clone()));
+        }
+        let mut ids = self.id_generator();
+        let built = build_document_with(document, &mut || ids.next_id())?;
         let request = SaveRequest {
             source: SourceChange::Add(Box::new(built.transaction.clone())),
             schedules: built.schedules,
@@ -786,6 +837,301 @@ impl Loaded {
         };
         let plan = self.save(&request)?;
         Ok((built.transaction, plan))
+    }
+
+    /// The role of `document`'s settlement account, when it is a receivable
+    /// or payable one (a prepayment settles through the bank: `None`).
+    fn settlement_role(&self, document: &DocumentSpec) -> Option<AccrualRole> {
+        AccrualRoles::of_accounts(
+            &self.journal().accounts,
+            [document.settlement_account.as_str()],
+        )
+        .role(&document.settlement_account)
+        .filter(|role| role.is_settlement())
+    }
+
+    fn loaded_documents(&self) -> &LoadedDocuments {
+        self.documents.get_or_init(|| {
+            let journal = self.journal();
+            let index = DocumentIndex::build(journal, &AccrualRoles::of(journal));
+            let refs: Vec<PostingRef> = index
+                .iter()
+                .flat_map(|(_, _, refs)| refs.iter().copied())
+                .collect();
+            let tindices: Vec<Tindex> = refs.iter().map(|at| at.txn).collect();
+            // Every document's fingerprint in ONE pass over each file: one
+            // at a time rebuilds the file's line index per call.
+            let fingerprints = refs
+                .iter()
+                .zip(self.editor.transaction_fingerprints(&tindices))
+                .filter_map(|(at, fingerprint)| Some((at.position, fingerprint?)))
+                .collect();
+            LoadedDocuments {
+                index,
+                fingerprints,
+            }
+        })
+    }
+
+    /// Every numbered invoice and bill in the books, built once per load
+    /// (and again after an in-memory edit).
+    #[must_use]
+    pub fn documents(&self) -> &DocumentIndex {
+        &self.loaded_documents().index
+    }
+
+    /// The booked invoice numbered `number` (L3): `invoice:` matched exactly
+    /// on a transaction with a receivable debit, never a payment, a void
+    /// reversal or a cash-books deposit. With the number used twice, the
+    /// first in file order; [`documents`](Self::documents) lists duplicates.
+    ///
+    /// The first call builds the index for every document; later calls are a
+    /// hash lookup and one transaction clone.
+    #[must_use]
+    pub fn find_document(&self, number: &str) -> Option<FoundDocument> {
+        self.find_document_as(AccrualRole::Receivable, number)
+    }
+
+    /// [`find_document`](Self::find_document) for an invoice
+    /// ([`AccrualRole::Receivable`]) or a bill ([`AccrualRole::Payable`]).
+    #[must_use]
+    pub fn find_document_as(&self, role: AccrualRole, number: &str) -> Option<FoundDocument> {
+        let loaded = self.loaded_documents();
+        let at = *loaded.index.get(role, number).first()?;
+        let transaction = self.journal().transactions.get(at.position)?.clone();
+        Some(FoundDocument {
+            tindex: at.txn,
+            position: at.position,
+            fingerprint: loaded.fingerprints.get(&at.position)?.clone(),
+            transaction,
+            settlement: at,
+            role,
+        })
+    }
+
+    /// The one booked `role` document numbered `number`.
+    fn the_document(&self, role: AccrualRole, number: &str) -> Result<FoundDocument, OpsError> {
+        if self.documents().get(role, number).len() > 1 {
+            return Err(OpsError::DuplicateDocument(number.to_string()));
+        }
+        self.find_document_as(role, number)
+            .ok_or_else(|| OpsError::DocumentNotFound(number.to_string()))
+    }
+
+    /// Refuse `date` on or before `[books] closed-through` (I8).
+    fn check_open(&self, what: &str, date: &str) -> Result<(), OpsError> {
+        match self.config.closed_through.as_deref() {
+            Some(closed) if date <= closed => Err(OpsError::Refused(format!(
+                "{what} is dated {date}, on or before closed-through {closed}; void and \
+                 reissue it in an open period instead"
+            ))),
+            _ => Ok(()),
+        }
+    }
+
+    /// **Re-book** a sent document (ARCHITECTURE §4.5): replace its
+    /// transaction with `document` rebuilt, found by `document.number`, and
+    /// restate its schedules in the same save.
+    ///
+    /// - Its deferred lines keep their `recognition:` ids, in line order, so
+    ///   each existing schedule is restated (D4) rather than started again.
+    ///   Dropping a schedule is refused: end its contract first.
+    /// - The settlement posting keeps its `match:` link. If the amount
+    ///   changed, the link no longer balances and shows as one to check.
+    /// - Refused when the original or the new date is on or before
+    ///   `closed-through` (I8): void and reissue instead.
+    ///
+    /// # Errors
+    /// [`OpsError::DocumentNotFound`], [`OpsError::DuplicateDocument`],
+    /// [`OpsError::Refused`], [`OpsError::Stale`]; otherwise as
+    /// [`Loaded::save`].
+    pub fn rebook_document(
+        &mut self,
+        document: &DocumentSpec,
+        today: &str,
+        create_file: bool,
+        expected: Option<&Generation>,
+    ) -> Result<(Transaction, SavePlan), OpsError> {
+        self.check_expected(expected)?;
+        let number = document.number.as_deref().ok_or_else(|| {
+            OpsError::Document(DocumentError::Invalid(
+                "a re-booked document needs its number".into(),
+            ))
+        })?;
+        let role = self.settlement_role(document).ok_or_else(|| {
+            OpsError::Document(DocumentError::Invalid(format!(
+                "{} is not a receivable or payable account",
+                document.settlement_account
+            )))
+        })?;
+        let found = self.the_document(role, number)?;
+        self.check_open(&format!("document {number}"), &found.transaction.date)?;
+        self.check_open(&format!("document {number}"), &document.date)?;
+        let mut old_ids: Vec<String> = Vec::new();
+        for posting in &found.transaction.postings {
+            if let Some(id) = super::tag_value(&posting.tags, RECOGNITION_TAG)
+                && !id.is_empty()
+                && id != super::NONE_VALUE
+                && !old_ids.iter().any(|old| old == id)
+            {
+                old_ids.push(id.to_string());
+            }
+        }
+        let mut fresh = self.id_generator();
+        let mut reused = old_ids.clone().into_iter();
+        let built = build_document_with(document, &mut || {
+            reused.next().unwrap_or_else(|| fresh.next_id())
+        })?;
+        if let Some(dropped) = old_ids
+            .iter()
+            .find(|id| !built.schedules.iter().any(|s| &s.id == *id))
+        {
+            return Err(OpsError::Refused(format!(
+                "re-booking document {number} would drop its schedule {dropped}; end that \
+                 contract first"
+            )));
+        }
+        let mut transaction = built.transaction;
+        let old_settlement = &found.transaction.postings[found.settlement.posting];
+        if let Some(link) = super::tag_value(&old_settlement.tags, MATCH_TAG) {
+            let settlement = &mut transaction.postings[0];
+            settlement.comment = format!(
+                "{}\n",
+                crate::edit::upsert_tag(
+                    settlement.comment.trim_end_matches('\n'),
+                    MATCH_TAG,
+                    Some(link)
+                )
+            );
+            settlement.tags = crate::parse::parse_tags(&settlement.comment);
+        }
+        let request = SaveRequest {
+            source: SourceChange::Replace {
+                tindex: found.tindex,
+                fingerprint: found.fingerprint,
+                transaction: Box::new(transaction.clone()),
+            },
+            schedules: built.schedules,
+            today: today.to_string(),
+            create_file,
+            expected: None,
+        };
+        let plan = self.save(&request)?;
+        Ok((transaction, plan))
+    }
+
+    /// **Void** a booked document (ARCHITECTURE §4.1): a reversing
+    /// transaction dated `date`, tagged `invoice:` and [`VOID_TAG`], each
+    /// posting the original's negated (its `customer:`/`item:` tags kept),
+    /// and a `match:` link joining the two settlement postings, so the
+    /// receivable nets to zero and [`super::receivables`] reads the reversal
+    /// as the document's settlement. One write.
+    ///
+    /// # Errors
+    /// [`OpsError::Refused`] when payments are already linked to it (that
+    /// needs a credit note), it has deferred lines (end their contracts
+    /// first), or `date` is before the document or on or before
+    /// `closed-through`; [`OpsError::DocumentNotFound`],
+    /// [`OpsError::DuplicateDocument`], [`OpsError::BadDate`],
+    /// [`OpsError::Stale`], [`OpsError::ExternalChange`].
+    pub fn void_document(
+        &mut self,
+        role: AccrualRole,
+        number: &str,
+        date: &str,
+        expected: Option<&Generation>,
+    ) -> Result<Voided, OpsError> {
+        self.check_expected(expected)?;
+        if !is_iso_date(date) {
+            return Err(OpsError::BadDate(date.to_string()));
+        }
+        let found = self.the_document(role, number)?;
+        let original = &found.transaction;
+        if date < original.date.as_str() {
+            return Err(OpsError::Refused(format!(
+                "a void can't be dated {date}, before document {number} ({})",
+                original.date
+            )));
+        }
+        self.check_open(&format!("the void of document {number}"), date)?;
+        let settlement = &original.postings[found.settlement.posting];
+        if super::tag_value(&settlement.tags, MATCH_TAG).is_some() {
+            return Err(OpsError::Refused(format!(
+                "document {number} already has payments linked; a void would reverse paid \
+                 work — issue a credit note"
+            )));
+        }
+        if original
+            .postings
+            .iter()
+            .any(|p| super::tag_value(&p.tags, RECOGNITION_TAG).is_some())
+        {
+            return Err(OpsError::Refused(format!(
+                "document {number} has deferred lines; end their contracts before voiding it"
+            )));
+        }
+        let link = MatchIds::new(self.journal()).next_id();
+        let dropped = [MATCH_TAG, NOMATCH_TAG];
+        let postings = original
+            .postings
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.generated.is_none())
+            .map(|(at, p)| {
+                let [amount] = p.amounts.as_slice() else {
+                    return Err(OpsError::Refused(format!(
+                        "document {number}'s posting on {} has no single amount to reverse",
+                        p.account.0
+                    )));
+                };
+                if amount.cost.is_some() {
+                    return Err(OpsError::Refused(format!(
+                        "document {number}'s posting on {} has a cost",
+                        p.account.0
+                    )));
+                }
+                let reversed = crate::model::Amount {
+                    quantity: amount
+                        .quantity
+                        .neg()
+                        .map_err(|_| OpsError::Document(DocumentError::Overflow))?,
+                    ..amount.clone()
+                };
+                let mut tags: Vec<(&str, String)> = p
+                    .tags
+                    .iter()
+                    .filter(|(name, _)| !dropped.contains(&name.as_str()))
+                    .map(|(name, value)| (name.as_str(), value.clone()))
+                    .collect();
+                if at == found.settlement.posting {
+                    tags.push((MATCH_TAG, link.clone()));
+                }
+                Ok(posting(&p.account.0, reversed, &tags))
+            })
+            .collect::<Result<Vec<_>, OpsError>>()?;
+        let reversal = new_transaction(
+            date,
+            &format!("{} (void)", original.description),
+            comment_with("", &[(INVOICE_TAG, number), (VOID_TAG, date)]),
+            postings,
+        );
+        self.documents.take();
+        self.editor.apply_batch(&[(
+            found.tindex,
+            found.fingerprint.clone(),
+            vec![EditOp::SetPostingTag {
+                posting: found.settlement.posting,
+                name: MATCH_TAG.to_string(),
+                value: Some(link.clone()),
+            }],
+        )])?;
+        self.editor
+            .add_transactions(std::slice::from_ref(&reversal), InsertPosition::DateOrdered)?;
+        self.editor.save()?;
+        Ok(Voided {
+            transaction: reversal,
+            link,
+        })
     }
 
     /// **Post through ‹date›** (D6): every open due entry dated on or before
@@ -839,6 +1185,7 @@ impl Loaded {
         } else {
             Vec::new()
         };
+        self.documents.take();
         let mut transactions = entries_to_post(&self.book, &open);
         let adjustments = match self.config.closed_through.as_deref() {
             Some(closed_through) => closed_adjustments(&self.book, &closed, today, closed_through),
@@ -908,6 +1255,7 @@ impl Loaded {
         if links.is_empty() {
             return Ok(Vec::new());
         }
+        self.documents.take();
         let journal = Arc::clone(self.editor.journal());
         let roles = AccrualRoles::of(&journal);
         // Once for the batch: a scan of the journal per pair is what made a

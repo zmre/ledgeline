@@ -115,8 +115,9 @@ fn an_invoicing_app_walks_the_whole_flow() {
         }],
         tags: vec![],
     };
+    let generation = loaded.generation();
     let (_, plan) = loaded
-        .write_document(&invoice, "2026-01-15", false)
+        .write_document(&invoice, "2026-01-15", false, Some(&generation))
         .expect("writes the invoice");
     assert_eq!(plan.appended.len(), 1);
     let id = plan.appended[0].id.clone();
@@ -366,6 +367,7 @@ fn an_external_write_between_load_and_save_writes_nothing() {
             },
             "2026-01-01",
             false,
+            None,
         )
         .expect("writes");
 
@@ -500,4 +502,219 @@ fn link_settlements_links_a_batch_in_one_write_or_not_at_all() {
             .expect("journal")
             .contains(&format!("match:{id}"))
     );
+}
+
+// ---------------------------------------------------------------------------
+// The invoicer's books bridge (invoicer PLAN Phase 2a, L1–L4)
+// ---------------------------------------------------------------------------
+
+/// A small service business's chart of accounts, in memory.
+const SERVICE_BOOKS: &str = "\
+commodity $1,000.00
+
+account assets:bank  ; type: C
+account assets:accounts receivable  ; type: A, kpi: receivable
+account liabilities:customer-deposits  ; type: L
+account revenue:consulting  ; type: R
+account revenue:consulting:delivery  ; type: R
+account revenue:discounts  ; type: R
+account expenses:payment fees  ; type: X
+account equity:opening  ; type: E
+
+2026-01-01 Opening balance
+    assets:bank  $1000.00
+    equity:opening
+";
+
+fn tag(name: &str, value: &str) -> (String, String) {
+    (name.to_string(), value.to_string())
+}
+
+fn customer(name: &str) -> Option<Party> {
+    Some(Party {
+        kind: PartyKind::Customer,
+        name: name.into(),
+    })
+}
+
+/// An invoice to `who`, numbered `number`, with `lines` of `(account,
+/// cents, item)`, due 30 days after `date`.
+fn invoice_spec(
+    journal: &Journal,
+    number: &str,
+    date: &str,
+    who: &str,
+    lines: &[(&str, i128, &str)],
+) -> DocumentSpec {
+    DocumentSpec {
+        direction: Direction::Revenue,
+        date: date.into(),
+        description: format!("{who} | Invoice {number}"),
+        number: Some(number.into()),
+        party: customer(who),
+        settlement_account: "assets:accounts receivable".into(),
+        lines: lines
+            .iter()
+            .map(|(account, cents, item)| DocumentLine {
+                tags: vec![tag("item", item)],
+                ..DocumentLine::new(*account, money(journal, "$", Dec::new(*cents, 2)))
+            })
+            .collect(),
+        tags: vec![
+            tag(
+                "document",
+                &format!("invoices/{date} {who} Invoice {number}.md"),
+            ),
+            tag("due", &ledgeline_core::reports::add_days(date, 30)),
+        ],
+    }
+}
+
+fn mem_books(text: &str) -> (std::sync::Arc<ledgeline_core::vault::MemVault>, Books) {
+    use ledgeline_core::vault::{MemVault, Vault, VaultPath};
+    let vault = std::sync::Arc::new(MemVault::new().with_file("books.journal", text));
+    let books = Books::open_in(
+        std::sync::Arc::clone(&vault) as std::sync::Arc<dyn Vault>,
+        VaultPath::new("books.journal").expect("path"),
+    );
+    (vault, books)
+}
+
+#[test]
+fn documents_are_found_by_number_rebooked_and_voided() {
+    use ledgeline_core::accrual::ops::Generation;
+    let (vault, books) = mem_books(SERVICE_BOOKS);
+    let journal_text = || vault.text("books.journal").expect("journal");
+
+    // A stale generation writes nothing.
+    let mut loaded = books.load().expect("loads");
+    let spec = invoice_spec(
+        loaded.journal(),
+        "105",
+        "2026-02-01",
+        "Customer X",
+        &[("revenue:consulting", 720_000, "Senior architect hours")],
+    );
+    let before = journal_text();
+    assert!(matches!(
+        loaded.write_document(
+            &spec,
+            "2026-02-01",
+            false,
+            Some(&Generation::from_token("stale"))
+        ),
+        Err(OpsError::Stale)
+    ));
+    assert_eq!(journal_text(), before);
+
+    // Booked once; a second send of the same number is refused.
+    let generation = loaded.generation();
+    loaded
+        .write_document(&spec, "2026-02-01", false, Some(&generation))
+        .expect("books 105");
+    assert!(matches!(
+        books
+            .load()
+            .expect("loads")
+            .write_document(&spec, "2026-02-01", false, None),
+        Err(OpsError::DuplicateDocument(n)) if n == "105"
+    ));
+
+    // Found by its exact number only, as an invoice only.
+    let loaded = books.load().expect("loads");
+    let found = loaded.find_document("105").expect("found");
+    assert_eq!(found.transaction.description, "Customer X | Invoice 105");
+    assert_eq!(found.settlement.posting, 0);
+    assert_eq!(
+        Some(found.fingerprint.clone()),
+        loaded.editor().transaction_fingerprint(found.tindex)
+    );
+    assert!(loaded.find_document("10").is_none());
+    assert!(loaded.find_document("1050").is_none());
+    assert!(
+        loaded
+            .find_document_as(AccrualRole::Payable, "105")
+            .is_none()
+    );
+
+    // Re-booked: the amount and lines change, still one document.
+    let mut loaded = books.load().expect("loads");
+    let mut edited = spec.clone();
+    edited.lines.push(DocumentLine {
+        tags: vec![tag("item", "Early payment discount")],
+        ..DocumentLine::new(
+            "revenue:discounts",
+            money(loaded.journal(), "$", Dec::new(-20_000, 2)),
+        )
+    });
+    loaded
+        .rebook_document(&edited, "2026-02-03", false, None)
+        .expect("re-books");
+    let loaded = books.load().expect("loads");
+    let found = loaded.find_document("105").expect("found");
+    assert_eq!(
+        found.transaction.postings[0].amounts[0].quantity,
+        Dec::new(700_000, 2)
+    );
+    assert_eq!(found.transaction.postings.len(), 3);
+    assert!(loaded.documents().duplicates().is_empty());
+
+    // An edit elsewhere between load and re-book: nothing is written.
+    let mut loaded = books.load().expect("loads");
+    vault.modify_externally("books.journal", format!("{}\n; touched\n", journal_text()));
+    let touched = journal_text();
+    assert!(matches!(
+        loaded.rebook_document(&spec, "2026-02-03", false, None),
+        Err(OpsError::ExternalChange)
+    ));
+    assert_eq!(journal_text(), touched);
+
+    // Closed through its date: re-booking is refused (I8).
+    books
+        .set_closed_through(Some("2026-02-01"))
+        .expect("closes");
+    assert!(matches!(
+        books
+            .load()
+            .expect("loads")
+            .rebook_document(&spec, "2026-02-03", false, None),
+        Err(OpsError::Refused(_))
+    ));
+    books.set_closed_through(None).expect("reopens");
+
+    // Voided: a reversal linked to the invoice, which is still the document.
+    let voided = books
+        .load()
+        .expect("loads")
+        .void_document(AccrualRole::Receivable, "105", "2026-02-10", None)
+        .expect("voids");
+    let loaded = books.load().expect("loads");
+    let journal = loaded.journal();
+    let links = matching::links(journal);
+    assert!(links.is_settlement(&voided.link) && links.broken().is_empty());
+    let found = loaded.find_document("105").expect("still found");
+    assert_eq!(found.transaction.description, "Customer X | Invoice 105");
+    assert_eq!(
+        tag_value(&voided.transaction.tags, "void"),
+        Some("2026-02-10")
+    );
+    // A voided (linked) invoice can't be voided again.
+    assert!(matches!(
+        books.load().expect("loads").void_document(
+            AccrualRole::Receivable,
+            "105",
+            "2026-02-11",
+            None
+        ),
+        Err(OpsError::Refused(_))
+    ));
+    assert!(matches!(
+        books.load().expect("loads").void_document(
+            AccrualRole::Receivable,
+            "999",
+            "2026-02-11",
+            None
+        ),
+        Err(OpsError::DocumentNotFound(_))
+    ));
 }
