@@ -104,6 +104,7 @@ pub mod single_entry;
 pub mod sort;
 pub mod text;
 pub mod title;
+pub mod ui_prefs;
 pub mod vault;
 pub mod view;
 pub mod wire;

@@ -1,7 +1,8 @@
 //! `GET`/`PATCH /api/ui-prefs` — the SPA's view state, kept in the global
 //! `ui-prefs.toml`, overridden key by key by a hand-made `ledgeline.toml`
 //! beside the journal, over the built-in defaults. The files, the merge, where
-//! a save goes and the trust model are [`crate::ui_prefs`]'s.
+//! a save goes and the trust model are [`ledgeline_core::ui_prefs`]'s, bound
+//! to the server's state by [`crate::ui_prefs`].
 //!
 //! Both answer the same body ([`ui_prefs::WireUiPrefs`]): every preference's
 //! effective value, where they are kept, which keys the ledger's own file
@@ -17,7 +18,7 @@ use crate::edit_api::json_body;
 use crate::error::AppError;
 use crate::reports_api::compute;
 use crate::security::no_store_json;
-use crate::ui_prefs::{self, Patch, Pin};
+use crate::ui_prefs::{self, AUTO_PRICE_KEYS, AUTO_RECOGNIZE_KEYS, Patch, Pin, SCHEMA, SYNC_KEYS};
 
 /// `GET /api/ui-prefs` — the effective preferences for the open journal.
 /// Reads only: never creates or writes a file.
@@ -38,10 +39,10 @@ pub(crate) async fn patch(
     State(state): State<AppState>,
     payload: Result<Json<serde_json::Value>, JsonRejection>,
 ) -> Result<Response, AppError> {
-    let patch = Patch::from_json(&json_body(payload)?)?;
-    let wake = patch.touches_auto_prices();
-    let wake_sync = patch.touches_sync();
-    let wake_recognize = patch.touches_auto_recognize();
+    let patch = Patch::from_json(SCHEMA, &json_body(payload)?)?;
+    let wake = patch.sets_any(AUTO_PRICE_KEYS);
+    let wake_sync = patch.sets_any(SYNC_KEYS);
+    let wake_recognize = patch.sets_any(AUTO_RECOGNIZE_KEYS);
     let saver = state.clone();
     let Json(body) = compute(move || ui_prefs::apply(&saver, &patch)).await?;
     if wake {
@@ -74,7 +75,7 @@ pub(crate) async fn pin(
     State(state): State<AppState>,
     payload: Result<Json<serde_json::Value>, JsonRejection>,
 ) -> Result<Response, AppError> {
-    let pin = Pin::from_json(&json_body(payload)?)?;
+    let pin = Pin::from_json(SCHEMA, &json_body(payload)?)?;
     let saver = state.clone();
     let Json(body) = compute(move || ui_prefs::pin(&saver, pin)).await?;
     // A pin can change this ledger's effective auto-price, auto-sync or
