@@ -558,8 +558,44 @@ fn rows_below_the_final_total_cannot_be_booked() {
 }
 
 #[test]
-fn a_blank_adjustment_under_a_zero_total_cannot_spread() {
-    let doc = "\
+fn a_blank_adjustment_with_no_revenue_to_spread_over_is_refused() {
+    let books = |doc: &str| {
+        let evaluation = bill(doc)
+            .evaluate(&Words::default(), &usd())
+            .expect("evaluates");
+        split(&evaluation, &AccountDefaults::default(), &usd())
+    };
+    // No item rows at all above the subtotal.
+    let none = "\
+| Description | Rate | Amount | *Account* |
+|---|---|---|---|
+| Pass-through | | +$10 | liabilities:pass-through |
+| **Subtotal** | | | |
+| Discount | -10% | | |
+| **Total** | | | |
+";
+    let error = books(none).expect_err("nothing to spread over");
+    assert!(matches!(error, BookingError::CannotSpread(_)));
+    assert!(
+        error
+            .to_string()
+            .starts_with("row 3 \u{201c}Discount\u{201d} (line 5)"),
+        "{error}"
+    );
+    // Item revenue that nets to zero across its lines.
+    let netted = "\
+| Description | Qty | Rate | Amount | *Account* |
+|---|---|---|---|---|
+| Work | 1 | $10 | | revenue:a |
+| Credit | 1 | $-10 | | revenue:b |
+| **Subtotal** | | | | |
+| Fee | | | +$5 | |
+| **Total** | | | | |
+";
+    assert!(matches!(books(netted), Err(BookingError::CannotSpread(_))));
+    // An own-account row on the same account doesn't count toward the
+    // weights: the item's $10 does, so the fee spreads onto it.
+    let own = "\
 | Description | Amount | *Account* |
 |---|---|---|
 | Work | $10 | revenue |
@@ -568,13 +604,53 @@ fn a_blank_adjustment_under_a_zero_total_cannot_spread() {
 | Fee | +$5 | |
 | **Total** | | |
 ";
+    let booking = books(own).expect("splits");
+    assert_eq!(booking.lines.len(), 1);
+    assert_eq!(booking.lines[0].amount, d(5));
+    assert_eq!(booking.total, d(5));
+}
+
+#[test]
+fn a_subtotal_discount_spreads_over_revenue_lines_only() {
+    let doc = "\
+| Description | Qty | Rate | Amount | *Account* |
+|---|---|---|---|---|
+| Design | 1 | $1,000 | | revenue:a |
+| Build | 1 | $500 | | revenue:b |
+| Sales tax | | 10% | | liabilities:sales-tax |
+| Less deposit (Invoice 104) | | | -$200.00 | liabilities:customer-deposits |
+| Support | 1 | $600 | | liabilities:deferred-revenue → revenue:support, 12 months |
+| | | **Subtotal** | | |
+| Early-payment discount | | -10% | | |
+| | | **Total due** | | |
+";
     let evaluation = bill(doc)
         .evaluate(&Words::default(), &usd())
         .expect("evaluates");
-    assert!(matches!(
-        split(&evaluation, &AccountDefaults::default(), &usd()),
-        Err(BookingError::CannotSpread(_))
-    ));
+    assert_eq!(evaluation.rows[5].amount, Some(d(1_950)));
+    assert_eq!(evaluation.total, d(1_755));
+    let booking = split(&evaluation, &AccountDefaults::default(), &usd()).expect("splits");
+    let lines: Vec<(String, Dec)> = booking
+        .lines
+        .iter()
+        .map(|l| (l.books.account().to_string(), l.amount))
+        .collect();
+    // -$195 over the item revenue only, 1,000 : 500 : 600 (the deferred item
+    // included): -92.86 / -46.43 / -55.71. The tax and the deposit keep
+    // exactly their own amounts.
+    assert_eq!(
+        lines,
+        [
+            ("revenue:a".into(), cents(90_714)),
+            ("revenue:b".into(), cents(45_357)),
+            ("liabilities:sales-tax".into(), d(50)),
+            ("liabilities:customer-deposits".into(), d(-200)),
+            ("liabilities:deferred-revenue".into(), cents(54_429)),
+        ]
+    );
+    assert_eq!(booking.lines[2].rows, [2]);
+    assert_eq!(booking.lines[3].rows, [3]);
+    assert_eq!(booking.total, d(1_755));
 }
 
 #[test]

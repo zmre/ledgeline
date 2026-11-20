@@ -7,9 +7,12 @@
 //! - An adjustment with a books cell books there.
 //! - An adjustment with a blank books cell takes the account(s) of the row it
 //!   applies to: an item's account (so the item nets its own discounts), or,
-//!   under a total, every line making up that total, pro rata by amount,
-//!   rounded half away from zero, with the remainder on the largest line. A
-//!   set `[invoicer] discount-account` takes negative ones instead.
+//!   under a total, the revenue lines making up that total (Patrick,
+//!   2026-11-19): only what came from item rows, deferred items included,
+//!   never tax, the deposit or other rows booked to their own account. It is
+//!   spread pro rata by that revenue, rounded half away from zero, with the
+//!   remainder on the largest line. A set `[invoicer] discount-account` takes
+//!   negative ones instead.
 //! - Lines with the same account and deferral merge, in first-appearance
 //!   order; lines that net to zero are dropped.
 //! - The lines sum to the table's total exactly, which is the receivable.
@@ -137,10 +140,25 @@ pub enum BookingError {
 #[derive(Debug, Clone, Default)]
 struct Split {
     lines: Vec<BookingLine>,
+    /// Per line: the part of its amount that came from item rows (the
+    /// items, adjustments netted into them, and earlier spreads). These are
+    /// the weights a blank adjustment under a total spreads by.
+    revenue: Vec<Dec>,
     /// Per body row: the line an item went to.
     item_line: Vec<Option<usize>>,
-    /// Per body row: for a total, every line's amount when it was reached.
+    /// Per body row: for a total, every line's revenue when it was reached.
     snapshot: Vec<Option<Vec<Dec>>>,
+}
+
+/// What a posting is, for the pro-rata weights.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Feed {
+    /// Item-derived: an item, or an adjustment netted into one, or a
+    /// spread share. Counts toward a later spread.
+    Revenue,
+    /// A row booked to its own account (tax, a deposit, a discount account,
+    /// a defaulted untargeted fixed adjustment). Never shares a spread.
+    Own,
 }
 
 impl Split {
@@ -149,6 +167,7 @@ impl Split {
         books: BooksEntry,
         amount: Dec,
         row: usize,
+        feed: Feed,
     ) -> Result<(Self, usize), BookingError> {
         let at = match self.lines.iter().position(|line| line.books == books) {
             Some(at) => at,
@@ -158,9 +177,15 @@ impl Split {
                     amount: Dec::zero(),
                     rows: Vec::new(),
                 });
+                self.revenue.push(Dec::zero());
                 self.lines.len() - 1
             }
         };
+        if feed == Feed::Revenue {
+            self.revenue[at] = self.revenue[at]
+                .add(amount)
+                .map_err(|_| BookingError::Overflow)?;
+        }
         let line = &mut self.lines[at];
         line.amount = line
             .amount
@@ -176,15 +201,19 @@ impl Split {
         self,
         amount: Dec,
         weights: &[Dec],
+        at: &RowRef,
         row: usize,
         precision: u32,
     ) -> Result<Self, BookingError> {
         pro_rata(amount, weights, precision)?
+            .ok_or_else(|| BookingError::CannotSpread(at.clone()))?
             .into_iter()
             .filter(|(_, share)| !share.is_zero())
             .try_fold(self, |split, (line, share)| {
                 let books = split.lines[line].books.clone();
-                split.post(books, share, row).map(|(split, _)| split)
+                split
+                    .post(books, share, row, Feed::Revenue)
+                    .map(|(split, _)| split)
             })
     }
 }
@@ -200,12 +229,12 @@ fn div_round(numerator: i128, denominator: i128) -> Option<i128> {
 
 /// Split `amount` over the non-zero `weights` (indexed by line) in
 /// proportion, each share rounded to `precision`, the remainder on the
-/// largest weight. Empty when the weights sum to zero.
+/// largest weight. `None` when the weights sum to zero.
 fn pro_rata(
     amount: Dec,
     weights: &[Dec],
     precision: u32,
-) -> Result<Vec<(usize, Dec)>, BookingError> {
+) -> Result<Option<Vec<(usize, Dec)>>, BookingError> {
     let overflow = |_| BookingError::Overflow;
     let scale = weights
         .iter()
@@ -226,7 +255,7 @@ fn pro_rata(
         .ok_or(BookingError::Overflow)?;
     if sum == 0 {
         // The caller turns this into `CannotSpread` with the row.
-        return Ok(Vec::new());
+        return Ok(None);
     }
     let a = at_scale(amount)?;
     let denominator = 10i128
@@ -265,7 +294,8 @@ fn pro_rata(
                 Ok((i, share))
             }
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
 }
 
 /// Split a computed bill table into booking lines.
@@ -318,29 +348,33 @@ fn book_row(
     match row.kind {
         RowKind::Spacer => Ok(split),
         RowKind::Total => {
-            split.snapshot[i] = Some(split.lines.iter().map(|line| line.amount).collect());
+            split.snapshot[i] = Some(split.revenue.clone());
             Ok(split)
         }
         RowKind::Item => {
             let (books, _) = resolve(row, defaults).ok_or_else(unresolved)?;
-            let (mut split, line) = split.post(books, amount, i)?;
+            let (mut split, line) = split.post(books, amount, i, Feed::Revenue)?;
             split.item_line[i] = Some(line);
             Ok(split)
         }
         RowKind::Adjustment(_) | RowKind::FixedAdjustment => {
             if let Some(books) = row.books.clone() {
-                return split.post(books, amount, i).map(|(split, _)| split);
+                return split
+                    .post(books, amount, i, Feed::Own)
+                    .map(|(split, _)| split);
             }
             if let Some(discount) = defaults.discount.clone().filter(|_| amount.mantissa < 0) {
                 return split
-                    .post(BooksEntry::Account(discount), amount, i)
+                    .post(BooksEntry::Account(discount), amount, i, Feed::Own)
                     .map(|(split, _)| split);
             }
             match row.applies_to.map(|t| (t, rows[t].kind)) {
                 Some((t, RowKind::Item)) => {
                     let line = split.item_line[t].ok_or_else(unresolved)?;
                     let books = split.lines[line].books.clone();
-                    split.post(books, amount, i).map(|(split, _)| split)
+                    split
+                        .post(books, amount, i, Feed::Revenue)
+                        .map(|(split, _)| split)
                 }
                 Some((t, RowKind::Total)) => {
                     if amount.is_zero() {
@@ -350,11 +384,13 @@ fn book_row(
                     if weights.iter().all(Dec::is_zero) {
                         return Err(BookingError::CannotSpread(row.at.clone()));
                     }
-                    split.spread(amount, &weights, i, precision)
+                    split.spread(amount, &weights, &row.at, i, precision)
                 }
                 _ => {
                     let (books, _) = resolve(row, defaults).ok_or_else(unresolved)?;
-                    split.post(books, amount, i).map(|(split, _)| split)
+                    split
+                        .post(books, amount, i, Feed::Own)
+                        .map(|(split, _)| split)
                 }
             }
         }
@@ -374,7 +410,8 @@ mod tests {
             &[Dec::new(1, 0), Dec::new(1, 0), Dec::new(1, 0)],
             2,
         )
-        .expect("splits");
+        .expect("splits")
+        .expect("non-zero weights");
         assert_eq!(
             shares,
             [
@@ -393,10 +430,19 @@ mod tests {
             ],
             2,
         )
-        .expect("splits");
+        .expect("splits")
+        .expect("non-zero weights");
         assert_eq!(
             shares.iter().map(|(_, s)| *s).collect::<Vec<_>>(),
             [Dec::new(-240, 0), Dec::new(-45, 0), Dec::new(-120, 0)]
+        );
+    }
+
+    #[test]
+    fn weights_summing_to_zero_cannot_be_spread() {
+        assert_eq!(
+            pro_rata(Dec::new(500, 2), &[Dec::new(10, 0), Dec::new(-10, 0)], 2),
+            Ok(None)
         );
     }
 
