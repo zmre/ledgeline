@@ -598,7 +598,8 @@ impl Receivables {
 
     /// Days sales outstanding for `role` over the `days` ending `today`, per
     /// commodity: outstanding at the end of `today` (documents dated on or
-    /// before it) over what was billed in the window, times `days`.
+    /// before it) over what was billed in the window, times `days`. A voided
+    /// document was never a sale and counts in neither.
     #[must_use]
     pub fn dso(&self, role: AccrualRole, today: &str, days: u32) -> Vec<Dso> {
         let start = day_of(today) - i32::try_from(days).unwrap_or(i32::MAX / 2);
@@ -606,7 +607,7 @@ impl Receivables {
         for document in self
             .documents
             .iter()
-            .filter(|d| d.role == role && d.date.as_str() <= today)
+            .filter(|d| d.role == role && d.date.as_str() <= today && d.state != PaymentState::Void)
         {
             let (outstanding, billed) = sums
                 .entry(document.commodity.as_str())
@@ -799,13 +800,13 @@ account expenses  ; type: X
         assert_eq!(mid[0].total, Dec::new(80_000, 2));
 
         // DSO over the 90 days to 2026-04-01: invoice 1 (2026-01-01) is the
-        // window's open start, so billed is 2 and 3, $800; outstanding is
-        // the $600 left of 1: 600 / 800 × 90 = 67.5.
+        // window's open start and 2 was voided, so billed is 3's $300;
+        // outstanding is the $600 left of 1: 600 / 300 × 90 = 180.0.
         let dso = r.dso(AccrualRole::Receivable, "2026-04-01", 90);
         assert_eq!(dso.len(), 1);
         assert_eq!(dso[0].outstanding, Dec::new(60_000, 2));
-        assert_eq!(dso[0].billed, Dec::new(80_000, 2));
-        assert_eq!(dso[0].value, Some(Dec::new(675, 1)));
+        assert_eq!(dso[0].billed, Dec::new(30_000, 2));
+        assert_eq!(dso[0].value, Some(Dec::new(1800, 1)));
 
         // Only invoice 3 is paid (the void doesn't count): 19 days.
         let paid = r.average_days_to_pay(AccrualRole::Receivable);
