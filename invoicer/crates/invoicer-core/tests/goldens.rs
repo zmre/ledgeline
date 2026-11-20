@@ -576,3 +576,19 @@ fn a_blank_adjustment_under_a_zero_total_cannot_spread() {
         Err(BookingError::CannotSpread(_))
     ));
 }
+
+#[test]
+fn a_header_with_two_columns_for_one_role_names_both() {
+    let doc = "Intro\n\n| Item | Description | Amount |\n|---|---|---|\n| A | B | $1 |\n";
+    let error = BillTable::find(doc, &Words::default()).expect_err("ambiguous");
+    assert_eq!(
+        error.to_string(),
+        "the bill table's header (line 3): `Item` and `Description` are both description columns; rename one"
+    );
+    // The catalog's `Code` header is the item column.
+    let doc = "| Code | Description | Amount |\n|---|---|---|\n| ARCH | Architect | $1 |\n";
+    let evaluation = bill(doc)
+        .evaluate(&Words::default(), &usd())
+        .expect("evaluates");
+    assert_eq!(evaluation.rows[0].item, Some(ItemCode("ARCH".into())));
+}

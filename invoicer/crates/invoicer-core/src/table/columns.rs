@@ -52,8 +52,10 @@ pub enum HeaderProblem {
     Duplicate {
         /// The role.
         role: Role,
+        /// The first column's header text.
+        first: String,
         /// The second column's header text.
-        header: String,
+        second: String,
     },
     /// There is an amount column but no description column.
     NoDescription,
@@ -62,9 +64,13 @@ pub enum HeaderProblem {
 impl std::fmt::Display for HeaderProblem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Duplicate { role, header } => write!(
+            Self::Duplicate {
+                role,
+                first,
+                second,
+            } => write!(
                 f,
-                "`{header}` is a second {} column",
+                "`{first}` and `{second}` are both {} columns; rename one",
                 format!("{role:?}").to_lowercase()
             ),
             Self::NoDescription => f.write_str("it has an amount column but no description column"),
@@ -85,9 +91,8 @@ pub fn is_italic(text: &str) -> bool {
     })
 }
 
-/// The role a header names and how preferred its word is in that role's list
-/// (0 = the list's first word).
-fn role_of(header: &str, words: &Words) -> Option<(Role, usize)> {
+/// The role a header names, if any.
+fn role_of(header: &str, words: &Words) -> Option<Role> {
     let text = unbold(header.trim()).unwrap_or(header).trim();
     [
         (&words.description, Role::Description),
@@ -99,65 +104,49 @@ fn role_of(header: &str, words: &Words) -> Option<(Role, usize)> {
         (&words.item, Role::Item),
     ]
     .iter()
-    .find_map(|(list, role)| list.rank(text).map(|rank| (*role, rank)))
+    .find(|(list, _)| list.matches(text))
+    .map(|(_, role)| *role)
 }
 
 impl Columns {
     /// Recognize a header. `Ok(None)` when no column is an amount column,
     /// which means this isn't a bill table.
     ///
-    /// When two columns name the same role, the one whose word comes first
-    /// in that role's list takes it and the other is kept as an
-    /// [`Role::Other`] column: `| Item | Description |` gives the
-    /// description role to `Description` (the §3.6 catalog's layout).
+    /// Two columns naming the same role (`| Item | Description |`, or
+    /// `| Amount | Total |`) are an error naming both: the invoicer can't
+    /// know which one the author meant.
     ///
     /// # Errors
-    /// A [`HeaderProblem`] for two columns naming a role with the same word,
-    /// or a missing description.
+    /// A [`HeaderProblem`] for two columns with one role, or a missing
+    /// description.
     pub fn recognize(header: &[String], words: &Words) -> Result<Option<Self>, HeaderProblem> {
         let last = header.len().saturating_sub(1);
-        let claims: Vec<Option<(Role, usize)>> = header
+        let roles: Vec<Role> = header
             .iter()
             .enumerate()
             .map(|(i, text)| {
                 if i == last && i > 0 && is_italic(text) {
-                    Some((Role::Books, 0))
+                    Role::Books
                 } else {
-                    role_of(text, words)
+                    role_of(text, words).unwrap_or(Role::Other)
                 }
             })
             .collect();
-        if !claims
-            .iter()
-            .any(|claim| matches!(claim, Some((Role::Amount, _))))
-        {
+        if !roles.contains(&Role::Amount) {
             return Ok(None);
         }
-        let winner = |role: Role| {
-            claims
-                .iter()
-                .filter_map(|claim| claim.filter(|(r, _)| *r == role).map(|(_, rank)| rank))
-                .min()
-        };
-        if let Some((i, (role, _))) = claims.iter().enumerate().find_map(|(i, claim)| {
-            claim
-                .filter(|(role, rank)| {
-                    Some(*rank) == winner(*role) && claims[..i].contains(&Some((*role, *rank)))
-                })
-                .map(|claim| (i, claim))
+        if let Some((second, first, role)) = roles.iter().enumerate().find_map(|(i, role)| {
+            (*role != Role::Other)
+                .then(|| roles[..i].iter().position(|r| r == role))
+                .flatten()
+                .map(|first| (i, first, *role))
         }) {
             return Err(HeaderProblem::Duplicate {
                 role,
-                header: header[i].clone(),
+                first: header[first].clone(),
+                second: header[second].clone(),
             });
         }
-        let roles: Vec<Role> = claims
-            .iter()
-            .map(|claim| match claim {
-                Some((role, rank)) if Some(*rank) == winner(*role) => *role,
-                _ => Role::Other,
-            })
-            .collect();
         if !roles.contains(&Role::Description) {
             return Err(HeaderProblem::NoDescription);
         }
@@ -254,23 +243,36 @@ mod tests {
     }
 
     #[test]
-    fn the_earlier_word_in_a_list_wins_a_shared_role() {
-        // §3.6's catalog header: `Item` is a description alias, but
-        // `Description` is the list's first word.
+    fn two_columns_with_one_role_are_an_error_naming_both() {
+        let words = Words::default();
+        for (cells, message) in [
+            (
+                ["Item", "Description", "Amount"],
+                "`Item` and `Description` are both description columns; rename one",
+            ),
+            (
+                ["Description", "Amount", "Total"],
+                "`Amount` and `Total` are both amount columns; rename one",
+            ),
+        ] {
+            let problem = Columns::recognize(&header(&cells), &words).expect_err("ambiguous");
+            assert_eq!(problem.to_string(), message);
+        }
+        // §3.6's catalog layout, its code column headed `Code`.
         let cols = Columns::recognize(
-            &header(&["Item", "Description", "Rate", "Amount", "Total"]),
-            &Words::default(),
+            &header(&["Code", "Description", "Unit", "Rate", "Amount"]),
+            &words,
         )
         .expect("ok")
         .expect("bill table");
         assert_eq!(
             cols.roles(),
             [
-                Role::Other,
+                Role::Item,
                 Role::Description,
+                Role::Unit,
                 Role::Rate,
-                Role::Amount,
-                Role::Other
+                Role::Amount
             ]
         );
     }

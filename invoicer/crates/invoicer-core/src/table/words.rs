@@ -47,13 +47,7 @@ impl WordList {
     /// Whether `text` is one of the words.
     #[must_use]
     pub fn matches(&self, text: &str) -> bool {
-        self.rank(text).is_some()
-    }
-
-    /// `text`'s position in the list, when it is one of the words.
-    #[must_use]
-    pub fn rank(&self, text: &str) -> Option<usize> {
-        self.0.iter().position(|word| same_word(word, text))
+        self.0.iter().any(|word| same_word(word, text))
     }
 }
 
