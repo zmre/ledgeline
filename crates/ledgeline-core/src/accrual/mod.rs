@@ -692,9 +692,12 @@ pub(crate) fn iso_of(day: i32) -> String {
     crate::parse::iso_ymd((narrow(year), narrow(month), narrow(day)))
 }
 
-/// Whether `date` is a well-formed ISO date that names a real day.
+/// Whether `date` is a well-formed ISO date that names a real day: exactly
+/// `YYYY-MM-DD`, ASCII digits, and a calendar date that exists (`2026-02-30`
+/// is not one). Every date this module writes or takes as `today` is checked
+/// with it.
 #[must_use]
-pub(crate) fn is_iso_date(date: &str) -> bool {
+pub fn is_iso_date(date: &str) -> bool {
     let bytes = date.as_bytes();
     bytes.len() == 10
         && bytes[4] == b'-'
