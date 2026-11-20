@@ -2,14 +2,14 @@
 // keeps it applied as the prefs, the OS colour scheme or the zoom shortcuts
 // change it (plan 39).
 //
-// The prefs are the source of truth (`settings.theme`, `settings.uiScale`, kept
-// in ui-prefs.toml / ledgeline.toml). They arrive by fetch, so the FIRST paint
-// is decided earlier, by the inline boot script in `app.html`, from a small
+// The prefs are the source of truth (Ledgeline: `settings.theme` and
+// `settings.uiScale`, kept in ui-prefs.toml / ledgeline.toml), handed in by the
+// app as an `AppearancePrefs`. They arrive by fetch, so the FIRST paint is
+// decided earlier, by the inline boot script in the app's `app.html`, from a small
 // localStorage cache this module writes: the variant to use under each OS
 // scheme, and the scale. The cache is never read back as a preference — only
 // that boot script reads it, and the prefs overwrite whatever it guessed.
 
-import {settings} from "#lib/stores/settings.svelte.js";
 import {themeFamily, isFamilyId, type VariantId} from "./catalog.js";
 import {resolveTheme} from "./resolve.js";
 import {applyScale} from "./scale.js";
@@ -19,6 +19,19 @@ import {setScaleSink} from "./zoom.svelte.js";
 export const APPEARANCE_CACHE_KEY = "ledgeline.appearance";
 
 const DARK_QUERY = "(prefers-color-scheme: dark)";
+
+/**
+ * The saved appearance prefs, as the app's settings store holds them. Pass the
+ * reactive store itself (Ledgeline passes `settings`): `useAppearance` reads
+ * these inside effects, so they must be reactive reads, and the zoom shortcuts
+ * write `uiScale` back through it.
+ */
+export interface AppearancePrefs {
+    readonly theme: string;
+    uiScale: number;
+    /** False until the saved prefs have loaded; the cache is written only after. */
+    readonly uiPrefsReady: boolean;
+}
 
 /** What the boot script needs to paint the first frame without the catalog. */
 export interface AppearanceCache {
@@ -57,7 +70,7 @@ function writeCache(cache: AppearanceCache): void {
  * Wire the appearance up. Call once, during the root layout's initialisation
  * (it registers effects). Returns nothing; teardown is the effects' own.
  */
-export function useAppearance(root: HTMLElement = document.documentElement): void {
+export function useAppearance(settings: AppearancePrefs, root: HTMLElement = document.documentElement): void {
     // Zoom shortcuts and the View menu step the SAVED scale, so a zoom is a
     // preference change like any other: debounced to the prefs files, and it
     // follows the ledger pin.

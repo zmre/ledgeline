@@ -12,11 +12,13 @@
 // control that reads June — with nothing to say it had failed. Deciding here
 // makes the ordering a tested property instead of four hand-written chains.
 
+import type {DataView} from "#ui/ui/dataView.js";
+
 /** The status every data store in `lib/stores` reports. */
 export type LoadStatus = "idle" | "loading" | "ready" | "error";
 
-/** The branch a surface should render. */
-export type DataView = "error" | "loading" | "data";
+/** The branch a surface should render: `AsyncSection`'s `view` (packages/ui). */
+export type {DataView};
 
 /**
  * Pick the branch for a surface backed by one async store.

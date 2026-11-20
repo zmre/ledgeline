@@ -23,8 +23,8 @@ import {
     type MixedAmount,
 } from "#lib/domain/money.js";
 import type {AmountStyle} from "#lib/domain/types.js";
-import {isNative} from "#lib/native/detect.js";
-import {share} from "#lib/native/share.js";
+import {isNative} from "#ui/native/detect.js";
+import {share} from "#ui/native/share.js";
 import type {HoldingsReport} from "#lib/holdings/types.js";
 import {primaryValue} from "#lib/reports/budgetSummary.js";
 import type {

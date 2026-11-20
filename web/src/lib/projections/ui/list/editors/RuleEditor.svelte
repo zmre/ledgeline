@@ -23,7 +23,7 @@
      the server for the "Writes:" preview. -->
 <script lang="ts">
     import {decToInput, parseAmountInput} from "#lib/api/editMapping.js";
-    import DateInput from "#lib/components/DateInput.svelte";
+    import DateInput from "#ui/components/DateInput.svelte";
     import type {AccountClasses} from "#lib/domain/accountClass.js";
     import type {AmountStyle} from "#lib/domain/types.js";
     import {EM_DASH} from "#lib/format/amounts.js";

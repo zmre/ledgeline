@@ -1,6 +1,6 @@
 /*
  * Default: daisyUI's own `light` and `dark` themes, copied value for value from
- * node_modules/daisyui/theme/{light,dark}.css (palette.test.ts pins them to the
+ * node_modules/daisyui/theme/{light,dark}.css (theme/themeFiles.test.ts pins them to the
  * installed daisyUI). default-dark is the app's original look and the :root
  * fallback when no data-theme is set.
  *

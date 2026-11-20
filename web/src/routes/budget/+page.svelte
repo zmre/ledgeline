@@ -20,7 +20,7 @@
     // is named from the CURRENT controls and built from the HELD report, so those
     // two may only be combined when they answer the same question).
     import {onMount} from "svelte";
-    import FoldedControls from "#lib/components/FoldedControls.svelte";
+    import FoldedControls from "#ui/components/FoldedControls.svelte";
     import {
         activeBudgetPreset,
         budgetParamsToSearch,
@@ -40,8 +40,8 @@
     import BudgetEditor from "#lib/budget/ui/BudgetEditor.svelte";
     import BudgetGaps from "#lib/budget/ui/BudgetGaps.svelte";
     import GoalModal from "#lib/budget/ui/GoalModal.svelte";
-    import AsyncSection from "#lib/components/AsyncSection.svelte";
-    import ErrorToast from "#lib/components/ErrorToast.svelte";
+    import AsyncSection from "#ui/components/AsyncSection.svelte";
+    import ErrorToast from "#ui/components/ErrorToast.svelte";
     import DepthSlider from "#lib/insights/DepthSlider.svelte";
     import {decToInput} from "#lib/api/editMapping.js";
     import {exportBudgetXlsx} from "#lib/export/xlsx.js";

@@ -60,8 +60,8 @@
     import {LineChart, Rule, Tooltip} from "layerchart";
     import {chartColors} from "#lib/format/chartColors.svelte.js";
     import ChartHeading from "./ChartHeading.svelte";
-    import ChartLegend from "./ChartLegend.svelte";
-    import {rootPx} from "#lib/theme/scale.js";
+    import ChartLegend from "#ui/components/ChartLegend.svelte";
+    import {rootPx} from "#ui/theme/scale.js";
     import {axisTickLabelProps, fittedTicks, labelFormatter, remPadding} from "./periodAxis";
 
     let {

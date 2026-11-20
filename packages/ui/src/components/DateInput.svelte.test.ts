@@ -6,7 +6,7 @@
 
 import {fireEvent, render, screen} from "@testing-library/svelte";
 import {describe, expect, it, vi} from "vitest";
-import {datePattern} from "#lib/format/datePattern.js";
+import {datePattern} from "#ui/format/datePattern.js";
 import DateInput from "./DateInput.svelte";
 
 const HIDE_NATIVE = "not-focus:[&::-webkit-datetime-edit]:opacity-0";

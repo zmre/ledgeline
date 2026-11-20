@@ -56,7 +56,7 @@
     } from "../aliasModel";
     import type {AliasEffect, AliasEntry, ConfWritten} from "../importTypes";
     import RenameList from "./RenameList.svelte";
-    import {reveal, revealArm} from "#lib/ui/reveal.js";
+    import {reveal, revealArm} from "#ui/ui/reveal.js";
 
     let {
         effect,

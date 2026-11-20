@@ -2,11 +2,11 @@
      $bindable contract as ImportTabs/ReportTabs, so every subnav in the app
      stays the same thing to look at and to operate. -->
 <script lang="ts">
-    import HScroll from "#lib/components/HScroll.svelte";
+    import HScroll from "#ui/components/HScroll.svelte";
     import {registerKeys} from "#lib/keys/keymap.svelte.js";
     import {PRIORITY} from "#lib/keys/types.js";
     import {accrual} from "#lib/accrual/store.svelte.js";
-    import {isNative} from "#lib/native/detect.js";
+    import {isNative} from "#ui/native/detect.js";
     import {TAB_LABELS, TAB_ORDER, type SettingsTab} from "#lib/settings/params.js";
 
     let {tab = $bindable()}: {tab: SettingsTab} = $props();

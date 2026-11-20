@@ -8,8 +8,8 @@ import {flushSync} from "svelte";
 import {afterEach, beforeEach, describe, expect, it} from "vitest";
 import ExportButton from "#lib/reports/ui/ExportButton.svelte";
 import DismissibleProbe from "#lib/testing/fixtures/DismissibleProbe.svelte";
-import {back, currentActions, openOverlays, resetNativeBridge} from "./bridge.svelte";
-import {NATIVE_CLASS} from "./detect";
+import {back, currentActions, openOverlays, resetNativeBridge} from "#ui/native/bridge.svelte.js";
+import {NATIVE_CLASS} from "#ui/native/detect.js";
 
 function setNative(on: boolean): void {
     document.documentElement.classList.toggle(NATIVE_CLASS, on);

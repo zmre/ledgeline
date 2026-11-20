@@ -39,8 +39,8 @@
     // was on screen, unsaved edits included, is still in `scenarioStore`
     // (plan 33 D3).
     import {onMount} from "svelte";
-    import AsyncSection from "#lib/components/AsyncSection.svelte";
-    import FoldedControls from "#lib/components/FoldedControls.svelte";
+    import AsyncSection from "#ui/components/AsyncSection.svelte";
+    import FoldedControls from "#ui/components/FoldedControls.svelte";
     import DepthSlider from "#lib/insights/DepthSlider.svelte";
     import {fileStore} from "#lib/projections/fileStore.svelte.js";
     import {defaultBlocker, defaultConflict, effectiveDefault, openingSteps, type OpeningSource} from "#lib/projections/opening.js";

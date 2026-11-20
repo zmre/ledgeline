@@ -5,7 +5,7 @@
 
 import {fireEvent, render, screen} from "@testing-library/svelte";
 import {describe, expect, it} from "vitest";
-import {tipPosition} from "#lib/ui/anchoredPopup.js";
+import {tipPosition} from "#ui/ui/anchoredPopup.js";
 import InfoTip from "./InfoTip.svelte";
 
 const HELP = {label: "DSO", title: "DSO — Days Sales Outstanding", text: "How many days customers take to pay you.", formula: "receivables ÷ revenue × days"};

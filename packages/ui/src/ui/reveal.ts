@@ -39,7 +39,7 @@
 // a component test could not check it. `toBeInViewport` in the e2e suite checks
 // the composed result.
 import {getContext, setContext} from "svelte";
-import {prefersReducedMotion} from "#lib/review/ui/motion.js";
+import {prefersReducedMotion} from "./motion";
 
 /** What of a viewport-relative rect the arithmetic needs. */
 export interface RevealBox {

@@ -35,11 +35,11 @@
     import type {AccountClasses} from "#lib/domain/accountClass.js";
     import type {AmountStyle, ISODate} from "#lib/domain/types.js";
     import AccountInput from "#lib/journal/edit/AccountInput.svelte";
-    import DateInput from "#lib/components/DateInput.svelte";
+    import DateInput from "#ui/components/DateInput.svelte";
     import type {RenderProjectionBody} from "#lib/api/native.js";
     import {registerKeys} from "#lib/keys/keymap.svelte.js";
     import {PRIORITY} from "#lib/keys/types.js";
-    import {listCursor} from "#lib/ui/listCursor.svelte.js";
+    import {listCursor} from "#ui/ui/listCursor.svelte.js";
     import {
         canDisable,
         ENTRY_FILTERS,

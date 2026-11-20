@@ -32,7 +32,7 @@
      beside it in every call site. Each call site centres label and icon with
      `items-center`; this keeps the icon from carrying its own baseline. -->
 <script lang="ts">
-    import {portal, tipPosition, type TipPlacement, liveViewport} from "#lib/ui/anchoredPopup.js";
+    import {portal, tipPosition, type TipPlacement, liveViewport} from "#ui/ui/anchoredPopup.js";
 
     let {
         label,

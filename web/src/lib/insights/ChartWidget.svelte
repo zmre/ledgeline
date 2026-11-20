@@ -13,9 +13,9 @@
     import {LineChart, PieChart, Tooltip} from "layerchart";
     import {decodeChart} from "#lib/api/journalViewDecode.js";
     import {LedgelineApi} from "#lib/api/native.js";
-    import ChartLegend from "#lib/components/ChartLegend.svelte";
+    import ChartLegend from "#ui/components/ChartLegend.svelte";
     import {axisTickLabelProps, fittedTicks, labelFormatter, remPadding} from "#lib/components/periodAxis.js";
-    import {rootPx} from "#lib/theme/scale.js";
+    import {rootPx} from "#ui/theme/scale.js";
     import type {RootCategory} from "#lib/domain/accounts.js";
     import {DEFAULT_AMOUNT_STYLE} from "#lib/format/amounts.js";
     import {chartColors} from "#lib/format/chartColors.svelte.js";

@@ -1,6 +1,6 @@
 <!-- Report tab strip (WP-07): daisyUI tabs, one per report. -->
 <script lang="ts">
-    import HScroll from "#lib/components/HScroll.svelte";
+    import HScroll from "#ui/components/HScroll.svelte";
     import {registerKeys} from "#lib/keys/keymap.svelte.js";
     import {PRIORITY} from "#lib/keys/types.js";
     import {TAB_LABELS, TAB_ORDER, type ReportTab} from "./params";

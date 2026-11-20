@@ -9,7 +9,7 @@
     import type {AmountStyle} from "#lib/domain/types.js";
     import type {SaasReport} from "#lib/reports/saasTypes.js";
     import {settings} from "#lib/stores/settings.svelte.js";
-    import InfoTip from "#lib/components/InfoTip.svelte";
+    import InfoTip from "#ui/components/InfoTip.svelte";
     import ChartPanel from "../ChartPanel.svelte";
     import {baseMetric, burnBand, deltaLine, fmt, fmtPct, fmtRatio, growthLine, pointsLine} from "./format";
     import {METRIC_HELP} from "./metricHelp";

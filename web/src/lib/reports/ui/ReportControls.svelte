@@ -2,7 +2,7 @@
      Mutates fields of the bound params object; date edits are ignored until
      the input holds a full valid ISO date (type=date emits "" while clearing). -->
 <script lang="ts">
-    import FoldedControls from "#lib/components/FoldedControls.svelte";
+    import FoldedControls from "#ui/components/FoldedControls.svelte";
     import DepthSlider from "#lib/insights/DepthSlider.svelte";
     import {bsMultiPeriod, controlsSummary, intervalLabel, MAX_COUNT, rangeKeys, TAB_CONTROLS, type ReportParams} from "./params";
 

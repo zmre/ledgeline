@@ -12,7 +12,7 @@
     import type {StagedOverride, StagedRef} from "../reviewTypes";
     import {refKey} from "../reviewModel";
     import ReviewIcon from "#lib/review/ui/ReviewIcon.svelte";
-    import {reveal, revealArm} from "#lib/ui/reveal.js";
+    import {reveal, revealArm} from "#ui/ui/reveal.js";
 
     let {
         overrideCount,

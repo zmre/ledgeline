@@ -11,7 +11,7 @@
      screen with nothing to say so (FE-5). -->
 <script lang="ts">
     import {journal} from "#lib/stores/journal.svelte.js";
-    import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import AsyncSection from "#ui/components/AsyncSection.svelte";
     import type {AmountStyle} from "#lib/domain/types.js";
     import {today} from "#lib/reports/periods.js";
     import {subscriptions} from "#lib/stores/subscriptions.svelte.js";

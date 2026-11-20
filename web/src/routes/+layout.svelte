@@ -23,17 +23,17 @@
         registerNativeOverlay,
         type NativeAction,
         type SectionId,
-    } from "#lib/native/bridge.svelte.js";
-    import {isNative} from "#lib/native/detect.js";
+    } from "#ui/native/bridge.svelte.js";
+    import {isNative} from "#ui/native/detect.js";
     import {localToday} from "#lib/stores/filters.svelte.js";
     import {journal, startPolling} from "#lib/stores/journal.svelte.js";
     import {problems} from "#lib/stores/problems.svelte.js";
     import {refreshEverything} from "#lib/stores/refreshAll.js";
     import {onServerReady} from "#lib/stores/serverWatch.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
-    import {useAppearance} from "#lib/theme/appearance.svelte.js";
-    import {listenForMenuZoom} from "#lib/theme/zoom.svelte.js";
-    import {connectionLabel, connectionTooltip, type ConnState} from "#lib/ui/connectionLabel.js";
+    import {useAppearance} from "#ui/theme/appearance.svelte.js";
+    import {listenForMenuZoom} from "#ui/theme/zoom.svelte.js";
+    import {connectionLabel, connectionTooltip, type ConnState} from "#ui/ui/connectionLabel.js";
 
     let {children} = $props();
 
@@ -74,7 +74,7 @@
     // OS colour scheme, with the zoom shortcuts stepping the saved scale. The
     // keyboard half of zoom is in `globalLayer()` above; this is the desktop
     // View menu's half, which arrives as a `ledgeline:zoom` event on `window`.
-    useAppearance();
+    useAppearance(settings);
     // Saves still waiting on their debounce go out as the page is hidden or
     // unloaded (a reload, a closed tab), with a request that outlives it.
     $effect(() => settings.flushUiPrefsWhenLeaving());

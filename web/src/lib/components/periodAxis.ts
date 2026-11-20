@@ -15,7 +15,7 @@
 // own copy of both functions, character for character. They live here so a
 // third chart cannot invent a seventh spacing.
 
-import {rootPx} from "#lib/theme/scale.js";
+import {rootPx} from "#ui/theme/scale.js";
 import {textMeasurer} from "./textWidth";
 
 /**

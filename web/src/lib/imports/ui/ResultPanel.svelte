@@ -16,11 +16,11 @@
     //
     // Find Matches (plan 35 D9 "Import") is offered here too, scoped to the
     // transactions the commit appended, when any of them has a proposed partner.
-    import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import AsyncSection from "#ui/components/AsyncSection.svelte";
     import {importSince} from "#lib/matching/model.js";
     import ImportMatches from "#lib/matching/ui/ImportMatches.svelte";
     import {reorderOffer, writtenLines} from "../importModel";
-    import {reveal, revealArm} from "#lib/ui/reveal.js";
+    import {reveal, revealArm} from "#ui/ui/reveal.js";
     import type {CommitResult} from "../importTypes";
 
     let {

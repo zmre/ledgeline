@@ -10,11 +10,11 @@
     // "Use for this ledger only" pins the key in the ledger's ledgeline.toml —
     // the one place the app may create that file, because you asked it to.
     import {settings, type ThemeId} from "#lib/stores/settings.svelte.js";
-    import {systemPrefersDark} from "#lib/theme/appearance.svelte.js";
-    import {THEME_FAMILIES, themeVariant, type ThemeFamily, type ThemeVariant} from "#lib/theme/catalog.js";
-    import {resolveTheme} from "#lib/theme/resolve.js";
-    import {DEFAULT_SCALE, SCALE_STEPS} from "#lib/theme/scale.js";
-    import {zoomIn, zoomOut, zoomReset} from "#lib/theme/zoom.svelte.js";
+    import {systemPrefersDark} from "#ui/theme/appearance.svelte.js";
+    import {THEME_FAMILIES, themeVariant, type ThemeFamily, type ThemeVariant} from "#ui/theme/catalog.js";
+    import {resolveTheme} from "#ui/theme/resolve.js";
+    import {DEFAULT_SCALE, SCALE_STEPS} from "#ui/theme/scale.js";
+    import {zoomIn, zoomOut, zoomReset} from "#ui/theme/zoom.svelte.js";
 
     const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
     const mod = isMac ? "⌘" : "Ctrl+";

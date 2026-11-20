@@ -9,17 +9,18 @@
      control reading June — with nothing to say it had failed.
 
      The order below is the fix, and now it is structural: a surface cannot get
-     it wrong without editing this file. `dataView` (lib/stores/loadState.ts)
-     still decides WHICH branch; this only renders it. Error outranks stale data
-     deliberately — a surface that cannot honour the current request must say
-     so, not keep quietly serving the previous one.
+     it wrong without editing this file. The app's `dataView` (Ledgeline:
+     web/src/lib/stores/loadState.ts) still decides WHICH branch; this only
+     renders it. Error outranks stale data deliberately — a surface that cannot
+     honour the current request must say so, not keep quietly serving the
+     previous one.
 
      `value` is passed to the data snippet rather than read from a store so the
      caller gets non-null narrowing without re-testing it. -->
 <script lang="ts" generics="T">
     import type {Snippet} from "svelte";
-    import {NativeApiUnavailableError} from "#lib/api/native.js";
-    import type {DataView} from "#lib/stores/loadState.js";
+    import {NativeApiUnavailableError} from "#ui/api/client.js";
+    import type {DataView} from "#ui/ui/dataView.js";
 
     let {
         view,

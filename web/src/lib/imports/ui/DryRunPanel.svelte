@@ -45,7 +45,7 @@
     // `.alert` is `display:grid; grid-auto-flow:column` and lays its children out
     // as narrow side-by-side columns without it. `routes/alertStacking.test.ts`
     // enforces that across every component.
-    import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import AsyncSection from "#ui/components/AsyncSection.svelte";
     import {balanceVerdict, canWrite, conflictDetail, idMatchesSummary, skippedWarning} from "../importModel";
     import type {AliasEntry, ConfWritten, DryRunResult} from "../importTypes";
     import type {StagedReviewProps} from "../stagedReview";

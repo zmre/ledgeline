@@ -33,7 +33,7 @@
     import {dismissible} from "#lib/keys/dismissible.js";
     import {registerKeys} from "#lib/keys/keymap.svelte.js";
     import {PRIORITY, type Binding} from "#lib/keys/types.js";
-    import {registerNativeActions, type NativeAction} from "#lib/native/bridge.svelte.js";
+    import {registerNativeActions, type NativeAction} from "#ui/native/bridge.svelte.js";
     import {rowMarker, type RowMarker} from "#lib/review/card.js";
     import {REVIEW_BUTTON} from "#lib/review/ui/buttons.js";
     import {reviewLaunch} from "#lib/review/ui/launch.svelte.js";
@@ -49,13 +49,13 @@
     import RecognitionButton from "#lib/accrual/ui/RecognitionButton.svelte";
     import {problems} from "#lib/stores/problems.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
-    import {rootPx} from "#lib/theme/scale.js";
-    import {lazyListCursor} from "#lib/ui/listCursor.svelte.js";
+    import {rootPx} from "#ui/theme/scale.js";
+    import {lazyListCursor} from "#ui/ui/listCursor.svelte.js";
     import CalendarView from "./CalendarView.svelte";
     import ColumnMenu from "./ColumnMenu.svelte";
     import {calendarFits, monthOf} from "./calendarModel";
     import {markReviewed} from "#lib/review/markReviewed.js";
-    import {belowMd} from "#lib/ui/appWidth.svelte.js";
+    import {belowMd} from "#ui/ui/appWidth.svelte.js";
     import type {SwipeAction} from "./swipe";
     import {swipeOpen} from "./swipeOpen.svelte";
     import RecognitionGroupRow from "./RecognitionGroupRow.svelte";

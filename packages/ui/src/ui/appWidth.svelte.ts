@@ -10,7 +10,7 @@
 // ResizeObserver): callers treat "unknown" as the desktop layout, so nothing
 // changes for tests or for a browser that cannot say.
 
-import {rootPx} from "#lib/theme/scale.js";
+import {rootPx} from "#ui/theme/scale.js";
 
 /** The `md` breakpoint, in rem (app.css: `@custom-variant md`). */
 export const MD_REM = 48;

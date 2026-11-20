@@ -16,14 +16,14 @@
     import {onMount} from "svelte";
     import {afterNavigate, goto} from "$app/navigation";
     import {resolve} from "$app/paths";
-    import ErrorToast from "#lib/components/ErrorToast.svelte";
+    import ErrorToast from "#ui/components/ErrorToast.svelte";
     import {importStore} from "#lib/imports/importStore.svelte.js";
     import {aliasesRedirect, defaultImportParams, paramsToSearch, searchToParams, type ImportParams} from "#lib/imports/params.js";
     import {rulesStore} from "#lib/imports/rulesStore.svelte.js";
     import EditRulesPanel from "#lib/imports/ui/EditRulesPanel.svelte";
     import ImportTabs from "#lib/imports/ui/ImportTabs.svelte";
     import NewTransactionsPanel from "#lib/imports/ui/NewTransactionsPanel.svelte";
-    import {isNative} from "#lib/native/detect.js";
+    import {isNative} from "#ui/native/detect.js";
     import {journal} from "#lib/stores/journal.svelte.js";
     import {loadJournalWhenReady, onServerReady} from "#lib/stores/serverWatch.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";

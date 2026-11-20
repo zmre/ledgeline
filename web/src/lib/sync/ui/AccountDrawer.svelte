@@ -8,7 +8,7 @@
 <script lang="ts">
     import {untrack} from "svelte";
     import {goto} from "$app/navigation";
-    import DateInput from "#lib/components/DateInput.svelte";
+    import DateInput from "#ui/components/DateInput.svelte";
     import {importStore} from "#lib/imports/importStore.svelte.js";
     import AccountInput from "#lib/journal/edit/AccountInput.svelte";
     import {dismissible} from "#lib/keys/dismissible.js";

@@ -13,8 +13,8 @@
 // back button closes first: it registers `onDismiss` with the bridge, so every
 // overlay built on this action gets back-to-close without a line of its own.
 
-import {addOverlay} from "#lib/native/bridge.svelte.js";
-import {isNative} from "#lib/native/detect.js";
+import {addOverlay} from "#ui/native/bridge.svelte.js";
+import {isNative} from "#ui/native/detect.js";
 import {FOCUSABLE} from "./target";
 
 export interface DismissibleOptions {
