@@ -172,7 +172,7 @@ A path you type into the file by hand isn't checked until Ledgeline runs it. If 
 | `budgetGapsOpen` | `false` | The Budget tab's "not budgeted" section |
 | `startupMoreOpen` | `false` | The "More metrics" list under the startup figures |
 | `holdingsPieDimension` | `"holding"` | `"holding"`, `"assetClass"`, `"sector"`, `"industry"`, `"securityType"`, `"category"` or `"risk"` |
-| `lastProjectionId` | none | The scenario file the Projections tab reopens, such as `"plans/series-a.journal"`. `""` means none |
+| `lastProjectionId` | none | The scenario file the Projections tab reopens, such as `"plans/series-a.journal"`. `""` means none. The path is relative to the journal's folder, so in `ui-prefs.toml` Ledgeline saves it per ledger, under `[ledgers."<path to main journal>"]`. If it is set at the top level, Ledgeline ignores it |
 | `benchmarks` | `[]` | Ticker symbols such as `"SPY"`, at most 32 |
 | `reviewRecentLimit` | `50` | 1 to 1000 |
 | `reviewMaxDays` | `365` | 0 to 36500. 0 means no limit |

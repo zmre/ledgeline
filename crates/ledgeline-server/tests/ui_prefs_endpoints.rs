@@ -227,12 +227,75 @@ async fn a_save_goes_to_the_global_file_and_never_creates_ledgeline_toml() {
 
     // A second save edits the same file, from either ledger.
     tree.open("b");
-    let (status, _) = tree.patch(json!({"lastProjectionId": null})).await;
+    let (status, _) = tree.patch(json!({"reviewMarkers": false})).await;
     assert_eq!(status, StatusCode::OK);
     let text = tree.read(GLOBAL).unwrap();
-    assert!(text.contains("lastProjectionId = \"\""), "{text}");
+    assert!(text.contains("reviewMarkers = false"), "{text}");
     assert!(text.contains("matchWindow = 20"), "{text}");
     assert_eq!(settings_files(&tree), [GLOBAL]);
+}
+
+/// The last-opened projection scenario is a file id relative to ONE journal's
+/// directory, so `ui-prefs.toml` keeps it per ledger: opening another ledger
+/// (or a development build opening a fixture) must not hand it a file that
+/// is not there.
+#[tokio::test]
+async fn the_last_projection_is_remembered_per_ledger() {
+    let tree = Tree::new();
+    let (status, body) = tree
+        .patch(json!({"lastProjectionId": "projection-a.journal"}))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["prefs"]["lastProjectionId"], "projection-a.journal");
+    assert_no_absolute_path(&tree, &body);
+
+    tree.open("b");
+    let (_, body) = tree.get().await;
+    assert_eq!(
+        body["prefs"]["lastProjectionId"],
+        Value::Null,
+        "not ledger a's"
+    );
+    let (status, body) = tree
+        .patch(json!({"lastProjectionId": "projection-b.journal"}))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["prefs"]["lastProjectionId"], "projection-b.journal");
+
+    tree.open("a");
+    let (_, body) = tree.get().await;
+    assert_eq!(body["prefs"]["lastProjectionId"], "projection-a.journal");
+
+    let text = tree.read(GLOBAL).unwrap();
+    let document: toml_edit::DocumentMut = text.parse().expect("valid TOML");
+    assert!(document.get("lastProjectionId").is_none(), "{text}");
+    let ledgers = document["ledgers"].as_table().expect("a ledgers table");
+    assert_eq!(ledgers.len(), 2, "{text}");
+    assert!(!text.contains("[ledgers]\n"), "no empty header: {text}");
+    assert_eq!(settings_files(&tree), [GLOBAL]);
+}
+
+/// A top-level `lastProjectionId` is from before it was kept per ledger and
+/// may name another ledger's file: it is ignored, and the first save drops it.
+#[tokio::test]
+async fn a_top_level_last_projection_is_ignored_and_dropped_on_save() {
+    let tree = Tree::new();
+    tree.write(
+        GLOBAL,
+        "matchWindow = 12\nlastProjectionId = \"elsewhere.journal\"\n",
+    );
+    let (_, body) = tree.get().await;
+    assert_eq!(body["prefs"]["lastProjectionId"], Value::Null);
+    assert_eq!(body["prefs"]["matchWindow"], 12);
+    assert_eq!(body["issues"], json!([]));
+
+    let (status, _) = tree
+        .patch(json!({"lastProjectionId": "projection-a.journal"}))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let text = tree.read(GLOBAL).unwrap();
+    assert!(!text.contains("elsewhere.journal"), "{text}");
+    assert!(text.contains("matchWindow = 12"), "{text}");
 }
 
 #[tokio::test]
