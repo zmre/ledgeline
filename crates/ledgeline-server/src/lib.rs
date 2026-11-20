@@ -33,17 +33,22 @@
 //! immediately. A state built without a path (the oneshot test helper [`app`])
 //! has no editor, so the edit endpoints report that editing is disabled.
 //!
-//! ACCESS CONTROL lives in [`security`] and is applied by
-//! [`router_with_security`]: a per-process bearer token on every wire and `/api`
+//! ACCESS CONTROL lives in the shared shell ([`ledgeline_shell::security`])
+//! and is applied by [`router_with_security`]: a per-process bearer token on every wire and `/api`
 //! route, a `Host` guard, an opt-in exact-origin CORS allowlist, and the response
 //! security headers. [`app`] and [`router_with_state`] deliberately build the
 //! router WITHOUT any of it, for the in-process test harnesses only — read the
-//! threat model on [`security`] before putting either on a real socket.
+//! threat model on [`ledgeline_shell::security`] before putting either on a
+//! real socket.
+//!
+//! The shell pieces — the token and `Host` guard, the SPA embed, the app's
+//! directories and the recents store — are [`ledgeline_shell`]'s, shared with
+//! every app built on it, and re-exported here under the paths this crate has
+//! always had. Ledgeline describes itself to them once, in [`APP`].
 
 mod account_api;
 mod accrual_api;
 mod alias_api;
-mod app_dirs;
 mod auto_api;
 mod auto_prices;
 mod auto_wire;
@@ -67,15 +72,12 @@ mod profiles_api;
 mod projection_cache;
 mod projections_api;
 mod qb_journal_api;
-pub mod recents;
 mod redact;
 mod reports_api;
 mod review_api;
 mod review_rules_api;
 mod rules_api;
-mod security;
 mod sidecar;
-mod spa;
 mod stage;
 mod sync;
 mod ui_prefs;
@@ -90,31 +92,92 @@ use axum::{
     Router,
     body::{Body, Bytes},
     extract::State,
-    http::{HeaderMap, HeaderValue, StatusCode, header},
-    middleware,
+    http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use ledgeline_core::vault::{Vault, VaultPath};
 use ledgeline_core::{EditError, Journal, JournalEditor, wire};
+use ledgeline_shell::AppIdentity;
+use rust_embed::RustEmbed;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use tower_http::CompressionLevel;
-use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::compression::CompressionLayer;
-use tower_http::set_header::SetResponseHeaderLayer;
+
+// The shell's modules, at the paths this crate's own modules (`crate::security`,
+// `crate::app_dirs`) and its users (`ledgeline::recents`) have always used.
+pub use ledgeline_shell::recents;
+use ledgeline_shell::{app_dirs, security, spa};
 
 pub use app_dirs::{AppDirs, CONFIG_DIR_ENV, HLEDGER_ENV, IGNORE_USER_CONF_ENV};
 pub use location::JournalLocation;
 pub use new_ledger_api::{DesktopHost, SAMPLE_JOURNAL, current_sample_journal};
 // The switch the e2e and live-contract harnesses set so a headless server
 // leaves UI preferences to the browser (see `ui_prefs`).
-pub use security::{
-    AccessToken, ProcessToken, Security, SecurityError, TOKEN_ENV, token_from_env_or_random,
-    token_init_script,
+pub use security::{AccessToken, ProcessToken, Security, SecurityError};
+
+/// Who Ledgeline is, to the shared shell: its names, and the globals its SPA
+/// reads. The globals are the SPA's contract (`web/src/lib/api/`), so they
+/// never change.
+pub static APP: AppIdentity = AppIdentity {
+    name: "Ledgeline",
+    bundle_id: "com.zmre.ledgeline",
+    log_prefix: "ledgeline",
+    token_env: "LEDGELINE_TOKEN",
+    token_global: "__LEDGELINE_TOKEN__",
+    embedded_global: "__LEDGELINE_EMBEDDED__",
 };
+
+/// Environment variable holding a caller-chosen token. Set it when a
+/// cross-origin client (vite dev, the Playwright e2e harness) has to know the
+/// token before the server starts; leave it unset and one is generated.
+pub const TOKEN_ENV: &str = APP.token_env;
+
+/// `$LEDGELINE_TOKEN` when set and non-empty, otherwise a fresh random token
+/// ([`security::token_from_env_or_random`]).
+///
+/// # Errors
+/// [`SecurityError::MalformedEnvToken`] if the environment value is not a
+/// well-formed token, or [`SecurityError::Random`] if entropy is unavailable.
+pub fn token_from_env_or_random() -> Result<ProcessToken, SecurityError> {
+    security::token_from_env_or_random(TOKEN_ENV)
+}
+
+/// The initialization script that hands a WebView Ledgeline's access token
+/// (`window.__LEDGELINE_TOKEN__`), on `origin` only — for the desktop GUI and
+/// the iOS host ([`security::token_init_script`]).
+#[must_use]
+pub fn token_init_script(origin: &str, token: &AccessToken) -> String {
+    security::token_init_script(&APP, origin, token)
+}
+
+/// The built SPA, embedded from a directory INSIDE this crate and served by the
+/// shell ([`ledgeline_shell::spa`]).
+///
+/// `build.rs` populates `spa/` — mirroring `web/build` in a workspace checkout,
+/// leaving the shipped copy alone in a published crate, and writing a
+/// placeholder when there is neither. It is deliberately not
+/// `$CARGO_MANIFEST_DIR/../../web/build`: `cargo package` refuses to include
+/// files outside the package root, so pointing at the workspace path would make
+/// this crate unpublishable and `cargo install ledgeline` would serve the
+/// placeholder page to every user. See `build.rs` for the three cases.
+#[derive(RustEmbed)]
+#[folder = "$CARGO_MANIFEST_DIR/spa"]
+struct SpaAssets;
+
+/// Request headers Ledgeline's client sends beyond the standard ones, which an
+/// `--allow-origin` dev SPA must be allowed to send too: a statement upload
+/// (`POST /api/import/stage`) carries its file name in one, and which account
+/// of a multi-account file to read in the other.
+fn cors_headers() -> [HeaderName; 2] {
+    [
+        HeaderName::from_static(import_api::FILENAME_HEADER),
+        HeaderName::from_static(import_api::STATEMENT_HEADER),
+    ]
+}
 pub use ui_prefs::{BootAppearance, UI_PREFS_IN_BROWSER_ENV, boot_appearance};
 // `ledgeline import` (WP-16 Phase 3). The binary is a SEPARATE crate from this
 // library, so the `pub(crate)` the rest of `import_api` uses would not reach it —
@@ -1337,7 +1400,7 @@ pub fn router_with_state(state: AppState) -> Router {
 /// token, and with it full read/write on the user's journal. `--allow-origin`
 /// is meant to open the API to a dev SPA; it must not also publish the
 /// credential. (The shell no longer carries the token at all — see
-/// `spa.rs` — but CORS stays off it regardless.)
+/// [`ledgeline_shell::spa`] — but CORS stays off it regardless.)
 ///
 /// The documented cross-origin flows do not need the shell: `just dev` and
 /// `web/playwright.config.ts` both serve the SPA from vite/`preview` and pin the
@@ -1775,32 +1838,18 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         .route("/api/new-ledger/sample", post(new_ledger_api::sample))
         // Plan 43 bank sync: every `/api/sync/*` route, token-gated with the
         // rest (they read and write credentials and the journal).
-        .merge(sync::routes())
-        // Token-gate exactly the routes registered above. `route_layer` skips
-        // the fallback, which is what lets the browser fetch the shell before it
-        // has any credential to present.
-        .route_layer(middleware::from_fn_with_state(
-            security.clone(),
-            security::token_guard,
-        ));
+        .merge(sync::routes());
 
-    // CORS for the allowlisted origins, over exactly the routes above. A second
-    // `route_layer` wraps the first, so this ends up OUTSIDE the token guard —
-    // which is required, because a preflight carries no `Authorization` and must
-    // be answered rather than refused.
-    //
-    // `route_layer`, never `layer`: see this function's docs. The default
-    // posture is no CORS layer at all, so a browser refuses to hand any
-    // cross-origin page our responses (SEC-1).
-    let router = match security.cors_layer() {
-        Some(cors) => router.route_layer(cors),
-        None => router,
-    };
+    // Token-gate exactly the routes registered above, and put CORS for the
+    // allowlisted origins over them — both `route_layer`s, so they skip the
+    // fallback, which is what lets the browser fetch the shell before it has
+    // any credential to present. See `security::protect` for the order.
+    let router = security::protect(router, &security, &cors_headers());
 
     // Everything else (the SPA shell, its embedded assets, and client-side deep
     // links) is served same-origin ONLY; the explicit routes above win, and
     // neither `route_layer` above reaches this.
-    let router = router.fallback(spa::fallback);
+    let router = router.fallback(spa::fallback::<SpaAssets>(&APP));
 
     // `Fastest` (gzip level 1), not the default level 6: the /transactions body
     // is hundreds of megabytes and this server's usual peer is the SPA on the
@@ -1810,27 +1859,9 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
     // client affordable.
     let router = router.layer(CompressionLayer::new().quality(CompressionLevel::Fastest));
 
-    router
-        .layer(middleware::from_fn_with_state(
-            security,
-            security::host_guard,
-        ))
-        .layer(CatchPanicLayer::new())
-        .layer(SetResponseHeaderLayer::overriding(
-            header::X_CONTENT_TYPE_OPTIONS,
-            HeaderValue::from_static("nosniff"),
-        ))
-        .layer(SetResponseHeaderLayer::overriding(
-            header::REFERRER_POLICY,
-            HeaderValue::from_static("no-referrer"),
-        ))
-        // `if_not_present` so the SPA shell's own policy — which additionally
-        // hashes the inline scripts it just rendered — is left alone.
-        .layer(SetResponseHeaderLayer::if_not_present(
-            header::CONTENT_SECURITY_POLICY,
-            security::base_csp(),
-        ))
-        .with_state(state)
+    // The Host guard, the panic catcher and the security headers, over
+    // everything (see `security::harden` for the order).
+    security::harden(router, security).with_state(state)
 }
 
 /// Serve one precomputed body from the current snapshot as

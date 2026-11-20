@@ -191,7 +191,8 @@ Two Linux-specific traps live in `spaBuild`, both already handled:
 
 ## The embedded SPA and the Nix sandbox
 
-`crates/ledgeline-server/src/spa.rs` embeds `crates/ledgeline-server/spa/`:
+`crates/ledgeline-server/src/lib.rs` embeds `crates/ledgeline-server/spa/` and
+hands it to the shared shell (`ledgeline_shell::spa`) to serve:
 
 ```rust
 #[derive(RustEmbed)]
@@ -331,7 +332,8 @@ double-click went to the editor. Claiming the alias keeps Ledgeline offered.
 Rank only breaks ties between claimants, and an editor claiming the alias at
 `Owner` too leaves the default to chance. The user's own choice outranks every
 claim: **Ledgeline ▸ Make Ledgeline the Default for Journal Files**
-(`gui_file_assoc.rs`) re-registers the running bundle, then records Ledgeline as
+(`DefaultHandler` in `crates/ledgeline-shell/src/gui/file_assoc.rs`, set up in
+the server's `gui.rs`) re-registers the running bundle, then records Ledgeline as
 the user's handler for each `Owner`-ranked type (the entry Finder's Get Info ▸
 **Change All…** writes) and reads it back. A unit test keeps the plist's
 `Owner` types and the command's list identical.
@@ -344,7 +346,7 @@ mdls -name kMDItemContentType path/to/file.journal   # Spotlight's cached type
 
 macOS does **not** pass the document in `argv`: it calls
 `application:openURLs:`, which tao surfaces as `Event::Opened { urls }` and
-`gui.rs` handles. That event lands *after* startup has already parsed a journal
+the server's `gui.rs` handles. That event lands *after* startup has already parsed a journal
 from `$LEDGELINE_FIXTURE`/recents, so the app may briefly show the previous
 journal before switching; re-opening the already-open journal is skipped.
 

@@ -4,6 +4,7 @@
 [workspace]
 members = [
     "crates/ledgeline-core",
+    "crates/ledgeline-shell",
     "crates/ledgeline-server",
     "crates/ledgeline-ffi",
     "invoicer/crates/invoicer-core",
@@ -35,6 +36,8 @@ itertools = "0.15"
 # duplicated. `scripts/release.sh` owns keeping it in step, and
 # `scripts/release.sh check` (a CI job) fails if it ever drifts.
 ledgeline-core = { path = "crates/ledgeline-core", version = "0.2.3" }
+# The same arrangement for the shell `ledgeline` (and the invoicer) build on.
+ledgeline-shell = { path = "crates/ledgeline-shell", version = "0.2.3" }
 
 # Plan 30: hledger queries (`= QUERY` auto-posting rules) are case-insensitive
 # infix regular expressions. `regex` is BurntSushi's, pure Rust (so it builds

@@ -16,12 +16,13 @@
 //! * the desktop builds one with [`AppDirs::from_env`] — exactly the lookups
 //!   those modules used to make, unchanged — and threads it through;
 //! * a sandboxed host builds one from its own container paths
-//!   ([`AppDirs::under`], or the fields directly) and hands it to
-//!   [`AppState::with_app_dirs`](crate::AppState::with_app_dirs).
+//!   ([`AppDirs::under`], or the fields directly) and hands it to the app's
+//!   state (Ledgeline's `AppState::with_app_dirs`).
 //!
-//! This file depends on nothing in the crate but the standard library, `dirs`
-//! and `ledgeline_core`, because `tests/prefs.rs` compiles it in by `#[path]`
-//! alongside `prefs.rs` and `hledger.rs`.
+//! Every app on the shell shares ONE config directory (`ledgeline/`): the
+//! global `ui-prefs.toml` and `recent.json` are deliberately common, so a
+//! theme or a recently opened ledger follows the user from one app to the
+//! other. An app's own settings go in its own keys or tables inside them.
 
 use ledgeline_core::hledger_conf::UserConfDirs;
 use std::path::{Path, PathBuf};

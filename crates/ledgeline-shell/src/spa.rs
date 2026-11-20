@@ -1,16 +1,17 @@
-//! Serve the built SvelteKit SPA same-origin, in-process.
+//! Serve an app's built SvelteKit SPA same-origin, in-process.
 //!
-//! The SPA is embedded from `web/build` via `rust-embed` (release builds bake
-//! the bytes into the binary; debug builds read them from disk for fast SPA
-//! iteration). It is served from the same axum app — and therefore the same
-//! origin — as the wire (`/version`, `/transactions`, …) and `/api/*` routes,
-//! which is what lets the packaged GUI skip the cross-origin setup modal.
+//! The app embeds its SPA with `rust-embed` (release builds bake the bytes
+//! into the binary; debug builds read them from disk for fast SPA iteration)
+//! and hands the type to [`fallback`]. It is served from the same axum app —
+//! and therefore the same origin — as the app's API routes (for Ledgeline the
+//! wire `/version`, `/transactions`, … and `/api/*`), which is what lets the
+//! packaged GUI skip the cross-origin setup modal.
 //!
 //! Routing contract (installed as the router's `fallback`, so the explicit wire
 //! and `/api/*` routes always win):
 //! - `/` and `/index.html` → the SPA shell (`index.html`), with a small marker
 //!   script injected so the SPA knows it is running embedded and should use
-//!   same-origin relative URLs.
+//!   same-origin relative URLs ([`AppIdentity::embedded_global`]).
 //!
 //! The shell is deliberately the one thing served WITHOUT a token: the browser
 //! has nothing to present until it has loaded the page. So it must never CARRY
@@ -18,7 +19,7 @@
 //! process's `curl`, and when the shell embedded the token it handed it to
 //! anything on the machine that could reach loopback. The token now reaches the
 //! SPA out of band: the GUI injects it with wry's initialization script
-//! (`gui.rs`), and `--server` prints a launch URL carrying it in the `#token=`
+//! ([`security::token_init_script`]), and `--server` prints a launch URL carrying it in the `#token=`
 //! fragment, which a browser never sends. See the threat model in
 //! [`crate::security`].
 //! - a real embedded asset path (e.g. `/_app/immutable/...`, `/robots.txt`) →
@@ -36,42 +37,42 @@ use axum::http::{HeaderValue, StatusCode, Uri, header};
 use axum::response::{Html, IntoResponse, Response};
 use rust_embed::RustEmbed;
 
-use crate::security;
-
-/// The built SPA, embedded from a directory INSIDE this crate.
-///
-/// `build.rs` populates `spa/` — mirroring `web/build` in a workspace checkout,
-/// leaving the shipped copy alone in a published crate, and writing a
-/// placeholder when there is neither. It is deliberately not
-/// `$CARGO_MANIFEST_DIR/../../web/build`: `cargo package` refuses to include
-/// files outside the package root, so pointing at the workspace path would make
-/// this crate unpublishable and `cargo install ledgeline-server` would serve the
-/// placeholder page to every user. See `build.rs` for the three cases.
-#[derive(RustEmbed)]
-#[folder = "$CARGO_MANIFEST_DIR/spa"]
-struct SpaAssets;
+use crate::{AppIdentity, security};
 
 /// Marker injected into the served `index.html`. The SPA reads
-/// `window.__LEDGELINE_EMBEDDED__` at startup and, when set, targets same-origin
-/// relative URLs instead of a stored server URL — so the packaged app needs no
-/// setup modal and is immune to a stale/ephemeral port in `localStorage`.
+/// `window.<embedded_global>` (Ledgeline's `__LEDGELINE_EMBEDDED__`) at startup
+/// and, when set, targets same-origin relative URLs instead of a stored server
+/// URL — so the packaged app needs no setup modal and is immune to a
+/// stale/ephemeral port in `localStorage`.
 ///
-/// It carries NO credential, and must not: see the module docs.
-const EMBED_MARKER: &str = "<script>window.__LEDGELINE_EMBEDDED__=true</script>";
+/// It carries NO credential, and must not: see the module docs. Its bytes are
+/// hashed into the shell's CSP, so they are fixed per app.
+#[must_use]
+pub fn embed_marker(app: &AppIdentity) -> String {
+    format!("<script>window.{}=true</script>", app.embedded_global)
+}
 
-/// Shown only when the SPA was never built AND `build.rs`'s placeholder is
-/// somehow missing too — a belt-and-suspenders fallback, never the normal path.
-const MISSING_SPA_HTML: &str = "<!doctype html><html><head><meta charset=\"utf-8\">\
-<title>Ledgeline</title></head><body><h1>Ledgeline SPA not built</h1>\
-<p>Run <code>bun run build</code> in <code>web/</code>, then rebuild.</p></body></html>";
+/// Shown only when the SPA was never built AND the app's build script's
+/// placeholder is somehow missing too — a belt-and-suspenders fallback, never
+/// the normal path.
+fn missing_spa_html(app: &AppIdentity) -> String {
+    format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\">\
+<title>{name}</title></head><body><h1>{name} SPA not built</h1>\
+<p>Run <code>bun run build</code> in <code>web/</code>, then rebuild.</p></body></html>",
+        name = app.name
+    )
+}
 
 /// The SPA shell with the embedded-mode marker injected right after `<head>` —
 /// falling back to a prefix if the document has no `<head>`.
-fn injected_index() -> String {
-    let marker = EMBED_MARKER;
-    let raw = match SpaAssets::get("index.html") {
+#[must_use]
+pub fn injected_index<E: RustEmbed>(app: &AppIdentity) -> String {
+    let marker = embed_marker(app);
+    let marker = marker.as_str();
+    let raw = match E::get("index.html") {
         Some(file) => String::from_utf8_lossy(&file.data).into_owned(),
-        None => return MISSING_SPA_HTML.to_string(),
+        None => return missing_spa_html(app),
     };
     match raw.find("<head>") {
         Some(head) => {
@@ -101,8 +102,8 @@ fn injected_index() -> String {
 /// This is the shell ONLY. [`asset_response`] keeps the year-long immutable
 /// cache on the content-hashed `_app/immutable/` assets, which carry no
 /// credential and are the whole reason that cache exists.
-fn shell_response() -> Response {
-    let html = injected_index();
+fn shell_response<E: RustEmbed>(app: &AppIdentity) -> Response {
+    let html = injected_index::<E>(app);
     let csp = security::shell_csp(&html);
     let mut response = Html(html).into_response();
     let headers = response.headers_mut();
@@ -128,36 +129,86 @@ fn asset_response(path: &str, data: Cow<'static, [u8]>) -> Response {
     response
 }
 
-/// Router `fallback`: serve the SPA (shell + assets) for everything the explicit
-/// wire / `/api/*` routes did not match. See the module docs for the contract.
-pub(crate) async fn fallback(uri: Uri) -> Response {
+/// Serve the SPA embedded as `E` (shell + assets) for a request the app's
+/// explicit routes did not match. See the module docs for the contract.
+#[must_use]
+pub fn respond<E: RustEmbed>(app: &AppIdentity, uri: &Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
 
     if path.is_empty() || path == "index.html" {
-        return shell_response();
+        return shell_response::<E>(app);
     }
     // An `/api/...` miss must be a real 404 — serving the shell here would break
     // the native client's engine-presence detection.
     if path.starts_with("api/") {
         return StatusCode::NOT_FOUND.into_response();
     }
-    match SpaAssets::get(path) {
+    match E::get(path) {
         Some(file) => asset_response(path, file.data),
         // Unknown non-asset path → hand SvelteKit's client-side router the shell.
-        None => shell_response(),
+        None => shell_response::<E>(app),
     }
+}
+
+/// The router `fallback` for an app whose SPA is embedded as `E`: everything
+/// the explicit routes did not match goes to [`respond`].
+///
+/// ```ignore
+/// #[derive(rust_embed::RustEmbed)]
+/// #[folder = "$CARGO_MANIFEST_DIR/spa"]
+/// struct SpaAssets;
+///
+/// let router = router.fallback(spa::fallback::<SpaAssets>(&APP));
+/// ```
+pub fn fallback<E: RustEmbed>(
+    app: &'static AppIdentity,
+) -> impl Fn(Uri) -> std::future::Ready<Response> + Clone + Send + Sync + 'static {
+    move |uri: Uri| std::future::ready(respond::<E>(app, &uri))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A stand-in SPA build: a shell with SvelteKit's shape (a `<head>`, an
+    /// inline bootstrap script) and one content-hashed asset.
+    #[derive(RustEmbed)]
+    #[folder = "$CARGO_MANIFEST_DIR/testdata/spa"]
+    struct TestSpa;
+
+    const APP: AppIdentity = AppIdentity {
+        name: "Ledgeline",
+        bundle_id: "com.zmre.ledgeline",
+        log_prefix: "ledgeline",
+        token_env: "LEDGELINE_TOKEN",
+        token_global: "__LEDGELINE_TOKEN__",
+        embedded_global: "__LEDGELINE_EMBEDDED__",
+    };
+
+    /// Ledgeline's SPA reads exactly this; the bytes are part of its CSP.
+    #[test]
+    fn the_marker_is_byte_for_byte_ledgelines() {
+        assert_eq!(
+            embed_marker(&APP),
+            "<script>window.__LEDGELINE_EMBEDDED__=true</script>"
+        );
+    }
+
+    #[test]
+    fn the_marker_goes_right_after_head() {
+        let html = injected_index::<TestSpa>(&APP);
+        assert!(
+            html.contains(&format!("<head>{}", embed_marker(&APP))),
+            "{html}"
+        );
+    }
+
     /// The shell is served unauthenticated, so it must never carry the token —
     /// only the token-free embedded marker.
     #[test]
     fn the_shell_carries_the_marker_and_no_token() {
-        let html = injected_index();
-        assert!(html.contains(EMBED_MARKER));
+        let html = injected_index::<TestSpa>(&APP);
+        assert!(html.contains(&embed_marker(&APP)));
         assert!(!html.contains("__LEDGELINE_TOKEN__"));
     }
 
@@ -165,7 +216,7 @@ mod tests {
     /// all — otherwise the browser silently refuses to boot the SPA.
     #[test]
     fn shell_csp_hashes_the_injected_marker_script() {
-        let html = injected_index();
+        let html = injected_index::<TestSpa>(&APP);
         let csp = security::shell_csp(&html);
         let csp = csp.to_str().expect("ascii policy");
         for script in inline_scripts(&html) {
@@ -183,7 +234,7 @@ mod tests {
     #[test]
     fn the_shell_is_never_stored() {
         assert_eq!(
-            shell_response()
+            shell_response::<TestSpa>(&APP)
                 .headers()
                 .get(header::CACHE_CONTROL)
                 .and_then(|value| value.to_str().ok()),

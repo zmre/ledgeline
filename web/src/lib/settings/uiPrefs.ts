@@ -6,7 +6,7 @@
 // every relaunch forgot them; they now live server-side, in `ui-prefs.toml` in
 // the config directory, overridden key by key by a hand-made `ledgeline.toml`
 // beside the journal (`GET`/`PATCH /api/ui-prefs`,
-// crates/ledgeline-server/src/ui_prefs.rs). Only
+// crates/ledgeline-core/src/ui_prefs.rs). Only
 // `serverUrl`/`serverToken` stay in localStorage: they describe this client,
 // not the ledger.
 //

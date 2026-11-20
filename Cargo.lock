@@ -2497,16 +2497,13 @@ dependencies = [
  "dirs 7.0.0",
  "futures",
  "getrandom 0.4.3",
- "gtk",
  "http-body-util",
  "keyring",
  "ledgeline",
  "ledgeline-core",
- "mime_guess",
+ "ledgeline-shell",
  "muda",
  "notify",
- "objc2-core-foundation",
- "objc2-core-services",
  "reqwest",
  "rfd",
  "rust-embed",
@@ -2522,7 +2519,6 @@ dependencies = [
  "tower",
  "tower-http 0.7.1",
  "url",
- "webkit2gtk",
  "webpki-root-certs",
  "wry",
  "zip",
@@ -2568,6 +2564,35 @@ dependencies = [
  "tokio",
  "tower",
  "uniffi",
+]
+
+[[package]]
+name = "ledgeline-shell"
+version = "0.2.3"
+dependencies = [
+ "axum",
+ "base64",
+ "dirs 7.0.0",
+ "getrandom 0.4.3",
+ "gtk",
+ "ledgeline-core",
+ "mime_guess",
+ "muda",
+ "objc2-core-foundation",
+ "objc2-core-services",
+ "rfd",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tao",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tower-http 0.7.1",
+ "url",
+ "webkit2gtk",
+ "wry",
 ]
 
 [[package]]

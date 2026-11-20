@@ -8,7 +8,7 @@
 //
 // ONE PRESS, ONE STEP. A menu accelerator and the page's own keydown could in
 // principle both see the same keystroke. Per platform, what the shell relies
-// on (crates/ledgeline-server/src/gui.rs has the long form):
+// on (crates/ledgeline-shell/src/gui.rs has the long form):
 //   - macOS: WKWebView offers a Cmd key-equivalent to the page FIRST; the
 //     keymap `preventDefault`s it, so AppKit never walks the menu. The menu
 //     fires only when clicked, or when the page did not take the key.
