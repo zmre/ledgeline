@@ -1305,8 +1305,15 @@ export class LedgelineApi {
         this.timeoutMs = options?.timeoutMs ?? REQUEST_TIMEOUT_MS;
     }
 
-    /** GET a native route, returning raw unknown JSON; pass through a nativeDecode.* decoder separately. */
-    private async getJson(route: string): Promise<unknown> {
+    /**
+     * GET a native route, returning raw unknown JSON; pass through a
+     * nativeDecode.* decoder separately.
+     *
+     * A 404 means "not the engine" unless `on404` says otherwise: a route that
+     * addresses a FILE answers 404 for a file that is not there, and that must
+     * not read as a missing engine. `on404` gets the server's own sentence.
+     */
+    private async getJson(route: string, on404?: (message: string) => Error): Promise<unknown> {
         const url = `${this.baseUrl}${route}`;
         return withDeadline(`GET ${url}`, this.timeoutMs, this.signal, async (signal) => {
             let response: Response;
@@ -1318,6 +1325,7 @@ export class LedgelineApi {
             }
             // A server without the native routes (not the Ledgeline engine) 404s here.
             if (response.status === 404) {
+                if (on404 !== undefined) throw on404(usableErrorBody(await response.text().catch(() => "")));
                 throw new NativeApiUnavailableError(NATIVE_UNAVAILABLE_MESSAGE);
             }
             if (!response.ok) {
@@ -1609,9 +1617,18 @@ export class LedgelineApi {
         return this.getJson("/api/projections");
     }
 
-    /** One journal file, read as a scenario (decode with `decodeScenarioFile`). */
+    /**
+     * One journal file, read as a scenario (decode with `decodeScenarioFile`).
+     *
+     * Its 404 is the FILE's — renamed, deleted, or an id remembered from
+     * another ledger — never "this engine predates projections": the tab only
+     * asks once the listing has answered.
+     */
     getProjection(id: string): Promise<unknown> {
-        return this.getJson(`/api/projections/${encodeRulesId(id)}`);
+        return this.getJson(
+            `/api/projections/${encodeRulesId(id)}`,
+            (message) => new NotFoundError(message || `There is no scenario file ${id} beside this journal.`)
+        );
     }
 
     /**

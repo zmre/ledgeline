@@ -135,7 +135,7 @@
         // screen over whatever opens instead (D9).
         let defaultFailure: string | null = null;
         for (const step of openingSteps(starred, settings.lastProjectionId, fileStore.available)) {
-            const opened = await openFile(url, step.id, step.source);
+            const opened = await openFile(url, step.id, step.source, true);
             if (step.source === "default" && !opened) defaultFailure = fileError;
             if (opened) {
                 if (defaultFailure !== null) fileError = defaultFailure;
@@ -155,14 +155,20 @@
      * `source` is why it is being opened: the default (which is never
      * forgotten — the marker is in the file, and is the user's to clear), or
      * the last file this browser opened, which is.
+     *
+     * `onMount` is the page's own reopen, not something the user asked for.
      */
-    async function openFile(url: string, id: string, source: OpeningSource = "last"): Promise<boolean> {
+    async function openFile(url: string, id: string, source: OpeningSource = "last", onMount = false): Promise<boolean> {
         const outcome = await fileStore.open(url, id);
         if (!outcome.ok) {
+            const gone = outcome.failure.kind === "notFound";
             // A remembered id that no longer resolves must not be retried on
             // every mount, which would put a failure on the screen each time the
             // tab is opened.
-            if (source === "last" && (outcome.failure.kind === "notFound" || outcome.failure.kind === "validation")) fileStore.forget();
+            if (source === "last" && (gone || outcome.failure.kind === "validation")) fileStore.forget();
+            // Nor is reopening one that names no file here (renamed, deleted)
+            // an error worth a sentence: nobody asked for it, and the tab seeds.
+            if (onMount && source === "last" && gone) return false;
             fileError = source === "default" ? `Your default scenario couldn't be opened: ${outcome.failure.message}` : outcome.failure.message;
             return false;
         }

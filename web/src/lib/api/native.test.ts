@@ -148,6 +148,14 @@ describe("UNIT LedgelineApi — error taxonomy", () => {
         await expect(promise).rejects.toThrow(NATIVE_UNAVAILABLE_MESSAGE);
     });
 
+    it("maps a projection FILE's 404 to NotFoundError with the engine's sentence, not 'not the engine'", async () => {
+        const sentence = 'no journal file "projection-x.journal" is available beside this journal';
+        vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(sentence, {status: 404, statusText: "Not Found"})));
+        const promise = new LedgelineApi("http://127.0.0.1:5000").getProjection("projection-x.journal");
+        await expect(promise).rejects.toBeInstanceOf(NotFoundError);
+        await expect(promise).rejects.toThrow(sentence);
+    });
+
     it("maps a 200 non-JSON body to NativeApiUnavailableError", async () => {
         vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("<html></html>", {status: 200})));
         await expect(new LedgelineApi("http://127.0.0.1:5000").holdings()).rejects.toBeInstanceOf(NativeApiUnavailableError);

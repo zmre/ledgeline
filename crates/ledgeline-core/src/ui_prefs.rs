@@ -13,7 +13,9 @@
 //!    key ([`Schema::pinnable`]) for this ledger ([`pin`], plan 39).
 //! 2. `ui-prefs.toml` in the app's config directory ([`Context::global_file`]), the
 //!    same keys at top level. The app's own file: it creates it on the first
-//!    save and edits it after.
+//!    save and edits it after. The schema's [`Schema::per_ledger`] keys,
+//!    whose values only mean something beside one journal, sit under
+//!    `[ledgers."<ledger>"]` instead, keyed by [`Context::ledger_id`].
 //! 3. The built-in defaults (the app's [`Schema`]).
 //!
 //! For each key the first layer that holds a USABLE value wins. A value that is
@@ -133,6 +135,14 @@ const KEPT_NO_CONFIG_DIR: &str =
 /// the file for later per-ledger settings.
 const UI_TABLE: &str = "ui";
 
+/// The [`GLOBAL_FILE`] table holding one sub-table per ledger
+/// ([`Schema::per_ledger`]).
+const LEDGERS_TABLE: &str = "ledgers";
+
+/// How an issue names a per-ledger key. Never the journal's path: no path is
+/// echoed back to the client.
+const LEDGER_KEY_PREFIX: &str = "ledgers.<this ledger>.";
+
 /// The largest settings file read. Real ones are a few hundred bytes.
 pub const MAX_FILE_BYTES: u64 = ledger_file::MAX_FILE_BYTES;
 
@@ -227,6 +237,12 @@ pub struct Schema {
     /// Undotted keys of [`specs`](Self::specs) a person may want to tell one
     /// ledger from another by.
     pub pinnable: &'static [&'static str],
+    /// Undotted keys of [`specs`](Self::specs) whose value only means
+    /// something beside one journal (a file id relative to its folder).
+    /// [`GLOBAL_FILE`] keeps them per ledger, under `[ledgers."<ledger>"]`
+    /// ([`Context::ledger_id`]), never at top level: a top-level spelling is
+    /// ignored on read, and the first per-ledger save removes it.
+    pub per_ledger: &'static [&'static str],
 }
 
 impl Schema {
@@ -234,6 +250,12 @@ impl Schema {
     #[must_use]
     pub fn spec(&self, key: &str) -> Option<&'static Spec> {
         self.specs.iter().find(|spec| spec.key == key)
+    }
+
+    /// Whether [`GLOBAL_FILE`] keeps `key` per ledger ([`Self::per_ledger`]).
+    #[must_use]
+    pub fn is_per_ledger(&self, key: &str) -> bool {
+        self.per_ledger.contains(&key)
     }
 
     /// Whether `key` is one of this schema's.
@@ -585,18 +607,56 @@ fn read_layer(schema: &Schema, table: &dyn TableLike, file: &'static str, prefix
     layer
 }
 
-/// `ui-prefs.toml` from the config directory, or an empty layer.
+/// The `[ledgers."<ledger>"]` sub-table of a global document, if there is one.
+fn ledger_table<'a>(document: &'a DocumentMut, ledger: &str) -> Option<&'a dyn TableLike> {
+    document
+        .get(LEDGERS_TABLE)?
+        .as_table_like()?
+        .get(ledger)?
+        .as_table_like()
+}
+
+/// A parsed [`GLOBAL_FILE`]'s values for `ledger`: the shared keys from the
+/// top level, and the [`Schema::per_ledger`] keys from that ledger's sub-table
+/// only. With no ledger open, no per-ledger key has a value.
+fn global_values(schema: &Schema, document: &DocumentMut, ledger: Option<&str>) -> Layer {
+    let per_ledger = |key: &str| schema.is_per_ledger(key);
+    let mut layer = read_layer(schema, document.as_table(), GLOBAL_FILE, "");
+    layer.values.retain(|key, _| !per_ledger(key));
+    layer
+        .issues
+        .retain(|issue| issue.key.as_deref().is_none_or(|key| !per_ledger(key)));
+    if let Some(table) = ledger.and_then(|ledger| ledger_table(document, ledger)) {
+        // Only the per-ledger keys count here; anything else a person wrote
+        // in the sub-table is ignored quietly, like any unknown key.
+        let mine = read_layer(schema, table, GLOBAL_FILE, LEDGER_KEY_PREFIX);
+        layer
+            .values
+            .extend(mine.values.into_iter().filter(|(key, _)| per_ledger(key)));
+        layer.issues.extend(mine.issues.into_iter().filter(|issue| {
+            issue
+                .key
+                .as_deref()
+                .and_then(|key| key.strip_prefix(LEDGER_KEY_PREFIX))
+                .is_some_and(per_ledger)
+        }));
+    }
+    layer
+}
+
+/// `ui-prefs.toml` from the config directory, or an empty layer; `ledger`
+/// selects the [`Schema::per_ledger`] values ([`global_values`]).
 ///
 /// Read with the ordinary, symlink-following open: it is the user's own
 /// config, and dotfile managers (home-manager, stow) deliver it as a symlink.
-fn global_layer(schema: &Schema, path: Option<&Path>) -> Layer {
+fn global_layer(schema: &Schema, path: Option<&Path>, ledger: Option<&str>) -> Layer {
     let Some(path) = path else {
         return Layer::default();
     };
     match read_global(path) {
         Ok(None) => Layer::default(),
         Ok(Some(text)) => match text.parse::<DocumentMut>() {
-            Ok(document) => read_layer(schema, document.as_table(), GLOBAL_FILE, ""),
+            Ok(document) => global_values(schema, &document, ledger),
             Err(_) => Layer {
                 values: Values::new(),
                 issues: vec![Issue::file(
@@ -958,6 +1018,54 @@ fn is_symlink(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
 }
 
+/// Apply `patch` to a [`GLOBAL_FILE`] document: the shared keys at top
+/// level, the [`Schema::per_ledger`] keys under `[ledgers."<ledger>"]`. With no
+/// ledger open a per-ledger key has nowhere to go and is dropped — there is no
+/// ledger for it to be remembered against.
+///
+/// # Errors
+/// [`UiPrefsError::Conflict`] when a table the save needs exists as
+/// something else, as [`patch_table`].
+fn patch_global(
+    schema: &Schema,
+    document: &mut DocumentMut,
+    ledger: Option<&str>,
+    patch: &Patch,
+) -> Result<(), UiPrefsError> {
+    let (mine, shared) = patch.split(|key| schema.is_per_ledger(key));
+    patch_table(document.as_table_mut(), false, GLOBAL_FILE, "", &shared)?;
+    let Some(ledger) = ledger.filter(|_| !mine.is_empty()) else {
+        return Ok(());
+    };
+    let not_a_table = |name: &str| {
+        UiPrefsError::Conflict(format!(
+            "{name} in {GLOBAL_FILE} is not a table, so Ledgeline will not overwrite it"
+        ))
+    };
+    let ledgers = document
+        .as_table_mut()
+        .entry(LEDGERS_TABLE)
+        .or_insert_with(|| {
+            // Implicit: no empty `[ledgers]` header above the sub-tables.
+            let mut table = Table::new();
+            table.set_implicit(true);
+            Item::Table(table)
+        })
+        .as_table_like_mut()
+        .ok_or_else(|| not_a_table(LEDGERS_TABLE))?;
+    let table = ledgers
+        .entry(ledger)
+        .or_insert_with(|| Item::Table(Table::new()))
+        .as_table_like_mut()
+        .ok_or_else(|| not_a_table("this ledger's entry under ledgers"))?;
+    patch_table(table, false, GLOBAL_FILE, LEDGER_KEY_PREFIX, &mine)?;
+    // The pre-keyed spelling (see `Schema::per_ledger`) is never read again.
+    for key in mine.values.keys() {
+        document.as_table_mut().remove(key);
+    }
+    Ok(())
+}
+
 /// Write `patch` into [`GLOBAL_FILE`], creating it (and the config directory)
 /// if need be. A symlinked file is left alone ([`GlobalSave::Kept`]); see the
 /// module docs.
@@ -966,7 +1074,12 @@ fn is_symlink(path: &Path) -> bool {
 /// [`UiPrefsError::Conflict`] when the file exists but cannot be safely
 /// rewritten (too large, not TOML, not a regular file, a group that is not a
 /// table); [`UiPrefsError::Internal`] when the write itself fails.
-fn write_global(path: Option<&Path>, patch: &Patch) -> Result<GlobalSave, UiPrefsError> {
+fn write_global(
+    schema: &Schema,
+    path: Option<&Path>,
+    ledger: Option<&str>,
+    patch: &Patch,
+) -> Result<GlobalSave, UiPrefsError> {
     let Some(path) = path else {
         return Ok(GlobalSave::Kept(KEPT_NO_CONFIG_DIR));
     };
@@ -986,7 +1099,7 @@ fn write_global(path: Option<&Path>, patch: &Patch) -> Result<GlobalSave, UiPref
                     .ok()
                     .and_then(|text| text.parse::<DocumentMut>().ok())
                     .ok_or_else(|| refuse("is not valid TOML"))?;
-                patch_table(document.as_table_mut(), false, GLOBAL_FILE, "", patch)?;
+                patch_global(schema, &mut document, ledger, patch)?;
                 match crate::pinned::replace(path, document.to_string().as_bytes(), &pin) {
                     Ok(_) => Ok(Attempt::Done(GlobalSave::Written)),
                     Err(crate::pinned::WriteError::Changed) => Ok(Attempt::Retry),
@@ -997,7 +1110,7 @@ fn write_global(path: Option<&Path>, patch: &Patch) -> Result<GlobalSave, UiPref
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 let mut document = DocumentMut::new();
-                patch_table(document.as_table_mut(), false, GLOBAL_FILE, "", patch)?;
+                patch_global(schema, &mut document, ledger, patch)?;
                 if let Some(dir) = path.parent() {
                     std::fs::create_dir_all(dir)
                         .map_err(|error| write_failed(GLOBAL_FILE, error.kind()))?;
@@ -1081,8 +1194,22 @@ impl WireUiPrefs {
 /// Saves that could not go to [`GLOBAL_FILE`], and why.
 #[derive(Debug, Default)]
 struct Kept {
+    /// The shared keys.
     values: Values,
+    /// The [`Schema::per_ledger`] keys, by [`Context::ledger_id`] — a File →
+    /// Open within the session must not carry one ledger's value to the next.
+    ledgers: BTreeMap<String, Values>,
     reason: Option<&'static str>,
+}
+
+impl Kept {
+    /// The kept per-ledger values for `ledger`, or none.
+    fn for_ledger(&self, ledger: Option<&str>) -> Values {
+        ledger
+            .and_then(|ledger| self.ledgers.get(ledger))
+            .cloned()
+            .unwrap_or_default()
+    }
 }
 
 /// Per-app-session UI-preferences state, shared by every clone of the app's
@@ -1165,6 +1292,10 @@ pub struct Context<'a> {
     pub global_file: Option<PathBuf>,
     /// The open ledger's [`LEDGER_FILE`].
     pub ledger: LedgerSlot,
+    /// What [`GLOBAL_FILE`] keys the open ledger's [`Schema::per_ledger`]
+    /// values by — the main journal's key in its vault (its absolute path on
+    /// the desktop) — or `None` with no ledger open. Never sent to a client.
+    pub ledger_id: Option<String>,
 }
 
 /// Families with both a light and a dark variant, as `(family, light, dark)`
@@ -1300,7 +1431,7 @@ pub fn current(ctx: &Context<'_>) -> WireUiPrefs {
     if session.browser {
         return browser_answer(schema, &Values::new());
     }
-    let global = global_layer(schema, ctx.global_file.as_deref());
+    let global = global_layer(schema, ctx.global_file.as_deref(), ctx.ledger_id.as_deref());
     let (ledger, local_keys) = match &ctx.ledger {
         LedgerSlot::At { vault, path } => match read_ledger(&**vault, path) {
             LedgerFile::Missing => (Layer::default(), Vec::new()),
@@ -1323,7 +1454,12 @@ pub fn current(ctx: &Context<'_>) -> WireUiPrefs {
     WireUiPrefs {
         prefs: prefs_json(&merge(
             schema,
-            &[&ledger.values, &kept.values, &global.values],
+            &[
+                &ledger.values,
+                &kept.for_ledger(ctx.ledger_id.as_deref()),
+                &kept.values,
+                &global.values,
+            ],
         )),
         storage: Storage::Files,
         local_keys,
@@ -1353,19 +1489,38 @@ pub fn apply(ctx: &Context<'_>, patch: &Patch) -> Result<WireUiPrefs, UiPrefsErr
     if !patch.is_empty() {
         // Released before `current`, which takes it again.
         let mut kept = session.kept();
+        let ledger_key = ctx.ledger_id.clone();
         let global = write_ledger(&ctx.ledger, patch)?;
         if !global.is_empty() {
-            match write_global(ctx.global_file.as_deref(), &global)? {
+            let (mine, shared) = global.split(|key| ctx.schema.is_per_ledger(key));
+            match write_global(
+                ctx.schema,
+                ctx.global_file.as_deref(),
+                ledger_key.as_deref(),
+                &global,
+            )? {
                 // A key that reached the file no longer needs its session copy.
                 GlobalSave::Written => {
                     kept.values
-                        .retain(|key, _| !global.values.contains_key(key));
-                    if kept.values.is_empty() {
+                        .retain(|key, _| !shared.values.contains_key(key));
+                    if let Some(values) = ledger_key
+                        .as_ref()
+                        .and_then(|ledger| kept.ledgers.get_mut(ledger))
+                    {
+                        values.retain(|key, _| !mine.values.contains_key(key));
+                    }
+                    kept.ledgers.retain(|_, values| !values.is_empty());
+                    if kept.values.is_empty() && kept.ledgers.is_empty() {
                         kept.reason = None;
                     }
                 }
                 GlobalSave::Kept(reason) => {
-                    kept.values.extend(global.values);
+                    kept.values.extend(shared.values);
+                    // With no ledger open there is nothing to keep it against,
+                    // as `patch_global` drops it from the file.
+                    if let Some(ledger) = ledger_key {
+                        kept.ledgers.entry(ledger).or_default().extend(mine.values);
+                    }
                     kept.reason = Some(reason);
                 }
             }
@@ -1460,10 +1615,14 @@ pub fn pin(ctx: &Context<'_>, pin: Pin) -> Result<WireUiPrefs, UiPrefsError> {
         if pin.pinned {
             // What the key is now without the ledger's file. When the file
             // has a usable value, that is already the effective one.
-            let global = global_layer(ctx.schema, ctx.global_file.as_deref());
-            let value = merge(ctx.schema, &[&kept.values, &global.values])
-                .remove(pin.key)
-                .ok_or_else(|| UiPrefsError::Internal(format!("{} has no spec", pin.key)))?;
+            let ledger_key = ctx.ledger_id.as_deref();
+            let global = global_layer(ctx.schema, ctx.global_file.as_deref(), ledger_key);
+            let value = merge(
+                ctx.schema,
+                &[&kept.for_ledger(ledger_key), &kept.values, &global.values],
+            )
+            .remove(pin.key)
+            .ok_or_else(|| UiPrefsError::Internal(format!("{} has no spec", pin.key)))?;
             pin_ledger(ctx.schema, vault, path, pin.key, &value)?;
         } else {
             unpin_ledger(vault, path, pin.key)?;
@@ -2021,6 +2180,57 @@ unknownKey = { deep = [1, 2] }
             "lastProjectionId = \"a.journal\"\n",
         );
         assert_eq!(prefs["lastProjectionId"], Json::Null);
+    }
+
+    #[test]
+    fn a_per_ledger_key_is_read_only_from_its_ledgers_table() {
+        let document = parse(concat!(
+            "lastProjectionId = \"old.journal\"\n",
+            "matchWindow = 12\n",
+            "[ledgers.\"/books/a/main.journal\"]\n",
+            "lastProjectionId = \"projection-a.journal\"\n",
+            "matchWindow = 40\n",
+            "[ledgers.\"/books/b/main.journal\"]\n",
+            "lastProjectionId = \"a\\u0007b\"\n",
+        ));
+        let a = global_values(S, &document, Some("/books/a/main.journal"));
+        assert_eq!(
+            a.values.get("lastProjectionId"),
+            Some(&PrefValue::FileId(Some("projection-a.journal".to_string())))
+        );
+        assert_eq!(
+            a.values.get("matchWindow"),
+            Some(&PrefValue::Whole(12)),
+            "a shared key in a ledger's table is ignored"
+        );
+        assert!(a.issues.is_empty(), "{:?}", a.issues);
+
+        let b = global_values(S, &document, Some("/books/b/main.journal"));
+        assert!(!b.values.contains_key("lastProjectionId"));
+        let keys: Vec<_> = b.issues.iter().filter_map(|i| i.key.as_deref()).collect();
+        assert_eq!(keys, ["ledgers.<this ledger>.lastProjectionId"]);
+
+        for ledger in [None, Some("/books/c/main.journal")] {
+            let other = global_values(S, &document, ledger);
+            assert!(
+                !other.values.contains_key("lastProjectionId"),
+                "the top-level spelling is never read"
+            );
+        }
+    }
+
+    #[test]
+    fn a_per_ledger_save_needs_a_ledger_and_keeps_a_non_table_entry() {
+        let patch = Patch::from_json(S, &json!({"lastProjectionId": "x.journal"})).unwrap();
+        let mut document = DocumentMut::new();
+        patch_global(S, &mut document, None, &patch).unwrap();
+        assert_eq!(document.to_string(), "", "nowhere to remember it");
+
+        let mut document = parse("ledgers = 3\n");
+        assert!(matches!(
+            patch_global(S, &mut document, Some("/a.journal"), &patch),
+            Err(UiPrefsError::Conflict(_))
+        ));
     }
 
     #[test]

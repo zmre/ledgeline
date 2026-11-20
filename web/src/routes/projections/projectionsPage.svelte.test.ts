@@ -247,6 +247,21 @@ describe("COMPONENT Projections page — what opens, and what a revisit keeps", 
         expect(page.settings.lastProjectionId).toBeNull();
     });
 
+    it("with a last file that is not beside this journal (404): forgotten quietly, then a seed — never 'not the engine'", async () => {
+        // The bug: an id remembered from another ledger 404s, and that 404 was
+        // read as "this server doesn't provide Ledgeline's report API", kept
+        // the id, and showed the same false sentence on every visit.
+        const page = await pageLoad("projection-elsewhere.journal");
+        const view = page.mount();
+        await vi.waitFor(() => expect(gets("/api/projections/seed")).toBe(1));
+        await vi.waitFor(() => expect(page.scenarioStore.adopted).toBe(true));
+        expect(gets("/api/projections/projection-elsewhere.journal")).toBe(1);
+        expect(page.settings.lastProjectionId).toBeNull();
+        expect(page.fileStore.available).toBe(true);
+        expect(view.queryByTestId("projection-file-error")).toBeNull();
+        expect(view.container.textContent).not.toContain("report API");
+    });
+
     it("starring a file with unsaved edits keeps them, and the next save carries the star's revision", async () => {
         const page = await pageLoad(B);
         const view = page.mount();

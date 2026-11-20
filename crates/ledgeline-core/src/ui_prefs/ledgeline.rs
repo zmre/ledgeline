@@ -153,10 +153,18 @@ const SPECS: &[Spec] = &[
     whole("settlementLeadDays", 0, 60, 4),
 ];
 
+/// The keys [`super::GLOBAL_FILE`] keeps per ledger
+/// ([`Schema::per_ledger`]). `lastProjectionId` is a file id relative to the
+/// journal's folder: kept at top level, the last scenario opened on ANY
+/// ledger — another book, a fixture a development build had open — was
+/// reopened on this one, where it does not exist.
+pub const PER_LEDGER: &[&str] = &["lastProjectionId"];
+
 /// Ledgeline's preferences.
 pub const SCHEMA: Schema = Schema {
     specs: SPECS,
     pinnable: PINNABLE,
+    per_ledger: PER_LEDGER,
 };
 
 /// The top of a [`super::LEDGER_FILE`] that linking a bank account creates

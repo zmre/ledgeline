@@ -39,9 +39,9 @@ impl From<UiPrefsError> for AppError {
 /// One operation's view of `state`: Ledgeline's schema, the session, the
 /// config folder's `ui-prefs.toml` and the open journal's `ledgeline.toml`.
 fn context(state: &AppState) -> prefs::Context<'_> {
-    let ledger = state
-        .snapshot()
-        .storage()
+    let location = state.snapshot().storage();
+    let ledger = location
+        .as_deref()
         .map_or(LedgerSlot::NoLedger, |location| {
             LedgerSlot::beside(location.vault().clone(), &location.root_dir())
         });
@@ -50,6 +50,11 @@ fn context(state: &AppState) -> prefs::Context<'_> {
         session: state.ui_prefs(),
         global_file: state.app_dirs().config_file(prefs::GLOBAL_FILE),
         ledger,
+        // The main journal's key in its vault: its absolute path on the
+        // desktop. Only ever a TOML table name, never sent to the client.
+        ledger_id: location
+            .as_deref()
+            .map(|location| location.key(location.main()).to_string_lossy().into_owned()),
     }
 }
 
