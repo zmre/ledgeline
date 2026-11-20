@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Advisory scans of both lockfiles: Cargo.lock (cargo-audit, RUSTSEC) and
-# web/bun.lock (bun audit, GitHub advisory DB).
+# bun.lock, the root of the bun workspace (bun audit, GitHub advisory DB).
 #
 # This is the ONE place the ignore lists live. CI and the daily scheduled run
 # (.github/workflows/audit.yml) and `just audit` / `just pre-push` all call it,
@@ -111,7 +111,7 @@ spa_audit() {
   #   bun.lock entry instead — version + `dist.integrity` from
   #   registry.npmjs.org/<pkg>/<ver> — then `bun install --frozen-lockfile`
   #   to prove bun accepts it, then `just audit`.
-  nix develop -L .#spaAudit -c bash -c 'cd web && bun audit \
+  nix develop -L .#spaAudit -c bash -c 'bun audit \
     --ignore=GHSA-gcqx-w48m-w2h4 \
     --ignore=GHSA-g3hv-75wg-m249'
 }

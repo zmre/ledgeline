@@ -292,7 +292,7 @@
 
       # 1. node_modules for the SPA. `bun install` needs the network, so this is
       #    a fixed-output derivation: the recursive `outputHash` pins the exact
-      #    dependency tree from `web/bun.lock`. `--ignore-scripts` keeps it
+      #    dependency tree from the workspace's root `bun.lock`. `--ignore-scripts` keeps it
       #    deterministic — the SvelteKit `prepare` (`svelte-kit sync`) runs in
       #    the build below, not here; the native binaries (esbuild, rollup,
       #    @tailwindcss/oxide) are ordinary per-platform packages that land with
@@ -326,18 +326,35 @@
       # on EVERY system (macDist on darwin, linuxDist on Linux), so a stale hash
       # here breaks `nix build github:zmre/ledgeline` with no attribute at all.
       spaNodeModulesHashes = {
-        aarch64-darwin = "sha256-dAWxIvQcjXoNyFe/KTgENDRthAEMYsyOKgWCjy9quUI=";
-        x86_64-linux = "sha256-D4UH5ZAoxZX/dtMzf+KO4gFCnWYhioDKwSfCix/7a0k=";
+        aarch64-darwin = "sha256-Dmv/g9r3baJfsvK4KHi1Zzs+hAiG/ixWiPGDIt4p4Xo=";
+        x86_64-linux = "sha256-tBedBELXAlVrq9yFrGfVd1c6uInppLLg0gvk3sOKihg=";
         # Intel Macs, for the x86_64 half of the release matrix. Produced by a
         # release-workflow dry run under Rosetta, which is the only machine that
         # can generate it — see docs/development/releasing.md.
         x86_64-darwin = "sha256-144A9MQzynvHnoze2aNAJpRmVqxb0rQq91nqPCps8qo=";
       };
 
+      # The bun WORKSPACE (root package.json: web/ and packages/*; invoicer/web
+      # joins it in plan L6/0d). `bun install` only needs the manifests and the
+      # one root bun.lock, so the FOD's source is just those: editing any source
+      # file leaves this derivation alone. A new workspace member must add its
+      # package.json here, or the frozen install fails on a lockfile that names
+      # a workspace it cannot see.
+      spaWorkspaceManifests = lib.fileset.toSource {
+        root = ./.;
+        fileset = lib.fileset.unions [
+          ./package.json
+          ./bun.lock
+          ./bunfig.toml
+          ./web/package.json
+          ./packages/ui/package.json
+        ];
+      };
+
       spaNodeModules = pkgs.stdenv.mkDerivation {
         pname = "ledgeline-spa-node-modules";
         inherit version;
-        src = ./web;
+        src = spaWorkspaceManifests;
         nativeBuildInputs = [pkgs.bun];
         dontConfigure = true;
         buildPhase = ''
@@ -345,9 +362,21 @@
           export BUN_INSTALL_CACHE_DIR="$TMPDIR/bun-cache"
           bun install --frozen-lockfile --no-progress --ignore-scripts
         '';
+        # The hoisted root node_modules (bunfig.toml), which also holds the
+        # workspace links (`node_modules/web -> ../web`,
+        # `node_modules/@ledgeline/ui -> ../../packages/ui`). They are RELATIVE
+        # links and dangle here; they resolve once `spaBuild` lays this tree
+        # over the source. Plus any member's own node_modules, should bun ever
+        # need one for a version conflict hoisting cannot resolve.
         installPhase = ''
           mkdir -p "$out"
           cp -R node_modules "$out/"
+          for member in web packages/*; do
+            if [ -d "$member/node_modules" ]; then
+              mkdir -p "$out/$member"
+              cp -R "$member/node_modules" "$out/$member/"
+            fi
+          done
         '';
         dontFixup = true;
         outputHashMode = "recursive";
@@ -370,15 +399,30 @@
       spaBuild = pkgs.stdenv.mkDerivation {
         pname = "ledgeline-spa";
         inherit version;
-        src = ./web;
+        # The workspace root, not just web/: web/ imports packages/ui as source
+        # (`#ui/*` -> `@ledgeline/ui`), and the node_modules tree's workspace
+        # links point at both.
+        src = lib.fileset.toSource {
+          root = ./.;
+          fileset = lib.fileset.unions [
+            ./package.json
+            ./bun.lock
+            ./bunfig.toml
+            ./web
+            ./packages
+          ];
+        };
         # nodejs is here for `patchShebangs` below, not to run the build (bun
         # does that) — it is what the rewritten shebangs point AT.
         nativeBuildInputs = [pkgs.bun pkgs.nodejs_24];
         dontConfigure = true;
         buildPhase = ''
           export HOME="$TMPDIR"
-          cp -R ${spaNodeModules}/node_modules ./node_modules
+          cp -R ${spaNodeModules}/. ./
           chmod -R u+w node_modules
+          for member in web packages/*; do
+            [ ! -d "$member/node_modules" ] || chmod -R u+w "$member/node_modules"
+          done
           # The `.bin` shims npm/bun generate carry `#!/usr/bin/env node`, and
           # the LINUX build sandbox has no /usr/bin/env — so `svelte-kit` and
           # `vite` died with "bad interpreter". The darwin sandbox does have
@@ -392,9 +436,11 @@
           # so pointing it at `.bin` alone reported success and changed
           # nothing.
           patchShebangs node_modules
+          cd web
           bun run prepare
           bun run build
         '';
+        # Still in web/: stdenv runs every phase in one shell.
         installPhase = ''
           mkdir -p "$out"
           cp -R build/. "$out/"

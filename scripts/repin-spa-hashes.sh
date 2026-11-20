@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Re-pin spaNodeModulesHashes in flake.nix after a web/bun.lock change.
+# Re-pin spaNodeModulesHashes in flake.nix after a bun.lock (or bunfig.toml)
+# change. Both live at the workspace root.
 #
 # For each system: swap in a placeholder hash, build the fixed-output
 # derivation, and paste in the `got:` hash Nix reports. This is the manual

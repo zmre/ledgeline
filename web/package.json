@@ -45,14 +45,13 @@
         "vitest": "^5.0.5"
     },
     "dependencies": {
+        "@ledgeline/ui": "workspace:*",
         "exceljs": "^4.4.0",
         "layerchart": "^2.9.2"
     },
-    "overrides": {
-        "uuid": "^11.1.1"
-    },
     "imports": {
         "#lib": "./src/lib/index.js",
-        "#lib/*": "./src/lib/*"
+        "#lib/*": "./src/lib/*",
+        "#ui/*": "@ledgeline/ui/*"
     }
 }

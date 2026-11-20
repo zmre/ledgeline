@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
-# Fail if web/bun.lock changed on this branch but the spaNodeModules hashes in
-# flake.nix did not.
+# Fail if the bun workspace's lockfile (or its install config) changed on this
+# branch but the spaNodeModules hashes in flake.nix did not.
+#
+# Watched: the root bun.lock and bunfig.toml, which with the workspace
+# manifests are the fixed-output derivation's whole input (flake.nix,
+# `spaWorkspaceManifests`). The manifests themselves are not watched: a
+# dependency change there also changes bun.lock (or the frozen install fails),
+# and the version bump every release makes in web/package.json changes nothing
+# in node_modules. web/bun.lock is the pre-workspace path, kept so a diff
+# against a base from before the move still counts.
 #
 # Why a diff heuristic rather than a build: a stale FOD pin is SILENT. The
 # store path comes from the hash, so while the old path is still in a local
@@ -23,7 +31,17 @@ base=$(git merge-base HEAD "$base_ref")
 
 # Working tree vs merge base, so uncommitted edits count too when this runs by
 # hand. At push time the tree normally matches HEAD.
-if git diff --quiet "$base" -- web/bun.lock; then
+if git diff --quiet "$base" -- bun.lock bunfig.toml web/bun.lock; then
+  exit 0
+fi
+
+# A release bump (scripts/release.sh set) rewrites web's `"version":` in its
+# bun.lock workspace entry. That changes nothing in node_modules, so a diff made
+# of nothing else needs no re-pin. Package entries are one-line arrays, so a
+# `"version":` line can only belong to a workspace entry.
+if [ -z "$(git diff --no-ext-diff --no-color -U0 "$base" -- bun.lock bunfig.toml web/bun.lock |
+  grep -E '^[+-]' | grep -vE '^(\+\+\+|---) ' |
+  grep -vE '^[+-][[:space:]]*"version": "[^"]*",$')" ]; then
   exit 0
 fi
 
@@ -50,7 +68,7 @@ if [ "${#stale[@]}" -eq 0 ]; then
 fi
 
 cat >&2 <<EOF
-web/bun.lock changed since $base_ref, but spaNodeModulesHashes in flake.nix
+bun.lock (or bunfig.toml) changed since $base_ref, but spaNodeModulesHashes in flake.nix
 still has the old pin for: ${stale[*]}
 
 Every bun.lock change alters the resolved node_modules and so its hash. CI's

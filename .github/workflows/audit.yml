@@ -1,4 +1,4 @@
-# Advisory scans of Cargo.lock and web/bun.lock.
+# Advisory scans of Cargo.lock and bun.lock.
 #
 # Two triggers, one definition:
 #
@@ -63,7 +63,7 @@ jobs:
       - name: cargo audit
         run: scripts/audit.sh rust
 
-  # GitHub-advisory scan of web/bun.lock — the SPA's counterpart to the Rust
+  # GitHub-advisory scan of bun.lock (the workspace root) — the SPA's counterpart to the Rust
   # `audit` job above.
   #
   # WHY THIS JOB HAS TO EXIST: Dependabot cannot cover the SPA. GitHub
