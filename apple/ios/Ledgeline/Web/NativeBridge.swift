@@ -5,7 +5,7 @@ import WebKit
 
 // The native bridge contract (plans/42-mobile-app.md, "The native bridge
 // contract"). Every wire literal lives in this file, spelled out: a vitest on
-// the SPA side reads it and checks each one against `web/src/lib/native/`, so
+// the SPA side reads it and checks each one against `packages/ui/src/native/`, so
 // a rename on either side fails a test instead of silently emptying the bar.
 // swiftformat:disable redundantRawValues
 
@@ -116,7 +116,7 @@ enum NativeBridge {
         UIDevice.current.userInterfaceIdiom == .pad ? "pad" : "phone"
     }
 
-    /// The page's UI-scale event (`ZOOM_EVENT` in web/src/lib/theme/zoom.svelte.ts).
+    /// The page's UI-scale event (`ZOOM_EVENT` in packages/ui/src/theme/zoom.svelte.ts).
     static let zoomEvent = "ledgeline:zoom"
 
     /// The custom property the page reads the home indicator's height from

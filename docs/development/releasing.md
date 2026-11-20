@@ -121,7 +121,7 @@ spaNodeModulesHashes = {
 ```
 
 All three are currently correct. Any change to `web/package.json` or
-`web/bun.lock` invalidates **all three at once**, and you can only fix the one
+`bun.lock` invalidates **all three at once**, and you can only fix the one
 you are standing on — the other two come back as failures from CI and from a
 release dry run. Budget for that: a dependency bump is a three-round-trip
 change, not a one-liner.

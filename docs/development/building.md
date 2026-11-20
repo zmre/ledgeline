@@ -160,7 +160,7 @@ nix build .#packages.x86_64-darwin.spaNodeModules
 
 #### A stale pin is invisible until the cache drops the path
 
-**Re-pin every hash in the same commit that changes `web/bun.lock`.** This is
+**Re-pin every hash in the same commit that changes `bun.lock`.** This is
 easy to forget because forgetting it is silent: a fixed-output derivation's
 store path is derived from its `outputHash`, so while the OLD path is still in
 your store or on zmre.cachix.org, Nix substitutes it and never runs `bun
@@ -362,10 +362,10 @@ Services records the path it registered, so a default pointing at a `dist/` or
 
 Unlike `.#ledgeline` (which embeds the CI placeholder SPA), **`.#macApp` embeds
 the real SvelteKit UI**: the flake builds the SPA inside Nix — a fixed-output
-`bun install` derivation (`spaNodeModules`, its hash pinned from `web/bun.lock`)
+`bun install` derivation (`spaNodeModules`, its hash pinned from the workspace root's `bun.lock`)
 feeds an offline `vite build` (`spaBuild`), whose output is baked into a
 dedicated crane build of the binary. No prior `bun run build` is required. If
-`web/bun.lock` changes, re-pin `spaNodeModules.outputHash` (build once with a
+`bun.lock` changes, re-pin `spaNodeModules.outputHash` (build once with a
 fake hash; Nix prints the real one). The pinned hash captures the host
 platform's native deps (esbuild/rollup/@tailwindcss/oxide), so it is
 `aarch64-darwin`-specific.
@@ -537,4 +537,4 @@ engine or a browser. See [`web/README.md`](https://github.com/zmre/ledgeline/blo
 Two kinds of failure used to reach CI because a laptop couldn't see them:
 
 - **New advisories.** The `audit` and `spa-audit` jobs go red when an advisory is published, with no commit from us. They live in `.github/workflows/audit.yml`. `ci.yml` calls it on every PR, and it also runs daily on `main`, so drift shows up there first. The ignore lists, and the reason for each entry, live in `scripts/audit.sh`, which `just audit` shares. When a new advisory has a patch release, bump the lockfile instead of adding an ignore. See the note at the end of the `spa_audit` comment in that script.
-- **A stale `spaNodeModules` pin.** A Mac can't build the Linux tree, so `just spa-hash-check` fails when `web/bun.lock` changed since `origin/main` but the aarch64-darwin or x86_64-linux pin didn't. `just repin-spa-hashes` fixes it. It builds aarch64-darwin locally and x86_64-linux on `$LEDGELINE_LINUX_STORE` (default `ssh-ng://avalon`).
+- **A stale `spaNodeModules` pin.** A Mac can't build the Linux tree, so `just spa-hash-check` fails when `bun.lock` changed since `origin/main` but the aarch64-darwin or x86_64-linux pin didn't. `just repin-spa-hashes` fixes it. It builds aarch64-darwin locally and x86_64-linux on `$LEDGELINE_LINUX_STORE` (default `ssh-ng://avalon`).

@@ -60,7 +60,7 @@ An axum `Router` over an `AppState`. The library is what every host links; `main
 
 ### Native mode (the iOS app)
 
-The iOS app shows the same SPA bundle with its own navigation bar in place of the HTML header. Its document-start script sets `window.__LEDGELINE_NATIVE__ = {platform, idiom, version}` and the `ll-native` class on `<html>`; `isNative()` in `web/src/lib/native/` reads either. Every native-only path is gated on it, so the desktop app and a browser are untouched. The contract is in `plans/42-mobile-app.md`.
+The iOS app shows the same SPA bundle with its own navigation bar in place of the HTML header. Its document-start script sets `window.__LEDGELINE_NATIVE__ = {platform, idiom, version}` and the `ll-native` class on `<html>`; `isNative()` in `packages/ui/src/native/` (the UI package web/ shares with the invoicer) reads either. Every native-only path is gated on it, so the desktop app and a browser are untouched. The contract is in `plans/42-mobile-app.md`.
 
 - **Page to app.** `window.webkit.messageHandlers.ledgeline.postMessage(msg)` with `{type: "page", title, sections, actions, canGoBack}` (posted from the root layout after every navigation and whenever an action, an open overlay or the history depth changes, deduped), `{type: "share", filename, mime, base64}` for an export, and `{type: "haptic", style}`.
 - **App to page.** `window.ledgelineNative.navigate(sectionId)`, `.action(actionId)`, `.back()` and `.state()`. `back()` closes the topmost overlay, else goes back in in-app history, else returns `false` and the app shows its home screen.
