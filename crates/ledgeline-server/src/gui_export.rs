@@ -25,7 +25,11 @@ pub(super) fn submenu() -> Submenu {
     let export = Submenu::new("&Export", true);
     let qif = MenuItem::with_id(QIF_ID, "&QIF…", true, None);
     let csv = MenuItem::with_id(CSV_ID, "&CSV (posting rows)…", true, None);
-    super::log_menu("export menu", export.append_items(&[&qif, &csv]));
+    ledgeline_shell::gui::log_menu(
+        &ledgeline::APP,
+        "export menu",
+        export.append_items(&[&qif, &csv]),
+    );
     export
 }
 

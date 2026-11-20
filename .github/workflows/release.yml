@@ -661,8 +661,8 @@ jobs:
           fi
           echo "Staged SPA looks real ($(find crates/ledgeline-server/spa -type f | wc -l | tr -d ' ') files)."
 
-      # Sequential and explicit: `ledgeline` depends on `ledgeline-core`,
-      # so core has to exist on the registry first. `cargo publish` has waited
+      # Sequential and explicit: `ledgeline` depends on `ledgeline-shell`,
+      # which depends on `ledgeline-core`, so they go up in that order. `cargo publish` has waited
       # for its own upload to appear in the index since 1.66, so the second
       # command does not race the first.
       #
@@ -682,4 +682,5 @@ jobs:
             exit 0
           fi
           nix develop path:. --command cargo publish -p ledgeline-core --allow-dirty
+          nix develop path:. --command cargo publish -p ledgeline-shell --allow-dirty
           nix develop path:. --command cargo publish -p ledgeline --allow-dirty

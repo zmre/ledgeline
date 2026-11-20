@@ -13,7 +13,8 @@
 # truth, but three other places have to agree with it, and each drifts silently
 # in its own way:
 #
-#   * `[workspace.dependencies] ledgeline-core.version` — REQUIRED for
+#   * `[workspace.dependencies] ledgeline-core.version` and
+#     `ledgeline-shell.version` — REQUIRED for
 #     `cargo publish` (a path dependency with no version is rejected), and cargo
 #     has no `version.workspace` inheritance for it. A stale value here does not
 #     break any local build, because `path` wins inside the workspace. It breaks
@@ -50,6 +51,11 @@ read_workspace_version() {
 
 read_core_dep_version() {
     sed -n -E 's/^ledgeline-core = \{ path = "crates\/ledgeline-core", version = "([^"]+)" \}$/\1/p' \
+        "$CARGO_TOML" | head -1
+}
+
+read_shell_dep_version() {
+    sed -n -E 's/^ledgeline-shell = \{ path = "crates\/ledgeline-shell", version = "([^"]+)" \}$/\1/p' \
         "$CARGO_TOML" | head -1
 }
 
@@ -99,8 +105,10 @@ cmd_check() {
     }
 
     check_one "Cargo.toml [workspace.dependencies] ledgeline-core" "$(read_core_dep_version)"
+    check_one "Cargo.toml [workspace.dependencies] ledgeline-shell" "$(read_shell_dep_version)"
     check_one "web/package.json" "$(read_package_json_version)"
     check_one "Cargo.lock ledgeline-core" "$(read_lock_version ledgeline-core)"
+    check_one "Cargo.lock ledgeline-shell" "$(read_lock_version ledgeline-shell)"
     check_one "Cargo.lock ledgeline" "$(read_lock_version ledgeline)"
 
     if [ -n "$expected_tag" ]; then
@@ -149,6 +157,7 @@ cmd_set() {
     # same on both.
     perl -pi -e "s/^version = \"\Q$previous\E\"\$/version = \"$version\"/" "$CARGO_TOML"
     perl -pi -e "s/^(ledgeline-core = \{ path = \"crates\/ledgeline-core\", version = )\"[^\"]*\"( \})\$/\${1}\"$version\"\${2}/" "$CARGO_TOML"
+    perl -pi -e "s/^(ledgeline-shell = \{ path = \"crates\/ledgeline-shell\", version = )\"[^\"]*\"( \})\$/\${1}\"$version\"\${2}/" "$CARGO_TOML"
     # `unless \$done` so only the package's own version is touched, never a
     # `"version"` key nested deeper in the file.
     perl -pi -e 'BEGIN { our $done = 0 } if (!$done && s/^(\s*"version": ")[^"]*(",?)$/${1}'"$version"'${2}/) { $done = 1 }' "$PACKAGE_JSON"

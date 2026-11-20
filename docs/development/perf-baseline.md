@@ -705,7 +705,7 @@ rows appearing, and a hard scroll through them.
 ### 8.1 The probe
 
 A dev tool, inert unless asked for. When `LEDGELINE_PERF` names a script, the
-GUI (`mod perf` in `crates/ledgeline-server/src/gui.rs`) injects it into the
+GUI (`mod perf` in `crates/ledgeline-shell/src/gui.rs`) injects it into the
 WebView and prints every message it posts back as
 `PERF js <ms since launch> <json>`, plus its own milestones as
 `PERF rust <label> <ms since launch>` (`journal_loaded`, `window_built`,

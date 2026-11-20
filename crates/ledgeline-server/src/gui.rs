@@ -1,16 +1,21 @@
-//! Native desktop shell (default `gui` feature): a tao window + wry webview that
-//! renders the in-process SPA, with muda menus and an rfd file picker.
+//! Ledgeline's desktop window (default `gui` feature): the shared shell's boot
+//! pieces ([`ledgeline_shell::gui`]) strung together around [`AppState`].
 //!
-//! Boot sequence (mirrors the proven order in zmre/mbr-markdown-browser):
+//! Boot sequence (the shell's, see its docs):
 //!  1. Parse the journal → build the shared [`AppState`].
-//!  2. Spawn axum on `127.0.0.1:0` (ephemeral) on a Tokio runtime; read the
-//!     ACTUAL bound port back over a `oneshot`.
-//!  3. On the MAIN thread (native UI requires it): build the tao `EventLoop` +
+//!  2. [`shell::spawn_server`]: axum on `127.0.0.1:0` (ephemeral) on a Tokio
+//!     runtime; the ACTUAL bound port comes back over a `oneshot`.
+//!  3. On the MAIN thread (native UI requires it): the menu bar, the tao
 //!     window, then the wry webview pointed at `http://127.0.0.1:<port>/`.
 //!  4. muda menus drive actions: File→Open journal… (rfd picker → reparse +
 //!     hot-swap the shared state + reload the webview) and View→Reload/Back/
 //!     Forward/Zoom (`webview` script/navigation). The Tokio runtime keeps serving on
 //!     its worker threads while the (diverging) event loop owns the main thread.
+//!
+//! What is Ledgeline's here, and not the shell's: the journal, File → New (the
+//! plan 39 wizard), File → Export, the "Make Ledgeline the Default" command,
+//! which outside pages may open in the system browser, and the event loop that
+//! ties them to the state.
 //!
 //! Because the SPA is served same-origin and the journal is hot-swapped in place,
 //! File→Open needs NO server restart: the ephemeral port is stable for the whole
@@ -25,42 +30,53 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use ledgeline::{
-    AccessToken, AppDirs, AppState, BootAppearance, DesktopHost, boot_appearance, recents,
-    router_with_security, token_init_script,
+    APP, AccessToken, AppState, DesktopHost, boot_appearance, recents, router_with_security,
+    token_init_script,
 };
-use muda::{
-    Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
-    accelerator::{Accelerator, Code, Modifiers},
+use ledgeline_shell::gui::{
+    self as shell, AppMenu, MenuSpec, RecentMenu, Shortcut, appearance_init_script, perf,
 };
+use muda::{IsMenuItem, MenuEvent};
 use notify::RecommendedWatcher;
-use tao::{
-    dpi::LogicalSize,
-    event::{Event, WindowEvent},
-    event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy},
-    window::WindowBuilder,
-};
 #[cfg(target_os = "linux")]
 use tao::{
     event::ElementState,
     keyboard::{Key, ModifiersState},
 };
-use url::Url;
-use wry::{NewWindowResponse, WebViewBuilder};
+use tao::{
+    event::{Event, WindowEvent},
+    event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy},
+};
 
 use crate::{AppError, Cli};
 
 // plan 39 export: File → Export → QIF… / CSV (posting rows)….
 #[path = "gui_export.rs"]
-mod export_menu;
-
-// Ledgeline ▸ Make Ledgeline the Default for Journal Files.
-#[cfg(target_os = "macos")]
-#[path = "gui_file_assoc.rs"]
-mod file_assoc;
+mod export;
 
 /// How many recent journals the File → "Open Recent" submenu shows (the on-disk
 /// store keeps more; this is just the visible slice).
 const RECENT_MENU_LIMIT: usize = 5;
+
+/// The content types Ledgeline ▸ "Make Ledgeline the Default for Journal Files"
+/// makes it the default for: every type in `assets/Info.plist.in`'s
+/// `Owner`-ranked document type (a unit test holds the two lists together). The
+/// `Alternate` ones (`.ledger`, `.j`) are left alone on purpose; see the
+/// plist's comment.
+#[cfg(target_os = "macos")]
+const DEFAULT_CONTENT_TYPES: [&str; 2] = ["com.zmre.ledgeline.journal", "org.ledger-cli.journal"];
+
+/// Ledgeline ▸ "Make Ledgeline the Default for Journal Files".
+#[cfg(target_os = "macos")]
+static MAKE_DEFAULT: shell::file_assoc::DefaultHandler = shell::file_assoc::DefaultHandler {
+    app: &APP,
+    menu_id: "make-default-for-journals",
+    menu_label: "Make Ledgeline the Default for Journal Files",
+    content_types: &DEFAULT_CONTENT_TYPES,
+    done_title: "Ledgeline is now the default",
+    done_text: "Double-clicking a .journal or .hledger file in Finder now opens it in Ledgeline.",
+    failed_title: "Could not make Ledgeline the default",
+};
 
 /// Custom events routed through the tao event loop from other threads (the
 /// global muda menu handler and the rfd file-picker thread).
@@ -97,7 +113,7 @@ impl DesktopHost for GuiHost {
 }
 
 /// GUI entry point: stand up the in-process server, then run the window.
-pub(crate) fn run(cli: &Cli, app_dirs: AppDirs) -> Result<(), AppError> {
+pub(crate) fn run(cli: &Cli, app_dirs: ledgeline::AppDirs) -> Result<(), AppError> {
     perf::start();
     // Same posture the headless server takes (token + Host guard, non-loopback
     // binds refused), decided before the journal is opened. The token is NOT
@@ -147,42 +163,15 @@ pub(crate) fn run(cli: &Cli, app_dirs: AppDirs) -> Result<(), AppError> {
     // GUI mode picks an ephemeral port unless one was explicitly requested.
     let port = cli.port.unwrap_or(0);
 
-    let (port_tx, port_rx) = tokio::sync::oneshot::channel::<Option<u16>>();
+    // The Host guard has to name the port we actually got, which is only
+    // knowable once bound (GUI mode binds an ephemeral port), so the router is
+    // built there.
     let server_state = state.clone();
-    let server_host = host.clone();
-
-    // Spawn axum; the JoinHandle is kept alive on this frame (the diverging event
-    // loop below never returns, so the runtime keeps serving for the session).
-    let _server = runtime.spawn(async move {
-        let addr = format!("{server_host}:{port}");
-        match tokio::net::TcpListener::bind(&addr).await {
-            Ok(listener) => {
-                let bound = listener.local_addr().map(|a| a.port()).ok();
-                let _ = port_tx.send(bound);
-                // The Host guard has to name the port we actually got, which is
-                // only knowable here (GUI mode binds an ephemeral port).
-                let security = match bound.map(|port| security_plan.build(port)) {
-                    Some(Ok(security)) => security,
-                    Some(Err(error)) => {
-                        eprintln!("ledgeline: security setup failed: {error}");
-                        return;
-                    }
-                    // The bound port is unknown, so the Host guard cannot be
-                    // pinned; refuse to serve rather than serve unguarded. The
-                    // main thread already sees `None` and reports ServerStart.
-                    None => return,
-                };
-                if let Err(error) =
-                    axum::serve(listener, router_with_security(server_state, security)).await
-                {
-                    eprintln!("ledgeline: server error: {error}");
-                }
-            }
-            Err(error) => {
-                eprintln!("ledgeline: bind error on {addr}: {error}");
-                let _ = port_tx.send(None);
-            }
-        }
+    let port_rx = shell::spawn_server(&APP, &runtime, &host, port, move |bound| {
+        security_plan
+            .build(bound)
+            .map(|security| router_with_security(server_state, security))
+            .map_err(|error| error.to_string())
     });
 
     // Plan 41: the background price updater, on the same runtime and the same
@@ -227,7 +216,8 @@ pub(crate) fn run(cli: &Cli, app_dirs: AppDirs) -> Result<(), AppError> {
             current: editor_path.unwrap_or_default(),
         },
     )
-    // `runtime` and `_server` stay live on this frame while the event loop runs.
+    // `runtime` and the server it spawned stay live on this frame while the
+    // event loop runs.
 }
 
 // plan 39 wizard
@@ -262,504 +252,6 @@ struct GuiContext {
     current: PathBuf,
 }
 
-/// Menu bar plus the handles for the custom items we match events against.
-struct AppMenu {
-    menu_bar: Menu,
-    // plan 39 wizard
-    new: MenuItem,
-    open: MenuItem,
-    /// File → "Open Recent" submenu; repopulated as journals are opened.
-    recent: Submenu,
-    reload: MenuItem,
-    back: MenuItem,
-    forward: MenuItem,
-    zoom_in: MenuItem,
-    zoom_out: MenuItem,
-    actual_size: MenuItem,
-    /// Linux only: muda's predefined Quit is inert on GTK, so we dispatch our
-    /// own. Elsewhere the native predefined item handles it and there is
-    /// nothing to match against.
-    #[cfg(target_os = "linux")]
-    quit: MenuItem,
-}
-
-// Referenced only by the macOS app menu's About item, so it does not exist on
-// other platforms (where it would be dead code under `-D warnings`).
-#[cfg(target_os = "macos")]
-fn about_metadata() -> muda::AboutMetadata {
-    muda::AboutMetadata {
-        name: Some("Ledgeline".to_string()),
-        version: Some(env!("CARGO_PKG_VERSION").to_string()),
-        ..Default::default()
-    }
-}
-
-/// Log (rather than crash on) a menu-construction failure — a degraded menu is
-/// cosmetic; aborting startup would be far worse.
-fn log_menu(what: &str, result: Result<(), muda::Error>) {
-    if let Err(error) = result {
-        eprintln!("ledgeline: failed to build {what}: {error}");
-    }
-}
-
-/// The modifier that means "the app's command key": Cmd on macOS, Ctrl on Linux
-/// and Windows.
-///
-/// [`Modifiers::META`] is Cmd on macOS but the **Super/Windows key** elsewhere,
-/// which belongs to the desktop rather than to us — a tiling compositor such as
-/// Hyprland binds nearly the whole Super range, so a `Super+O` accelerator does
-/// not merely render as a wrong-looking "Meta+O" in the menu, it never fires at
-/// all. Every accelerator that is Cmd-something on macOS goes through this.
-#[cfg(target_os = "macos")]
-const COMMAND_MODIFIER: Modifiers = Modifiers::META;
-#[cfg(not(target_os = "macos"))]
-const COMMAND_MODIFIER: Modifiers = Modifiers::CONTROL;
-
-/// An action reachable from more than one route.
-///
-/// The menu route and (on Linux) the keyboard route both resolve to one of
-/// these and both funnel into a single `perform_shortcut`, so each action has
-/// exactly one implementation and the two routes cannot drift apart.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Shortcut {
-    // plan 39 wizard
-    New,
-    Open,
-    Reload,
-    Back,
-    Forward,
-    /// View → Zoom In / Zoom Out / Actual Size. The SPA owns the scale (its
-    /// steps, and saving it as a preference), so these only tell it which way.
-    Zoom(Zoom),
-    /// Linux only — see `quit` in [`build_menu`] for why this is not
-    /// `PredefinedMenuItem::quit`.
-    ///
-    /// The variant itself is `cfg`-gated, not just its construction sites:
-    /// macOS and Windows quit through muda's native predefined item, which
-    /// works there, so nothing on those platforms ever builds a `Quit` and an
-    /// ungated variant is dead code under `-D warnings`.
-    #[cfg(target_os = "linux")]
-    Quit,
-}
-
-/// Which way a View-menu zoom goes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Zoom {
-    In,
-    Out,
-    Reset,
-}
-
-/// The script that hands a zoom to the SPA: a `ledgeline:zoom` event on
-/// `window`, which `web/src/lib/theme/zoom.svelte.ts` listens for and turns into
-/// the same step the keyboard takes.
-///
-/// One press, one step. The menu's accelerators are the same keys the SPA's
-/// keymap binds, and what keeps a single press from zooming twice is which of
-/// the two sees it — per platform:
-///
-/// - **macOS**: WKWebView offers a Cmd key-equivalent to the PAGE first and only
-///   walks the main menu if the page leaves it unhandled. The keymap
-///   `preventDefault`s its zoom keys, so the menu item fires only when it is
-///   clicked (or the page is not up to take the key).
-/// - **Linux**: with the menu bar shown its `GtkAccelGroup` consumes the key
-///   before the web view gets it; with the bar hidden (the default) the
-///   accelerator is dead and only the page sees the key.
-/// - **Windows**: WebView2 handles keys in its own browser process and wry does
-///   not forward them to the host's accelerator table, so the menu is not
-///   expected to see a key the page has focus for. (wry's default
-///   `with_hotkeys_zoom(false)` also turns WebView2's own Ctrl +/- page zoom off,
-///   which would otherwise stack a page zoom on top of the interface scale.)
-///
-/// None of that is testable from here, so the SPA also drops the same action
-/// arriving from the other route within a few hundred milliseconds.
-const fn zoom_script(zoom: Zoom) -> &'static str {
-    match zoom {
-        Zoom::In => "window.dispatchEvent(new CustomEvent('ledgeline:zoom', {detail: 'in'}))",
-        Zoom::Out => "window.dispatchEvent(new CustomEvent('ledgeline:zoom', {detail: 'out'}))",
-        Zoom::Reset => "window.dispatchEvent(new CustomEvent('ledgeline:zoom', {detail: 'reset'}))",
-    }
-}
-
-/// Kill the WebKit web process instead of letting it exit on its own.
-///
-/// The web process is a separate OS process. When the UI process goes away it
-/// notices the IPC connection close and calls `exit()`, which runs `_dl_fini`
-/// and the atexit handlers — and that unwind races the compositor/EGL threads
-/// that are still live if the page has not finished loading. Observed aborting
-/// there in two shapes, both heap corruption reported by glibc:
-///
-/// ```text
-/// abort ← malloc_printerr ← _int_free ← __eglFini ← _dl_fini ← exit
-/// abort ← malloc_printerr ← _int_free ← _dl_deallocate_tls ← __nptl_free_stacks
-/// ```
-///
-/// `webkit_web_view_terminate_web_process()` SIGKILLs it instead, so those
-/// handlers never run and the abort is impossible BY CONSTRUCTION rather than
-/// by winning a race. Nothing is lost by being abrupt: we only call this once
-/// the user has asked to quit, at which point the page is being thrown away.
-///
-/// Not a fix for the underlying WebKitGTK/glvnd bug, which also shows up in
-/// other apps on this stack — just a refusal to walk into it.
-#[cfg(target_os = "linux")]
-fn stop_web_process(webview: &wry::WebView) {
-    use webkit2gtk::WebViewExt;
-    use wry::WebViewExtUnix;
-
-    webview.webview().terminate_web_process();
-}
-
-/// Map a key press to an action, for the Linux keyboard route used while the
-/// menu bar is hidden.
-///
-/// Pure, and takes the modifier state as a parameter rather than reading it
-/// from a window, so the whole table is unit-testable without standing up an
-/// event loop.
-///
-/// The modifier tests are exact rather than "contains": `Ctrl+Alt+O` is a
-/// different chord from `Ctrl+O` and must not be mistaken for it. Shift is
-/// deliberately not examined — it is already folded into `logical_key`, so a
-/// shifted `o` simply arrives as `Key::Character("O")`, which is why the
-/// character comparison is ASCII-case-insensitive.
-#[cfg(target_os = "linux")]
-fn linux_shortcut_for(key: &Key<'_>, modifiers: ModifiersState) -> Option<Shortcut> {
-    let ctrl = modifiers.control_key() && !modifiers.alt_key() && !modifiers.super_key();
-    let alt = modifiers.alt_key() && !modifiers.control_key() && !modifiers.super_key();
-    match key {
-        // plan 39 wizard
-        Key::Character(character) if ctrl && character.eq_ignore_ascii_case("n") => {
-            Some(Shortcut::New)
-        }
-        Key::Character(character) if ctrl && character.eq_ignore_ascii_case("o") => {
-            Some(Shortcut::Open)
-        }
-        Key::Character(character) if ctrl && character.eq_ignore_ascii_case("r") => {
-            Some(Shortcut::Reload)
-        }
-        // Needed here as well as on the menu item: with the bar hidden the
-        // menu's accelerator is dead, and the title bar's close button is
-        // hidden too, so this is the only way out short of asking the
-        // compositor to close the window.
-        Key::Character(character) if ctrl && character.eq_ignore_ascii_case("q") => {
-            Some(Shortcut::Quit)
-        }
-        Key::ArrowLeft if alt => Some(Shortcut::Back),
-        Key::ArrowRight if alt => Some(Shortcut::Forward),
-        _ => None,
-    }
-}
-
-/// Stop GTK from swallowing `F10` for menu-bar traversal.
-///
-/// `gtk-menu-bar-accel` defaults to `F10`, and a *visible* menu bar consumes
-/// that key to move keyboard focus into itself — so without this the toggle
-/// works in one direction only: `F10` reveals the bar, and the next `F10` opens
-/// the File menu instead of hiding it again.
-///
-/// `find_property` first because `set_property` PANICS on a name the object does
-/// not have, and this property has been deprecated since GTK 3.10 — so it may
-/// simply be gone in a future GTK. What is given up is GTK's keyboard route
-/// *into* a visible bar; every item still has its own accelerator.
-#[cfg(target_os = "linux")]
-fn disable_gtk_menu_bar_accel() {
-    use gtk::prelude::*;
-
-    if let Some(settings) = gtk::Settings::default()
-        && settings.find_property("gtk-menu-bar-accel").is_some()
-    {
-        settings.set_property("gtk-menu-bar-accel", None::<String>);
-    }
-}
-
-/// Show or hide the desktop chrome: the in-window `GtkMenuBar` *and* the window
-/// decorations (title bar with its close/minimise buttons).
-///
-/// Both are hidden by default on Linux and both come back together on `F10`.
-/// They are toggled as ONE unit deliberately: the SPA already draws its own
-/// header with the app name, so the title bar is duplicate furniture under a
-/// tiling compositor — but a window with neither decorations nor a menu bar has
-/// no close button and no File→Quit on a *floating* desktop, which would be a
-/// trap. Tying them together guarantees there is always one key that brings
-/// back a way out.
-///
-/// `gtk_widget_show_all` recurses the whole widget tree, so any later
-/// `show_all()` on the window would undo a plain `hide()`. `set_no_show_all` is
-/// what makes the hide stick; it has to be cleared again before showing, or the
-/// bar would refuse to come back.
-///
-/// `gtk_menubar_for_gtk_window` takes `self` by value, but `Menu` is a `Clone`
-/// handle around a shared inner, so the clone is a refcount bump rather than a
-/// second menu.
-#[cfg(target_os = "linux")]
-fn set_window_chrome_visible(menu_bar: &Menu, window: &tao::window::Window, visible: bool) {
-    use gtk::prelude::*;
-    use tao::platform::unix::WindowExtUnix;
-
-    if let Some(bar) = menu_bar
-        .clone()
-        .gtk_menubar_for_gtk_window(window.gtk_window())
-    {
-        bar.set_no_show_all(!visible);
-    }
-    log_menu(
-        "menu bar visibility",
-        if visible {
-            menu_bar.show_for_gtk_window(window.gtk_window())
-        } else {
-            menu_bar.hide_for_gtk_window(window.gtk_window())
-        },
-    );
-    window.set_decorations(visible);
-}
-
-/// Build the application menu bar (macOS app menu + File/Edit/View).
-fn build_menu() -> AppMenu {
-    let menu_bar = Menu::new();
-
-    #[cfg(target_os = "macos")]
-    let app_menu = {
-        let app_menu = Submenu::new("Ledgeline", true);
-        log_menu(
-            "app menu",
-            app_menu.append_items(&[
-                &PredefinedMenuItem::about(None, Some(about_metadata())),
-                &PredefinedMenuItem::separator(),
-                &file_assoc::menu_item(),
-                &PredefinedMenuItem::separator(),
-                &PredefinedMenuItem::services(None),
-                &PredefinedMenuItem::separator(),
-                &PredefinedMenuItem::hide(None),
-                &PredefinedMenuItem::hide_others(None),
-                &PredefinedMenuItem::show_all(None),
-                &PredefinedMenuItem::separator(),
-                &PredefinedMenuItem::quit(None),
-            ]),
-        );
-        app_menu
-    };
-
-    let file_menu = Submenu::new("&File", true);
-    // plan 39 wizard: File → New… opens the new-ledger wizard.
-    let new = MenuItem::with_id(
-        "new",
-        "&New…",
-        true,
-        Some(Accelerator::new(COMMAND_MODIFIER, Code::KeyN)),
-    );
-    let open = MenuItem::with_id(
-        "open",
-        "&Open journal…",
-        true,
-        Some(Accelerator::new(COMMAND_MODIFIER, Code::KeyO)),
-    );
-    // Populated on demand by `rebuild_recent` (empty until then).
-    let recent = Submenu::new("Open &Recent", true);
-    log_menu(
-        "file menu",
-        file_menu.append_items(&[
-            &new, // plan 39 wizard
-            &open,
-            &recent,
-            &PredefinedMenuItem::separator(),
-        ]),
-    );
-    // plan 39 export: File → Export, right after Open Recent wherever that is.
-    let after_recent = file_menu
-        .items()
-        .iter()
-        .position(|item| item.id() == recent.id())
-        .map_or(0, |index| index + 1);
-    log_menu(
-        "file menu export",
-        file_menu.insert(&export_menu::submenu(), after_recent),
-    );
-    // muda implements only Separator/Copy/Cut/Paste/SelectAll/About on GTK —
-    // `close_window` and `quit` are BOTH documented "Linux: Unsupported" and
-    // are silently inert there. Shipping them on Linux put two dead entries in
-    // the File menu and left the window-manager close button as the only way
-    // out of the app, which stopped being obvious once the title bar was
-    // hidden by default. So Linux gets a real menu item we dispatch ourselves,
-    // and macOS/Windows keep the native ones that do work.
-    #[cfg(not(target_os = "linux"))]
-    log_menu(
-        "file menu close",
-        file_menu.append(&PredefinedMenuItem::close_window(Some("Close Window"))),
-    );
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    log_menu(
-        "file menu quit",
-        file_menu.append_items(&[
-            &PredefinedMenuItem::separator(),
-            &PredefinedMenuItem::quit(None),
-        ]),
-    );
-    #[cfg(target_os = "linux")]
-    let quit = {
-        let quit = MenuItem::with_id(
-            "quit",
-            "&Quit",
-            true,
-            Some(Accelerator::new(COMMAND_MODIFIER, Code::KeyQ)),
-        );
-        log_menu("file menu quit", file_menu.append(&quit));
-        quit
-    };
-
-    // Standard clipboard items so Cmd/Ctrl+C/V/X work inside the webview.
-    let edit_menu = Submenu::new("&Edit", true);
-    log_menu(
-        "edit menu",
-        edit_menu.append_items(&[
-            &PredefinedMenuItem::undo(None),
-            &PredefinedMenuItem::redo(None),
-            &PredefinedMenuItem::separator(),
-            &PredefinedMenuItem::cut(None),
-            &PredefinedMenuItem::copy(None),
-            &PredefinedMenuItem::paste(None),
-            &PredefinedMenuItem::select_all(None),
-        ]),
-    );
-
-    let view_menu = Submenu::new("&View", true);
-    let reload = MenuItem::with_id(
-        "reload",
-        "&Reload",
-        true,
-        Some(Accelerator::new(COMMAND_MODIFIER, Code::KeyR)),
-    );
-    // Back/Forward are the one pair where the platforms disagree about the KEY
-    // and not just the modifier: macOS browsers use Cmd+[ / Cmd+], while Linux
-    // and Windows use Alt+← / Alt+→. So this is not a COMMAND_MODIFIER swap.
-    #[cfg(target_os = "macos")]
-    let (back_accel, forward_accel) = (
-        Accelerator::new(COMMAND_MODIFIER, Code::BracketLeft),
-        Accelerator::new(COMMAND_MODIFIER, Code::BracketRight),
-    );
-    #[cfg(not(target_os = "macos"))]
-    let (back_accel, forward_accel) = (
-        Accelerator::new(Modifiers::ALT, Code::ArrowLeft),
-        Accelerator::new(Modifiers::ALT, Code::ArrowRight),
-    );
-    let back = MenuItem::with_id("back", "&Back", true, Some(back_accel));
-    let forward = MenuItem::with_id("forward", "&Forward", true, Some(forward_accel));
-    // Cmd/Ctrl `=` rather than `+`: `=` is the unshifted key on a US layout, the
-    // one browsers put on Zoom In. The SPA's keymap also takes `+`, for layouts
-    // with a dedicated `+` key; see `zoom_script` for why a press never counts
-    // twice.
-    let zoom_in = MenuItem::with_id(
-        "zoom-in",
-        "Zoom &In",
-        true,
-        Some(Accelerator::new(COMMAND_MODIFIER, Code::Equal)),
-    );
-    let zoom_out = MenuItem::with_id(
-        "zoom-out",
-        "Zoom &Out",
-        true,
-        Some(Accelerator::new(COMMAND_MODIFIER, Code::Minus)),
-    );
-    let actual_size = MenuItem::with_id(
-        "actual-size",
-        "&Actual Size",
-        true,
-        Some(Accelerator::new(COMMAND_MODIFIER, Code::Digit0)),
-    );
-    log_menu(
-        "view menu",
-        view_menu.append_items(&[
-            &reload,
-            &PredefinedMenuItem::separator(),
-            &back,
-            &forward,
-            &PredefinedMenuItem::separator(),
-            &zoom_in,
-            &zoom_out,
-            &actual_size,
-        ]),
-    );
-
-    #[cfg(target_os = "macos")]
-    log_menu(
-        "menu bar",
-        menu_bar.append_items(&[&app_menu, &file_menu, &edit_menu, &view_menu]),
-    );
-    #[cfg(not(target_os = "macos"))]
-    log_menu(
-        "menu bar",
-        menu_bar.append_items(&[&file_menu, &edit_menu, &view_menu]),
-    );
-
-    AppMenu {
-        menu_bar,
-        new, // plan 39 wizard
-        open,
-        recent,
-        reload,
-        back,
-        forward,
-        zoom_in,
-        zoom_out,
-        actual_size,
-        #[cfg(target_os = "linux")]
-        quit,
-    }
-}
-
-/// Repopulate the File → "Open Recent" submenu from the recents store, excluding
-/// the currently-open journal (`current`), and refresh the id→path map used to
-/// dispatch a click. Called at startup and after every successful open so the
-/// list always reflects the latest history.
-fn rebuild_recent(
-    dirs: &AppDirs,
-    submenu: &Submenu,
-    map: &RefCell<Vec<(MenuId, PathBuf)>>,
-    current: Option<&Path>,
-) {
-    // Clear existing entries (remove index 0 until the submenu is empty) first.
-    while submenu.remove_at(0).is_some() {}
-
-    let recents: Vec<PathBuf> = recents::list(dirs)
-        .into_iter()
-        .filter(|path| Some(path.as_path()) != current)
-        .take(RECENT_MENU_LIMIT)
-        .collect();
-
-    if recents.is_empty() {
-        // A disabled placeholder so an empty submenu still reads clearly.
-        log_menu(
-            "open-recent submenu",
-            submenu.append(&MenuItem::new("No recent journals", false, None)),
-        );
-        map.borrow_mut().clear();
-        return;
-    }
-
-    let mut new_map = Vec::with_capacity(recents.len());
-    for (index, path) in recents.iter().enumerate() {
-        let item = MenuItem::with_id(
-            format!("recent-{index}"),
-            recents::display_label(path),
-            true,
-            None,
-        );
-        new_map.push((item.id().clone(), path.clone()));
-        log_menu("open-recent submenu", submenu.append(&item));
-    }
-    *map.borrow_mut() = new_map;
-}
-
-/// Should the WebView be allowed to navigate to `candidate`?
-///
-/// Only inside our own in-process origin. The window has no address bar, so an
-/// unconstrained WebView would happily render an attacker's page as if it were
-/// the app — and that page would then be same-origin with nothing, but would
-/// still be the user's whole visible UI. `base` is `http://host:port/`, and the
-/// required trailing slash is what stops `http://127.0.0.1:5000@evil.example/`
-/// from passing as a prefix match.
-fn navigation_allowed(base: &str, candidate: &str) -> bool {
-    candidate == base.trim_end_matches('/') || candidate.starts_with(base)
-}
-
 /// The published docs site, one of the few places outside the app the SPA links to.
 const DOCS_HOST: &str = "zmre.github.io";
 const DOCS_PATH: &str = "/ledgeline/";
@@ -774,17 +266,6 @@ const SIMPLEFIN_HOSTS: [&str; 4] = [
     "simplefin.org",
 ];
 
-/// `raw` re-serialized when it is a plain https URL: no port, no credentials.
-fn plain_https(raw: &str) -> Option<Url> {
-    let url = Url::parse(raw.trim()).ok()?;
-    let plain = url.scheme() == "https"
-        && url.host_str().is_some()
-        && url.port().is_none()
-        && url.username().is_empty()
-        && url.password().is_none();
-    plain.then_some(url)
-}
-
 /// `candidate`, re-serialized, when it is a page the webview may hand to the
 /// system browser: the published docs site, SimpleFIN's, or exactly one of
 /// `saved` — the bank download pages saved for the open ledger (plan 43). Both
@@ -793,170 +274,23 @@ fn plain_https(raw: &str) -> Option<Url> {
 /// blocked: a link the SPA did not mean to show (or one injected into it) must
 /// not become a way to launch arbitrary URLs.
 fn external_url(candidate: &str, saved: impl FnOnce() -> Vec<String>) -> Option<String> {
-    let url = plain_https(candidate)?;
+    let url = shell::plain_https(candidate)?;
     let host = url.host_str()?;
     let known = (host == DOCS_HOST && url.path().starts_with(DOCS_PATH))
         || SIMPLEFIN_HOSTS.contains(&host)
         || saved()
             .iter()
-            .filter_map(|page| plain_https(page))
+            .filter_map(|page| shell::plain_https(page))
             .any(|page| page == url);
     known.then(|| url.to_string())
-}
-
-/// Open a page (already vetted by [`external_url`]) in the user's
-/// browser. The URL is one argument to a fixed program — no shell.
-fn open_in_browser(url: &str) {
-    #[cfg(target_os = "macos")]
-    let program = "/usr/bin/open";
-    #[cfg(target_os = "linux")]
-    let program = "xdg-open";
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        eprintln!("ledgeline: opening {url} is not supported on this platform");
-        return;
-    }
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    if let Err(error) = std::process::Command::new(program).arg(url).spawn() {
-        eprintln!("ledgeline: could not open {url}: {error}");
-    }
 }
 
 /// Send `candidate` to the system browser when [`external_url`] allows it.
 /// Returns whether it did. The page never loads in the app's own window.
 fn open_if_external(state: &AppState, candidate: &str) -> bool {
     external_url(candidate, || ledgeline::saved_download_pages(state))
-        .map(|url| open_in_browser(&url))
+        .map(|url| shell::open_in_browser(&APP, &url))
         .is_some()
-}
-
-/// Pick the one journal to open from the URLs macOS delivered with a document
-/// launch ([`Event::Opened`]).
-///
-/// Split out as a pure function so it is testable without standing up an event
-/// loop. `Url::to_file_path` is doing the real work: it rejects non-`file://`
-/// URLs (a deeplink scheme we have not implemented — skipped, not fatal, so a
-/// real document later in the same batch still wins) and it undoes the
-/// percent-encoding, which matters because Finder escapes spaces and a journal
-/// under "My Books" would otherwise resolve to a path that does not exist.
-///
-/// Only the FIRST resolvable path is returned: Ledgeline is single-journal,
-/// single-window, so selecting several files in Finder and hitting Open cannot
-/// be honoured in full. The caller logs the ones it drops.
-fn first_journal_path(urls: &[Url]) -> Option<PathBuf> {
-    urls.iter().find_map(|url| url.to_file_path().ok())
-}
-
-/// Seeds the SPA's first-paint cache (`ledgeline.appearance`, read by the
-/// boot script in `app.html`) with the saved theme and scale (plan 39).
-///
-/// The cache lives in localStorage, which is per origin, and the desktop
-/// origin's port changes on every launch, so without this a saved theme would
-/// flash the default for a frame on each start. Seeded ONCE per webview
-/// session (a sessionStorage marker): init scripts run again on every reload,
-/// and by then the SPA has written newer values than these launch-time ones.
-fn appearance_init_script(origin: &str, appearance: &BootAppearance) -> String {
-    let literal = |value: &str| serde_json::Value::from(value).to_string();
-    let cache = serde_json::to_string(appearance).unwrap_or_else(|_| "null".to_string());
-    format!(
-        "if (window.location.origin === {origin}) {{ try {{ \
-         if (!sessionStorage.getItem(\"ledgeline.appearance.seeded\")) {{ \
-         localStorage.setItem(\"ledgeline.appearance\", {cache}); \
-         sessionStorage.setItem(\"ledgeline.appearance.seeded\", \"1\"); }} \
-         }} catch (e) {{}} }}",
-        origin = literal(origin),
-        cache = literal(&cache),
-    )
-}
-
-/// Build the wry webview for `window`, pointed at `url`, with `token` handed to
-/// pages on `url`'s origin (see [`token_init_script`]).
-fn build_webview(
-    window: &tao::window::Window,
-    url: &str,
-    start: &str,
-    token: &AccessToken,
-    appearance: &BootAppearance,
-    state: &AppState,
-) -> Result<wry::WebView, AppError> {
-    let base = url.to_string();
-    let (navigating, new_window) = (state.clone(), state.clone());
-    let origin = Url::parse(url)
-        .map_err(|error| AppError::Gui(format!("parsing the webview url: {error}")))?
-        .origin()
-        .ascii_serialization();
-    let builder = WebViewBuilder::new()
-        .with_initialization_script(token_init_script(&origin, token))
-        .with_initialization_script(appearance_init_script(&origin, appearance))
-        .with_url(start)
-        .with_navigation_handler(move |candidate| {
-            let allowed = navigation_allowed(&base, &candidate);
-            // A docs, SimpleFIN or saved download-page link leaves the webview
-            // where it is and opens in the user's browser instead.
-            if !allowed && !open_if_external(&navigating, &candidate) {
-                eprintln!("ledgeline: blocked navigation to {candidate}");
-            }
-            allowed
-        })
-        // No pop-ups at all: a new window would be a second WebView outside the
-        // navigation handler above. A docs, SimpleFIN or saved download-page
-        // link (`target=_blank`) goes to the user's browser instead.
-        .with_new_window_req_handler(move |candidate, _features| {
-            if !open_if_external(&new_window, &candidate) {
-                eprintln!("ledgeline: blocked new window for {candidate}");
-            }
-            NewWindowResponse::Deny
-        })
-        // Every xlsx export is a browser download. wry's default handler accepts
-        // it into ~/Downloads with no sign that anything happened, so a click
-        // looked like a no-op; ask where to save instead, the way a desktop app
-        // does.
-        .with_download_started_handler(|_url, destination| choose_download_destination(destination))
-        .with_download_completed_handler(|_url, path, success| {
-            if !success {
-                show_download_error(path.as_deref());
-            }
-        });
-    // Dev-only: the launch/scroll probe, when `LEDGELINE_PERF` names one.
-    let builder = match perf::script() {
-        Some(script) => builder
-            .with_initialization_script(script)
-            .with_ipc_handler(|request| perf::on_message(request.body())),
-        None => builder,
-    };
-
-    #[cfg(not(target_os = "linux"))]
-    let webview = builder
-        .build(window)
-        .map_err(|error| AppError::Gui(format!("creating webview: {error}")))?;
-    #[cfg(target_os = "linux")]
-    let webview = {
-        use tao::platform::unix::WindowExtUnix;
-        // `build_gtk` lives on this extension trait; it must be in scope (Linux).
-        use wry::WebViewBuilderExtUnix;
-        // The WebView goes in the window's DEFAULT VBOX, not in the window.
-        // A GtkApplicationWindow is a GtkBin — exactly one child — and tao has
-        // already put a GtkBox there, which is also where muda's menu bar goes
-        // (`init_for_gtk_window`). Handing the WebView to the window instead
-        // makes GTK refuse it and silently drop it, leaving a menu bar with no
-        // page under it plus a `Gtk-WARNING: … can only contain one widget at a
-        // time; it already contains a widget of type GtkBox`. Ordering is no
-        // escape: the vbox exists from window creation, so whichever widget is
-        // offered to the window loses.
-        //
-        // Packing works out because the two crates agree on the box: wry
-        // recognises a `gtk::Box` and uses `pack_start(webview, true, true, 0)`
-        // so the page expands, while muda packs the bar `(false, false)` and
-        // reorders it to position 0. The `None` arm is unreachable unless the
-        // window was built `with_default_vbox(false)`, and keeps the match
-        // total without a panic.
-        match window.default_vbox() {
-            Some(vbox) => builder.build_gtk(vbox),
-            None => builder.build_gtk(window.gtk_window()),
-        }
-        .map_err(|error| AppError::Gui(format!("creating webview: {error}")))?
-    };
-    Ok(webview)
 }
 
 /// Show the rfd file picker on a background thread (it blocks) and forward the
@@ -974,70 +308,38 @@ fn spawn_file_picker(proxy: EventLoopProxy<UserEvent>) {
     });
 }
 
-/// Ask where to save a download, starting from wry's proposed destination (the
-/// Downloads folder plus the page's suggested filename). `false` cancels it.
-///
-/// Runs on the main thread and blocks: WebKit wants the destination as the
-/// return value, so this cannot hop to a background thread like
-/// [`spawn_file_picker`]. The save panel already confirmed any overwrite, and
-/// WebKit fails a download whose destination exists, so a file the user chose to
-/// replace is removed first.
-fn choose_download_destination(destination: &mut PathBuf) -> bool {
-    let suggested = destination
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let dialog = rfd::FileDialog::new()
-        .set_title("Save export")
-        .set_file_name(suggested);
-    let dialog = match destination.parent() {
-        Some(dir) => dialog.set_directory(dir),
-        None => dialog,
-    };
-    let Some(chosen) = dialog.save_file() else {
-        return false;
-    };
-    if chosen.exists()
-        && let Err(error) = std::fs::remove_file(&chosen)
-    {
-        eprintln!("ledgeline: could not replace {}: {error}", chosen.display());
-        return false;
-    }
-    *destination = chosen;
-    true
-}
-
-/// Report a download WebKit could not finish (a full disk, a folder that went
-/// away) — the save dialog closed, so silence would read as success.
-fn show_download_error(path: Option<&Path>) {
-    let description = match path {
-        Some(path) => format!("Could not save {}.", path.display()),
-        None => "The export could not be saved.".to_string(),
-    };
-    std::thread::spawn(move || {
-        rfd::MessageDialog::new()
-            .set_level(rfd::MessageLevel::Error)
-            .set_title("Export failed")
-            .set_description(description)
-            .set_buttons(rfd::MessageButtons::Ok)
-            .show();
-    });
-}
-
 /// Report a failed File→Open without disturbing the currently loaded journal.
 fn show_open_error(path: &Path, error: &AppError) {
-    let description = format!(
-        "Could not open {}:\n{error}\n\nThe current journal stays loaded.",
-        path.display()
+    shell::show_error(
+        "Failed to open journal",
+        format!(
+            "Could not open {}:\n{error}\n\nThe current journal stays loaded.",
+            path.display()
+        ),
     );
-    std::thread::spawn(move || {
-        rfd::MessageDialog::new()
-            .set_level(rfd::MessageLevel::Error)
-            .set_title("Failed to open journal")
-            .set_description(description)
-            .set_buttons(rfd::MessageButtons::Ok)
-            .show();
-    });
+}
+
+/// Ledgeline's menu bar: the shell's standard one, with Export after Open
+/// Recent and (macOS) "Make Ledgeline the Default" in the app menu.
+fn build_menu() -> AppMenu {
+    let export = export::submenu();
+    let after_recent: [&dyn IsMenuItem; 1] = [&export];
+    #[cfg(target_os = "macos")]
+    let make_default = MAKE_DEFAULT.menu_item();
+    #[cfg(target_os = "macos")]
+    let app_menu_items: &[&dyn IsMenuItem] = &[&make_default];
+    #[cfg(not(target_os = "macos"))]
+    let app_menu_items: &[&dyn IsMenuItem] = &[];
+    AppMenu::build(
+        &APP,
+        &MenuSpec {
+            version: env!("CARGO_PKG_VERSION"),
+            new_label: "&New…", // plan 39 wizard
+            open_label: "&Open journal…",
+            app_menu_items,
+            after_recent: &after_recent,
+        },
+    )
 }
 
 /// Build the window + webview on the main thread and run the (diverging) event
@@ -1053,67 +355,31 @@ fn run_event_loop(
     }));
 
     let menu = build_menu();
-    #[cfg(target_os = "macos")]
-    menu.menu_bar.init_for_nsapp();
-
-    // Open at a comfortable desktop size (mbr leaves this to the platform
-    // default, which is too small for a data-dense GUI); clamp the floor so the
-    // report layout never collapses.
-    let window_builder = WindowBuilder::new()
-        .with_title("Ledgeline")
-        .with_inner_size(LogicalSize::new(1280.0, 832.0))
-        .with_min_inner_size(LogicalSize::new(800.0, 600.0));
-    // Linux opens with no title bar — the SPA draws its own header with the app
-    // name, so the decorations are duplicate furniture under a tiling
-    // compositor. Asked for HERE rather than switched off after creation so
-    // there is no visible flash of chrome at startup; `F10` brings it back
-    // together with the menu bar (see `set_window_chrome_visible`).
-    // macOS and Windows keep their native decorations.
-    #[cfg(target_os = "linux")]
-    let window_builder = window_builder.with_decorations(false);
-    let window = window_builder
-        .build(&event_loop)
-        .map_err(|error| AppError::Gui(format!("creating window: {error}")))?;
-
-    #[cfg(target_os = "windows")]
-    {
-        use tao::platform::windows::WindowExtWindows;
-        // SAFETY: called once, on the main thread, with this window's live HWND.
-        unsafe {
-            let _ = menu.menu_bar.init_for_hwnd(window.hwnd() as isize);
-        }
-    }
-    #[cfg(target_os = "linux")]
-    {
-        use tao::platform::unix::WindowExtUnix;
-        let _ = menu
-            .menu_bar
-            .init_for_gtk_window(window.gtk_window(), window.default_vbox());
-    }
+    let window = shell::build_window(&APP, &event_loop, &menu.menu_bar)
+        .map_err(|error| AppError::Gui(error.to_string()))?;
 
     perf::stamp("window_built");
     let appearance = boot_appearance(&ctx.state);
-    let webview = build_webview(
+    let origin =
+        shell::webview_origin(&ctx.url).map_err(|error| AppError::Gui(error.to_string()))?;
+    let navigating = ctx.state.clone();
+    let webview = shell::build_webview(
+        &APP,
         &window,
         &ctx.url,
         &ctx.start,
-        &ctx.token,
-        &appearance,
-        &ctx.state,
-    )?;
+        vec![
+            token_init_script(&origin, &ctx.token),
+            appearance_init_script(&origin, &appearance),
+        ],
+        // A docs, SimpleFIN or saved download-page link leaves the webview
+        // where it is and opens in the user's browser instead.
+        move |candidate| open_if_external(&navigating, candidate),
+    )
+    .map_err(|error| AppError::Gui(error.to_string()))?;
     perf::stamp("webview_built");
 
-    let new_id = menu.new.id().clone(); // plan 39 wizard
-    let open_id = menu.open.id().clone();
-    let reload_id = menu.reload.id().clone();
-    let back_id = menu.back.id().clone();
-    let forward_id = menu.forward.id().clone();
-    let zoom_in_id = menu.zoom_in.id().clone();
-    let zoom_out_id = menu.zoom_out.id().clone();
-    let actual_size_id = menu.actual_size.id().clone();
-    let recent_submenu = menu.recent.clone();
-    #[cfg(target_os = "linux")]
-    let quit_id = menu.quit.id().clone();
+    let recent = RecentMenu::new(menu.recent.clone(), RECENT_MENU_LIMIT, "No recent journals");
 
     // Linux: the in-window GtkMenuBar looks out of place on a modern desktop,
     // and under a tiling Wayland compositor there is no global menu bar to move
@@ -1141,8 +407,8 @@ fn run_event_loop(
     let modifiers = std::cell::Cell::new(ModifiersState::empty());
     #[cfg(target_os = "linux")]
     {
-        disable_gtk_menu_bar_accel();
-        set_window_chrome_visible(&menu_bar, &window, false);
+        shell::disable_gtk_menu_bar_accel();
+        shell::set_window_chrome_visible(&APP, &menu_bar, &window, false);
     }
 
     let picker_proxy = event_loop.create_proxy();
@@ -1155,18 +421,12 @@ fn run_event_loop(
     let url = ctx.url;
     let state = ctx.state;
     let watcher: RefCell<Option<RecommendedWatcher>> = RefCell::new(ctx.watcher);
-    // Canonical path of the open journal (excluded from the recents submenu) and
-    // the id→path map for its items, both refreshed on every open.
+    // Canonical path of the open journal (excluded from the recents submenu),
+    // refreshed on every open.
     let current: RefCell<PathBuf> = RefCell::new(ctx.current);
-    let recent_map: RefCell<Vec<(MenuId, PathBuf)>> = RefCell::new(Vec::new());
     {
         let current_ref = current.borrow();
-        rebuild_recent(
-            state.app_dirs(),
-            &recent_submenu,
-            &recent_map,
-            Some(current_ref.as_path()),
-        );
+        recent.rebuild(&APP, state.app_dirs(), Some(current_ref.as_path()));
     }
 
     event_loop.run(move |event, _target, control_flow| {
@@ -1185,12 +445,7 @@ fn run_event_loop(
             watcher.replace(crate::spawn_watcher(editor_path, state.clone()).ok());
             recents::record(state.app_dirs(), editor_path);
             current.replace(editor_path.to_path_buf());
-            rebuild_recent(
-                state.app_dirs(),
-                &recent_submenu,
-                &recent_map,
-                Some(editor_path),
-            );
+            recent.rebuild(&APP, state.app_dirs(), Some(editor_path));
             eprintln!("ledgeline: opened {}", editor_path.display());
         };
         let open_journal = |raw: &Path| {
@@ -1234,7 +489,7 @@ fn run_event_loop(
                     let _ = webview.evaluate_script("history.forward()");
                 }
                 Shortcut::Zoom(zoom) => {
-                    let _ = webview.evaluate_script(zoom_script(zoom));
+                    let _ = webview.evaluate_script(shell::zoom_script(zoom));
                 }
                 #[cfg(target_os = "linux")]
                 Shortcut::Quit => return true,
@@ -1242,60 +497,26 @@ fn run_event_loop(
             false
         };
 
-        // Which action, if any, a muda menu id stands for. `None` means it may
-        // still be an Open Recent item, which the caller resolves.
-        let menu_shortcut = |id: &MenuId| {
-            #[cfg(target_os = "linux")]
-            if *id == quit_id {
-                return Some(Shortcut::Quit);
-            }
-            if *id == new_id {
-                Some(Shortcut::New) // plan 39 wizard
-            } else if *id == open_id {
-                Some(Shortcut::Open)
-            } else if *id == reload_id {
-                Some(Shortcut::Reload)
-            } else if *id == back_id {
-                Some(Shortcut::Back)
-            } else if *id == forward_id {
-                Some(Shortcut::Forward)
-            } else if *id == zoom_in_id {
-                Some(Shortcut::Zoom(Zoom::In))
-            } else if *id == zoom_out_id {
-                Some(Shortcut::Zoom(Zoom::Out))
-            } else if *id == actual_size_id {
-                Some(Shortcut::Zoom(Zoom::Reset))
-            } else {
-                None
-            }
-        };
-
         match event {
             Event::UserEvent(UserEvent::Menu(menu_event)) => {
                 // plan 39 export: runs on its own thread, against the open journal.
-                if export_menu::handle(&menu_event.id, &current.borrow()) {
+                if export::handle(&menu_event.id, &current.borrow()) {
                     return;
                 }
                 #[cfg(target_os = "macos")]
-                if file_assoc::handle(&menu_event.id) {
+                if MAKE_DEFAULT.handle(&menu_event.id) {
                     return;
                 }
-                if let Some(shortcut) = menu_shortcut(&menu_event.id) {
+                if let Some(shortcut) = menu.shortcut_for(&menu_event.id) {
                     if perform_shortcut(shortcut) {
                         #[cfg(target_os = "linux")]
-                        stop_web_process(&webview);
+                        shell::stop_web_process(&webview);
                         *control_flow = ControlFlow::Exit;
                     }
-                } else {
-                    // Maybe an Open Recent item; the borrow is released before we
-                    // open (which re-borrows the map to rebuild the submenu).
-                    let picked = recent_map
-                        .borrow()
-                        .iter()
-                        .find_map(|(id, path)| (*id == menu_event.id).then(|| path.clone()));
-                    if let Some(path) = picked {
-                        open_journal(&path);
-                    }
+                } else if let Some(path) = recent.picked(&menu_event.id) {
+                    // An Open Recent item; `picked` has released the map's
+                    // borrow, so opening (which rebuilds the submenu) is safe.
+                    open_journal(&path);
                 }
                 // PredefinedMenuItem events (quit, copy, …) are handled natively.
             }
@@ -1328,7 +549,7 @@ fn run_event_loop(
                 for url in urls.iter().filter(|url| url.to_file_path().is_err()) {
                     eprintln!("ledgeline: ignoring {url}: not a file:// URL");
                 }
-                if let Some(path) = first_journal_path(&urls) {
+                if let Some(path) = shell::first_file_path(&urls) {
                     for extra in urls
                         .iter()
                         .filter_map(|url| url.to_file_path().ok())
@@ -1399,16 +620,17 @@ fn run_event_loop(
                     // Deliberately NOT gated on visibility: the toggle is the one
                     // key that has to work in both states, so it gets its own arm.
                     let visible = !chrome_visible.get();
-                    set_window_chrome_visible(&menu_bar, &window, visible);
+                    shell::set_window_chrome_visible(&APP, &menu_bar, &window, visible);
                     chrome_visible.set(visible);
                 } else if !chrome_visible.get() {
                     // Gated. With the bar VISIBLE its GtkAccelGroup already fires
                     // these, so an ungated arm would run every shortcut twice the
                     // moment the bar came back.
-                    if let Some(shortcut) = linux_shortcut_for(&key.logical_key, modifiers.get())
+                    if let Some(shortcut) =
+                        shell::linux_shortcut_for(&key.logical_key, modifiers.get())
                         && perform_shortcut(shortcut)
                     {
-                        stop_web_process(&webview);
+                        shell::stop_web_process(&webview);
                         *control_flow = ControlFlow::Exit;
                     }
                 }
@@ -1418,7 +640,7 @@ fn run_event_loop(
                 ..
             } => {
                 #[cfg(target_os = "linux")]
-                stop_web_process(&webview);
+                shell::stop_web_process(&webview);
                 *control_flow = ControlFlow::Exit;
             }
             _ => {}
@@ -1426,198 +648,9 @@ fn run_event_loop(
     });
 }
 
-#[cfg(all(test, target_os = "linux"))]
-mod linux_keyboard_tests {
-    use super::{Shortcut, linux_shortcut_for};
-    use tao::keyboard::{Key, ModifiersState};
-
-    const CTRL: ModifiersState = ModifiersState::CONTROL;
-    const ALT: ModifiersState = ModifiersState::ALT;
-    const SHIFT: ModifiersState = ModifiersState::SHIFT;
-
-    #[test]
-    fn the_bound_chords_map_to_their_actions() {
-        assert_eq!(
-            linux_shortcut_for(&Key::Character("n"), CTRL),
-            Some(Shortcut::New)
-        );
-        assert_eq!(
-            linux_shortcut_for(&Key::Character("o"), CTRL),
-            Some(Shortcut::Open)
-        );
-        assert_eq!(
-            linux_shortcut_for(&Key::Character("r"), CTRL),
-            Some(Shortcut::Reload)
-        );
-        assert_eq!(
-            linux_shortcut_for(&Key::ArrowLeft, ALT),
-            Some(Shortcut::Back)
-        );
-        assert_eq!(
-            linux_shortcut_for(&Key::ArrowRight, ALT),
-            Some(Shortcut::Forward)
-        );
-        assert_eq!(
-            linux_shortcut_for(&Key::Character("q"), CTRL),
-            Some(Shortcut::Quit)
-        );
-    }
-
-    #[test]
-    fn the_modifier_must_match_exactly() {
-        // Unmodified keys belong to the page, not to us.
-        assert_eq!(
-            linux_shortcut_for(&Key::Character("o"), ModifiersState::empty()),
-            None
-        );
-        assert_eq!(
-            linux_shortcut_for(&Key::ArrowLeft, ModifiersState::empty()),
-            None
-        );
-
-        // The two modifiers are not interchangeable.
-        assert_eq!(linux_shortcut_for(&Key::Character("o"), ALT), None);
-        assert_eq!(linux_shortcut_for(&Key::ArrowLeft, CTRL), None);
-
-        // A SUPERset is a different chord: Ctrl+Alt+O must not fire Open, or a
-        // desktop-level binding would be shadowed by ours.
-        assert_eq!(linux_shortcut_for(&Key::Character("o"), CTRL | ALT), None);
-        assert_eq!(linux_shortcut_for(&Key::ArrowLeft, ALT | CTRL), None);
-        assert_eq!(
-            linux_shortcut_for(&Key::Character("o"), CTRL | ModifiersState::SUPER),
-            None
-        );
-    }
-
-    #[test]
-    fn shift_is_folded_into_the_logical_key_rather_than_examined() {
-        // tao reports the SHIFTED meaning in `logical_key`, so Ctrl+Shift+O
-        // arrives as an uppercase character with SHIFT still in the mask. It is
-        // the same action, which is why the comparison is case-insensitive and
-        // why SHIFT is not part of the exactness test.
-        assert_eq!(
-            linux_shortcut_for(&Key::Character("O"), CTRL | SHIFT),
-            Some(Shortcut::Open)
-        );
-        assert_eq!(
-            linux_shortcut_for(&Key::Character("R"), CTRL | SHIFT),
-            Some(Shortcut::Reload)
-        );
-    }
-
-    #[test]
-    fn unbound_keys_are_left_to_the_page() {
-        // F10 is handled by its OWN arm (it must work whether the menu bar is
-        // shown or hidden), so it must not appear in this table.
-        assert_eq!(linux_shortcut_for(&Key::F10, ModifiersState::empty()), None);
-        // The SPA binds Ctrl+D / Ctrl+U for half-page scrolling; a native
-        // accelerator here would take them away from the page.
-        assert_eq!(linux_shortcut_for(&Key::Character("d"), CTRL), None);
-        assert_eq!(linux_shortcut_for(&Key::Character("u"), CTRL), None);
-        assert_eq!(
-            linux_shortcut_for(&Key::Escape, ModifiersState::empty()),
-            None
-        );
-    }
-}
-
-/// Dev-only launch and scroll probe (`docs/development/perf-baseline.md`).
-///
-/// Inert unless `LEDGELINE_PERF` names a probe script (`scripts/perf/probe.js`).
-/// When it does, the script is injected into every page the WebView loads and
-/// may report back over `window.ipc.postMessage`; each message is printed to
-/// stderr as `PERF js <ms since launch> <json>`, the Rust-side milestones as
-/// `PERF rust <label> <ms since launch>`, and a `{"ev":"scroll_done",…}`
-/// message ends the process — so a measurement is one command, start to exit.
-mod perf {
-    use std::sync::OnceLock;
-    use std::time::Instant;
-
-    /// The environment variable naming the probe script.
-    const ENV: &str = "LEDGELINE_PERF";
-
-    static START: OnceLock<Instant> = OnceLock::new();
-
-    fn enabled() -> bool {
-        std::env::var_os(ENV).is_some()
-    }
-
-    fn elapsed_ms() -> f64 {
-        START.get_or_init(Instant::now).elapsed().as_secs_f64() * 1000.0
-    }
-
-    /// Fix the launch instant every other stamp is measured from.
-    pub(super) fn start() {
-        START.get_or_init(Instant::now);
-    }
-
-    /// Print a Rust-side milestone, when probing.
-    pub(super) fn stamp(label: &str) {
-        if enabled() {
-            eprintln!("PERF rust {label} {:.1}", elapsed_ms());
-        }
-    }
-
-    /// The probe script to inject, when `LEDGELINE_PERF` names a readable file.
-    pub(super) fn script() -> Option<String> {
-        let path = std::env::var_os(ENV)?;
-        match std::fs::read_to_string(&path) {
-            Ok(script) => Some(script),
-            Err(error) => {
-                eprintln!(
-                    "ledgeline: {ENV}: cannot read {}: {error}",
-                    path.to_string_lossy()
-                );
-                None
-            }
-        }
-    }
-
-    /// One message from the probe: printed, and the end of the run on `scroll_done`.
-    pub(super) fn on_message(body: &str) {
-        eprintln!("PERF js {:.1} {body}", elapsed_ms());
-        if body.contains("\"ev\":\"scroll_done\"") {
-            std::process::exit(0);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        AccessToken, BootAppearance, Zoom, appearance_init_script, external_url,
-        first_journal_path, navigation_allowed, token_init_script, zoom_script,
-    };
-    use std::path::PathBuf;
-    use url::Url;
-
-    #[test]
-    fn appearance_script_seeds_the_boot_cache_once_on_our_origin() {
-        let appearance = BootAppearance {
-            light: "catppuccin-latte",
-            dark: "catppuccin-mocha",
-            scale: 125,
-        };
-        let script = appearance_init_script("http://127.0.0.1:5555", &appearance);
-        assert!(script.starts_with(r#"if (window.location.origin === "http://127.0.0.1:5555")"#));
-        assert!(script.contains(
-            r#"localStorage.setItem("ledgeline.appearance", "{\"light\":\"catppuccin-latte\",\"dark\":\"catppuccin-mocha\",\"scale\":125}")"#
-        ));
-        assert!(script.contains(r#"sessionStorage.getItem("ledgeline.appearance.seeded")"#));
-    }
-
-    #[test]
-    fn zoom_scripts_dispatch_the_event_the_spa_listens_for() {
-        // The SPA's `ZOOM_EVENT` and `isZoomAction` (web/src/lib/theme/zoom.svelte.ts).
-        for (zoom, detail) in [(Zoom::In, "in"), (Zoom::Out, "out"), (Zoom::Reset, "reset")] {
-            let script = zoom_script(zoom);
-            assert!(script.starts_with("window.dispatchEvent(new CustomEvent('ledgeline:zoom'"));
-            assert!(
-                script.contains(&format!("{{detail: '{detail}'}}")),
-                "{script}"
-            );
-        }
-    }
+    use super::external_url;
 
     #[test]
     fn only_docs_and_simplefin_pages_go_to_the_system_browser() {
@@ -1679,86 +712,72 @@ mod tests {
         }
     }
 
-    const BASE: &str = "http://127.0.0.1:5000/";
-
-    fn urls(raw: &[&str]) -> Vec<Url> {
-        raw.iter()
-            .map(|raw| Url::parse(raw).expect("test URL parses"))
-            .collect()
-    }
-
+    /// Ledgeline's WebView reads exactly this global; the shell builds it from
+    /// [`ledgeline::APP`].
     #[test]
-    fn navigation_is_confined_to_our_own_origin() {
-        assert!(navigation_allowed(BASE, "http://127.0.0.1:5000/"));
-        assert!(navigation_allowed(BASE, "http://127.0.0.1:5000"));
-        assert!(navigation_allowed(
-            BASE,
-            "http://127.0.0.1:5000/reports?tab=1"
-        ));
-
-        assert!(!navigation_allowed(BASE, "https://evil.example/"));
-        assert!(!navigation_allowed(BASE, "file:///etc/passwd"));
-        // A different local port is a different app, not ours.
-        assert!(!navigation_allowed(BASE, "http://127.0.0.1:5001/"));
-        // The trailing slash is what makes the prefix test safe: userinfo and
-        // longer-port tricks must not read as our origin.
-        assert!(!navigation_allowed(
-            BASE,
-            "http://127.0.0.1:5000@evil.example/"
-        ));
-        assert!(!navigation_allowed(BASE, "http://127.0.0.1:50000/"));
-        assert!(!navigation_allowed(
-            BASE,
-            "http://127.0.0.1:5000.evil.example/"
-        ));
-    }
-
-    /// The token goes to the WebView by initialization script, and only to a
-    /// document on our exact origin — the script itself runs on every document
-    /// the main frame loads.
-    #[test]
-    fn the_token_script_is_guarded_by_our_exact_origin() {
-        let token = AccessToken::parse("token-for-unit-tests").expect("well-formed");
-        let script = token_init_script("http://127.0.0.1:5000", &token);
+    fn the_token_script_hands_over_ledgelines_global() {
+        let token = ledgeline::AccessToken::parse("token-for-unit-tests").expect("well-formed");
         assert_eq!(
-            script,
+            ledgeline::token_init_script("http://127.0.0.1:5000", &token),
             "if (window.location.origin === \"http://127.0.0.1:5000\") \
              { window.__LEDGELINE_TOKEN__ = \"token-for-unit-tests\"; }"
         );
     }
+}
+
+/// The "Make Ledgeline the Default" command against the app's real plist.
+#[cfg(all(test, target_os = "macos"))]
+mod file_assoc_tests {
+    use std::path::Path;
+
+    use super::{DEFAULT_CONTENT_TYPES, MAKE_DEFAULT};
+
+    /// The plist template, read at run time: `include_str!` would reach outside
+    /// the published crate. The Nix source filter keeps this one file.
+    fn info_plist() -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/Info.plist.in");
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()))
+    }
+
+    /// Text between `<key>{key}</key>` and the next top-level key.
+    fn section<'a>(plist: &'a str, key: &str, next_key: &str) -> &'a str {
+        let start = plist
+            .find(&format!("<key>{key}</key>"))
+            .unwrap_or_else(|| panic!("{key} missing from Info.plist.in"));
+        let end = plist[start..]
+            .find(&format!("<key>{next_key}</key>"))
+            .map_or(plist.len(), |offset| start + offset);
+        &plist[start..end]
+    }
 
     #[test]
-    fn document_launch_resolves_the_first_usable_file_url() {
-        // The ordinary Finder double-click.
-        assert_eq!(
-            first_journal_path(&urls(&["file:///tmp/main.journal"])),
-            Some(PathBuf::from("/tmp/main.journal"))
+    fn the_plist_claims_every_type_the_command_sets_at_owner_rank() {
+        let plist = info_plist();
+        let document_types = section(
+            &plist,
+            "CFBundleDocumentTypes",
+            "UTExportedTypeDeclarations",
         );
+        let owner = document_types
+            .split("</dict>")
+            .find(|dict| dict.contains("<string>Owner</string>"))
+            .expect("an Owner-ranked document type");
+        let claimed: Vec<&str> = owner
+            .split("<string>")
+            .skip(1)
+            .filter_map(|rest| rest.split("</string>").next())
+            .filter(|value| value.contains('.'))
+            .collect();
+        assert_eq!(claimed, DEFAULT_CONTENT_TYPES);
+        assert_eq!(MAKE_DEFAULT.content_types, DEFAULT_CONTENT_TYPES);
+    }
 
-        // Finder percent-encodes spaces; `to_file_path` is what decodes them back
-        // into the path that actually exists on disk.
-        assert_eq!(
-            first_journal_path(&urls(&["file:///Users/me/My%20Books/main.journal"])),
-            Some(PathBuf::from("/Users/me/My Books/main.journal"))
-        );
-
-        // A deeplink we do not implement is skipped rather than opened.
-        assert_eq!(
-            first_journal_path(&urls(&["https://example.com/main.journal"])),
-            None
-        );
-
-        // No URLs at all (nothing to open) must not panic.
-        assert_eq!(first_journal_path(&[]), None);
-
-        // A non-file URL must not shadow a real document behind it in the batch.
-        assert_eq!(
-            first_journal_path(&urls(&[
-                "ledgeline://open",
-                "file:///tmp/second.journal",
-                "file:///tmp/third.journal",
-            ])),
-            Some(PathBuf::from("/tmp/second.journal"))
-        );
+    #[test]
+    fn the_plist_bundle_id_is_the_one_the_command_names() {
+        assert!(info_plist().contains(&format!(
+            "<key>CFBundleIdentifier</key>\n  <string>{}</string>",
+            MAKE_DEFAULT.app.bundle_id
+        )));
     }
 }

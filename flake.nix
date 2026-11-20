@@ -100,11 +100,14 @@
       # `crates/ledgeline-server/src/sample.journal` is `include_str!`ed by the
       # File → New wizard (a copy of the fixture, so the published crate holds
       # it); it is not a Cargo source, so it needs its own clause.
-      # `assets/Info.plist.in` is READ by a macOS unit test (gui_file_assoc.rs)
+      # `assets/Info.plist.in` is READ by a macOS unit test (the server's gui.rs)
       # that keeps the file types the app claims in step with the ones its
       # "Make Default" menu command sets; `assets/` itself stays out.
       # `crates/ledgeline-core/src/feeds/mcc.tsv` is the merchant-category table
       # `include_str!`ed by `feeds/mcc.rs`.
+      # `crates/ledgeline-shell/testdata/` is the stand-in SPA build the shell's
+      # `spa.rs` unit tests `RustEmbed`; rust-embed fails to compile against a
+      # missing folder, so it has to survive the filter.
       src = lib.cleanSourceWith {
         src = ./.;
         name = "ledgeline-source";
@@ -113,11 +116,12 @@
           || (builtins.match ".*/fixtures(/.*)?" path != null)
           || (lib.hasSuffix "/crates/ledgeline-server/src/sample.journal" path)
           || (lib.hasSuffix "/crates/ledgeline-core/src/feeds/mcc.tsv" path)
+          || (builtins.match ".*/crates/ledgeline-shell/testdata(/.*)?" path != null)
           || (lib.hasSuffix "/assets" path && type == "directory")
           || (lib.hasSuffix "/assets/Info.plist.in" path);
       };
 
-      # `crates/ledgeline-server/src/spa.rs` embeds `crates/ledgeline-server/spa/`
+      # `crates/ledgeline-server/src/lib.rs` embeds `crates/ledgeline-server/spa/`
       # via `#[derive(RustEmbed)]`, and `build.rs` fills that folder by mirroring
       # `web/build` (or writes its own placeholder when there is none). Both are
       # git-ignored build artifacts, so neither is in `src`. Before every cargo
@@ -256,7 +260,7 @@
           meta = {
             description = "Ledgeline — local hledger GUI (axum server + wry/tao webview) with embedded SPA";
             homepage = "https://github.com/zmre/ledgeline";
-            license = lib.licenses.mit;
+            license = lib.licenses.agpl3Plus;
             mainProgram = "ledgeline";
             platforms = lib.platforms.unix;
           };
