@@ -1,0 +1,68 @@
+; Receivables fixture: the invoicer's books bridge (invoicer PLAN Phase 2a).
+; Synthetic — every name and figure is invented. Written by
+; tests/accrual_library.rs (the_invoicer_flow_on_accrual_books). Clock: 2026-11-17.
+commodity $1,000.00
+
+account assets:bank:checking           ; type: C
+account assets:accounts receivable     ; type: A, kpi: receivable
+account liabilities:customer-deposits  ; type: L
+account revenue:consulting             ; type: R
+account revenue:consulting:delivery    ; type: R
+account revenue:discounts              ; type: R
+account equity:opening                 ; type: E
+
+2026-01-01 Opening balance
+    assets:bank:checking  $10000.00
+    equity:opening
+
+2026-08-01 Wingtip | Invoice 106  ; invoice: 106, document: invoices/2026-08-01 Wingtip Invoice 106.md, due: 2026-08-31
+    assets:accounts receivable  $1200.00  ; customer: Wingtip
+    revenue:consulting          $-1200.00  ; customer: Wingtip, item: Retainer
+
+2026-09-01 Contoso | Invoice 101  ; invoice: 101, document: invoices/2026-09-01 Contoso Invoice 101.md, due: 2026-10-01
+    assets:accounts receivable  $4000.00  ; customer: Contoso, match:oyvl34
+    revenue:consulting          $-4000.00  ; customer: Contoso, item: Architecture review
+
+2026-09-15 Fabrikam | Invoice 102  ; invoice: 102, document: invoices/2026-09-15 Fabrikam Invoice 102.md, due: 2026-10-15
+    assets:accounts receivable   $2900.00  ; customer: Fabrikam, match:7uyclp
+    revenue:consulting           $-2000.00  ; customer: Fabrikam, item: Discovery workshop
+    revenue:consulting:delivery  $-1200.00  ; customer: Fabrikam, item: Implementation
+    revenue:discounts            $300.00  ; customer: Fabrikam, item: Loyalty discount
+
+2026-09-20 CONTOSO ACH  ; invoice: 101
+    assets:bank:checking        $1500.00
+    assets:accounts receivable  $-1500.00  ; customer: Contoso, match:oyvl34
+
+2026-10-01 Tailspin | Invoice 103  ; invoice: 103, document: invoices/2026-10-01 Tailspin Invoice 103.md, due: 2026-10-31
+    assets:accounts receivable  $800.00  ; customer: Tailspin, match:rb32o4
+    revenue:consulting          $-800.00  ; customer: Tailspin, item: Site visit
+
+2026-10-01 Customer X | Invoice 104  ; invoice: 104, document: invoices/2026-10-01 Customer X Invoice 104.md, due: 2026-10-31, reference: PO #PY75334
+    assets:accounts receivable     $8350.00  ; customer: Customer X, match:ipsr9v
+    liabilities:customer-deposits  $-8350.00  ; customer: Customer X, item: Deposit: 50% of proposal P-12
+
+2026-10-05 CONTOSO ACH 2  ; invoice: 101
+    assets:bank:checking        $2500.00
+    assets:accounts receivable  $-2500.00  ; customer: Contoso, match:oyvl34
+
+2026-10-08 CUSTOMER X WIRE  ; invoice: 104
+    assets:bank:checking        $8350.00
+    assets:accounts receivable  $-8350.00  ; customer: Customer X, match:ipsr9v
+
+2026-10-10 Tailspin | Invoice 103 (void)  ; invoice: 103, void: 2026-10-10
+    assets:accounts receivable  $-800.00  ; customer: Tailspin, match: rb32o4
+    revenue:consulting          $800.00  ; customer: Tailspin, item: Site visit
+
+2026-10-20 FABRIKAM PAYMENT  ; invoice: 102
+    assets:bank:checking        $2900.00
+    assets:accounts receivable  $-2900.00  ; customer: Fabrikam, match:7uyclp
+
+2026-11-10 Customer X | Invoice 105  ; invoice: 105, document: invoices/2026-11-10 Customer X Invoice 105.md, due: 2026-12-10, reference: PO #PY75334 rev. 2
+    assets:accounts receivable     $8350.00  ; customer: Customer X
+    revenue:consulting             $-7200.00  ; customer: Customer X, item: Senior architect hours
+    revenue:consulting:delivery    $-9500.00  ; customer: Customer X, item: Junior engineer
+    liabilities:customer-deposits  $8350.00  ; customer: Customer X, item: Less deposit (Invoice 104)
+
+2026-11-12 GAMMA LLC DEPOSIT
+    assets:bank:checking        $250.00
+    assets:accounts receivable  $-250.00  ; customer: Gamma

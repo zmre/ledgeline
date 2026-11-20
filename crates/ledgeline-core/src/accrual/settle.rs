@@ -164,7 +164,8 @@ fn party_tag(tags: &[(String, String)]) -> Option<Party> {
     })
 }
 
-fn party_of(txn: &Transaction, posting: &Posting) -> Option<Party> {
+/// The posting's `customer:`/`vendor:`, else the transaction's.
+pub(crate) fn party_of(txn: &Transaction, posting: &Posting) -> Option<Party> {
     party_tag(&posting.tags).or_else(|| party_tag(&txn.tags))
 }
 
@@ -235,7 +236,7 @@ pub fn candidates<'j>(
 }
 
 /// Whether `text` contains `word` as a whole word (ASCII case-insensitive).
-fn has_word(text: &str, word: &str) -> bool {
+pub(crate) fn has_word(text: &str, word: &str) -> bool {
     let text = text.to_ascii_lowercase();
     let word = word.to_ascii_lowercase();
     text.match_indices(&word).any(|(at, _)| {
@@ -486,7 +487,7 @@ pub fn pair_among(
 
 /// The day distance between an invoice and its payment, and whether the
 /// payment came first.
-fn gap_between(invoice: &str, payment: &str) -> (u32, bool) {
+pub(crate) fn gap_between(invoice: &str, payment: &str) -> (u32, bool) {
     let days = i64::from(day_of(payment)) - i64::from(day_of(invoice));
     (
         u32::try_from(days.unsigned_abs()).unwrap_or(u32::MAX),

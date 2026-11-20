@@ -1390,8 +1390,15 @@ fn render_amount(amount: &Amount) -> String {
 ///
 /// Every rule is one that would make the written line read back as something
 /// other than what was asked for — the failure `verify` would catch afterwards,
-/// reported up front with a sentence instead.
-pub(crate) fn check_account(account: &str) -> Result<(), PeriodicError> {
+/// reported up front with a sentence instead. Public so a program building
+/// postings for this crate to write (an invoicing app) checks names the same
+/// way.
+///
+/// # Errors
+/// [`PeriodicError::Invalid`], with a sentence saying why, for a name that is
+/// empty, too long, padded with whitespace, or holds a control character,
+/// `;`, `#`, two consecutive spaces, a tab or a bracket.
+pub fn check_account(account: &str) -> Result<(), PeriodicError> {
     let invalid = |why: &str| Err(PeriodicError::Invalid(format!("an account name {why}")));
     if account.is_empty() {
         return invalid("may not be empty");
