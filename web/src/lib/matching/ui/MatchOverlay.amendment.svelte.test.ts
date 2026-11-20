@@ -102,7 +102,9 @@ async function press(key: string, init: KeyboardEventInit = {}): Promise<void> {
 async function focusOn(index = 1): Promise<void> {
     matches.openFor(index);
     render(MatchOverlay);
-    await vi.waitFor(() => expect(screen.getByTestId("match-focus-txn")).toBeDefined());
+    // Longer than waitFor's 1 s default: the first render of the file pays for
+    // the overlay's imports, and on a loaded CI runner that has taken 1012 ms.
+    await vi.waitFor(() => expect(screen.getByTestId("match-focus-txn")).toBeDefined(), {timeout: 5000});
 }
 
 beforeEach(() => {
