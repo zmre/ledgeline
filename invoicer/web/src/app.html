@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en" data-theme="default-dark">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+        <!--
+            First-paint appearance, exactly as web/src/app.html paints it (keep
+            the two scripts in step): from the cache #ui/theme/appearance.svelte.ts
+            writes, else the default theme's variant for the OS scheme.
+        -->
+        <script>
+            (function () {
+                var root = document.documentElement;
+                var dark = !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+                var cache = null;
+                try {
+                    cache = JSON.parse(localStorage.getItem("ledgeline.appearance") || "null");
+                } catch (e) {}
+                var ok = function (v) {
+                    return typeof v === "string" && /^[a-z-]{1,40}$/.test(v);
+                };
+                var variant = cache && ok(dark ? cache.dark : cache.light) ? (dark ? cache.dark : cache.light) : dark ? "default-dark" : "default-light";
+                root.setAttribute("data-theme", variant);
+                var scale = cache && typeof cache.scale === "number" && cache.scale >= 50 && cache.scale <= 300 ? cache.scale : 100;
+                if (scale !== 100) {
+                    root.style.setProperty("--ui-scale", String(scale / 100));
+                    root.style.fontSize = scale + "%";
+                }
+            })();
+        </script>
+        %sveltekit.head%
+    </head>
+    <body data-sveltekit-preload-data="hover">
+        <div style="display: contents">%sveltekit.body%</div>
+    </body>
+</html>

@@ -1,0 +1,18 @@
+[package]
+name = "ledgeline-invoicer"
+description = "Ledgeline Invoicer: plain-text invoices linked into hledger books, as a desktop app and a CLI."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+# Not on crates.io until invoicer PLAN Phase 6 (with invoicer-core).
+publish = false
+
+[[bin]]
+name = "ledgeline-invoicer"
+path = "src/main.rs"
+
+[dependencies]
+invoicer-core = { workspace = true }
+clap = { version = "4", features = ["derive"] }

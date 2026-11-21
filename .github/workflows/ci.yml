@@ -473,7 +473,7 @@ jobs:
   # `components` (jsdom, mounted `*.svelte.test.ts`). Neither needs an engine or
   # a browser, so both belong in this job and not in `e2e`.
   spa:
-    name: SPA (build + unit + check)
+    name: SPA (build + unit + check + lint)
     runs-on: ubuntu-latest
     env:
       # Runners are UTC while the developer is America/Denver, so a date bug
@@ -503,6 +503,11 @@ jobs:
       - name: Type check (svelte-check + tsc)
         run: bun run check
 
+      # prettier --check + eslint. Gated here, not only by pre-push: quality
+      # is a release criterion (invoicer/PLAN.md I20).
+      - name: Lint (prettier + eslint)
+        run: bun run lint
+
       # The shared UI package (themes, scale, generic components, API token
       # base, native bridge). web/'s build and suite compile it, but its own
       # tests and its svelte-check run here: svelte-check only reports on the
@@ -514,6 +519,28 @@ jobs:
       - name: UI package type check (svelte-check + tsc)
         working-directory: packages/ui
         run: bun run check
+
+      - name: UI package lint (prettier + eslint)
+        working-directory: packages/ui
+        run: bun run lint
+
+      # Ledgeline Invoicer's SPA (invoicer/web), in the same bun workspace.
+      # Not in `e2e`: it has no Playwright suite yet.
+      - name: Invoicer SPA build
+        working-directory: invoicer/web
+        run: bun run build
+
+      - name: Invoicer SPA unit tests (vitest)
+        working-directory: invoicer/web
+        run: bun run test:unit
+
+      - name: Invoicer SPA type check (svelte-check + tsc)
+        working-directory: invoicer/web
+        run: bun run check
+
+      - name: Invoicer SPA lint (prettier + eslint)
+        working-directory: invoicer/web
+        run: bun run lint
 
   # The two suites that need a REAL engine behind the SPA, sharing one build of
   # the binary:

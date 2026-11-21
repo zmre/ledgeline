@@ -40,8 +40,11 @@ The secondary goals:
 | I13 | Every English word the invoicer matches (column headers, total rows, the customer tag, contact labels) is a setting in `[invoicer.words]`. File-format keys stay fixed. |
 | I14 | **Performance and correctness are release criteria.** The ARCHITECTURE §5.6 budgets are gated by benches on a 5,000-invoice corpus.                            |
 | I15 | Customer `contracts:` take wikilinks or file paths (executed PDFs). `billing_portal:` records vendor-portal delivery.                                           |
-| I16 | MBR ships **one release** once its P0 and P1 changes land. The invoicer pins a git rev until then.                                                              |
+| I16 | MBR ships **one release** once its P0 and P1 changes land. The invoicer uses it from crates.io: a git rev cannot work, because `mbr-core` embeds built JS bundles that only the crates.io package contains. The release gates Phase 3. |
 | I17 | Cash books get **Apply payment** in v1 (Phase 2): pick an imported deposit and its income side is re-split into the invoice's row accounts, tagged `invoice:`. The invoicer never creates payment transactions. Both bases are first-class: Patrick runs accrual and cash businesses. |
+| I18 | **No Intel Mac build of the invoicer** (Patrick, 2026-11-20). It ships for Apple Silicon macOS and Linux only. Ledgeline keeps its x86_64-darwin build.         |
+| I19 | **The invoicer crates stay `publish = false`** until Patrick decides to share them (2026-11-20). Nothing about the invoicer goes to crates.io before then.      |
+| I20 | **Quality is paramount: CI lints every web directory** (`web/`, `packages/ui`, `invoicer/web`) with prettier and eslint, not only pre-push (2026-11-20).        |
 
 These were decided in drafting and are open to veto. They are listed in
 ARCHITECTURE.md §3:
@@ -102,7 +105,7 @@ phases can cite them.
 | 3     | App shell, rendering, PDF, branding    | The GUI app boots, MBR mounted, preview, starter templates, `pdf`, icon | 2; MBR M3, M4, M5 (git rev)    |
 | 4     | Editors                                | Invoice, customer, catalog, snippet and template editors   | 3; MBR M1, M2 (M6 optional)    |
 | 5     | Dashboard and lists                    | Receivables dashboard, invoice and customer lists          | 2, 4                           |
-| 6     | Packaging, release, docs               | Signed DMGs in lock-step, crates.io, docs section, README  | 3 (can start in parallel with 4) |
+| 6     | Packaging, release, docs               | Signed DMGs in lock-step, docs section, README             | 3 (can start in parallel with 4) |
 | 7     | Later                                  | Each item is its own plan                                  | —                              |
 
 After Phase 2, every booking feature works from the CLI. That makes the
@@ -457,16 +460,15 @@ preview against a chosen invoice.
   - `checks` gains `invoicerSpaShellCsp`.
 - **`ci.yml`:** the macOS job builds `.#invoicerMacApp`.
 - **`release.yml`:**
-  - the package matrix builds both apps per arch: sign, notarize, and
-    produce `LedgelineInvoicer-<ver>-<arch>.dmg`;
-  - the release asserts all four DMGs exist;
+  - the package matrix builds the invoicer on arm64 only (I18): sign,
+    notarize, and produce `LedgelineInvoicer-<ver>-arm64.dmg`;
+  - the release asserts all three DMGs exist (Ledgeline arm64 and x86_64,
+    the invoicer arm64);
   - `SHA256SUMS` covers all of them;
-  - publish order is `ledgeline-core`, `ledgeline-shell`, `ledgeline`,
-    `invoicer-core`, then `ledgeline-invoicer`.
-- **`package-crates`:** excludes the ffi crates. `release.sh check` covers
-  the new literals.
-- **Dependency:** MBR is pinned to a crates.io release before the first
-  invoicer release. `cargo publish` rejects git dependencies.
+  - crates.io publishing is unchanged: the invoicer crates stay
+    `publish = false` (I19).
+- **`package-crates`:** excludes the ffi crates and the invoicer crates
+  (I19). `release.sh check` covers the new literals.
 
 **6b. Docs:**
 - `docs/invoicer/` in the same mbr site:
@@ -519,12 +521,11 @@ Worktree agents follow the repo's established practice:
 - agents never run Playwright.
 
 MBR work (MBR-CHANGES.md) runs in parallel in the MBR repo. M3, M4 and M5
-gate Phase 3. M1 and M2 gate Phase 4. Until M2 lands, Phase 1 uses
-`mbr_core::repo::Repo` directly, inside `invoicer_core::notes`. The invoicer
-pins MBR by git rev throughout development. MBR cuts one release after all
-its P0 and P1 changes land (M0), and Phase 6 switches the pin to that
-release before the first invoicer release, because `cargo publish` rejects
-git dependencies.
+gate Phase 3. M1 and M2 gate Phase 4. MBR cuts one release after all its P0
+and P1 changes land (M0), and the invoicer depends on that crates.io release
+from Phase 3 on (I16). Phase 1 depends on no MBR crate: `invoicer_core::notes`
+does its own discovery behind an API shaped like `mbr_core::Site`, and swaps
+to `Site` when the dependency arrives.
 
 ## Risks
 
@@ -532,9 +533,9 @@ git dependencies.
   theme first paint, iOS bridge). Mitigations: it is behaviour-neutral by
   rule, it gets the full e2e plus iOS build check, and the docs screenshots
   are diffed.
-- **MBR timing.** PDF and templates are already on MBR's main; the risk is
-  the release. The invoicer can't publish to crates.io on a git dependency,
-  so the MBR release (M0) gates Phase 6, not earlier phases.
+- **MBR timing.** Everything the invoicer needs is on MBR's main or in its
+  last open PR; the risk is the release. `mbr-core` cannot be used from git
+  (I16), so the MBR release (M0) gates Phase 3.
 - **Arithmetic disagreement between Rust and TypeScript.** The server is the
   only calculator. The grid shows the server's numbers after a debounced
   round trip, and optimistic display is labelled.

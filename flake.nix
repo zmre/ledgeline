@@ -330,16 +330,16 @@
       # on EVERY system (macDist on darwin, linuxDist on Linux), so a stale hash
       # here breaks `nix build github:zmre/ledgeline` with no attribute at all.
       spaNodeModulesHashes = {
-        aarch64-darwin = "sha256-Dmv/g9r3baJfsvK4KHi1Zzs+hAiG/ixWiPGDIt4p4Xo=";
-        x86_64-linux = "sha256-tBedBELXAlVrq9yFrGfVd1c6uInppLLg0gvk3sOKihg=";
+        aarch64-darwin = "sha256-9lnNYEBs/WO8QQWOC2F3Bi4+BFFR2VmmXe1qpmnKSUw=";
+        x86_64-linux = "sha256-+MB5IjekDyFJMoBHlre+4OIUIAcAtMJmx/NhmSpLDWo=";
         # Intel Macs, for the x86_64 half of the release matrix. Produced by a
         # release-workflow dry run under Rosetta, which is the only machine that
         # can generate it — see docs/development/releasing.md.
         x86_64-darwin = "sha256-144A9MQzynvHnoze2aNAJpRmVqxb0rQq91nqPCps8qo=";
       };
 
-      # The bun WORKSPACE (root package.json: web/ and packages/*; invoicer/web
-      # joins it in plan L6/0d). `bun install` only needs the manifests and the
+      # The bun WORKSPACE (root package.json: web/, invoicer/web and
+      # packages/*). `bun install` only needs the manifests and the
       # one root bun.lock, so the FOD's source is just those: editing any source
       # file leaves this derivation alone. A new workspace member must add its
       # package.json here, or the frozen install fails on a lockfile that names
@@ -351,6 +351,7 @@
           ./bun.lock
           ./bunfig.toml
           ./web/package.json
+          ./invoicer/web/package.json
           ./packages/ui/package.json
         ];
       };
@@ -375,7 +376,7 @@
         installPhase = ''
           mkdir -p "$out"
           cp -R node_modules "$out/"
-          for member in web packages/*; do
+          for member in web invoicer/web packages/*; do
             if [ -d "$member/node_modules" ]; then
               mkdir -p "$out/$member"
               cp -R "$member/node_modules" "$out/$member/"
@@ -424,7 +425,7 @@
           export HOME="$TMPDIR"
           cp -R ${spaNodeModules}/. ./
           chmod -R u+w node_modules
-          for member in web packages/*; do
+          for member in web invoicer/web packages/*; do
             [ ! -d "$member/node_modules" ] || chmod -R u+w "$member/node_modules"
           done
           # The `.bin` shims npm/bun generate carry `#!/usr/bin/env node`, and
