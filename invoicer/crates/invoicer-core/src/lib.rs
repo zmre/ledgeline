@@ -11,16 +11,23 @@
 //! - [`problem`]: what `check` reports;
 //! - [`settings`]: `ledgeline.toml [invoicer]` (§3.8);
 //! - [`notes`]: discovery, behind an API shaped like MBR's `Site` (§3.1);
-//! - [`customers`] (§3.4) and [`snippets`] (§3.7).
+//! - [`customers`] (§3.4) and [`snippets`] (§3.7);
+//! - [`doc`]: the invoice document and its validation (§3.2);
+//! - [`catalog`] (§3.6) and [`templates`] (§3.5);
+//! - [`numbering`] (§5.1).
 //!
 //! Plan 26 rules apply: no globals, no IO here, no platform `cfg`.
 
 pub mod booking;
+pub mod catalog;
 pub mod customers;
+pub mod doc;
 pub mod frontmatter;
 pub mod notes;
+pub mod numbering;
 mod par;
 pub mod problem;
 pub mod settings;
 pub mod snippets;
 pub mod table;
+pub mod templates;
