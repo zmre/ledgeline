@@ -4,6 +4,8 @@ Two books folders for the invoicer (PLAN 0d). Every name, number and amount
 is invented. The clock is **2026-11-17**.
 `invoicer-core/tests/fixtures.rs` checks that both read with no problems and
 that every booked invoice's total equals its receivable posting.
+`ledgeline-invoicer/tests/cli.rs` runs the CLI on a copy of each, under
+`target/`, and snapshots its JSON. Tests never write to these folders.
 
 ## `accrual/`
 
@@ -28,7 +30,8 @@ Customer X has a billing portal that requires a `reference`, contracts as a
 wikilink and a file path, open POs and a default snippet. Fred Smith is a
 person at Customer X, so invoices to him bill Customer X. The books also
 hold plan 45's invoices 2001–2004, which have no files: Phase 2's `check`
-reports them, and numbering over files and books gives 2005.
+reports them. Numbering over files and books gives 2005; the bill `PA-9`
+is a payable, in its own namespace, so it doesn't count.
 
 ## `cash/`
 

@@ -250,6 +250,29 @@ All of this is in `invoicer-core`. Nothing here writes the journal.
 - **Tests:** CLI integration tests against `invoicer/fixtures`, each on a
   copy under `target/`. JSON output is snapshotted.
 
+*Done (2026-11-21).* ARCHITECTURE §6.4 "As built" has the commands, the
+`--json` shapes and the rules. The logic is in `invoicer_core::{session,
+views, edit}`, and `main.rs` only parses and prints. The tests are
+`ledgeline-invoicer/tests/cli.rs`: each runs the built binary with an empty
+environment on its own fixture copy in `CARGO_TARGET_TMPDIR`. The snapshots
+are committed files in `tests/snapshots/` (`insta` isn't in the lockfile),
+re-recorded with `UPDATE_SNAPSHOTS=1`. These decisions are open to veto:
+
+| #   | Decision                                                                                                                                                          |
+|-----|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| C1  | Numbering already counts the books' `invoice:` tags (§5.1), except bills on the payable side. The accrual fixture's next number is 2005, not 109.                 |
+| C2  | `set` refuses `status`, `paid`, and `invoice_num` on a sent or void document. Those changes wait for send/void/rebook; hand edits stay possible.                  |
+| C3  | `recalc` with no arguments rewrites drafts only. Sent and void documents are reported as skipped and rewritten only when named.                                   |
+| C4  | `check` exits 1 on errors only; `--strict` makes warnings fail too. Any failure to run exits 2.                                                                   |
+| C5  | "Open" and "overdue" read the `paid:` mirror until the Phase 2 reconciler exists. Today is the **local** date (`--today` overrides); Ledgeline's server uses UTC. |
+| C6  | The journal comes from `JOURNAL` or `-f JOURNAL` (hledger's flag), then `$LEDGELINE_FIXTURE`, then recents. The CLI never records recents.                        |
+| C7  | `--row` takes `DESC\|QTY\|RATE\|ACCOUNT`. With no quantity, a money rate becomes the amount. A bare `Subtotal` writes a total row.                                |
+| C8  | `--json` failures print `{"error": "…"}` on stdout (exit 2), so a script reads one JSON value either way.                                                         |
+
+Left for later: `new --status sent` (send is Phase 2), `customers new` and
+`import-csv`, `check --full` (a CLI index is always fresh), and prose
+flags on `new` (snippets fill the prose after the table).
+
 **Gate:** `just engine-check engine-test`, plus the new crate tests, the
 benches against their baseline, clippy `-D warnings`, and fmt.
 
