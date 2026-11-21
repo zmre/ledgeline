@@ -1,0 +1,10 @@
+# Ledgeline settings for the invoicer's cash fixture (synthetic).
+
+[books]
+basis = "cash"
+
+[invoicer]
+company = "[[My Company]]"
+revenue-account = "revenue:consulting"
+deposit-account = "liabilities:customer-deposits"
+number-start = 201

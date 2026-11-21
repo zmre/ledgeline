@@ -668,3 +668,18 @@ fn a_header_with_two_columns_for_one_role_names_both() {
         .expect("evaluates");
     assert_eq!(evaluation.rows[0].item, Some(ItemCode("ARCH".into())));
 }
+
+#[test]
+fn a_total_label_in_the_rate_column_is_not_a_commodity() {
+    // An empty draft's table: the only cells in the money columns are the
+    // total's label and blank amounts. The label must not read as a symbol.
+    let doc = "| Description | Qty | Rate | Amount | *Account* |\n| | | **Total due** | | |\n";
+    let table = BillTable::find(doc, &Words::default())
+        .expect("reads")
+        .expect("a bill table");
+    assert_eq!(table.commodity(), None);
+    assert_eq!(
+        recalc(doc),
+        "| Description | Qty | Rate          | Amount    | *Account* |\n|:------------|----:|--------------:|----------:|:----------|\n|             |     | **Total due** | **$0.00** |           |\n"
+    );
+}

@@ -1,0 +1,72 @@
+; Revenue and expense recognition schedules for books.journal, written by Ledgeline.
+; Read it beside your books, never instead of them:
+;   hledger -f books.journal -f recognition.journal --forecast=tomorrow.. reg tag:recognition
+; Do not `include` this file: hledger and the Budget tab would read every
+; schedule as a budget goal. Posted entries live in books.journal itself.
+
+commodity $1,000.00
+; ── Customer X · cx1217 · 2025-12-17 Customer X Payment
+~ monthly from 2025-12-17 to 2026-11-18  Customer X Recognized  ; recognition: cx1217, renewal-date: 2026-12-17
+    liabilities:deferred-revenue   $1000.00  ; customer: Customer X
+    revenue:subscriptions         $-1000.00  ; customer: Customer X
+
+; ── Customer Y · cy0203 · 2026-02-03 Customer Y Payment
+~ monthly from 2026-02-03 to 2027-01-03  Customer Y Recognized  ; recognition: cy0203, renewal-date: 2027-02-03
+    liabilities:deferred-revenue   $833.33  ; customer: Customer Y
+    revenue:subscriptions         $-833.33  ; customer: Customer Y
+~ 2027-01-03  Customer Y Recognized  ; recognition: cy0203
+    liabilities:deferred-revenue   $833.37  ; customer: Customer Y
+    revenue:subscriptions         $-833.37  ; customer: Customer Y
+
+; ── Northwind Insurance · nw0301 · 2026-03-01 Northwind Insurance
+~ monthly from 2026-03-01 to 2027-02-02  Northwind Insurance Recognized  ; recognition: nw0301, renewal-date: 2027-03-01
+    assets:prepaid              $-500.00  ; vendor: Northwind Insurance
+    expenses:insurance:d-and-o   $500.00  ; vendor: Northwind Insurance
+
+; ── Adatum · ad0401 · 2026-04-01 Adatum Payment
+~ monthly from 2026-04-01 to 2027-03-02  Adatum Recognized  ; recognition: ad0401, renewal-date: 2027-04-01
+    liabilities:deferred-revenue   $200.00  ; customer: Adatum
+    revenue:subscriptions         $-200.00  ; customer: Adatum
+
+; ── Litware · lw0517 · 2026-05-17 Litware Payment
+~ 2026-05-17  Litware Recognized  ; recognition: lw0517
+    liabilities:deferred-revenue   $483.87  ; customer: Litware
+    revenue:subscriptions         $-483.87  ; customer: Litware
+~ monthly from 2026-06-01 to 2027-05-01  Litware Recognized  ; recognition: lw0517, renewal-date: 2027-05-17
+    liabilities:deferred-revenue   $1000.00  ; customer: Litware
+    revenue:subscriptions         $-1000.00  ; customer: Litware
+~ 2027-05-01  Litware Recognized  ; recognition: lw0517
+    liabilities:deferred-revenue   $516.13  ; customer: Litware
+    revenue:subscriptions         $-516.13  ; customer: Litware
+
+; ── Tailspin · tt2001 · 2026-06-15 Tailspin Invoice 2001
+~ monthly from 2026-07-01 to 2026-12-02  Tailspin Recognized  ; recognition: tt2001, renewal-date: 2027-01-01
+    liabilities:deferred-revenue   $500.00  ; customer: Tailspin
+    revenue:subscriptions         $-500.00  ; customer: Tailspin
+
+; ── Proseware Assurance · pw0615 · 2026-06-15 Proseware Assurance
+~ monthly from 2026-06-15 to 2027-05-16  Proseware Assurance Recognized  ; recognition: pw0615, renewal-date: 2027-06-15
+    assets:prepaid              $-200.00  ; vendor: Proseware Assurance
+    expenses:insurance:e-and-o   $200.00  ; vendor: Proseware Assurance
+
+; ── Alpine Ski House · as0710 · 2026-07-10 Alpine Ski House Payment
+~ monthly from 2026-07-10 to 2027-06-11  Alpine Ski House Recognized  ; recognition: as0710, renewal-date: 2027-07-10
+    liabilities:deferred-revenue   $100.00  ; customer: Alpine Ski House
+    revenue:subscriptions         $-100.00  ; customer: Alpine Ski House
+
+; ── Contoso · ct0801 · 2026-08-01 Contoso Payment
+~ monthly from 2026-08-01 to 2027-07-02  Contoso Recognized  ; recognition: ct0801, renewal-date: 2027-08-01
+    liabilities:deferred-revenue   $500.00  ; customer: Contoso
+    revenue:subscriptions         $-500.00  ; customer: Contoso
+    liabilities:deferred-revenue   $100.00  ; customer: Contoso
+    revenue:support               $-100.00  ; customer: Contoso
+
+; ── Contoso · ct0802 · 2026-08-01 Contoso Payment
+~ monthly from 2026-08-01 to 2026-10-02  Contoso Recognized  ; recognition: ct0802, renewal-date: 2026-11-01
+    liabilities:deferred-revenue   $300.00  ; customer: Contoso
+    revenue:onboarding            $-300.00  ; customer: Contoso
+
+; ── Adatum · ad1015 · 2026-10-15 Adatum Invoice 2003
+~ monthly from 2026-10-15 to 2027-09-16  Adatum Recognized  ; recognition: ad1015, renewal-date: 2027-10-15
+    liabilities:deferred-revenue   $500.00  ; customer: Adatum
+    revenue:subscriptions         $-500.00  ; customer: Adatum

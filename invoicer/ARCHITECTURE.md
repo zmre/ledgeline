@@ -106,7 +106,7 @@ derivation.
 
 | Crate                | Kind        | Depends on                                            | Holds                                                                                                                                     |
 |----------------------|-------------|-------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------|
-| `invoicer-core`      | lib         | `ledgeline-core`, `mbr-core` (no default features)    | The document model, table engine, customers, catalog, snippets, templates, numbering, booking bridge, reconciliation, receivables view.    |
+| `invoicer-core`      | lib         | `ledgeline-core`; `mbr-core` (crates.io, Phase 3)     | The document model, table engine, customers, catalog, snippets, templates, numbering, booking bridge, reconciliation, receivables view.    |
 | `ledgeline-invoicer` | bin + lib   | `invoicer-core`, `ledgeline-shell`, `mbr-server`, mbr (PDF) | The CLI, the axum `/api` routes, the SPA embed, the MBR router mount, the desktop window, and PDF export.                           |
 | `ledgeline-shell`    | lib         | axum, wry/tao/muda/rfd (behind `gui`)                 | Token and Host guard, rust-embed SPA serving with init script, the GUI boot sequence, `AppDirs`, recents, and UI-prefs merge, all extracted from `ledgeline-server`. |
 | `invoicer-ffi`       | staticlib   | `ledgeline-invoicer` (no gui), uniffi 0.31            | Later. Mirrors `ledgeline-ffi`: `handle(method, url, headers, body)` behind a `ledgeline-invoicer://` URL scheme.                          |
@@ -161,9 +161,19 @@ each one can be overridden in `ledgeline.toml [invoicer]`.
 The default folders only decide where **new** files go. Discovery is always
 by content, across the whole books folder, so a user who keeps
 `customer-x/Customer X.md` next to `customer-x/invoices/105.md` loses
-nothing. Discovery uses MBR's repo scan, so MBR's ignore rules apply: hidden
-folders, `templates/`, `node_modules/` and so on. That is one reason the
-default template folder is `invoices/tpl/` and not `templates/`.
+nothing. Discovery follows MBR's repo scan, so MBR's ignore rules apply: hidden
+folders, `templates/`, `node_modules/` and so on, plus the invoicer's own
+`pdf-dir`. That is one reason the default template folder is `invoices/tpl/`
+and not `templates/`.
+
+`invoicer_core::notes` implements that scan itself until MBR's `Site` façade
+(MBR-CHANGES M2) is on crates.io: mbr-core can't be a git dependency, because
+its built JS assets are gitignored (decided 2026-11-20). Its API is shaped
+like `Site` (`notes_of_type`, `note`, `field_values`, `resolve_wikilink`), so
+the swap touches no caller. It reads frontmatter with `yaml-rust2`, MBR's
+parser, matches `type` and tags case-insensitively as MBR does, and resolves
+wikilinks by MBR's body-link rules: same-folder file stem, then title, then
+alias, then stem, the smallest path winning a tie.
 
 ### 3.2 An invoice
 
@@ -234,6 +244,11 @@ frontmatter.
 | `deposit_for`                    | no       | On a deposit invoice: what it is a deposit on (free text or a wikilink to an estimate).                                       |
 | `stripe_id`, `stripe_url`, …     | no       | Later: sync identity (§7).                                                                                                    |
 | *anything else*                  | no       | Custom fields. Templates see them, MBR autocompletes them, and the invoicer keeps them byte-for-byte.                         |
+
+`check` reports a missing required field as an error, except the snapshot
+emails and addresses (`invoicee_email`, `invoicee_address`, `invoicer_email`,
+`invoicer_address`), which are warnings: a customer without one can still be
+invoiced.
 
 **Title and filename.** The default filename pattern is
 `{date} {customer} Invoice {invoice_num}.md`, and `title` mirrors it. Both are
@@ -469,7 +484,10 @@ Fred Smith is the champion.
 
 - **Billing contact.** The invoicer picks the email or address labelled
   `billing`, then `work`, then the first one. A person note's
-  `company: "[[Org]]"` makes the org the default bill-to.
+  `company: "[[Org]]"` makes the org the default bill-to: the org's name, and
+  its billing email and address when it has them (the person's otherwise).
+  Addresses may be text or MBR's map (`street`, `city`, `region`,
+  `postcode`, `country`), which is written as lines.
 - **Identity in the books.** The books identify a customer by
   `ledger_customer`, falling back to the title. That value is the
   `customer:` tag, plan 37's attribution, so Ledgeline's SaaS metrics and
@@ -529,7 +547,7 @@ is the point, since a third party can render our invoices with plain `mbr`.
   comment on its first line, for example
   `{# invoicer: name="MyCo default" kinds="invoice,estimate" #}`. Tera
   comments aren't HTML comments, and this is an HTML file anyway. With no
-  such comment, the name is the file stem.
+  such comment, the name is the file stem and the kind is `invoice`.
 - **Starter templates.** The invoicer ships two (clean, classic). They are
   copied into `invoices/tpl/` the first time they're used, and from then on
   they are the user's files. Each starter includes:
@@ -616,7 +634,7 @@ rate        = ["Rate", "Price", "Unit price", "Unit cost"]
 amount      = ["Amount", "Total", "Line total"]
 date        = ["Date", "Service date"]
 unit        = ["Unit"]
-item        = ["SKU", "Code"]
+item        = ["Code", "SKU"]
 subtotal    = ["Subtotal"]                                  # total rows the editor writes mid-table
 total       = ["Total due", "Total", "Balance due", "Amount due"]  # first = the final total row
 deposit     = ["Less deposit"]                              # label for an "apply deposit" row
@@ -795,7 +813,12 @@ increments. There is no counter file.
    unbilled time.
 4. Write prose above and below the table.
 5. Save. The file is written atomically with a content-hash check, as MBR's
-   editor does, and the status is `draft`.
+   editor does, and the status is `draft`. A new file first claims its name
+   exclusively (an empty file), then is atomically replaced, conditional on
+   still being that empty file: a crash leaves an empty note or the whole
+   draft, and two writers can't both take the name. Every write is verified
+   first: the text must read back with its frontmatter and a bill table that
+   adds up.
 6. **Send:** this marks the invoice sent, books it (§4.1), and offers the
    PDF.
 
@@ -847,9 +870,21 @@ Rust has no YAML library that preserves formatting. The invoicer therefore
 edits frontmatter **by key**:
 
 - it replaces or inserts top-level `key: value` lines in the YAML block,
-  including `|` blocks;
-- it preserves order, comments and unknown keys;
-- it verifies the result by re-parsing and comparing every other key.
+  including `|` blocks; a new key goes after the last one;
+- it preserves order, comments and unknown keys, and a replaced one-line
+  value keeps its trailing `# comment` and its quoting style;
+- it verifies the result by re-parsing and comparing every other key, and
+  the body byte for byte;
+- it refuses, writing nothing, when the block's layout isn't plain
+  top-level `key: value` lines (a top-level flow map, a `? ` key, a column-0
+  comment inside a list). Those files are edited by hand.
+
+Values are written plain when they read back as the same string (dates stay
+`2026-11-17`), double-quoted otherwise (`"[[Customer X]]"`, `"PO #1"`), and
+multi-line text as a `|` block. `|+` is never written, since it would absorb
+blank lines after it. Nested maps are written in key order. Frontmatter is
+read as MBR reads it: YAML 1.2 (`no` is text), integers as numbers, floats as
+`f64`. `invoice_num` is taken as written, so `0042` stays `0042`.
 
 The same edit is how scripts are expected to modify invoices. It is exposed
 as `ledgeline-invoicer set <invoice> key=value`.
@@ -900,12 +935,37 @@ produced by a deterministic generator that extends Ledgeline's
 - **No subprocesses on interactive paths.** Booking, settlement, receivables
   and reconciliation use ledgeline-core's own engine. `hledger` runs only in
   tests, which cross-check our results against it.
-- **Parallel open.** The open-time scan parses files on a rayon pool, as
-  MBR's repo scan does.
+- **Parallel open.** The open-time scan reads and parses files on scoped
+  threads, one chunk per core (rayon isn't in the lockfile, and the scan is
+  one parallel map). Each file is read once: the scan keeps the text just
+  long enough to index the documents' bill tables.
 - **Benchmarks are tests.** `invoicer-core/benches` has criterion benches for
   the scan, table recompute, booking and reconciliation, in the same style
   as `ledgeline-core/benches`. A bench that regresses more than 20% against
-  the stored baseline fails the gate.
+  the stored baseline fails the gate. The baseline is committed
+  (`benches/baseline.json`, the median per bench and the machine it was
+  taken on), since criterion's own baselines live under `target/`.
+  `just invoicer-bench-gate` runs the benches and then `examples/bench_gate`,
+  which fails on any bench more than 20% slower or not run;
+  `just invoicer-bench-baseline` re-records it.
+
+**Measured (Phase 1b, 2026-11-20).** On the corpus (6,104 notes; a journal of
+59,250 transactions, 9.2 MB), Apple M5 Max, `cargo bench` medians:
+
+| Bench                              | Median   | Feeds the budget                                |
+|------------------------------------|----------|-------------------------------------------------|
+| Index open (walk, read, parse all) | 121 ms   | open → list (300 ms); with the journal, ~200 ms |
+| `list --json` on a warm index      | 3.2 ms   | `list --json` (300 ms); cold, ~200 ms           |
+| `check` on a warm index            | 3.8 ms   | `check` (1 s); cold, ~200 ms                    |
+| Refresh one changed file           | 1.3 ms   | save a draft (20 ms)                            |
+| Save (verify, write, re-index)     | 5.8 ms   | save a draft (20 ms)                            |
+| Ledgeline journal open             | 74 ms    | open; a journal change                          |
+| Ledgeline journal reopen           | 73–92 ms | a journal change → `paid:` refreshed (100 ms)   |
+| Bill-table keystroke (100 rows)    | 0.17 ms  | keystroke (10 ms)                               |
+
+Every budget holds, but the journal reload alone uses most of the 100 ms
+for a journal change, which leaves the reconciler under 10–25 ms. That is
+L10 in §8.
 
 **Correctness is never traded for speed:**
 
@@ -1071,12 +1131,14 @@ The CLI and the API share one library function per operation, as
 | L7 | Generalize `scripts/release.sh`, the flake, `ci.yml`, `release.yml` and `package-crates` for a second app                                              | Lock-step release                                      |
 | L8 | Relicense to AGPL-3.0-or-later (`LICENSE`, `[workspace.package] license`, `web/package.json`, README badge and section, docs)                                  | MBR is GPL; decision 2026-11-19                        |
 | L9 | Ledgeline journal view: a `document:` tag renders as an "Open invoice" link (it opens the invoicer, or MBR's page)                                     | Book → invoice navigation                              |
+| L10 | Incremental journal reload: re-parse only the changed include file, or the changed transactions, instead of the whole journal                       | A reload is 73–92 ms on the §5.6 corpus, most of the 100 ms journal-change budget |
 
 ## 9. Risks
 
 - **MBR API churn.** MBR's crates say "no API stability guarantees".
   Mitigations:
-  - pin an exact version, or a git rev until MBR's next release;
+  - pin an exact crates.io version (a git rev can't build: mbr-core's built
+    JS assets aren't in git);
   - keep all MBR calls behind one `invoicer_core::notes` module;
   - get the façade (MBR-CHANGES M2) agreed early.
 - **Two vault abstractions.** Ledgeline has its `Vault` and MBR has its own.

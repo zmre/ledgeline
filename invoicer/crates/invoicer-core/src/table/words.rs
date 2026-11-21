@@ -105,7 +105,7 @@ impl Default for Words {
             amount: WordList::of(&["Amount", "Total", "Line total"]),
             date: WordList::of(&["Date", "Service date"]),
             unit: WordList::of(&["Unit"]),
-            item: WordList::of(&["SKU", "Code"]),
+            item: WordList::of(&["Code", "SKU"]),
             subtotal: WordList::of(&["Subtotal"]),
             total: WordList::of(&["Total due", "Total", "Balance due", "Amount due"]),
             deposit: WordList::of(&["Less deposit"]),
