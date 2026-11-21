@@ -399,7 +399,9 @@ impl BillTable {
         self.table.grid.rows.iter().find_map(|row| {
             money_cols.iter().find_map(|col| {
                 let text = plain(row.get(*col)?);
-                if text.ends_with('%') {
+                // Money has digits: a `**Total due**` label in the rate
+                // column is not a commodity.
+                if text.ends_with('%') || !text.chars().any(|c| c.is_ascii_digit()) {
                     return None;
                 }
                 let symbolic = |c: char| {

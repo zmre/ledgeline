@@ -57,7 +57,7 @@ pub enum HeaderProblem {
         /// The second column's header text.
         second: String,
     },
-    /// There is an amount column but no description column.
+    /// There is no description column.
     NoDescription,
 }
 
@@ -73,7 +73,7 @@ impl std::fmt::Display for HeaderProblem {
                 "`{first}` and `{second}` are both {} columns; rename one",
                 format!("{role:?}").to_lowercase()
             ),
-            Self::NoDescription => f.write_str("it has an amount column but no description column"),
+            Self::NoDescription => f.write_str("it has no description column"),
         }
     }
 }
@@ -120,8 +120,25 @@ impl Columns {
     /// A [`HeaderProblem`] for two columns with one role, or a missing
     /// description.
     pub fn recognize(header: &[String], words: &Words) -> Result<Option<Self>, HeaderProblem> {
+        let roles = Self::roles_of(header, words);
+        if !roles.contains(&Role::Amount) {
+            return Ok(None);
+        }
+        Self::checked(roles, header).map(Some)
+    }
+
+    /// Recognize a header that needn't have an amount column (the catalog's,
+    /// §3.6), with the same duplicate and description rules.
+    ///
+    /// # Errors
+    /// As [`Columns::recognize`].
+    pub fn recognize_any(header: &[String], words: &Words) -> Result<Self, HeaderProblem> {
+        Self::checked(Self::roles_of(header, words), header)
+    }
+
+    fn roles_of(header: &[String], words: &Words) -> Vec<Role> {
         let last = header.len().saturating_sub(1);
-        let roles: Vec<Role> = header
+        header
             .iter()
             .enumerate()
             .map(|(i, text)| {
@@ -131,10 +148,10 @@ impl Columns {
                     role_of(text, words).unwrap_or(Role::Other)
                 }
             })
-            .collect();
-        if !roles.contains(&Role::Amount) {
-            return Ok(None);
-        }
+            .collect()
+    }
+
+    fn checked(roles: Vec<Role>, header: &[String]) -> Result<Self, HeaderProblem> {
         if let Some((second, first, role)) = roles.iter().enumerate().find_map(|(i, role)| {
             (*role != Role::Other)
                 .then(|| roles[..i].iter().position(|r| r == role))
@@ -150,7 +167,7 @@ impl Columns {
         if !roles.contains(&Role::Description) {
             return Err(HeaderProblem::NoDescription);
         }
-        Ok(Some(Self { roles }))
+        Ok(Self { roles })
     }
 
     /// The role of column `col`.

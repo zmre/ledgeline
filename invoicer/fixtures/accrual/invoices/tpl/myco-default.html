@@ -1,0 +1,23 @@
+{# invoicer: name="MyCo default" kinds="invoice,estimate" #}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ frontmatter.title }}</title>
+<style>
+  @page { size: letter; margin: 0.75in; }
+  body { font-family: system-ui, sans-serif; color: #111; }
+  /* The books column: last column, italic header. */
+  table:has(thead th:last-child > em:only-child) :is(th, td):last-child { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Invoice {{ frontmatter.invoice_num }}</h1>
+  <p>{{ frontmatter.invoicer_name }}</p>
+  <p>Date {{ frontmatter.date }}{% if frontmatter.due_date %} · Due {{ frontmatter.due_date }}{% endif %}</p>
+  <p>Bill to {{ frontmatter.invoicee_name }}</p>
+</header>
+<main>{{ markdown | safe }}</main>
+</body>
+</html>

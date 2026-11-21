@@ -1,0 +1,10 @@
+# Ledgeline settings for the invoicer's accrual fixture (synthetic).
+
+[books]
+closed-through = "2026-09-30"
+
+[invoicer]
+company = "[[My Company]]"
+receivable-account = "assets:accounts receivable"
+revenue-account = "revenue:consulting"
+deposit-account = "liabilities:customer-deposits"

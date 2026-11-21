@@ -100,9 +100,9 @@ phases can cite them.
 | Phase | Name                                   | Ships                                                     | Depends on                     |
 |-------|----------------------------------------|-----------------------------------------------------------|--------------------------------|
 | 0     | Foundations                            | AGPL, shared shell/prefs/ui extraction, empty crates, fixtures, CI wiring | —                              |
-| 1     | Document engine + read-only CLI         | `invoicer-core` docs model, table engine, discovery, numbering, index, benches; `new/list/show/set/recalc/check/next-number/config` | 0; MBR main (git rev) |
+| 1     | Document engine + read-only CLI         | `invoicer-core` docs model, table engine, discovery, numbering, index, benches; `new/list/show/set/recalc/check/next-number/config` | 0 (no MBR dependency) |
 | 2     | Books bridge                           | Ledgeline L1–L4; `send/void/rebook/reconcile/receivables/recognize`; deposits; cash vs accrual | 1                              |
-| 3     | App shell, rendering, PDF, branding    | The GUI app boots, MBR mounted, preview, starter templates, `pdf`, icon | 2; MBR M3, M4, M5 (git rev)    |
+| 3     | App shell, rendering, PDF, branding    | The GUI app boots, MBR mounted, preview, starter templates, `pdf`, icon | 2; MBR M3, M4, M5 (crates.io)  |
 | 4     | Editors                                | Invoice, customer, catalog, snippet and template editors   | 3; MBR M1, M2 (M6 optional)    |
 | 5     | Dashboard and lists                    | Receivables dashboard, invoice and customer lists          | 2, 4                           |
 | 6     | Packaging, release, docs               | Signed DMGs in lock-step, docs section, README             | 3 (can start in parallel with 4) |
@@ -205,17 +205,19 @@ All of this is in `invoicer-core`. Nothing here writes the journal.
 - **Benches** (criterion, as in `ledgeline-core/benches`): recomputing a
   100-row table and re-writing one cell. Budget: under 1 ms.
 
-**1b. Documents and discovery** (`invoicer_core::{doc, frontmatter, notes, customers, catalog, snippets, templates, numbering}`):
-- Frontmatter read: lossless, to `serde_json::Value`, with MBR's parser once
-  M2 lands. Until then use `yaml-rust2`, the same crate MBR uses.
+**1b. Documents and discovery** (`invoicer_core::{doc, frontmatter, notes, customers, catalog, snippets, templates, numbering, index, draft, settings, problem}`):
+- Frontmatter read: lossless, to `serde_json::Value`, with `yaml-rust2`, the
+  same crate MBR uses. 1b has no MBR dependency (decided 2026-11-20; see
+  I16).
 - Frontmatter edit-by-key, preserving order and comments (ARCHITECTURE §5.5),
   verified by re-parsing.
 - The `Invoice` model: frontmatter fields, prose before, bill table, prose
   after, supporting tables.
 - Validation produces `Vec<Problem>` with a file, a line and a fix-it where
   possible.
-- Discovery through `notes`, a thin wrapper over MBR's repo scan. All MBR
-  calls are confined to this module.
+- Discovery through `notes`: its own walk over `Vault`, following MBR's
+  ignore, type, tag and wikilink rules, behind an API shaped like MBR's `Site`
+  façade (M2) so that it can become a thin wrapper over it.
   - Invoices by `type`.
   - Customers by type plus the `customer` tag, with billing-contact
     selection.
@@ -235,7 +237,7 @@ All of this is in `invoicer-core`. Nothing here writes the journal.
 - **The corpus generator:** 5,000 invoices, 500 customers and 10 years of
   journal, deterministic, extending `ledgeline-core/benches/corpus.rs`.
   Benches for open, list and `check`, with a stored baseline. A >20%
-  regression fails the gate.
+  regression fails the gate (`just invoicer-bench-gate`; ARCHITECTURE §5.6).
 - **Measure Ledgeline's journal reload** on the corpus. If it threatens the
   §5.6 budgets, file the Ledgeline change now rather than in Phase 3.
 

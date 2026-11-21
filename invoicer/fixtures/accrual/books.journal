@@ -1,0 +1,427 @@
+; Invoicer accrual fixture books (invoicer PLAN 0d): a copy of
+; fixtures/accrual (plan 45) with the invoicer's documents booked at the end.
+; Every name and figure here is invented. Clock: 2026-11-17.
+commodity $1,000.00
+
+account assets:bank:checking            ; type: C
+account assets:accounts receivable      ; type: A, kpi: receivable
+account assets:prepaid                  ; type: A, kpi: prepaid
+account liabilities:accounts payable    ; type: L, kpi: payable
+account liabilities:deferred-revenue    ; type: L, kpi: deferred-revenue
+account revenue:sales                   ; type: R
+account revenue:subscriptions           ; type: R, kpi: recurring
+account revenue:support                 ; type: R
+account revenue:onboarding              ; type: R
+account revenue:setup                   ; type: R
+account revenue:services                ; type: R
+account revenue:consulting              ; type: R
+account revenue:consulting:delivery     ; type: R
+account revenue:discounts               ; type: R
+account revenue:saas                    ; type: R
+account liabilities:customer-deposits   ; type: L
+account expenses:insurance:d-and-o      ; type: X
+account expenses:insurance:e-and-o      ; type: X
+account expenses:payment fees           ; type: X
+account expenses:payroll                ; type: X
+account equity:opening                  ; type: E
+
+include books-2025.journal
+
+2026-01-17 Customer X Recognized  ; recognition: cx1217, renewal-date: 2026-12-17, recognized: 2026-01-17
+    liabilities:deferred-revenue  $1000.00  ; customer: Customer X
+    revenue:subscriptions         $-1000.00  ; customer: Customer X
+
+; Rounding: $10,000 over 12 months from the 3rd.
+2026-02-03 Customer Y Payment
+    assets:bank:checking                $10000.00
+    liabilities:deferred-revenue       $-10000.00  ; customer: Customer Y, recognition: cy0203, term-months: 12, contract: new
+
+2026-02-03 Customer Y Recognized  ; recognition: cy0203, renewal-date: 2027-02-03, recognized: 2026-02-03
+    liabilities:deferred-revenue  $833.33  ; customer: Customer Y
+    revenue:subscriptions         $-833.33  ; customer: Customer Y
+
+2026-02-17 Customer X Recognized  ; recognition: cx1217, renewal-date: 2026-12-17, recognized: 2026-02-17
+    liabilities:deferred-revenue  $1000.00  ; customer: Customer X
+    revenue:subscriptions         $-1000.00  ; customer: Customer X
+
+; Prepaid D&O, billed through payables.
+2026-03-01 Northwind Insurance  ; invoice: B-77
+    assets:prepaid                       $6000.00  ; vendor: Northwind Insurance, recognition: nw0301, term-months: 12, contract: new
+    liabilities:accounts payable        $-6000.00  ; vendor: Northwind Insurance
+
+2026-03-01 Northwind Insurance Recognized  ; recognition: nw0301, renewal-date: 2027-03-01, recognized: 2026-03-01
+    assets:prepaid              $-500.00  ; vendor: Northwind Insurance
+    expenses:insurance:d-and-o  $500.00  ; vendor: Northwind Insurance
+
+2026-03-03 Customer Y Recognized  ; recognition: cy0203, renewal-date: 2027-02-03, recognized: 2026-03-03
+    liabilities:deferred-revenue  $833.33  ; customer: Customer Y
+    revenue:subscriptions         $-833.33  ; customer: Customer Y
+
+; Point-in-time sale: no schedule, just the customer.
+2026-03-10 Fabrikam Widgets
+    assets:bank:checking                  $450.00
+    revenue:sales                        $-450.00  ; customer: Fabrikam
+
+2026-03-17 Customer X Recognized  ; recognition: cx1217, renewal-date: 2026-12-17, recognized: 2026-03-17
+    liabilities:deferred-revenue  $1000.00  ; customer: Customer X
+    revenue:subscriptions         $-1000.00  ; customer: Customer X
+
+2026-03-20 Northwind Insurance B-77
+    liabilities:accounts payable         $6000.00
+    assets:bank:checking
+
+; Credit-back, part 1: an annual plan from April.
+2026-04-01 Adatum Payment
+    assets:bank:checking                 $2400.00
+    liabilities:deferred-revenue        $-2400.00  ; customer: Adatum, recognition: ad0401, term-months: 12, contract: new
+
+2026-04-01 Adatum Recognized  ; recognition: ad0401, renewal-date: 2027-04-01, recognized: 2026-04-01
+    liabilities:deferred-revenue  $200.00  ; customer: Adatum
+    revenue:subscriptions         $-200.00  ; customer: Adatum
+
+2026-04-01 Northwind Insurance Recognized  ; recognition: nw0301, renewal-date: 2027-03-01, recognized: 2026-04-01
+    assets:prepaid              $-500.00  ; vendor: Northwind Insurance
+    expenses:insurance:d-and-o  $500.00  ; vendor: Northwind Insurance
+
+2026-04-03 Customer Y Recognized  ; recognition: cy0203, renewal-date: 2027-02-03, recognized: 2026-04-03
+    liabilities:deferred-revenue  $833.33  ; customer: Customer Y
+    revenue:subscriptions         $-833.33  ; customer: Customer Y
+
+2026-04-17 Customer X Recognized  ; recognition: cx1217, renewal-date: 2026-12-17, recognized: 2026-04-17
+    liabilities:deferred-revenue  $1000.00  ; customer: Customer X
+    revenue:subscriptions         $-1000.00  ; customer: Customer X
+
+2026-05-01 Adatum Recognized  ; recognition: ad0401, renewal-date: 2027-04-01, recognized: 2026-05-01
+    liabilities:deferred-revenue  $200.00  ; customer: Adatum
+    revenue:subscriptions         $-200.00  ; customer: Adatum
+
+2026-05-01 Northwind Insurance Recognized  ; recognition: nw0301, renewal-date: 2027-03-01, recognized: 2026-05-01
+    assets:prepaid              $-500.00  ; vendor: Northwind Insurance
+    expenses:insurance:d-and-o  $500.00  ; vendor: Northwind Insurance
+
+2026-05-03 Customer Y Recognized  ; recognition: cy0203, renewal-date: 2027-02-03, recognized: 2026-05-03
+    liabilities:deferred-revenue  $833.33  ; customer: Customer Y
+    revenue:subscriptions         $-833.33  ; customer: Customer Y
+
+; Anchored: billing anchored to the 1st, a stub, a year, and the remainder.
+2026-05-17 Litware Payment
+    assets:bank:checking                $12000.00
+    liabilities:deferred-revenue       $-12000.00  ; customer: Litware, recognition: lw0517, term-months: 12, proration: calendar, contract: new
+
+2026-05-17 Customer X Recognized  ; recognition: cx1217, renewal-date: 2026-12-17, recognized: 2026-05-17
+    liabilities:deferred-revenue  $1000.00  ; customer: Customer X
+    revenue:subscriptions         $-1000.00  ; customer: Customer X
+
+2026-05-17 Litware Recognized  ; recognition: lw0517, recognized: 2026-05-17
+    liabilities:deferred-revenue  $483.87  ; customer: Litware
+    revenue:subscriptions         $-483.87  ; customer: Litware
+
+2026-06-01 Adatum Recognized  ; recognition: ad0401, renewal-date: 2027-04-01, recognized: 2026-06-01
+    liabilities:deferred-revenue  $200.00  ; customer: Adatum
+    revenue:subscriptions         $-200.00  ; customer: Adatum
+
+2026-06-01 Litware Recognized  ; recognition: lw0517, renewal-date: 2027-05-17, recognized: 2026-06-01
+    liabilities:deferred-revenue  $1000.00  ; customer: Litware
+    revenue:subscriptions         $-1000.00  ; customer: Litware
+
+2026-06-01 Northwind Insurance Recognized  ; recognition: nw0301, renewal-date: 2027-03-01, recognized: 2026-06-01
+    assets:prepaid              $-500.00  ; vendor: Northwind Insurance
+    expenses:insurance:d-and-o  $500.00  ; vendor: Northwind Insurance
+
+2026-06-03 Customer Y Recognized  ; recognition: cy0203, renewal-date: 2027-02-03, recognized: 2026-06-03
+    liabilities:deferred-revenue  $833.33  ; customer: Customer Y
+    revenue:subscriptions         $-833.33  ; customer: Customer Y
+
+; Invoice, then payment ($30 short), with recognition from July 1.
+2026-06-15 Tailspin Invoice 2001  ; invoice: 2001
+    assets:accounts receivable           $3000.00  ; customer: Tailspin
+    liabilities:deferred-revenue        $-3000.00  ; customer: Tailspin, recognition: tt2001, service-start: 2026-07-01, term-months: 6, contract: new
+
+; Prepaid E&O from a second vendor, a different start date.
+2026-06-15 Proseware Assurance  ; invoice: PA-9
+    assets:prepaid                       $2400.00  ; vendor: Proseware Assurance, recognition: pw0615, term-months: 12, contract: new
+    liabilities:accounts payable        $-2400.00  ; vendor: Proseware Assurance
+
+2026-06-15 Proseware Assurance Recognized  ; recognition: pw0615, renewal-date: 2027-06-15, recognized: 2026-06-15
+    assets:prepaid              $-200.00  ; vendor: Proseware Assurance
+    expenses:insurance:e-and-o  $200.00  ; vendor: Proseware Assurance
+
+2026-06-17 Customer X Recognized  ; recognition: cx1217, renewal-date: 2026-12-17, recognized: 2026-06-17
+    liabilities:deferred-revenue  $1000.00  ; customer: Customer X
+    revenue:subscriptions         $-1000.00  ; customer: Customer X
+
+2026-07-01 Adatum Recognized  ; recognition: ad0401, renewal-date: 2027-04-01, recognized: 2026-07-01
+    liabilities:deferred-revenue  $200.00  ; customer: Adatum
+    revenue:subscriptions         $-200.00  ; customer: Adatum
+
+2026-07-01 Litware Recognized  ; recognition: lw0517, renewal-date: 2027-05-17, recognized: 2026-07-01
+    liabilities:deferred-revenue  $1000.00  ; customer: Litware
+    revenue:subscriptions         $-1000.00  ; customer: Litware
+
+2026-07-01 Northwind Insurance Recognized  ; recognition: nw0301, renewal-date: 2027-03-01, recognized: 2026-07-01
+    assets:prepaid              $-500.00  ; vendor: Northwind Insurance
+    expenses:insurance:d-and-o  $500.00  ; vendor: Northwind Insurance
+
+2026-07-01 Tailspin Recognized  ; recognition: tt2001, renewal-date: 2027-01-01, recognized: 2026-07-01
+    liabilities:deferred-revenue  $500.00  ; customer: Tailspin
+    revenue:subscriptions         $-500.00  ; customer: Tailspin
+
+2026-07-03 Customer Y Recognized  ; recognition: cy0203, renewal-date: 2027-02-03, recognized: 2026-07-03
+    liabilities:deferred-revenue  $833.33  ; customer: Customer Y
+    revenue:subscriptions         $-833.33  ; customer: Customer Y
+
+; Closed period: a September occurrence is never posted.
+2026-07-10 Alpine Ski House Payment
+    assets:bank:checking                 $1200.00
+    liabilities:deferred-revenue        $-1200.00  ; customer: Alpine Ski House, recognition: as0710, term-months: 12, contract: new
+
+2026-07-10 Alpine Ski House Recognized  ; recognition: as0710, renewal-date: 2027-07-10, recognized: 2026-07-10
+    liabilities:deferred-revenue  $100.00  ; customer: Alpine Ski House
+    revenue:subscriptions         $-100.00  ; customer: Alpine Ski House
+
+2026-07-15 Proseware Assurance Recognized  ; recognition: pw0615, renewal-date: 2027-06-15, recognized: 2026-07-15
+    assets:prepaid              $-200.00  ; vendor: Proseware Assurance
+    expenses:insurance:e-and-o  $200.00  ; vendor: Proseware Assurance
+
+2026-07-17 Customer X Recognized  ; recognition: cx1217, renewal-date: 2026-12-17, recognized: 2026-07-17
+    liabilities:deferred-revenue  $1000.00  ; customer: Customer X
+    revenue:subscriptions         $-1000.00  ; customer: Customer X
+
+2026-07-20 Tailspin payment INV 2001
+    assets:bank:checking                 $2970.00
+    assets:accounts receivable
+
+; Multi-line payment: a fee, a one-time item, two lines on one schedule, and
+; a 3-month line on a second.
+2026-08-01 Contoso Payment
+    assets:bank:checking                 $8570.00
+    expenses:payment fees                  $30.00
+    revenue:setup                        $-500.00  ; customer: Contoso
+    liabilities:deferred-revenue        $-6000.00  ; customer: Contoso, recognition: ct0801, term-months: 12, contract: new
+    liabilities:deferred-revenue        $-1200.00  ; customer: Contoso, recognition: ct0801, term-months: 12, contract: new
+    liabilities:deferred-revenue         $-900.00  ; customer: Contoso, recognition: ct0802, term-months: 3, contract: new
+
+2026-08-01 Adatum Recognized  ; recognition: ad0401, renewal-date: 2027-04-01, recognized: 2026-08-01
+    liabilities:deferred-revenue  $200.00  ; customer: Adatum
+    revenue:subscriptions         $-200.00  ; customer: Adatum
+
+2026-08-01 Contoso Recognized  ; recognition: ct0801, renewal-date: 2027-08-01, recognized: 2026-08-01
+    liabilities:deferred-revenue  $500.00  ; customer: Contoso
+    revenue:subscriptions         $-500.00  ; customer: Contoso
+    liabilities:deferred-revenue  $100.00  ; customer: Contoso
+    revenue:support               $-100.00  ; customer: Contoso
+
+2026-08-01 Contoso Recognized  ; recognition: ct0802, renewal-date: 2026-11-01, recognized: 2026-08-01
+    liabilities:deferred-revenue  $300.00  ; customer: Contoso
+    revenue:onboarding            $-300.00  ; customer: Contoso
+
+2026-08-01 Litware Recognized  ; recognition: lw0517, renewal-date: 2027-05-17, recognized: 2026-08-01
+    liabilities:deferred-revenue  $1000.00  ; customer: Litware
+    revenue:subscriptions         $-1000.00  ; customer: Litware
+
+2026-08-01 Northwind Insurance Recognized  ; recognition: nw0301, renewal-date: 2027-03-01, recognized: 2026-08-01
+    assets:prepaid              $-500.00  ; vendor: Northwind Insurance
+    expenses:insurance:d-and-o  $500.00  ; vendor: Northwind Insurance
+
+2026-08-01 Tailspin Recognized  ; recognition: tt2001, renewal-date: 2027-01-01, recognized: 2026-08-01
+    liabilities:deferred-revenue  $500.00  ; customer: Tailspin
+    revenue:subscriptions         $-500.00  ; customer: Tailspin
+
+2026-08-03 Customer Y Recognized  ; recognition: cy0203, renewal-date: 2027-02-03, recognized: 2026-08-03
+    liabilities:deferred-revenue  $833.33  ; customer: Customer Y
+    revenue:subscriptions         $-833.33  ; customer: Customer Y
+
+2026-08-10 Alpine Ski House Recognized  ; recognition: as0710, renewal-date: 2027-07-10, recognized: 2026-08-10
+    liabilities:deferred-revenue  $100.00  ; customer: Alpine Ski House
+    revenue:subscriptions         $-100.00  ; customer: Alpine Ski House
+
+2026-08-15 Proseware Assurance Recognized  ; recognition: pw0615, renewal-date: 2027-06-15, recognized: 2026-08-15
+    assets:prepaid              $-200.00  ; vendor: Proseware Assurance
+    expenses:insurance:e-and-o  $200.00  ; vendor: Proseware Assurance
+
+2026-08-17 Customer X Recognized  ; recognition: cx1217, renewal-date: 2026-12-17, recognized: 2026-08-17
+    liabilities:deferred-revenue  $1000.00  ; customer: Customer X
+    revenue:subscriptions         $-1000.00  ; customer: Customer X
+
+2026-09-01 Adatum Recognized  ; recognition: ad0401, renewal-date: 2027-04-01, recognized: 2026-09-01
+    liabilities:deferred-revenue  $200.00  ; customer: Adatum
+    revenue:subscriptions         $-200.00  ; customer: Adatum
+
+2026-09-01 Contoso Recognized  ; recognition: ct0801, renewal-date: 2027-08-01, recognized: 2026-09-01
+    liabilities:deferred-revenue  $500.00  ; customer: Contoso
+    revenue:subscriptions         $-500.00  ; customer: Contoso
+    liabilities:deferred-revenue  $100.00  ; customer: Contoso
+    revenue:support               $-100.00  ; customer: Contoso
+
+2026-09-01 Contoso Recognized  ; recognition: ct0802, renewal-date: 2026-11-01, recognized: 2026-09-01
+    liabilities:deferred-revenue  $300.00  ; customer: Contoso
+    revenue:onboarding            $-300.00  ; customer: Contoso
+
+2026-09-01 Litware Recognized  ; recognition: lw0517, renewal-date: 2027-05-17, recognized: 2026-09-01
+    liabilities:deferred-revenue  $1000.00  ; customer: Litware
+    revenue:subscriptions         $-1000.00  ; customer: Litware
+
+2026-09-01 Northwind Insurance Recognized  ; recognition: nw0301, renewal-date: 2027-03-01, recognized: 2026-09-01
+    assets:prepaid              $-500.00  ; vendor: Northwind Insurance
+    expenses:insurance:d-and-o  $500.00  ; vendor: Northwind Insurance
+
+2026-09-01 Tailspin Recognized  ; recognition: tt2001, renewal-date: 2027-01-01, recognized: 2026-09-01
+    liabilities:deferred-revenue  $500.00  ; customer: Tailspin
+    revenue:subscriptions         $-500.00  ; customer: Tailspin
+
+2026-09-03 Customer Y Recognized  ; recognition: cy0203, renewal-date: 2027-02-03, recognized: 2026-09-03
+    liabilities:deferred-revenue  $833.33  ; customer: Customer Y
+    revenue:subscriptions         $-833.33  ; customer: Customer Y
+
+; Billed after delivery: an invoice straight to revenue, paid exactly.
+2026-09-05 Wingtip Invoice 2002  ; invoice: 2002
+    assets:accounts receivable           $1500.00  ; customer: Wingtip
+    revenue:services                    $-1500.00  ; customer: Wingtip
+
+2026-09-15 Proseware Assurance Recognized  ; recognition: pw0615, renewal-date: 2027-06-15, recognized: 2026-09-15
+    assets:prepaid              $-200.00  ; vendor: Proseware Assurance
+    expenses:insurance:e-and-o  $200.00  ; vendor: Proseware Assurance
+
+2026-09-17 Customer X Recognized  ; recognition: cx1217, renewal-date: 2026-12-17, recognized: 2026-09-17
+    liabilities:deferred-revenue  $1000.00  ; customer: Customer X
+    revenue:subscriptions         $-1000.00  ; customer: Customer X
+
+2026-09-25 Wingtip Toys payment 2002
+    assets:bank:checking                 $1500.00
+    assets:accounts receivable
+
+2026-10-01 Adatum Recognized  ; recognition: ad0401, renewal-date: 2027-04-01, recognized: 2026-10-01
+    liabilities:deferred-revenue  $200.00  ; customer: Adatum
+    revenue:subscriptions         $-200.00  ; customer: Adatum
+
+2026-10-01 Contoso Recognized  ; recognition: ct0801, renewal-date: 2027-08-01, recognized: 2026-10-01
+    liabilities:deferred-revenue  $500.00  ; customer: Contoso
+    revenue:subscriptions         $-500.00  ; customer: Contoso
+    liabilities:deferred-revenue  $100.00  ; customer: Contoso
+    revenue:support               $-100.00  ; customer: Contoso
+
+2026-10-01 Contoso Recognized  ; recognition: ct0802, renewal-date: 2026-11-01, recognized: 2026-10-01
+    liabilities:deferred-revenue  $300.00  ; customer: Contoso
+    revenue:onboarding            $-300.00  ; customer: Contoso
+
+2026-10-01 Litware Recognized  ; recognition: lw0517, renewal-date: 2027-05-17, recognized: 2026-10-01
+    liabilities:deferred-revenue  $1000.00  ; customer: Litware
+    revenue:subscriptions         $-1000.00  ; customer: Litware
+
+2026-10-01 Northwind Insurance Recognized  ; recognition: nw0301, renewal-date: 2027-03-01, recognized: 2026-10-01
+    assets:prepaid              $-500.00  ; vendor: Northwind Insurance
+    expenses:insurance:d-and-o  $500.00  ; vendor: Northwind Insurance
+
+2026-10-01 Tailspin Recognized  ; recognition: tt2001, renewal-date: 2027-01-01, recognized: 2026-10-01
+    liabilities:deferred-revenue  $500.00  ; customer: Tailspin
+    revenue:subscriptions         $-500.00  ; customer: Tailspin
+
+2026-10-03 Customer Y Recognized  ; recognition: cy0203, renewal-date: 2027-02-03, recognized: 2026-10-03
+    liabilities:deferred-revenue  $833.33  ; customer: Customer Y
+    revenue:subscriptions         $-833.33  ; customer: Customer Y
+
+2026-10-10 Alpine Ski House Recognized  ; recognition: as0710, renewal-date: 2027-07-10, recognized: 2026-10-10
+    liabilities:deferred-revenue  $100.00  ; customer: Alpine Ski House
+    revenue:subscriptions         $-100.00  ; customer: Alpine Ski House
+
+; Credit-back, part 2: Adatum upgrades. The unused months of the old plan are
+; credited (a deferred-revenue debit) and the new plan is its own schedule.
+2026-10-15 Adatum Invoice 2003  ; invoice: 2003
+    assets:accounts receivable           $5000.00  ; customer: Adatum
+    liabilities:deferred-revenue         $1000.00  ; customer: Adatum
+    liabilities:deferred-revenue        $-6000.00  ; customer: Adatum, recognition: ad1015, term-months: 12, contract: expansion
+
+2026-10-15 Adatum Recognized  ; recognition: ad1015, renewal-date: 2027-10-15, recognized: 2026-10-15
+    liabilities:deferred-revenue  $500.00  ; customer: Adatum
+    revenue:subscriptions         $-500.00  ; customer: Adatum
+
+2026-10-15 Proseware Assurance Recognized  ; recognition: pw0615, renewal-date: 2027-06-15, recognized: 2026-10-15
+    assets:prepaid              $-200.00  ; vendor: Proseware Assurance
+    expenses:insurance:e-and-o  $200.00  ; vendor: Proseware Assurance
+
+2026-10-17 Customer X Recognized  ; recognition: cx1217, renewal-date: 2026-12-17, recognized: 2026-10-17
+    liabilities:deferred-revenue  $1000.00  ; customer: Customer X
+    revenue:subscriptions         $-1000.00  ; customer: Customer X
+
+; External invoice: written by another app, no schedule yet.
+2026-11-02 Fourth Coffee Invoice 2004  ; invoice: 2004
+    assets:accounts receivable           $1800.00  ; customer: Fourth Coffee
+    liabilities:deferred-revenue        $-1800.00  ; customer: Fourth Coffee
+
+; Duplicate: a second, hand-typed copy of one posted entry.
+2026-03-17 Customer X Recognized (copy)  ; recognition: cx1217, recognized: 2026-03-17
+    liabilities:deferred-revenue   $1000.00  ; customer: Customer X
+    revenue:subscriptions         $-1000.00  ; customer: Customer X
+
+; Paid before the bill: the payroll provider debits the bank, and its bill
+; arrives three days later, for exactly the same amount (an early payment
+; within the default 4 lead days: a clear pair).
+2026-10-29 Gusto debit
+    assets:bank:checking           $-4812.33
+    liabilities:accounts payable    $4812.33  ; vendor: Gusto
+
+2026-11-01 Gusto payroll bill
+    expenses:payroll                $4812.33  ; vendor: Gusto
+    liabilities:accounts payable   $-4812.33  ; vendor: Gusto
+
+; ---------------------------------------------------------------------------
+; The invoicer's documents (invoices/*.md), booked as Phase 2 will book them.
+; 101-106 are the receivables fixture's cases; 107 is part-paid; 108 is a
+; draft and so is not here (I2).
+; ---------------------------------------------------------------------------
+
+2026-08-01 Wingtip | Invoice 106  ; invoice: 106, document: invoices/2026-08-01 Wingtip Invoice 106.md, due: 2026-08-31
+    assets:accounts receivable  $1200.00  ; customer: Wingtip
+    revenue:consulting          $-1200.00  ; customer: Wingtip, item: Retainer
+
+2026-09-01 Contoso | Invoice 101  ; invoice: 101, document: invoices/2026-09-01 Contoso Invoice 101.md, due: 2026-10-01
+    assets:accounts receivable  $4000.00  ; customer: Contoso, match:in0101
+    revenue:consulting          $-4000.00  ; customer: Contoso, item: Architecture review
+
+2026-09-15 Fabrikam | Invoice 102  ; invoice: 102, document: invoices/2026-09-15 Fabrikam Invoice 102.md, due: 2026-10-15
+    assets:accounts receivable   $2900.00  ; customer: Fabrikam, match:in0102
+    revenue:consulting           $-2000.00  ; customer: Fabrikam, item: Discovery workshop
+    revenue:consulting:delivery  $-1200.00  ; customer: Fabrikam, item: Implementation
+    revenue:discounts            $300.00  ; customer: Fabrikam, item: Loyalty discount
+
+2026-09-20 CONTOSO ACH  ; invoice: 101
+    assets:bank:checking        $1500.00
+    assets:accounts receivable  $-1500.00  ; customer: Contoso, match:in0101
+
+2026-10-01 Tailspin | Invoice 103  ; invoice: 103, document: invoices/2026-10-01 Tailspin Invoice 103.md, due: 2026-10-31
+    assets:accounts receivable  $800.00  ; customer: Tailspin, match:in0103
+    revenue:consulting          $-800.00  ; customer: Tailspin, item: Site visit
+
+2026-10-01 Customer X | Invoice 104  ; invoice: 104, document: invoices/2026-10-01 Customer X Invoice 104.md, due: 2026-10-31, reference: PO #PY75334
+    assets:accounts receivable     $8350.00  ; customer: Customer X, match:in0104
+    liabilities:customer-deposits  $-8350.00  ; customer: Customer X, item: Deposit: 50% of proposal P-12
+
+2026-10-05 CONTOSO ACH 2  ; invoice: 101
+    assets:bank:checking        $2500.00
+    assets:accounts receivable  $-2500.00  ; customer: Contoso, match:in0101
+
+2026-10-08 CUSTOMER X WIRE  ; invoice: 104
+    assets:bank:checking        $8350.00
+    assets:accounts receivable  $-8350.00  ; customer: Customer X, match:in0104
+
+2026-10-10 Tailspin | Invoice 103 (void)  ; invoice: 103, void: 2026-10-10
+    assets:accounts receivable  $-800.00  ; customer: Tailspin, match:in0103
+    revenue:consulting          $800.00  ; customer: Tailspin, item: Site visit
+
+2026-10-15 Contoso | Invoice 107  ; invoice: 107, document: invoices/2026-10-15 Contoso Invoice 107.md, due: 2026-11-14
+    assets:accounts receivable  $3000.00  ; customer: Contoso, match:in0107
+    revenue:consulting          $-3000.00  ; customer: Contoso, item: Follow-up workshop
+
+2026-10-20 FABRIKAM PAYMENT  ; invoice: 102
+    assets:bank:checking        $2900.00
+    assets:accounts receivable  $-2900.00  ; customer: Fabrikam, match:in0102
+
+2026-11-05 CONTOSO ACH 3  ; invoice: 107
+    assets:bank:checking        $1000.00
+    assets:accounts receivable  $-1000.00  ; customer: Contoso, match:in0107
+
+2026-11-10 Customer X | Invoice 105  ; invoice: 105, document: invoices/2026-11-10 Customer X Invoice 105.md, due: 2026-12-10, reference: PO #PY75334 rev. 2
+    assets:accounts receivable     $8350.00  ; customer: Customer X
+    revenue:consulting             $-7200.00  ; customer: Customer X, item: Senior architect hours
+    revenue:consulting:delivery    $-9500.00  ; customer: Customer X, item: Junior engineer
+    liabilities:customer-deposits  $8350.00  ; customer: Customer X, item: Less deposit (Invoice 104)
