@@ -120,8 +120,10 @@ spaNodeModulesHashes = {
 };
 ```
 
-All three are currently correct. Any change to `web/package.json` or
-`bun.lock` invalidates **all three at once**, and you can only fix the one
+The x86_64-darwin entry is stale: the bun workspace (invoicer PLAN 0c) and
+`invoicer/web` joining it (0d) changed the tree, and no release dry run has
+re-pinned it since. Get it from the next dry run, as below. Any change to a
+workspace `package.json` or `bun.lock` invalidates **all three at once**, and you can only fix the one
 you are standing on — the other two come back as failures from CI and from a
 release dry run. Budget for that: a dependency bump is a three-round-trip
 change, not a one-liner.
@@ -145,7 +147,7 @@ architectures and stops before signing, so it surfaces the hash for free:
 ## Cutting a release
 
 `scripts/release.sh` owns the version. Use it rather than editing files by hand:
-the version lives in four places and three of them fail silently when they drift.
+the version lives in several places and most of them fail silently when they drift.
 
 ```sh
 scripts/release.sh set 0.2.0            # rewrite every reference, verify, stop
@@ -160,13 +162,13 @@ waiting on Apple: there are two notarization round trips (the app, then the DMG)
 
 ### Where the version lives, and how each one betrays you
 
-| Location | Kept in step by | What a stale value does |
-| --- | --- | --- |
-| `Cargo.toml` `[workspace.package] version` | **source of truth** | — |
-| `Cargo.toml` `[workspace.dependencies] ledgeline-core.version` and `ledgeline-shell.version` | `release.sh set` | Nothing locally — `path` wins inside the workspace. Breaks `cargo publish`, at the end of a release |
-| `Cargo.lock` | `cargo update --workspace` | Fails `--locked` builds in CI |
-| `web/package.json` | `release.sh set` | Nothing at all. It had already drifted to `0.0.1` against a `0.1.0` workspace before this script existed |
-| The git tag | you | Publishes `Ledgeline-0.2.0.dmg` containing an app that reports `0.1.0` in About and in every crash report forever — `Info.plist` is substituted from `Cargo.toml`, not from the tag |
+| Location                                                                                                              | Kept in step by            | What a stale value does                                                                                                                                                             |
+|-----------------------------------------------------------------------------------------------------------------------|----------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `Cargo.toml` `[workspace.package] version`                                                                            | **source of truth**        | —                                                                                                                                                                                   |
+| `Cargo.toml` `[workspace.dependencies] ledgeline-core.version`, `ledgeline-shell.version` and `invoicer-core.version` | `release.sh set`           | Nothing locally — `path` wins inside the workspace. Breaks `cargo publish`, at the end of a release                                                                                 |
+| `Cargo.lock`                                                                                                          | `cargo update --workspace` | Fails `--locked` builds in CI                                                                                                                                                       |
+| `web/package.json`, `invoicer/web/package.json` and their `bun.lock` entries                                          | `release.sh set`           | Nothing at all. It had already drifted to `0.0.1` against a `0.1.0` workspace before this script existed                                                                            |
+| The git tag                                                                                                           | you                        | Publishes `Ledgeline-0.2.0.dmg` containing an app that reports `0.1.0` in About and in every crash report forever — `Info.plist` is substituted from `Cargo.toml`, not from the tag |
 
 `scripts/release.sh check` asserts all of them agree, and takes an optional tag
 to check against. It runs in three places so drift cannot survive:
@@ -384,7 +386,8 @@ Rehearse the whole thing locally without publishing anything:
 
 ```sh
 cd web && bun run build && cd ..     # populate web/build so build.rs mirrors it
-cargo package --workspace --exclude ledgeline-ffi --allow-dirty   # the iOS crate is publish = false
+# the iOS crate and the invoicer binary are publish = false
+cargo package --workspace --exclude ledgeline-ffi --exclude ledgeline-invoicer --allow-dirty
 tar tzf target/package/ledgeline-[0-9]*.crate | grep -c '/spa/'   # expect ~76
 ```
 
