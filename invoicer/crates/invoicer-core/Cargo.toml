@@ -13,6 +13,7 @@ autobenches = false
 [dependencies]
 ledgeline-core = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 # `[invoicer.words]` is read out of `ledgeline.toml`. toml 0.9 is already in
 # Cargo.lock (through the server's build graph), so this adds no crate.
@@ -20,6 +21,12 @@ toml = "0.9"
 # Column alignment by display width, so a CJK or emoji description still
 # lines up in a monospace editor. Already in Cargo.lock.
 unicode-width = "0.2"
+# Frontmatter is read with the YAML parser MBR uses (ARCHITECTURE §5.5,
+# PLAN 1b), so a note reads the same here as in MBR: YAML 1.2 core schema
+# (`no` is a string, `2026-11-17` is a string), insertion-ordered maps. The
+# one new crate family this PR adds (with `hashlink` and `arraydeque`); pure
+# Rust, no unsafe in the parser. Default features off, as MBR has them.
+yaml-rust2 = { version = "0.13", default-features = false }
 
 [dev-dependencies]
 proptest = { workspace = true }

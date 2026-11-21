@@ -6,9 +6,13 @@
 //! - [`table`]: the bill-table engine (§3.3) — parse with spans, recognize
 //!   columns and rows, compute amounts, check, and write back aligned;
 //! - [`booking`]: the pure booking split of a computed table into one line
-//!   per account and deferral (§4.2).
+//!   per account and deferral (§4.2);
+//! - [`frontmatter`]: read losslessly, edit by key (§5.5);
+//! - [`problem`]: what `check` reports.
 //!
 //! Plan 26 rules apply: no globals, no IO here, no platform `cfg`.
 
 pub mod booking;
+pub mod frontmatter;
+pub mod problem;
 pub mod table;

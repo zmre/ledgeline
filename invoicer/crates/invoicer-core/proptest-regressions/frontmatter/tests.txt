@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a5e899adcbf33751ed843a51a6968bf5e079eb154d528f695fb4bd663a8281f8 # shrinks to (doc, keys) = ("---\na: 0\n---\n\nBody | text\n", ["a"]), pick = Index(0)
+cc 44434aaee4d83901a248896bd833f55f353d21da343b6100c878bd71aa8159dc # shrinks to (doc, keys) = ("---\na:\n  - |+\n    -\n\n# a comment between keys\n\n---\n\nBody | text\n", ["a"]), pick = Index(0), fresh = true, new_value = Number(0)
+cc 8ebf4770b51897c07ca49a1e361a0b622e7bb373d8b1164343dc82bc249ceb7b # shrinks to (doc, keys) = ("---\na:\n  - |+\n    :\n\naa: []\n\n---\n\nBody | text\n", ["a", "aa"]), pick = Index(9223372036854775808)
+cc 203896a4499cfff6d7a59131283433908b86ef1b69a712906e2f10620eda5bee # shrinks to (doc, keys) = ("---\na: 0\n\n---\n\nBody | text\n", ["a"]), pick = Index(0), fresh = false, new_value = String("'\n\n")
