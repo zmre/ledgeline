@@ -253,19 +253,30 @@ fn built(loaded: &Loaded, spec: &DocumentSpec) -> Result<Transaction, BooksError
         .transaction)
 }
 
-/// The one booked invoice numbered `number`, if any.
+/// The one booked invoice numbered `number`, if any. (Fingerprinting every
+/// document, which `find_document` does on first use, is left for when there
+/// is one: a send of a new number never pays for it.)
 fn booked_document(loaded: &Loaded, number: &str) -> Result<Option<FoundDocument>, BooksError> {
-    if loaded
+    match loaded
         .documents()
         .get(AccrualRole::Receivable, number)
         .len()
-        > 1
     {
-        return Err(BooksError::Refused(format!(
+        0 => Ok(None),
+        1 => Ok(loaded.find_document(number)),
+        _ => Err(BooksError::Refused(format!(
             "invoice {number} is booked more than once; remove the extra transaction by hand"
-        )));
+        ))),
     }
-    Ok(loaded.find_document(number))
+}
+
+/// The transaction booked under `number`, as written (after a write).
+fn booked_text(loaded: &Loaded, number: &str) -> Option<BookedTransaction> {
+    let at = *loaded
+        .documents()
+        .get(AccrualRole::Receivable, number)
+        .first()?;
+    BookedTransaction::of(loaded, at.txn)
 }
 
 /// The void reversal booked for `number`, if any.
@@ -428,9 +439,7 @@ impl InvoiceBooks {
                     }
                     loaded.write_document(&spec, &request.today, true, None)?;
                     journal_written = true;
-                    booked = loaded
-                        .find_document(&request.number)
-                        .and_then(|found| BookedTransaction::of(&loaded, found.tindex));
+                    booked = booked_text(&loaded, &request.number);
                 }
             }
         } else if already_sent {
@@ -547,9 +556,7 @@ impl InvoiceBooks {
         }
         loaded.rebook_document(&spec, &request.today, true, None)?;
         rebooked.changed = true;
-        rebooked.booked = loaded
-            .find_document(&request.number)
-            .and_then(|found| BookedTransaction::of(&loaded, found.tindex));
+        rebooked.booked = booked_text(&loaded, &request.number);
         Ok(rebooked)
     }
 
