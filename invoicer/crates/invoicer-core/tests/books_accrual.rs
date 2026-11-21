@@ -84,19 +84,6 @@ fn recalculated(text: &str, books: &InvoiceBooks) -> String {
 #[test]
 fn the_fixture_books_are_in_step_with_their_files() {
     let dir = scratch("accrual", "in-step");
-    // The fixture's 104 was booked by hand before the bridge existed, with
-    // its `item:` cut short at the comma of `($16,700)`; the bridge drops a
-    // thousands separator instead (`($16700)`). Bring the copy in line.
-    let journal = read(&dir, "books.journal");
-    write(
-        &dir,
-        "books.journal",
-        &replace_once(
-            &journal,
-            "item: Deposit: 50% of proposal P-12\n",
-            "item: Deposit: 50% of proposal P-12 ($16700)\n",
-        ),
-    );
     let (books, index) = open(&dir);
     for number in ["101", "102", "103", "104", "105", "106", "107"] {
         let preview = books.preview(&index, number).expect("previews");
