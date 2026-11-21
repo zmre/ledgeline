@@ -281,3 +281,127 @@ fn voiding_an_unpaid_cash_invoice_writes_only_the_markdown() {
     assert!(read(&dir, INV_203).contains("status: void\n"));
     assert!(read(&dir, INV_203).contains("void_date: 2026-11-17\n---\n"));
 }
+
+#[test]
+fn a_final_invoice_its_deposit_covers_books_at_send_in_cash_books() {
+    // Wingtip: a $1,000 deposit invoice (208), paid by wire and applied;
+    // then a $1,000 final (209) the deposit covers. No payment will ever
+    // arrive for 209, so sending it moves the revenue off the liability.
+    let dir = scratch("cash", "cash-zero");
+    write(
+        &dir,
+        "invoices/2026-11-10 Wingtip Invoice 208.md",
+        &wingtip(
+            "208",
+            "2026-11-10",
+            "draft",
+            "| Deposit on phase 2      | 1   | $1,000 | $1,000.00 | liabilities:customer-deposits |\n",
+            "$1,000.00",
+        ),
+    );
+    let final_209 = "invoices/2026-11-17 Wingtip Invoice 209.md";
+    write(
+        &dir,
+        final_209,
+        &wingtip(
+            "209",
+            "2026-11-17",
+            "draft",
+            "| Phase 2 build           | 1   | $1,000 | $1,000.00 | revenue:consulting            |\n",
+            "$1,000.00",
+        ),
+    );
+    let journal = format!(
+        "{}\n2026-11-12 * WIRE WINGTIP DEPOSIT  ; id: ww-1\n    assets:bank:checking  $1,000.00\n    income:unknown\n",
+        read(&dir, "books.journal")
+    );
+    write(&dir, "books.journal", &journal);
+    let (books, mut index) = open(&dir);
+    let send = |number: &str| Send {
+        number: number.into(),
+        today: TODAY.into(),
+        sent_via: None,
+        expected: None,
+    };
+    books.send(&mut index, &send("208")).expect("sends");
+    let wire = books
+        .payment_candidates(&index, "208", TODAY)
+        .expect("lists")
+        .into_iter()
+        .next()
+        .expect("the wire");
+    books
+        .apply_payment(&index, &apply("208", &wire.reference))
+        .expect("applies");
+    let open_deposits = books.open_deposits(&index, "209").expect("lists");
+    assert_eq!(open_deposits.deposits.len(), 1);
+    assert_eq!(open_deposits.deposits[0].remaining, Dec::new(100_000, 2));
+    let applied = books
+        .apply_deposit(
+            &mut index,
+            &invoicer_core::books::ApplyDeposit {
+                number: "209".into(),
+                deposit: "208".into(),
+                amount: None,
+            },
+        )
+        .expect("applies the deposit");
+    assert_eq!(applied.total, Dec::zero());
+
+    let before = read(&dir, "books.journal");
+    let sent = books.send(&mut index, &send("209")).expect("sends");
+    assert!(sent.journal_written && sent.markdown_written);
+    let booked = sent.booked.expect("booked").text;
+    assert_eq!(
+        booked,
+        "2026-11-17 Wingtip | Invoice 209  ; invoice: 209, document: invoices/2026-11-17 Wingtip Invoice 209.md, due: 2026-12-17\n\
+         \x20   revenue:consulting             $-1000.00  ; customer: Wingtip, item: Phase 2 build\n\
+         \x20   liabilities:customer-deposits  $1000.00  ; customer: Wingtip, item: Less deposit (Invoice 208)\n"
+    );
+    let (removed, added) = diff(&before, &read(&dir, "books.journal"));
+    assert_eq!((removed.as_str(), added), ("", format!("\n{booked}")));
+    // Nothing to pay, nothing left on the deposit; the bridge finds it.
+    assert!(
+        books
+            .payment_candidates(&index, "209", TODAY)
+            .expect("lists")
+            .is_empty()
+    );
+    assert!(
+        books
+            .open_deposits(&index, "203")
+            .expect("lists")
+            .deposits
+            .is_empty()
+    );
+    assert_eq!(
+        books.preview(&index, "209").expect("previews").in_step,
+        Some(true)
+    );
+    // An ordinary cash-books invoice still books nothing at send.
+    assert!(
+        books
+            .preview(&index, "203")
+            .expect("previews")
+            .would_book
+            .is_none()
+    );
+
+    if let Some(out) = hledger(&dir, &["books.journal"], &["-s", "check"]) {
+        assert_eq!(out, "");
+    }
+    if let Some(out) = hledger(
+        &dir,
+        &["books.journal"],
+        &[
+            "bal",
+            "tag:customer=Wingtip",
+            "liabilities:customer-deposits",
+            "--flat",
+            "-O",
+            "csv",
+        ],
+    ) {
+        assert_eq!(out, "\"account\",\"balance\"\n\"Total:\",\"0\"\n");
+    }
+}

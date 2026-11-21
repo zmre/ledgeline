@@ -510,21 +510,6 @@ fn a_stale_preview_writes_nothing() {
         .expect("sends");
 }
 
-/// A Wingtip invoice: `rows` under the standard header, then the total.
-fn wingtip(number: &str, date: &str, status: &str, rows: &str, total: &str) -> String {
-    format!(
-        "---\ntitle: {date} Wingtip Invoice {number}\ntype: invoice\ntemplate: /invoices/tpl/myco-default.html\n\
-         status: {status}\ninvoice_num: {number}\ndate: {date}\nterms: 30\ncustomer: \"[[Wingtip]]\"\n\
-         invoicee_name: Wingtip\ninvoicee_email: ap@wingtip.example\ninvoicee_address: |\n  1 Wingtip Way\n\
-         invoicer: \"[[My Company]]\"\ninvoicer_name: My Company\ninvoicer_email: finance@mycompany.com\n\
-         invoicer_address: |\n  1234 Background Blvd.\n---\n\n\
-         | Description             | Qty | Rate   | Amount    | *Account*                     |\n\
-         |:------------------------|----:|-------:|----------:|:------------------------------|\n\
-         {rows}\
-         |                         |     | **Total due** | **{total}** |                  |\n"
-    )
-}
-
 #[test]
 fn a_deposit_invoice_and_the_final_invoice_applying_it() {
     let dir = scratch("accrual", "deposit");
@@ -645,5 +630,197 @@ fn a_deposit_invoice_and_the_final_invoice_applying_it() {
     ) {
         // The deposit is used up: nothing left on the liability.
         assert_eq!(out, "\"account\",\"balance\"\n\"Total:\",\"0\"\n");
+    }
+}
+
+/// A $1,500 Wingtip deposit (109, sent) and a $1,500 final (110, a draft)
+/// that its deposit covers in full once applied.
+fn fully_covered(
+    test: &str,
+) -> (
+    std::path::PathBuf,
+    InvoiceBooks,
+    invoicer_core::index::DocumentIndex,
+) {
+    let dir = scratch("accrual", test);
+    write(
+        &dir,
+        "invoices/2026-11-12 Wingtip Invoice 109.md",
+        &wingtip(
+            "109",
+            "2026-11-12",
+            "draft",
+            "| Deposit on phase 2      | 1   | $1,500 | $1,500.00 | liabilities:customer-deposits |\n",
+            "$1,500.00",
+        ),
+    );
+    write(
+        &dir,
+        FINAL_110,
+        &wingtip(
+            "110",
+            "2026-11-17",
+            "draft",
+            "| Phase 2 build           | 1   | $1,500 | $1,500.00 | revenue:consulting            |\n",
+            "$1,500.00",
+        ),
+    );
+    let (books, mut index) = open(&dir);
+    books
+        .send(&mut index, &send("109"))
+        .expect("sends the deposit");
+    let applied = books
+        .apply_deposit(
+            &mut index,
+            &ApplyDeposit {
+                number: "110".into(),
+                deposit: "109".into(),
+                amount: None,
+            },
+        )
+        .expect("applies");
+    assert_eq!(applied.total, Dec::zero());
+    (dir, books, index)
+}
+
+const FINAL_110: &str = "invoices/2026-11-17 Wingtip Invoice 110.md";
+
+/// 110 as booked when its deposit covers it: the rows against the deposit
+/// liability, and no receivable posting.
+const ZERO_110: &str = "\
+2026-11-17 Wingtip | Invoice 110  ; invoice: 110, document: invoices/2026-11-17 Wingtip Invoice 110.md, due: 2026-12-17
+    revenue:consulting             $-1500.00  ; customer: Wingtip, item: Phase 2 build
+    liabilities:customer-deposits  $1500.00  ; customer: Wingtip, item: Less deposit (Invoice 109)
+";
+
+/// `text` with the rate of the row described `row` changed from `from` to
+/// `to`.
+fn with_rate(text: &str, row: &str, from: &str, to: &str) -> String {
+    text.lines()
+        .map(|line| {
+            if line.contains(row) {
+                line.replacen(&format!("{from} "), &format!("{to} "), 1)
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
+
+#[test]
+fn a_final_invoice_its_deposit_covers_books_with_no_receivable() {
+    let (dir, books, mut index) = fully_covered("zero-total");
+    let before = read(&dir, "books.journal");
+    let sent = books.send(&mut index, &send("110")).expect("sends");
+    assert!(sent.journal_written && sent.markdown_written);
+    let booked = sent.booked.expect("booked").text;
+    assert_eq!(booked, ZERO_110);
+    let (removed, added) = diff(&before, &read(&dir, "books.journal"));
+    assert_eq!((removed.as_str(), added), ("", format!("\n{booked}")));
+    // Not a receivable document; the bridge still finds it, in step.
+    assert!(books.load().expect("loads").find_document("110").is_none());
+    let preview = books.preview(&index, "110").expect("previews");
+    assert_eq!(preview.in_step, Some(true));
+    assert_eq!(preview.booked.map(|b| b.text), Some(booked.clone()));
+    assert!(!preview.linked);
+    // Booked once: again is refused, and nothing is left on the deposit.
+    assert!(matches!(
+        books.send(&mut index, &send("110")),
+        Err(BooksError::Status { .. })
+    ));
+    assert!(
+        books
+            .open_deposits(&index, "106")
+            .expect("lists")
+            .deposits
+            .is_empty()
+    );
+
+    // Void: the rows reversed, no link (no receivable to net).
+    let journal = read(&dir, "books.journal");
+    let voided = books.void(&mut index, &void("110", TODAY)).expect("voids");
+    assert!(voided.journal_written && voided.link.is_none());
+    let reversal = voided.reversal.expect("reversal").text;
+    assert_eq!(
+        reversal,
+        "2026-11-17 Wingtip | Invoice 110 (void)  ; invoice: 110, void: 2026-11-17\n\
+         \x20   revenue:consulting             $1500.00  ; customer: Wingtip, item: Phase 2 build\n\
+         \x20   liabilities:customer-deposits  $-1500.00  ; customer: Wingtip, item: Less deposit (Invoice 109)\n"
+    );
+    let (removed, added) = diff(&journal, &read(&dir, "books.journal"));
+    assert_eq!((removed.as_str(), added), ("", format!("\n{reversal}")));
+    // Voiding it frees the deposit again.
+    let open = books.open_deposits(&index, "106").expect("lists");
+    assert_eq!(open.balance, Dec::new(150_000, 2));
+
+    if let Some(out) = hledger(
+        &dir,
+        &["books.journal", "recognition.journal"],
+        &["-s", "check"],
+    ) {
+        assert_eq!(out, "");
+    }
+    if let Some(out) = hledger(
+        &dir,
+        &["books.journal"],
+        &["bal", "tag:invoice=^110$", "--flat", "-O", "csv"],
+    ) {
+        // The booking and its void net to nothing.
+        assert_eq!(out, "\"account\",\"balance\"\n\"Total:\",\"0\"\n");
+    }
+}
+
+#[test]
+fn a_rebook_moves_between_a_zero_and_a_positive_total() {
+    let (dir, books, mut index) = fully_covered("zero-rebook");
+    books.send(&mut index, &send("110")).expect("sends");
+    let zero = books
+        .preview(&index, "110")
+        .expect("previews")
+        .booked
+        .expect("booked")
+        .text;
+    assert_eq!(zero, ZERO_110);
+
+    // More work: $2,000 less the $1,500 deposit leaves $500 to receive.
+    let more = recalculated(
+        &with_rate(&read(&dir, FINAL_110), "Phase 2 build", "$1,500", "$2,000"),
+        &books,
+    );
+    write(&dir, FINAL_110, &more);
+    let (books, index) = reopen(books);
+    let rebooked = books.rebook(&index, &rebook("110")).expect("rebooks");
+    assert!(rebooked.changed);
+    let positive = rebooked.booked.expect("booked").text;
+    assert_eq!(
+        positive,
+        "2026-11-17 Wingtip | Invoice 110  ; invoice: 110, document: invoices/2026-11-17 Wingtip Invoice 110.md, due: 2026-12-17\n\
+         \x20   assets:accounts receivable     $500.00  ; customer: Wingtip\n\
+         \x20   revenue:consulting             $-2000.00  ; customer: Wingtip, item: Phase 2 build\n\
+         \x20   liabilities:customer-deposits  $1500.00  ; customer: Wingtip, item: Less deposit (Invoice 109)\n"
+    );
+    let loaded = books.load().expect("loads");
+    assert!(loaded.find_document("110").is_some(), "a receivable now");
+    assert_eq!(rebooked.previous.map(|b| b.text), Some(zero.clone()));
+
+    // And back: the receivable (unlinked) is dropped again.
+    let back = recalculated(
+        &with_rate(&read(&dir, FINAL_110), "Phase 2 build", "$2,000", "$1,500"),
+        &books,
+    );
+    write(&dir, FINAL_110, &back);
+    let (books, index) = reopen(books);
+    let rebooked = books.rebook(&index, &rebook("110")).expect("rebooks");
+    assert!(rebooked.changed);
+    assert_eq!(rebooked.booked.map(|b| b.text), Some(zero));
+    assert!(books.load().expect("loads").find_document("110").is_none());
+    if let Some(out) = hledger(
+        &dir,
+        &["books.journal", "recognition.journal"],
+        &["-s", "check"],
+    ) {
+        assert_eq!(out, "");
     }
 }

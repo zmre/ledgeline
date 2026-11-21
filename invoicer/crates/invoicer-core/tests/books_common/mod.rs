@@ -133,3 +133,19 @@ pub fn diff(before: &str, after: &str) -> (String, String) {
         a[head..a.len() - tail].concat(),
     )
 }
+
+/// A Wingtip invoice: `rows` under the standard header, then the total.
+#[must_use]
+pub fn wingtip(number: &str, date: &str, status: &str, rows: &str, total: &str) -> String {
+    format!(
+        "---\ntitle: {date} Wingtip Invoice {number}\ntype: invoice\ntemplate: /invoices/tpl/myco-default.html\n\
+         status: {status}\ninvoice_num: {number}\ndate: {date}\nterms: 30\ncustomer: \"[[Wingtip]]\"\n\
+         invoicee_name: Wingtip\ninvoicee_email: ap@wingtip.example\ninvoicee_address: |\n  1 Wingtip Way\n\
+         invoicer: \"[[My Company]]\"\ninvoicer_name: My Company\ninvoicer_email: finance@mycompany.com\n\
+         invoicer_address: |\n  1234 Background Blvd.\n---\n\n\
+         | Description             | Qty | Rate   | Amount    | *Account*                     |\n\
+         |:------------------------|----:|-------:|----------:|:------------------------------|\n\
+         {rows}\
+         |                         |     | **Total due** | **{total}** |                  |\n"
+    )
+}

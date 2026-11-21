@@ -1,19 +1,19 @@
 //! Preview, send, re-book and void (ARCHITECTURE §4.1, §4.5).
 
-use super::spec::{InvoiceBooking, receivable_account};
+use super::spec::{DOCUMENT_TAG, InvoiceBooking, deposit_account, receivable_account};
 use super::{BooksError, Document, InvoiceBooks, check_generation};
 use crate::doc::Status;
 use crate::frontmatter::FieldEdit;
 use crate::index::DocumentIndex;
-use ledgeline_core::accrual::documents::FoundDocument;
-use ledgeline_core::accrual::invoice::{DocumentSpec, build_document};
-use ledgeline_core::accrual::ops::{Generation, Loaded};
+use ledgeline_core::accrual::invoice::{DocumentSpec, build_settled_document};
+use ledgeline_core::accrual::ops::{Generation, Loaded, OpsError, SaveRequest, SourceChange};
 use ledgeline_core::accrual::{
-    AccrualRole, INVOICE_TAG, RECOGNITION_TAG, VOID_TAG, is_iso_date, tag_value,
+    AccrualRole, AccrualRoles, INVOICE_TAG, RECOGNITION_TAG, VOID_TAG, is_iso_date,
+    is_posted_entry, tag_value,
 };
-use ledgeline_core::edit::format_transaction;
+use ledgeline_core::edit::{Fingerprint, format_transaction, render_amount};
 use ledgeline_core::matching::{MATCH_TAG, NOMATCH_TAG};
-use ledgeline_core::model::{Tindex, Transaction};
+use ledgeline_core::model::{Amount, Tindex, Transaction};
 use ledgeline_core::vault::VaultPath;
 use serde::Serialize;
 use serde_json::Value;
@@ -245,38 +245,100 @@ fn shape(txn: &Transaction) -> Shape {
     )
 }
 
-/// The transaction `spec` builds (with placeholder schedule ids).
+/// The transaction `spec` builds (with placeholder schedule ids). A zero
+/// total builds with no settlement posting, as it is written.
 fn built(loaded: &Loaded, spec: &DocumentSpec) -> Result<Transaction, BooksError> {
     let mut ids = loaded.id_generator();
-    Ok(build_document(spec, &mut ids)
-        .map_err(ledgeline_core::accrual::ops::OpsError::from)?
+    Ok(build_settled_document(spec, &mut || ids.next_id())
+        .map_err(OpsError::from)?
         .transaction)
 }
 
-/// The one booked invoice numbered `number`, if any. (Fingerprinting every
-/// document, which `find_document` does on first use, is left for when there
-/// is one: a send of a new number never pays for it.)
-fn booked_document(loaded: &Loaded, number: &str) -> Result<Option<FoundDocument>, BooksError> {
+/// An invoice's transaction in the books, found by its number.
+struct Booked {
+    tindex: Tindex,
+    fingerprint: Fingerprint,
+    transaction: Transaction,
+    /// Its receivable posting, when it has one. A final invoice its deposit
+    /// covers (a zero total) is booked with none: there is nothing to
+    /// receive, so Ledgeline's documents, receivables and matching never see
+    /// it.
+    settlement: Option<usize>,
+}
+
+impl Booked {
+    fn linked(&self) -> bool {
+        self.settlement
+            .is_some_and(|at| tag_value(&self.transaction.postings[at].tags, MATCH_TAG).is_some())
+    }
+}
+
+/// Whether `txn` is a zero-total invoice's own booking: `invoice:` and
+/// `document:` on the header, no settlement leg, not a void. (A cash-books
+/// payment applied carries `invoice:` but no `document:`.)
+fn is_settled_booking(txn: &Transaction, number: &str, roles: &AccrualRoles) -> bool {
+    tag_value(&txn.tags, INVOICE_TAG) == Some(number)
+        && tag_value(&txn.tags, DOCUMENT_TAG).is_some()
+        && tag_value(&txn.tags, VOID_TAG).is_none()
+        && !is_posted_entry(txn)
+        && !txn
+            .postings
+            .iter()
+            .any(|p| roles.role(&p.account.0).is_some_and(|r| r.is_settlement()))
+}
+
+/// The one transaction booked under `number`, if any: Ledgeline's document
+/// (a receivable debit), else a zero-total booking. Fingerprinting every
+/// document (which `find_document` does on first use) is left for when there
+/// is one.
+fn booked(loaded: &Loaded, number: &str) -> Result<Option<Booked>, BooksError> {
+    let twice = || {
+        BooksError::Refused(format!(
+            "invoice {number} is booked more than once; remove the extra transaction by hand"
+        ))
+    };
     match loaded
         .documents()
         .get(AccrualRole::Receivable, number)
         .len()
     {
-        0 => Ok(None),
-        1 => Ok(loaded.find_document(number)),
-        _ => Err(BooksError::Refused(format!(
-            "invoice {number} is booked more than once; remove the extra transaction by hand"
-        ))),
+        0 => {}
+        1 => {
+            return Ok(loaded.find_document(number).map(|found| Booked {
+                tindex: found.tindex,
+                fingerprint: found.fingerprint,
+                transaction: found.transaction,
+                settlement: Some(found.settlement.posting),
+            }));
+        }
+        _ => return Err(twice()),
+    }
+    let roles = loaded.roles();
+    let settled: Vec<&Transaction> = loaded
+        .journal()
+        .transactions
+        .iter()
+        .filter(|txn| is_settled_booking(txn, number, &roles))
+        .collect();
+    match settled.as_slice() {
+        [] => Ok(None),
+        [txn] => Ok(Some(Booked {
+            tindex: txn.index,
+            fingerprint: loaded
+                .editor()
+                .transaction_fingerprint(txn.index)
+                .ok_or(OpsError::Stale)?,
+            transaction: (*txn).clone(),
+            settlement: None,
+        })),
+        _ => Err(twice()),
     }
 }
 
 /// The transaction booked under `number`, as written (after a write).
 fn booked_text(loaded: &Loaded, number: &str) -> Option<BookedTransaction> {
-    let at = *loaded
-        .documents()
-        .get(AccrualRole::Receivable, number)
-        .first()?;
-    BookedTransaction::of(loaded, at.txn)
+    let found = booked(loaded, number).ok()??;
+    BookedTransaction::of(loaded, found.tindex)
 }
 
 /// The void reversal booked for `number`, if any.
@@ -292,7 +354,8 @@ fn void_reversal(loaded: &Loaded, number: &str) -> Option<Tindex> {
         .map(|txn| txn.index)
 }
 
-/// Cash books: the transactions a payment of `number` was applied to.
+/// Cash books: the transactions a payment of `number` was applied to (its
+/// own zero-total booking, which carries `document:`, aside).
 pub(super) fn applied_payments<'j>(loaded: &'j Loaded, number: &str) -> Vec<&'j Transaction> {
     loaded
         .journal()
@@ -301,8 +364,76 @@ pub(super) fn applied_payments<'j>(loaded: &'j Loaded, number: &str) -> Vec<&'j 
         .filter(|txn| {
             tag_value(&txn.tags, INVOICE_TAG) == Some(number)
                 && tag_value(&txn.tags, VOID_TAG).is_none()
+                && tag_value(&txn.tags, DOCUMENT_TAG).is_none()
         })
         .collect()
+}
+
+/// Refuse `date` on or before `[books] closed-through`.
+fn check_open(loaded: &Loaded, number: &str, date: &str) -> Result<(), BooksError> {
+    match loaded.config().closed_through.as_deref() {
+        Some(closed) if date <= closed => Err(BooksError::Refused(format!(
+            "invoice {number} is dated {date}, on or before closed-through {closed}; date it in \
+             an open period"
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// The `recognition:` ids on `txn`'s postings, in order, once each.
+fn schedule_ids(txn: &Transaction) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for posting in &txn.postings {
+        if let Some(id) = tag_value(&posting.tags, RECOGNITION_TAG).map(str::trim)
+            && !id.is_empty()
+            && !ids.iter().any(|old| old == id)
+        {
+            ids.push(id.to_string());
+        }
+    }
+    ids
+}
+
+/// A zero-total invoice's reversal: every posting negated, its tags kept,
+/// dated `date`, tagged `invoice:` and `void:`. (No `match:` link: there is
+/// no receivable to net.)
+fn settled_reversal(
+    original: &Transaction,
+    number: &str,
+    date: &str,
+) -> Result<Transaction, BooksError> {
+    let mut text = format!(
+        "{date} {} (void)  ; {INVOICE_TAG}: {number}, {VOID_TAG}: {date}\n",
+        original.description
+    );
+    for posting in original.postings.iter().filter(|p| p.generated.is_none()) {
+        let [amount] = posting.amounts.as_slice() else {
+            return Err(BooksError::Refused(format!(
+                "invoice {number}'s posting on {} has no single amount to reverse",
+                posting.account.0
+            )));
+        };
+        let reversed = Amount {
+            quantity: amount.quantity.neg().map_err(|_| BooksError::Overflow)?,
+            ..amount.clone()
+        };
+        let comment = posting.comment.trim();
+        text.push_str(&format!(
+            "    {}  {}{}\n",
+            posting.account.0,
+            render_amount(&reversed),
+            if comment.is_empty() {
+                String::new()
+            } else {
+                format!("  ; {comment}")
+            }
+        ));
+    }
+    let parsed = ledgeline_core::parse_journal(&text, "void.journal")
+        .map_err(|e| BooksError::Refused(format!("the void of invoice {number}: {e}")))?;
+    parsed.transactions.into_iter().next().ok_or_else(|| {
+        BooksError::Refused(format!("the void of invoice {number} didn't read back"))
+    })
 }
 
 fn set(key: &str, value: &str) -> FieldEdit {
@@ -327,7 +458,38 @@ fn status_error(document: &Document, hint: &str) -> BooksError {
     }
 }
 
+/// Whether the books get a transaction for `booking`: always in accrual
+/// books; in cash books only for a zero total (a final invoice its deposit
+/// covers: no payment will ever arrive to apply, so sending it moves the
+/// revenue off the deposit liability).
+fn books_it(basis: Basis, booking: &InvoiceBooking) -> bool {
+    basis == Basis::Accrual || booking.total.is_zero()
+}
+
 impl InvoiceBooks {
+    /// The transaction `booking` books in `loaded`'s basis.
+    fn spec_for(
+        &self,
+        index: &DocumentIndex,
+        loaded: &Loaded,
+        booking: &InvoiceBooking,
+        basis: Basis,
+    ) -> Result<DocumentSpec, BooksError> {
+        Ok(match basis {
+            Basis::Accrual => {
+                let receivable = receivable_account(index.settings(), loaded.journal())?;
+                booking.document_spec(loaded.journal(), &receivable)
+            }
+            // Cash books: rows into the accounts a payment would have gone
+            // to. With a zero total there is no settlement posting, so the
+            // settlement account is never written.
+            Basis::Cash => booking.cash_document_spec(
+                loaded.journal(),
+                &deposit_account(index.settings(), loaded.journal()),
+            ),
+        })
+    }
+
     /// What invoice `number` books, and what it has booked.
     ///
     /// # Errors
@@ -351,29 +513,29 @@ impl InvoiceBooks {
             linked: false,
             generation: loaded.generation(),
         };
-        if basis == Basis::Accrual {
-            let receivable = receivable_account(index.settings(), loaded.journal())?;
-            let spec = preview.booking.document_spec(loaded.journal(), &receivable);
+        if books_it(basis, &preview.booking) {
+            let spec = self.spec_for(index, &loaded, &preview.booking, basis)?;
             let would = built(&loaded, &spec)?;
-            if let Some(found) = booked_document(&loaded, number)? {
+            if let Some(found) = booked(&loaded, number)? {
                 preview.in_step = Some(shape(&found.transaction) == shape(&would));
-                preview.linked = tag_value(
-                    &found.transaction.postings[found.settlement.posting].tags,
-                    MATCH_TAG,
-                )
-                .is_some();
+                preview.linked = found.linked();
                 preview.booked = BookedTransaction::of(&loaded, found.tindex);
             }
             preview.would_book = Some(format_transaction(&would));
-            preview.receivable = Some(receivable);
+            if basis == Basis::Accrual {
+                preview.receivable = Some(spec.settlement_account);
+            }
         }
         Ok(preview)
     }
 
-    /// **Send** (§4.1): book the invoice — accrual books only — then set
-    /// `status: sent`, `sent_date` (when it has none), `sent_via` (when
-    /// given) and `paid: no` (when it has no `paid`).
+    /// **Send** (§4.1): book the invoice, then set `status: sent`,
+    /// `sent_date` (when it has none), `sent_via` (when given) and `paid: no`
+    /// (when it has no `paid`).
     ///
+    /// - Accrual books book every invoice; cash books only one with a zero
+    ///   total (its deposit covers it). A zero total is booked with no
+    ///   receivable posting: the rows against the deposit liability.
     /// - A draft already booked under its number, exactly as its file says,
     ///   is an earlier send whose markdown write failed: only the file is
     ///   written. Booked differently, it is refused.
@@ -406,11 +568,10 @@ impl InvoiceBooks {
         let booking = self.booking(index, &document, &loaded)?;
         let basis = Basis::of(&loaded);
         let mut journal_written = false;
-        let mut booked = None;
-        if basis == Basis::Accrual {
-            let receivable = receivable_account(index.settings(), loaded.journal())?;
-            let spec = booking.document_spec(loaded.journal(), &receivable);
-            match booked_document(&loaded, &request.number)? {
+        let mut booked_now = None;
+        if books_it(basis, &booking) {
+            let spec = self.spec_for(index, &loaded, &booking, basis)?;
+            match booked(&loaded, &request.number)? {
                 Some(_) if already_sent => {
                     return Err(status_error(
                         &document,
@@ -425,21 +586,26 @@ impl InvoiceBooks {
                             request.number, found.transaction.date
                         )));
                     }
-                    booked = BookedTransaction::of(&loaded, found.tindex);
+                    booked_now = BookedTransaction::of(&loaded, found.tindex);
                 }
                 None => {
-                    if let Some(closed) = loaded.config().closed_through.as_deref()
-                        && booking.date.as_str() <= closed
-                    {
-                        return Err(BooksError::Refused(format!(
-                            "invoice {} is dated {}, on or before closed-through {closed}; date \
-                             it in an open period",
-                            request.number, booking.date
-                        )));
+                    check_open(&loaded, &request.number, &booking.date)?;
+                    if booking.total.is_zero() {
+                        let mut ids = loaded.id_generator();
+                        let built = build_settled_document(&spec, &mut || ids.next_id())
+                            .map_err(OpsError::from)?;
+                        loaded.save(&SaveRequest {
+                            source: SourceChange::Add(Box::new(built.transaction)),
+                            schedules: built.schedules,
+                            today: request.today.clone(),
+                            create_file: true,
+                            expected: None,
+                        })?;
+                    } else {
+                        loaded.write_document(&spec, &request.today, true, None)?;
                     }
-                    loaded.write_document(&spec, &request.today, true, None)?;
                     journal_written = true;
-                    booked = booked_text(&loaded, &request.number);
+                    booked_now = booked_text(&loaded, &request.number);
                 }
             }
         } else if already_sent {
@@ -475,7 +641,7 @@ impl InvoiceBooks {
             number: request.number.clone(),
             path: document.path,
             basis,
-            booked,
+            booked: booked_now,
             journal_written,
             markdown_written,
         })
@@ -487,9 +653,11 @@ impl InvoiceBooks {
     /// booked or the new date is on or before `closed-through`: void and
     /// reissue instead.
     ///
-    /// Cash books book nothing at send, so there is nothing to re-book;
-    /// payments already applied keep the split they were applied with (a
-    /// warning says so).
+    /// An invoice may move between a positive and a zero total (a deposit
+    /// row added or removed); a receivable with payments linked is never
+    /// dropped. Cash books book only a zero total, so there is otherwise
+    /// nothing to re-book; payments already applied keep the split they
+    /// were applied with (a warning says so).
     ///
     /// # Errors
     /// [`BooksError::Status`] for a draft or void invoice;
@@ -519,60 +687,106 @@ impl InvoiceBooks {
             booked: None,
             warnings: Vec::new(),
         };
-        if basis == Basis::Cash {
-            if !applied_payments(&loaded, &request.number).is_empty() {
-                rebooked.warnings.push(format!(
-                    "payments already applied to invoice {} keep the split they were applied \
-                     with; undo and apply them again to re-split",
-                    request.number
-                ));
-            }
+        let found = booked(&loaded, &request.number)?;
+        if basis == Basis::Cash && !applied_payments(&loaded, &request.number).is_empty() {
+            rebooked.warnings.push(format!(
+                "payments already applied to invoice {} keep the split they were applied with; \
+                 undo and apply them again to re-split",
+                request.number
+            ));
+        }
+        if basis == Basis::Cash && found.is_none() && !booking.total.is_zero() {
             return Ok(rebooked);
         }
-        let receivable = receivable_account(index.settings(), loaded.journal())?;
-        let spec = booking.document_spec(loaded.journal(), &receivable);
-        let found = booked_document(&loaded, &request.number)?.ok_or_else(|| {
-            BooksError::Refused(format!(
+        let Some(found) = found else {
+            return Err(BooksError::Refused(format!(
                 "invoice {} is sent but not booked; send books it",
                 request.number
-            ))
-        })?;
+            )));
+        };
+        let spec = if books_it(basis, &booking) {
+            self.spec_for(index, &loaded, &booking, basis)?
+        } else {
+            return Err(BooksError::Refused(format!(
+                "invoice {} is booked with a zero total, and its total isn't zero any more; in \
+                 cash books, void it and reissue it",
+                request.number
+            )));
+        };
         rebooked.previous = BookedTransaction::of(&loaded, found.tindex);
         if shape(&found.transaction) == shape(&built(&loaded, &spec)?) {
             rebooked.booked = rebooked.previous.clone();
             return Ok(rebooked);
         }
-        if tag_value(
-            &found.transaction.postings[found.settlement.posting].tags,
-            MATCH_TAG,
-        )
-        .is_some()
-        {
+        if found.linked() {
+            if booking.total.is_zero() {
+                return Err(BooksError::Refused(format!(
+                    "invoice {} has payments linked to its receivable; a zero total would drop \
+                     it — unlink them first",
+                    request.number
+                )));
+            }
             rebooked.warnings.push(format!(
                 "invoice {} has payments linked; the link is kept, and if the total changed it \
                  shows as one to check",
                 request.number
             ));
         }
-        loaded.rebook_document(&spec, &request.today, true, None)?;
+        if found.settlement.is_some() && !booking.total.is_zero() {
+            loaded.rebook_document(&spec, &request.today, true, None)?;
+        } else {
+            // A zero total on either side: replace it here, as Ledgeline's
+            // re-book would, keeping the schedule ids.
+            check_open(&loaded, &request.number, &found.transaction.date)?;
+            check_open(&loaded, &request.number, &booking.date)?;
+            let old_ids = schedule_ids(&found.transaction);
+            let mut reused = old_ids.clone().into_iter();
+            let mut fresh = loaded.id_generator();
+            let built = build_settled_document(&spec, &mut || {
+                reused.next().unwrap_or_else(|| fresh.next_id())
+            })
+            .map_err(OpsError::from)?;
+            if let Some(dropped) = old_ids
+                .iter()
+                .find(|id| !built.schedules.iter().any(|s| &s.id == *id))
+            {
+                return Err(BooksError::Refused(format!(
+                    "re-booking invoice {} would drop its schedule {dropped}; end that contract \
+                     first",
+                    request.number
+                )));
+            }
+            loaded.save(&SaveRequest {
+                source: SourceChange::Replace {
+                    tindex: found.tindex,
+                    fingerprint: found.fingerprint,
+                    transaction: Box::new(built.transaction),
+                },
+                schedules: built.schedules,
+                today: request.today.clone(),
+                create_file: true,
+                expected: None,
+            })?;
+        }
         rebooked.changed = true;
         rebooked.booked = booked_text(&loaded, &request.number);
         Ok(rebooked)
     }
 
-    /// **Void** (§4.1): in accrual books, a reversing transaction dated
-    /// `date`, linked to the invoice's receivable with `match:`; then
-    /// `status: void` and `void_date`. A draft (never booked) and a cash-books
-    /// invoice with no payment applied change in the markdown only. A void
-    /// already booked for the number (an earlier void whose markdown write
-    /// failed) is not booked again.
+    /// **Void** (§4.1): a reversing transaction dated `date` — linked to the
+    /// invoice's receivable with `match:` when it has one — then
+    /// `status: void` and `void_date`. A draft (never booked) and an
+    /// unbooked cash-books invoice with no payment applied change in the
+    /// markdown only. A void already booked for the number (an earlier void
+    /// whose markdown write failed) is not booked again.
     ///
     /// # Errors
     /// [`BooksError::Status`] for an invoice already void;
-    /// [`BooksError::Refused`] for a date after today, or a cash-books
-    /// invoice with payments applied; [`BooksError::Ops`] when Ledgeline
-    /// refuses the void (payments linked, deferred lines, a closed period)
-    /// — nothing written; [`BooksError::MarkdownNotWritten`].
+    /// [`BooksError::Refused`] for a date after today, a cash-books invoice
+    /// with payments applied, or a booking with deferred lines;
+    /// [`BooksError::Ops`] when Ledgeline refuses the void (payments linked,
+    /// deferred lines, a closed period) — nothing written;
+    /// [`BooksError::MarkdownNotWritten`].
     pub fn void(&self, index: &mut DocumentIndex, request: &Void) -> Result<Voided, BooksError> {
         check_date("today", &request.today)?;
         check_date("the void date", &request.date)?;
@@ -603,25 +817,51 @@ impl InvoiceBooks {
             markdown_written: false,
         };
         if status == Some(Status::Sent) {
-            if basis == Basis::Cash {
-                if !applied_payments(&loaded, &request.number).is_empty() {
-                    return Err(BooksError::Refused(format!(
-                        "invoice {} has payments applied; undo them before voiding it (or \
-                         issue a credit note)",
-                        request.number
-                    )));
-                }
-            } else if let Some(at) = void_reversal(&loaded, &request.number) {
+            if basis == Basis::Cash && !applied_payments(&loaded, &request.number).is_empty() {
+                return Err(BooksError::Refused(format!(
+                    "invoice {} has payments applied; undo them before voiding it (or issue a \
+                     credit note)",
+                    request.number
+                )));
+            }
+            if let Some(at) = void_reversal(&loaded, &request.number) {
                 voided.reversal = BookedTransaction::of(&loaded, at);
-            } else if booked_document(&loaded, &request.number)?.is_some() {
-                let written = loaded.void_document(
-                    AccrualRole::Receivable,
-                    &request.number,
-                    &request.date,
-                    None,
-                )?;
+            } else if let Some(found) = booked(&loaded, &request.number)? {
+                if found.settlement.is_some() {
+                    let written = loaded.void_document(
+                        AccrualRole::Receivable,
+                        &request.number,
+                        &request.date,
+                        None,
+                    )?;
+                    voided.link = Some(written.link);
+                } else {
+                    // A zero-total booking: reversed here, as Ledgeline
+                    // reverses a document, less the link.
+                    if !schedule_ids(&found.transaction).is_empty() {
+                        return Err(BooksError::Refused(format!(
+                            "invoice {} has deferred lines; end their contracts before voiding it",
+                            request.number
+                        )));
+                    }
+                    if request.date < found.transaction.date {
+                        return Err(BooksError::Refused(format!(
+                            "a void can't be dated {}, before invoice {} ({})",
+                            request.date, request.number, found.transaction.date
+                        )));
+                    }
+                    check_open(&loaded, &request.number, &request.date)?;
+                    let reversal =
+                        settled_reversal(&found.transaction, &request.number, &request.date)?;
+                    loaded.save(&SaveRequest {
+                        source: SourceChange::Add(Box::new(reversal)),
+                        schedules: Vec::new(),
+                        today: request.today.clone(),
+                        create_file: false,
+                        expected: None,
+                    })?;
+                }
                 voided.journal_written = true;
-                voided.link = Some(written.link);
                 voided.reversal = void_reversal(&loaded, &request.number)
                     .and_then(|at| BookedTransaction::of(&loaded, at));
             }

@@ -117,9 +117,26 @@ pub struct InvoiceBooking {
 
 impl InvoiceBooking {
     /// The accrual transaction: `receivable` debited with the total, each
-    /// line credited (a negative line debited).
+    /// line credited (a negative line debited). With a zero total (a final
+    /// invoice its deposit covers) it is built with
+    /// [`build_settled_document`](ledgeline_core::accrual::invoice::build_settled_document):
+    /// no receivable posting.
     #[must_use]
     pub fn document_spec(&self, journal: &Journal, receivable: &str) -> DocumentSpec {
+        self.spec_with(journal, receivable, false)
+    }
+
+    /// The cash-books transaction of a zero-total invoice: each line into
+    /// its [`cash_account`](BookLine::cash_account), with no deferral (cash
+    /// books recognize revenue when it is paid, and a deposit paid it).
+    /// `settlement` is never written (the total is zero) but must name an
+    /// account.
+    #[must_use]
+    pub fn cash_document_spec(&self, journal: &Journal, settlement: &str) -> DocumentSpec {
+        self.spec_with(journal, settlement, true)
+    }
+
+    fn spec_with(&self, journal: &Journal, settlement: &str, cash: bool) -> DocumentSpec {
         DocumentSpec {
             direction: Direction::Revenue,
             date: self.date.clone(),
@@ -129,14 +146,18 @@ impl InvoiceBooking {
                 kind: PartyKind::Customer,
                 name: self.customer.clone(),
             }),
-            settlement_account: receivable.to_string(),
+            settlement_account: settlement.to_string(),
             lines: self
                 .lines
                 .iter()
                 .map(|line| DocumentLine {
-                    account: line.account.clone(),
+                    account: if cash {
+                        line.cash_account().to_string()
+                    } else {
+                        line.account.clone()
+                    },
                     amount: money(journal, &self.commodity, line.amount),
-                    deferral: line.deferral.clone(),
+                    deferral: if cash { None } else { line.deferral.clone() },
                     tags: line
                         .item
                         .iter()
@@ -364,7 +385,7 @@ fn blocking(invoice: &Invoice, settings: &Settings, money: &Money) -> Vec<Proble
 /// [`BooksError::Invalid`] for a document with errors (a missing field, a
 /// table that doesn't read or add up — run `recalc`); [`BooksError::Booking`]
 /// for a row whose account doesn't resolve; [`BooksError::Refused`] for a
-/// total that isn't positive (a credit note, later) or a number, customer or
+/// negative total (a credit note, later) or a number, customer or
 /// reference that can't be a tag value.
 pub fn booking_of(
     invoice: &Invoice,
@@ -410,10 +431,10 @@ pub fn booking_of(
             path: path.clone(),
             source,
         })?;
-    if total.mantissa <= 0 {
+    if total.mantissa < 0 {
         return Err(BooksError::Refused(format!(
-            "invoice {number}'s total is {}; only a positive total can be booked (a credit \
-             note is a later document type)",
+            "invoice {number}'s total is {}; a negative total can't be booked (a credit note is \
+             a later document type)",
             style.format(total)
         )));
     }
