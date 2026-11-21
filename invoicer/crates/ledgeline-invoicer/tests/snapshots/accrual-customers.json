@@ -1,0 +1,98 @@
+[
+  {
+    "billing": {
+      "address": "1 Contoso Way\nSpringfield, IL 62701\nUSA",
+      "email": "ap@contoso.example",
+      "name": "Contoso",
+      "note": "customers/Contoso.md"
+    },
+    "invoices": 2,
+    "kind": "organization",
+    "ledger_customer": "Contoso",
+    "open": 1,
+    "path": "customers/Contoso.md",
+    "portal": null,
+    "terms": 30,
+    "title": "Contoso"
+  },
+  {
+    "billing": {
+      "address": "1234 Main St. #555\nSpringfield, CO 80000",
+      "email": "accounts_receivable@customerx.com",
+      "name": "Customer X",
+      "note": "customers/Customer X.md"
+    },
+    "invoices": 3,
+    "kind": "organization",
+    "ledger_customer": "Customer X",
+    "open": 1,
+    "path": "customers/Customer X.md",
+    "portal": "Coupa",
+    "terms": 30,
+    "title": "Customer X"
+  },
+  {
+    "billing": {
+      "address": "1 Fabrikam Way\nSpringfield, IL 62701\nUSA",
+      "email": "ap@fabrikam.example",
+      "name": "Fabrikam",
+      "note": "customers/Fabrikam.md"
+    },
+    "invoices": 1,
+    "kind": "organization",
+    "ledger_customer": "Fabrikam",
+    "open": 0,
+    "path": "customers/Fabrikam.md",
+    "portal": null,
+    "terms": 30,
+    "title": "Fabrikam"
+  },
+  {
+    "billing": {
+      "address": "1234 Main St. #555\nSpringfield, CO 80000",
+      "email": "accounts_receivable@customerx.com",
+      "name": "Customer X",
+      "note": "customers/Customer X.md"
+    },
+    "invoices": 0,
+    "kind": "person",
+    "ledger_customer": "Fred Smith",
+    "open": 0,
+    "path": "customers/Fred Smith.md",
+    "portal": null,
+    "terms": null,
+    "title": "Fred Smith"
+  },
+  {
+    "billing": {
+      "address": "1 Tailspin Way\nSpringfield, IL 62701\nUSA",
+      "email": "ap@tailspin.example",
+      "name": "Tailspin",
+      "note": "customers/Tailspin.md"
+    },
+    "invoices": 1,
+    "kind": "organization",
+    "ledger_customer": "Tailspin",
+    "open": 0,
+    "path": "customers/Tailspin.md",
+    "portal": null,
+    "terms": 30,
+    "title": "Tailspin"
+  },
+  {
+    "billing": {
+      "address": "1 Wingtip Way\nSpringfield, IL 62701\nUSA",
+      "email": "ap@wingtip.example",
+      "name": "Wingtip",
+      "note": "customers/Wingtip.md"
+    },
+    "invoices": 1,
+    "kind": "organization",
+    "ledger_customer": "Wingtip",
+    "open": 1,
+    "path": "customers/Wingtip.md",
+    "portal": null,
+    "terms": 30,
+    "title": "Wingtip"
+  }
+]

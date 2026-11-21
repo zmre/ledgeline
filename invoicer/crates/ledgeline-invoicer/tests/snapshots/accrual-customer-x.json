@@ -1,0 +1,189 @@
+{
+  "billing": {
+    "address": "1234 Main St. #555\nSpringfield, CO 80000",
+    "email": "accounts_receivable@customerx.com",
+    "name": "Customer X",
+    "note": "customers/Customer X.md"
+  },
+  "billing_portal": {
+    "instructions": "Upload the PDF under Invoices → Create from PO, then attach the timesheet.\n",
+    "login": "finance@mycompany.com",
+    "name": "Coupa",
+    "requires_reference": true,
+    "supplier_id": "SUP-44821",
+    "url": "https://customerx.coupahost.com/"
+  },
+  "contact": {
+    "addresses": [
+      {
+        "label": "billing",
+        "value": "1234 Main St. #555\nSpringfield, CO 80000"
+      }
+    ],
+    "company": null,
+    "emails": [
+      {
+        "label": "billing",
+        "value": "accounts_receivable@customerx.com"
+      },
+      {
+        "label": "work",
+        "value": "hello@customerx.com"
+      }
+    ],
+    "kind": "organization",
+    "path": "customers/Customer X.md",
+    "title": "Customer X"
+  },
+  "contracts": [
+    {
+      "found": "customers/contracts/Customer X MSA 2026.md",
+      "kind": "note",
+      "link": "[[Customer X MSA 2026]]"
+    },
+    {
+      "found": "customers/contracts/Customer X SOW 3 renewal (signed).pdf",
+      "kind": "file",
+      "path": "/customers/contracts/Customer X SOW 3 renewal (signed).pdf"
+    }
+  ],
+  "documents": [
+    {
+      "commodity": "$",
+      "date": "2026-11-17",
+      "deposit_for": null,
+      "doc_type": "invoice",
+      "due_date": "2026-12-17",
+      "invoicee": {
+        "address": "1234 Main St. #555\nSpringfield, CO 80000\n",
+        "email": "accounts_receivable@customerx.com",
+        "link": "[[Customer X]]",
+        "name": "Customer X"
+      },
+      "invoicer": {
+        "address": "1234 Background Blvd.\nAnywhere, CA 90000\n",
+        "email": "finance@mycompany.com",
+        "link": "[[My Company]]",
+        "name": "My Company"
+      },
+      "number": "108",
+      "open": false,
+      "overdue": false,
+      "paid": null,
+      "path": "invoices/2026-11-17 Customer X Invoice 108.md",
+      "problems": {
+        "errors": 0,
+        "warnings": 0
+      },
+      "reference": "PO #PY75334",
+      "sent_date": null,
+      "sent_via": null,
+      "status": "draft",
+      "template": "/invoices/tpl/myco-default.html",
+      "terms": 30,
+      "title": "2026-11-17 Customer X Invoice 108",
+      "total": "$13,600.00",
+      "void_date": null
+    },
+    {
+      "commodity": "$",
+      "date": "2026-11-10",
+      "deposit_for": null,
+      "doc_type": "invoice",
+      "due_date": "2026-12-10",
+      "invoicee": {
+        "address": "1234 Main St. #555\nSpringfield, CO 80000\n",
+        "email": "accounts_receivable@customerx.com",
+        "link": "[[Customer X]]",
+        "name": "Customer X"
+      },
+      "invoicer": {
+        "address": "1234 Background Blvd.\nAnywhere, CA 90000\n",
+        "email": "finance@mycompany.com",
+        "link": "[[My Company]]",
+        "name": "My Company"
+      },
+      "number": "105",
+      "open": true,
+      "overdue": false,
+      "paid": {
+        "state": "no"
+      },
+      "path": "invoices/2026-11-10 Customer X Invoice 105.md",
+      "problems": {
+        "errors": 0,
+        "warnings": 0
+      },
+      "reference": "PO #PY75334, rev. 2",
+      "sent_date": "2026-11-10",
+      "sent_via": "portal",
+      "status": "sent",
+      "template": "/invoices/tpl/myco-default.html",
+      "terms": 30,
+      "title": "2026-11-10 Customer X Invoice 105",
+      "total": "$8,350.00",
+      "void_date": null
+    },
+    {
+      "commodity": "$",
+      "date": "2026-10-01",
+      "deposit_for": "proposal P-12",
+      "doc_type": "invoice",
+      "due_date": "2026-10-31",
+      "invoicee": {
+        "address": "1234 Main St. #555\nSpringfield, CO 80000\n",
+        "email": "accounts_receivable@customerx.com",
+        "link": "[[Customer X]]",
+        "name": "Customer X"
+      },
+      "invoicer": {
+        "address": "1234 Background Blvd.\nAnywhere, CA 90000\n",
+        "email": "finance@mycompany.com",
+        "link": "[[My Company]]",
+        "name": "My Company"
+      },
+      "number": "104",
+      "open": false,
+      "overdue": false,
+      "paid": {
+        "date": "2026-10-08",
+        "state": "full"
+      },
+      "path": "invoices/2026-10-01 Customer X Invoice 104.md",
+      "problems": {
+        "errors": 0,
+        "warnings": 0
+      },
+      "reference": "PO #PY75334",
+      "sent_date": "2026-10-01",
+      "sent_via": "portal",
+      "status": "sent",
+      "template": "/invoices/tpl/myco-default.html",
+      "terms": 30,
+      "title": "2026-10-01 Customer X Invoice 104",
+      "total": "$8,350.00",
+      "void_date": null
+    }
+  ],
+  "invoice_template": "/invoices/tpl/myco-default.html",
+  "invoices": 3,
+  "kind": "organization",
+  "ledger_customer": "Customer X",
+  "open": 1,
+  "open_pos": [
+    {
+      "amount": "$40,000",
+      "expires": "2027-06-30",
+      "reference": "PO #PY75334"
+    }
+  ],
+  "path": "customers/Customer X.md",
+  "portal": "Coupa",
+  "problems": [],
+  "revenue_account": "revenue:consulting",
+  "snippets": [
+    "[[Net 30 ACH]]"
+  ],
+  "terms": 30,
+  "title": "Customer X"
+}

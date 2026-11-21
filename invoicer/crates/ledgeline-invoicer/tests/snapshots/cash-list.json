@@ -1,0 +1,281 @@
+[
+  {
+    "commodity": "$",
+    "date": "2026-11-17",
+    "deposit_for": null,
+    "doc_type": "invoice",
+    "due_date": "2026-12-17",
+    "invoicee": {
+      "address": "1234 Main St. #555\nSpringfield, CO 80000\n",
+      "email": "accounts_receivable@customerx.com",
+      "link": "[[Customer X]]",
+      "name": "Customer X"
+    },
+    "invoicer": {
+      "address": "1234 Background Blvd.\nAnywhere, CA 90000\n",
+      "email": "finance@mycompany.com",
+      "link": "[[My Company]]",
+      "name": "My Company"
+    },
+    "number": "204",
+    "open": false,
+    "overdue": false,
+    "paid": null,
+    "path": "invoices/2026-11-17 Customer X Invoice 204.md",
+    "problems": {
+      "errors": 0,
+      "warnings": 0
+    },
+    "reference": "PO #PY75334",
+    "sent_date": null,
+    "sent_via": null,
+    "status": "draft",
+    "template": "/invoices/tpl/myco-default.html",
+    "terms": 30,
+    "title": "2026-11-17 Customer X Invoice 204",
+    "total": "$3,200.00",
+    "void_date": null
+  },
+  {
+    "commodity": "$",
+    "date": "2026-11-16",
+    "deposit_for": null,
+    "doc_type": "invoice",
+    "due_date": "2026-12-16",
+    "invoicee": {
+      "address": "1234 Main St. #555\nSpringfield, CO 80000\n",
+      "email": "accounts_receivable@customerx.com",
+      "link": "[[Customer X]]",
+      "name": "Customer X"
+    },
+    "invoicer": {
+      "address": "1234 Background Blvd.\nAnywhere, CA 90000\n",
+      "email": "finance@mycompany.com",
+      "link": "[[My Company]]",
+      "name": "My Company"
+    },
+    "number": "207",
+    "open": true,
+    "overdue": false,
+    "paid": {
+      "state": "no"
+    },
+    "path": "invoices/2026-11-16 Customer X Invoice 207.md",
+    "problems": {
+      "errors": 0,
+      "warnings": 0
+    },
+    "reference": "PO #PY75334",
+    "sent_date": "2026-11-16",
+    "sent_via": "portal",
+    "status": "sent",
+    "template": "/invoices/tpl/myco-default.html",
+    "terms": 30,
+    "title": "2026-11-16 Customer X Invoice 207",
+    "total": "$7,000.00",
+    "void_date": null
+  },
+  {
+    "commodity": "$",
+    "date": "2026-11-05",
+    "deposit_for": null,
+    "doc_type": "invoice",
+    "due_date": "2026-12-05",
+    "invoicee": {
+      "address": "1 Wingtip Way\nSpringfield, IL 62701\nUSA\n",
+      "email": "ap@wingtip.example",
+      "link": "[[Wingtip]]",
+      "name": "Wingtip"
+    },
+    "invoicer": {
+      "address": "1234 Background Blvd.\nAnywhere, CA 90000\n",
+      "email": "finance@mycompany.com",
+      "link": "[[My Company]]",
+      "name": "My Company"
+    },
+    "number": "203",
+    "open": true,
+    "overdue": false,
+    "paid": {
+      "state": "no"
+    },
+    "path": "invoices/2026-11-05 Wingtip Invoice 203.md",
+    "problems": {
+      "errors": 0,
+      "warnings": 0
+    },
+    "reference": null,
+    "sent_date": "2026-11-05",
+    "sent_via": "email",
+    "status": "sent",
+    "template": "/invoices/tpl/myco-default.html",
+    "terms": 30,
+    "title": "2026-11-05 Wingtip Invoice 203",
+    "total": "$1,200.00",
+    "void_date": null
+  },
+  {
+    "commodity": "$",
+    "date": "2026-11-02",
+    "deposit_for": null,
+    "doc_type": "invoice",
+    "due_date": "2026-12-02",
+    "invoicee": {
+      "address": "1 Tailspin Way\nSpringfield, IL 62701\nUSA\n",
+      "email": "ap@tailspin.example",
+      "link": "[[Tailspin]]",
+      "name": "Tailspin"
+    },
+    "invoicer": {
+      "address": "1234 Background Blvd.\nAnywhere, CA 90000\n",
+      "email": "finance@mycompany.com",
+      "link": "[[My Company]]",
+      "name": "My Company"
+    },
+    "number": "205",
+    "open": false,
+    "overdue": false,
+    "paid": {
+      "state": "no"
+    },
+    "path": "invoices/2026-11-02 Tailspin Invoice 205.md",
+    "problems": {
+      "errors": 0,
+      "warnings": 0
+    },
+    "reference": null,
+    "sent_date": "2026-11-02",
+    "sent_via": null,
+    "status": "void",
+    "template": "/invoices/tpl/myco-default.html",
+    "terms": 30,
+    "title": "2026-11-02 Tailspin Invoice 205",
+    "total": "$800.00",
+    "void_date": "2026-11-06"
+  },
+  {
+    "commodity": "$",
+    "date": "2026-11-01",
+    "deposit_for": "proposal P-14",
+    "doc_type": "invoice",
+    "due_date": "2026-12-01",
+    "invoicee": {
+      "address": "1234 Main St. #555\nSpringfield, CO 80000\n",
+      "email": "accounts_receivable@customerx.com",
+      "link": "[[Customer X]]",
+      "name": "Customer X"
+    },
+    "invoicer": {
+      "address": "1234 Background Blvd.\nAnywhere, CA 90000\n",
+      "email": "finance@mycompany.com",
+      "link": "[[My Company]]",
+      "name": "My Company"
+    },
+    "number": "206",
+    "open": false,
+    "overdue": false,
+    "paid": {
+      "date": "2026-11-08",
+      "state": "full"
+    },
+    "path": "invoices/2026-11-01 Customer X Invoice 206.md",
+    "problems": {
+      "errors": 0,
+      "warnings": 0
+    },
+    "reference": "PO #PY75334",
+    "sent_date": "2026-11-01",
+    "sent_via": "portal",
+    "status": "sent",
+    "template": "/invoices/tpl/myco-default.html",
+    "terms": 30,
+    "title": "2026-11-01 Customer X Invoice 206",
+    "total": "$5,000.00",
+    "void_date": null
+  },
+  {
+    "commodity": "$",
+    "date": "2026-11-01",
+    "deposit_for": null,
+    "doc_type": "invoice",
+    "due_date": "2026-12-01",
+    "invoicee": {
+      "address": "1 Fabrikam Way\nSpringfield, IL 62701\nUSA\n",
+      "email": "ap@fabrikam.example",
+      "link": "[[Fabrikam]]",
+      "name": "Fabrikam"
+    },
+    "invoicer": {
+      "address": "1234 Background Blvd.\nAnywhere, CA 90000\n",
+      "email": "finance@mycompany.com",
+      "link": "[[My Company]]",
+      "name": "My Company"
+    },
+    "number": "202",
+    "open": true,
+    "overdue": false,
+    "paid": {
+      "parts": [
+        {
+          "amount": "$500",
+          "date": "2026-11-12"
+        }
+      ],
+      "state": "partial"
+    },
+    "path": "invoices/2026-11-01 Fabrikam Invoice 202.md",
+    "problems": {
+      "errors": 0,
+      "warnings": 0
+    },
+    "reference": null,
+    "sent_date": "2026-11-01",
+    "sent_via": "email",
+    "status": "sent",
+    "template": "/invoices/tpl/myco-default.html",
+    "terms": 30,
+    "title": "2026-11-01 Fabrikam Invoice 202",
+    "total": "$2,000.00",
+    "void_date": null
+  },
+  {
+    "commodity": "$",
+    "date": "2026-10-20",
+    "deposit_for": null,
+    "doc_type": "invoice",
+    "due_date": "2026-11-19",
+    "invoicee": {
+      "address": "1 Contoso Way\nSpringfield, IL 62701\nUSA\n",
+      "email": "ap@contoso.example",
+      "link": "[[Contoso]]",
+      "name": "Contoso"
+    },
+    "invoicer": {
+      "address": "1234 Background Blvd.\nAnywhere, CA 90000\n",
+      "email": "finance@mycompany.com",
+      "link": "[[My Company]]",
+      "name": "My Company"
+    },
+    "number": "201",
+    "open": false,
+    "overdue": false,
+    "paid": {
+      "date": "2026-11-03",
+      "state": "full"
+    },
+    "path": "invoices/2026-10-20 Contoso Invoice 201.md",
+    "problems": {
+      "errors": 0,
+      "warnings": 0
+    },
+    "reference": null,
+    "sent_date": "2026-10-20",
+    "sent_via": "email",
+    "status": "sent",
+    "template": "/invoices/tpl/myco-default.html",
+    "terms": 30,
+    "title": "2026-10-20 Contoso Invoice 201",
+    "total": "$3,000.00",
+    "void_date": null
+  }
+]

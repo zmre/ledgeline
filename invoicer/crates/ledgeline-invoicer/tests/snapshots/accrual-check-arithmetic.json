@@ -1,0 +1,21 @@
+{
+  "customers": 6,
+  "documents": 8,
+  "errors": 1,
+  "problems": [
+    {
+      "code": "arithmetic",
+      "file": "invoices/2026-08-01 Wingtip Invoice 106.md",
+      "fix": {
+        "edit": {
+          "kind": "recalc"
+        },
+        "message": "recalc rewrites the computed amounts"
+      },
+      "line": 33,
+      "message": "row 2 (line 33): the amount says **$1,200.00**, but the arithmetic gives **$1,100.00**",
+      "severity": "error"
+    }
+  ],
+  "warnings": 0
+}
