@@ -18,7 +18,7 @@
     // goes, what a reorder means — is a pure function in `#lib/imports/model.js`,
     // because components here are not unit-tested and that is exactly why the
     // logic does not live in them.
-    import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import AsyncSection from "#ui/components/AsyncSection.svelte";
     import {fieldNames, isDirty, settingText, toForm, toSaveRequest, validateForm, type FormItem, type RulesForm} from "#lib/imports/model.js";
     import {openRules, rulesIndex, rulesStore} from "#lib/imports/rulesStore.svelte.js";
     import type {RulesDocument, RulesPreview} from "#lib/imports/types.js";
@@ -30,7 +30,7 @@
     import {journal} from "#lib/stores/journal.svelte.js";
     import {holdUnsavedEdits} from "#lib/stores/refreshAll.js";
     import {settings} from "#lib/stores/settings.svelte.js";
-    import {createRevealArm, reveal} from "#lib/ui/reveal.js";
+    import {createRevealArm, reveal} from "#ui/ui/reveal.js";
 
     type Tab = "prefs" | "mapping" | "accounts";
     const TABS: {id: Tab; label: string}[] = [

@@ -5,7 +5,7 @@
     // the section writes the source tags onto the card and re-asks the engine
     // for the preview. Optional dates use DateInput (WebKit paints today into
     // an empty native date field).
-    import DateInput from "#lib/components/DateInput.svelte";
+    import DateInput from "#ui/components/DateInput.svelte";
     import {CONTRACT_KINDS, type ContractKind, type Party} from "../types";
     import {defaultDescription, TERM_CHIPS, type ScheduleDraft} from "../model";
 

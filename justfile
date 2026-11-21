@@ -6,18 +6,22 @@ dev:
     cd web && bun run dev
 
 # Run the front-end suite: BOTH vitest projects, `unit` (node) and `components`
-# (jsdom, mounted .svelte files). See web/README.md for which to write.
+# (jsdom, mounted .svelte files), in web/ and in the shared packages/ui (which
+# has the same two projects). See web/README.md for which to write.
 # Run unit + component tests (vitest)
 test:
     cd web && bun run test:unit
+    cd packages/ui && bun run test:unit
 
 # Run only the pure-function tests (vitest --project=unit)
 test-node:
     cd web && bun run test:node
+    cd packages/ui && bun run test:node
 
 # Run only the mounted-component tests (vitest --project=components)
 test-components:
     cd web && bun run test:components
+    cd packages/ui && bun run test:components
 
 # Without LEDGELINE_API_URL the *.integration.test.ts suites report as SKIPPED, so
 # plain `just test` never exercises the fixture→engine→JSON→decode→rendered-string
@@ -78,18 +82,22 @@ docs-screenshots:
     cargo build -p ledgeline --features test-fakes
     cd web && bunx playwright test -c playwright.docs.config.ts
 
-# Typecheck + svelte-check
+# Typecheck + svelte-check (web/ and packages/ui: svelte-check reports only on
+# its own directory, so the package is checked in its own right)
 check:
     cd web && bun run check
+    cd packages/ui && bun run check
 
-# Gated by NO CI job. `bun run lint` is in web/package.json and no workflow ever
-# calls it, so prettier and eslint over web/ are held clean by whoever remembers
-# to run this. That is why it is in `pre-push` below.
-# prettier --check + eslint over the SPA
+# Gated by NO CI job. `bun run lint` is in web/package.json (and
+# packages/ui/package.json) and no workflow ever calls it, so prettier and eslint
+# over web/ and packages/ui/ are held clean by whoever remembers to run this.
+# That is why it is in `pre-push` below.
+# prettier --check + eslint over the SPA and the shared UI package
 lint:
     cd web && bun run lint
+    cd packages/ui && bun run lint
 
-# Advisory scans of Cargo.lock + web/bun.lock, with exactly CI's ignore lists.
+# Advisory scans of Cargo.lock + bun.lock, with exactly CI's ignore lists.
 # Needs the network. The lists, and why each entry is there, live in
 # scripts/audit.sh.
 # cargo audit + bun audit, as CI runs them
@@ -98,7 +106,7 @@ audit:
 
 # Instant: a diff against the merge base, no build. See the script for why a
 # stale pin cannot be caught any other way before CI.
-# Fail if web/bun.lock changed but the spaNodeModules hashes did not
+# Fail if bun.lock changed but the spaNodeModules hashes did not
 spa-hash-check:
     ./scripts/check-spa-hash.sh
 

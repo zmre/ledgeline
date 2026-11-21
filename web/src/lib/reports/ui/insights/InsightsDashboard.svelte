@@ -5,7 +5,7 @@
      URL like the other tabs. -->
 <script lang="ts">
     import {journal} from "#lib/stores/journal.svelte.js";
-    import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import AsyncSection from "#ui/components/AsyncSection.svelte";
     import {maIsZero} from "#lib/domain/money.js";
     import type {AmountStyle} from "#lib/domain/types.js";
     import type {InsightsReport} from "#lib/reports/insightsTypes.js";

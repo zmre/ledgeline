@@ -66,12 +66,15 @@
 //! assert!(schedule.rules[0].text.starts_with("~ monthly from 2026-11-17 to 2027-10-18"));
 //! ```
 
+pub mod apply;
 pub mod book;
 pub mod books_config;
+pub mod documents;
 pub mod due;
 pub mod index;
 pub mod invoice;
 pub mod ops;
+pub mod receivables;
 pub mod restate;
 pub mod schedule;
 pub mod settle;
@@ -119,6 +122,20 @@ pub const CUSTOMER_TAG: &str = "customer";
 pub const VENDOR_TAG: &str = "vendor";
 /// The invoice or bill number, on the invoice's and the payment's headers.
 pub const INVOICE_TAG: &str = "invoice";
+/// On a document's header: the date it falls due, `YYYY-MM-DD` (receivables
+/// aging; invoicer ARCHITECTURE §4.2).
+pub const DUE_TAG: &str = "due";
+/// On a document's header: where its source lives (the invoicer's markdown
+/// path).
+pub const DOCUMENT_TAG: &str = "document";
+/// On a document's header: the customer's reference (`PO #105`).
+pub const REFERENCE_TAG: &str = "reference";
+/// On a document's line: the row's description.
+pub const ITEM_TAG: &str = "item";
+/// On a void reversal's header: the date the document was voided. A
+/// transaction carrying it is never itself a document; its settlement
+/// posting settles the one it reverses ([`receivables`]).
+pub const VOID_TAG: &str = "void";
 /// Service start + term, on the main rule's header.
 pub const RENEWAL_DATE_TAG: &str = "renewal-date";
 /// The **scheduled** occurrence date a posted entry fills.
@@ -675,9 +692,12 @@ pub(crate) fn iso_of(day: i32) -> String {
     crate::parse::iso_ymd((narrow(year), narrow(month), narrow(day)))
 }
 
-/// Whether `date` is a well-formed ISO date that names a real day.
+/// Whether `date` is a well-formed ISO date that names a real day: exactly
+/// `YYYY-MM-DD`, ASCII digits, and a calendar date that exists (`2026-02-30`
+/// is not one). Every date this module writes or takes as `today` is checked
+/// with it.
 #[must_use]
-pub(crate) fn is_iso_date(date: &str) -> bool {
+pub fn is_iso_date(date: &str) -> bool {
     let bytes = date.as_bytes();
     bytes.len() == 10
         && bytes[4] == b'-'

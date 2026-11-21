@@ -4,7 +4,7 @@
      customers, ARPA and NRR. A picker appears when more than one key is
      offered. -->
 <script lang="ts">
-    import InfoTip from "#lib/components/InfoTip.svelte";
+    import InfoTip from "#ui/components/InfoTip.svelte";
     import {sub} from "#lib/domain/money.js";
     import type {AmountStyle} from "#lib/domain/types.js";
     import {sentimentClass} from "#lib/format/sign.js";

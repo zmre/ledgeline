@@ -21,7 +21,7 @@
     // CSV dry run does. Its saves are held as overrides keyed by Trans # and
     // ride on the Import. There is no "Remember as a rule" here: an alias maps a
     // whole QuickBooks account, so there is no payee rule to write.
-    import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import AsyncSection from "#ui/components/AsyncSection.svelte";
     import ImportMatches from "#lib/matching/ui/ImportMatches.svelte";
     import {reviewLaunch} from "#lib/review/ui/launch.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
@@ -41,7 +41,7 @@
     import QbUnmappedAccounts from "./QbUnmappedAccounts.svelte";
     import StagedEditsNote from "./StagedEditsNote.svelte";
     import StagedReviewButtons from "./StagedReviewButtons.svelte";
-    import {reveal, revealArm} from "#lib/ui/reveal.js";
+    import {reveal, revealArm} from "#ui/ui/reveal.js";
 
     let {
         stageId,

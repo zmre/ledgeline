@@ -13,8 +13,8 @@
     // go does not also open the transaction.
     import {untrack, type Snippet} from "svelte";
     import type {ClassValue} from "svelte/elements";
-    import {haptic} from "#lib/native/share.js";
-    import {rootPx} from "#lib/theme/scale.js";
+    import {haptic} from "#ui/native/share.js";
+    import {rootPx} from "#ui/theme/scale.js";
     import {
         crossedCommit,
         decideAxis,

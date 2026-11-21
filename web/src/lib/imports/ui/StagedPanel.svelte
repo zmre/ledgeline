@@ -11,7 +11,7 @@
     // the latter was not possible at all — see `importModel.ts`. It is now, in
     // the `components` vitest project, and `NewTransactionsPanel.staged.svelte.test.ts`
     // uses it to check that the values this panel is HANDED are the right ones.)
-    import AsyncSection from "#lib/components/AsyncSection.svelte";
+    import AsyncSection from "#ui/components/AsyncSection.svelte";
     import {actionBlocker, actionLabel, importAction, shows, validateCsvPath, type ImportSection} from "../importModel";
     import type {JournalTarget, StagedFile} from "../importTypes";
     import BalanceField from "./BalanceField.svelte";
@@ -22,7 +22,7 @@
     import StatementPicker from "./StatementPicker.svelte";
     import type {RulesDraft} from "../types";
     import type {FormItem, RulesForm} from "../model";
-    import {reveal, revealArm} from "#lib/ui/reveal.js";
+    import {reveal, revealArm} from "#ui/ui/reveal.js";
 
     let {
         sections,

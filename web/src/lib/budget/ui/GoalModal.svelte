@@ -12,7 +12,7 @@
      than surprising. -->
 <script lang="ts">
     import {untrack} from "svelte";
-    import {registerNativeOverlay} from "#lib/native/bridge.svelte.js";
+    import {registerNativeOverlay} from "#ui/native/bridge.svelte.js";
     import {parseAmountInput} from "#lib/api/editMapping.js";
     import {BUDGET_PERIODS, type AccountReference, type BudgetPeriod, type GoalDraft, type GoalSubmission} from "#lib/budget/types.js";
     import type {AmountStyle} from "#lib/domain/types.js";

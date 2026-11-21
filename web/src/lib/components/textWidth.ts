@@ -13,7 +13,7 @@
 // budget in `accounts.ts`, which is imprecise but never claims otherwise.
 
 import type {MeasureText} from "#lib/domain/accounts.js";
-import {rootPx} from "#lib/theme/scale.js";
+import {rootPx} from "#ui/theme/scale.js";
 
 // The journal's account chips are daisyUI `badge-sm`, whose `font-size` is
 // 0.75rem. There is no chip in the document at the time the first measurement is

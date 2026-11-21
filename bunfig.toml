@@ -1,0 +1,7 @@
+# Hoisted, not isolated: bun 1.3+ defaults a *workspace* to the isolated
+# linker, which would give web/ and packages/ui/ separate symlinked trees.
+# Hoisted keeps one flat root node_modules, as web/ had on its own, so every
+# tool (vite, Tailwind's @plugin, prettier plugins) resolves exactly as before,
+# and packages/ui resolves daisyui/svelte from the same copy web/ does.
+[install]
+linker = "hoisted"

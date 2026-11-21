@@ -91,5 +91,12 @@ name = "accrual"
 path = "benches/accrual.rs"
 harness = false
 
+# The invoicer's books bridge (find_document, receivables, aging) on the
+# corpus with 5,000 invoices and their payments added.
+[[bench]]
+name = "receivables"
+path = "benches/receivables.rs"
+harness = false
+
 [lib]
 bench = false

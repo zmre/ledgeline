@@ -20,14 +20,14 @@
      section lines start closed. Keyboard: j/k walk every visible row, Enter opens
      a line or shows an account's postings for the report's dates. -->
 <script lang="ts">
-    import HScroll from "#lib/components/HScroll.svelte";
+    import HScroll from "#ui/components/HScroll.svelte";
     import type {MixedAmount} from "#lib/domain/money.js";
     import type {AmountStyle} from "#lib/domain/types.js";
     import {openJournal} from "#lib/journal/openJournal.js";
     import {registerKeys} from "#lib/keys/keymap.svelte.js";
     import {PRIORITY} from "#lib/keys/types.js";
     import type {CashFlowStatement, CfColumns, CfSectionKind} from "#lib/reports/types.js";
-    import {listCursor} from "#lib/ui/listCursor.svelte.js";
+    import {listCursor} from "#ui/ui/listCursor.svelte.js";
     import {amountCell, type AmountCell} from "./amountCell";
     import {cfCursorRows, cfDisplayModel, cfFoldKey, type CfDisplayRow} from "./cashFlowRows";
     import CompareCells from "./CompareCells.svelte";

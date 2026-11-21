@@ -572,7 +572,7 @@ const CHECKING_CSV = new URL("../../fixtures/rules/simple/checking.csv", import.
 const REVIEW_NOW = new Date(2026, 9, 31, 12, 0, 0); // local 2026-10-31
 /**
  * Short enough that the button pressed is at the bottom of the window and what
- * it makes appear starts below it — the case `#lib/ui/reveal` exists for.
+ * it makes appear starts below it — the case `#ui/ui/reveal` exists for.
  */
 const SHORT_VIEWPORT = {width: 1280, height: 600};
 

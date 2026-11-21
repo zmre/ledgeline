@@ -1,0 +1,20 @@
+; Receivables fixture, cash books: Apply payment (invoicer I17). Synthetic.
+; Written by tests/accrual_library.rs (the_invoicer_flow_on_cash_books).
+commodity $1,000.00
+
+account assets:bank:checking          ; type: C
+account income:unknown                ; type: R
+account revenue:consulting            ; type: R
+account revenue:consulting:delivery   ; type: R
+account expenses:payment fees         ; type: X
+
+2026-11-03 * STRIPE PAYOUT CONTOSO  ; id: st-1, invoice:201
+    assets:bank:checking       $2,910.00
+    expenses:payment fees         $90.00
+    revenue:consulting           $-1800.00  ; customer: Contoso
+    revenue:consulting:delivery  $-1200.00  ; customer: Contoso
+
+2026-11-12 * WIRE FABRIKAM INV 202  ; id: wf-9, invoice:202
+    assets:bank:checking         $500.00
+    revenue:consulting           $-375.00  ; customer: Fabrikam
+    revenue:consulting:delivery  $-125.00  ; customer: Fabrikam

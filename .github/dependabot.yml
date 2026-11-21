@@ -17,7 +17,7 @@
 #   * bun — GitHub classifies Bun as its OWN ecosystem (yaml value `bun`), and
 #     it supports version updates but NOT security updates. A bun entry would
 #     therefore produce routine churn while adding no security coverage. The
-#     `SPA audit (bun)` job in audit.yml is what actually covers web/bun.lock, and
+#     `SPA audit (bun)` job in audit.yml is what actually covers bun.lock, and
 #     it exists precisely because Dependabot cannot.
 #
 # Stale action pins are a genuine supply-chain risk and there are only a

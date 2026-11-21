@@ -37,14 +37,14 @@
      something on first load rather than nothing — and Enter either opens the
      disclosure (on a group) or drills into the journal (on an account). -->
 <script lang="ts">
-    import HScroll from "#lib/components/HScroll.svelte";
+    import HScroll from "#ui/components/HScroll.svelte";
     import type {AmountStyle} from "#lib/domain/types.js";
     import {openJournal} from "#lib/journal/openJournal.js";
     import {registerKeys} from "#lib/keys/keymap.svelte.js";
     import {PRIORITY} from "#lib/keys/types.js";
     import type {Amounts, IncomeStatementReport, IsSectionKind} from "#lib/reports/types.js";
     import {settings} from "#lib/stores/settings.svelte.js";
-    import {listCursor} from "#lib/ui/listCursor.svelte.js";
+    import {listCursor} from "#ui/ui/listCursor.svelte.js";
     import {amountCell, fmtPct, isCursorRows, isDisplayModel, isGroupKey, type AmountCell, type IsDisplayRow} from "./incomeStatementRows";
     import CompareCells from "./CompareCells.svelte";
     import {AS_PROJECTED_SR} from "./compareColumns";

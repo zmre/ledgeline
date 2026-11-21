@@ -1,4 +1,4 @@
-// The live chart palette: the theme's `--chart-*` tokens (`src/themes/`, and
+// The live chart palette: the theme's `--chart-*` tokens (`packages/ui/src/themes/`, and
 // daisyUI's `--color-info`/`-secondary`/`-accent` for pinned series) resolved to concrete
 // colour strings, re-resolved whenever `<html data-theme>` changes.
 //

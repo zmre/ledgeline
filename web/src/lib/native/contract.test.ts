@@ -11,8 +11,8 @@ import {readdirSync, readFileSync, statSync} from "node:fs";
 import {join} from "node:path";
 import {fileURLToPath} from "node:url";
 import {describe, expect, it} from "vitest";
-import {ZOOM_EVENT} from "#lib/theme/zoom.svelte.js";
-import {MESSAGE_HANDLER, NATIVE_API, NATIVE_CLASS, NATIVE_GLOBAL} from "./detect";
+import {ZOOM_EVENT} from "#ui/theme/zoom.svelte.js";
+import {MESSAGE_HANDLER, NATIVE_API, NATIVE_CLASS, NATIVE_GLOBAL} from "#ui/native/detect.js";
 
 const IOS_ROOT = fileURLToPath(new URL("../../../../apple/ios", import.meta.url));
 

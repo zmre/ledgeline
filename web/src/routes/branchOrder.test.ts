@@ -47,7 +47,8 @@ const read = (path: string): string => readFileSync(`${WEB_SRC}/${path}`, "utf8"
 /** Source with comments blanked out, so a comment ABOUT the old code doesn't read as the old code. */
 const readCode = (path: string): string => read(path).replace(/<!--[\s\S]*?-->|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "");
 
-const ASYNC_SECTION = "lib/components/AsyncSection.svelte";
+/** In packages/ui since the invoicer extraction (plan L6); still the one place every surface below delegates to. */
+const ASYNC_SECTION = "../../packages/ui/src/components/AsyncSection.svelte";
 
 /** Each surface delegating to AsyncSection: its file, and the error testid it must hand over. */
 const SURFACES = [

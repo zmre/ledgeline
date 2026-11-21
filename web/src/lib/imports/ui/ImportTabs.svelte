@@ -5,7 +5,7 @@
     import {TAB_LABELS, TAB_ORDER, type ImportTab} from "#lib/imports/params.js";
     import {registerKeys} from "#lib/keys/keymap.svelte.js";
     import {PRIORITY} from "#lib/keys/types.js";
-    import {isNative} from "#lib/native/detect.js";
+    import {isNative} from "#ui/native/detect.js";
 
     let {tab = $bindable()}: {tab: ImportTab} = $props();
 

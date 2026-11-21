@@ -52,13 +52,13 @@
 <script lang="ts">
     import {Chart, Link, Svg, Text} from "layerchart";
     import {Sankey} from "layerchart/graph";
-    import AsyncSection from "#lib/components/AsyncSection.svelte";
-    import ChartLegend from "#lib/components/ChartLegend.svelte";
+    import AsyncSection from "#ui/components/AsyncSection.svelte";
+    import ChartLegend from "#ui/components/ChartLegend.svelte";
     import ChartPanel from "./ChartPanel.svelte";
     import type {AmountStyle} from "#lib/domain/types.js";
     import {chartColors} from "#lib/format/chartColors.svelte.js";
     import type {FlowReport} from "#lib/reports/types.js";
-    import {rootPx} from "#lib/theme/scale.js";
+    import {rootPx} from "#ui/theme/scale.js";
     import {placeLabels, type Bar} from "./sankeyLabels";
     import {flowPalette, linkTooltip, nodeTooltip, sankeyView, tooltipText, type FlowsPanel, type SankeyTooltip} from "./sankeyModel";
 

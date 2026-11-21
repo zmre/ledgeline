@@ -1,7 +1,7 @@
 <script lang="ts">
     // Date range with quick presets (WP-04). Native date inputs for good
     // mobile UX; all range math goes through presetRange (pure, tested).
-    import DateInput from "#lib/components/DateInput.svelte";
+    import DateInput from "#ui/components/DateInput.svelte";
     import type {ISODate} from "#lib/domain/types.js";
     import {filters, type DatePreset} from "#lib/stores/filters.svelte.js";
 

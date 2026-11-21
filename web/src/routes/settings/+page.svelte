@@ -13,7 +13,7 @@
     // a debounced `replaceState` mirror the other way.
     import {onMount} from "svelte";
     import {afterNavigate} from "$app/navigation";
-    import ErrorToast from "#lib/components/ErrorToast.svelte";
+    import ErrorToast from "#ui/components/ErrorToast.svelte";
     import AccountsPanel from "#lib/accounts/ui/AccountsPanel.svelte";
     import AccrualSettingsPanel from "#lib/accrual/settings/AccrualSettingsPanel.svelte";
     import AliasPanel from "#lib/imports/ui/AliasPanel.svelte";
@@ -25,7 +25,7 @@
     import {defaultSettingsParams, paramsToSearch, searchToParams, type SettingsParams} from "#lib/settings/params.js";
     import SettingsTabs from "#lib/settings/ui/SettingsTabs.svelte";
     import SyncSettingsPanel from "#lib/sync/ui/SyncSettingsPanel.svelte";
-    import {isNative} from "#lib/native/detect.js";
+    import {isNative} from "#ui/native/detect.js";
     import {journal} from "#lib/stores/journal.svelte.js";
     import {loadJournalWhenReady} from "#lib/stores/serverWatch.svelte.js";
     import {searchMirror} from "#lib/url/searchSync.js";

@@ -4,7 +4,7 @@ import CoreGraphics
 /// time the fingers spread (or close) by `ratio` since the last step. Pure, so
 /// the thresholds are unit-tested without a finger.
 struct PinchSteps {
-    /// The `ledgeline:zoom` event's `detail` (web/src/lib/theme/zoom.svelte.ts).
+    /// The `ledgeline:zoom` event's `detail` (packages/ui/src/theme/zoom.svelte.ts).
     enum Direction: String {
         case zoomIn = "in"
         case zoomOut = "out"

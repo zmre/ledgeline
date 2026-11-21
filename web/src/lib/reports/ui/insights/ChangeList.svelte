@@ -7,7 +7,7 @@
      the list is empty we distinguish "the previous period has no history to
      compare against" from "nothing moved much". -->
 <script lang="ts">
-    import InfoTip from "#lib/components/InfoTip.svelte";
+    import InfoTip from "#ui/components/InfoTip.svelte";
     import type {AmountStyle} from "#lib/domain/types.js";
     import {NEUTRAL_CLASS, sentimentClass} from "#lib/format/sign.js";
     import type {ChangeRow} from "#lib/reports/insightsTypes.js";

@@ -18,8 +18,8 @@
      same split `AliasPanel.svelte` states for its own screen. -->
 <script lang="ts">
     import AccountLabel from "#lib/components/AccountLabel.svelte";
-    import AsyncSection from "#lib/components/AsyncSection.svelte";
-    import InfoTip from "#lib/components/InfoTip.svelte";
+    import AsyncSection from "#ui/components/AsyncSection.svelte";
+    import InfoTip from "#ui/components/InfoTip.svelte";
     import {dataView} from "#lib/stores/loadState.js";
     import {holdUnsavedEdits} from "#lib/stores/refreshAll.js";
     import {onServerReady} from "#lib/stores/serverWatch.svelte.js";
@@ -39,7 +39,7 @@
     } from "../model";
     import type {AccountForm} from "../model";
     import type {AccountEntry} from "../types";
-    import {createRevealArm, reveal} from "#lib/ui/reveal.js";
+    import {createRevealArm, reveal} from "#ui/ui/reveal.js";
 
     let {accountNames}: {accountNames: string[]} = $props();
 

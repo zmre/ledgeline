@@ -17,8 +17,8 @@
     // discarding the whole half-typed transaction.
     import {tick} from "svelte";
     import {TYPING_ATTRIBUTE} from "#lib/keys/target.js";
-    import {remToPx} from "#lib/theme/scale.js";
-    import {popupPosition, portal, liveViewport} from "#lib/ui/anchoredPopup.js";
+    import {remToPx} from "#ui/theme/scale.js";
+    import {popupPosition, portal, liveViewport} from "#ui/ui/anchoredPopup.js";
     import {matchAccounts, tabCompletion} from "./accountMatch";
 
     let {

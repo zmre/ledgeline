@@ -49,8 +49,8 @@
     import {Area, AreaChart, BarChart, Spline, Tooltip} from "layerchart";
     import {chartColors} from "#lib/format/chartColors.svelte.js";
     import ChartHeading from "./ChartHeading.svelte";
-    import ChartLegend, {type LegendEntry} from "./ChartLegend.svelte";
-    import {rootPx} from "#lib/theme/scale.js";
+    import ChartLegend, {type LegendEntry} from "#ui/components/ChartLegend.svelte";
+    import {rootPx} from "#ui/theme/scale.js";
     import {axisTickLabelProps, fittedTicks, labelFormatter, remPadding, tickIndices} from "./periodAxis";
     import {stackBars} from "./stackBars";
     import {seriesAt, topToBottom} from "./stackHit";

@@ -12,7 +12,7 @@
      payee-inferred customers, whose only trace is the description. -->
 <script lang="ts">
     import {resolve} from "$app/paths";
-    import InfoTip from "#lib/components/InfoTip.svelte";
+    import InfoTip from "#ui/components/InfoTip.svelte";
     import type {Dec} from "#lib/domain/money.js";
     import type {AmountStyle} from "#lib/domain/types.js";
     import {journalSearch} from "#lib/filters/journalTarget.js";

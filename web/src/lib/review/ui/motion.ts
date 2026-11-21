@@ -299,10 +299,8 @@ export function footerFade(_node: Element, params: {reduced: boolean}): Transiti
     return {duration: params.reduced ? DURATIONS.reduced : DURATIONS.footer, css: (t) => `opacity: ${r(t)}`};
 }
 
-/** The user's `prefers-reduced-motion`, read when asked (it can change mid-session). */
-export function prefersReducedMotion(): boolean {
-    return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-}
+/** The user's `prefers-reduced-motion`, read when asked. Shared with `#ui/ui/reveal` (packages/ui). */
+export {prefersReducedMotion} from "#ui/ui/motion.js";
 
 /**
  * End every animation running under `root` at its last frame, at once (D29: a

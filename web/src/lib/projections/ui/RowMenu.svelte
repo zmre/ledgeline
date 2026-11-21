@@ -28,8 +28,8 @@
      asserting on geometry, and so the keyboard reaches them at all. -->
 <script lang="ts">
     import {dismissible} from "#lib/keys/dismissible.js";
-    import {remToPx} from "#lib/theme/scale.js";
-    import {menuPosition, portal, liveViewport} from "#lib/ui/anchoredPopup.js";
+    import {remToPx} from "#ui/theme/scale.js";
+    import {menuPosition, portal, liveViewport} from "#ui/ui/anchoredPopup.js";
 
     interface Item {
         /** Also the `{#each}` key, so two items of one menu must not share one. */

@@ -29,6 +29,13 @@
 //! proposed here (that's [`crate::accrual::settle`]) and never collapse into a
 //! transfer row.
 //!
+//! A settlement link may also be **open** (invoicer L4: one invoice, several
+//! payments): exactly one posting on the invoice side (a receivable debit or
+//! a payable credit), the rest on the payment side, and the payments not yet
+//! covering the invoice. It is valid — an invoice part paid is not a broken
+//! link — and [`LinkIndex::is_open`] says so. A link that over-settles stays
+//! broken ([`BrokenReason::DoNotCancel`]).
+//!
 //! Nothing here writes a file. The ops go through
 //! [`crate::edit::JournalEditor::apply_batch`].
 
@@ -224,6 +231,8 @@ pub struct LinkIndex {
     by_position: HashMap<usize, Vec<String>>,
     /// The valid links whose postings are settlement postings (plan 45).
     settlement: BTreeSet<String>,
+    /// The settlement links still short of their invoice (invoicer L4).
+    open: BTreeSet<String>,
 }
 
 impl LinkIndex {
@@ -281,6 +290,15 @@ impl LinkIndex {
     #[must_use]
     pub fn is_settlement(&self, id: &str) -> bool {
         self.settlement.contains(id)
+    }
+
+    /// Whether the valid link `id` is an **open** settlement link: one
+    /// invoice (or bill) and the payments made on it so far, which don't yet
+    /// cover it (N:1 partial settlement, invoicer L4). Its members don't sum
+    /// to zero; every other valid link's do.
+    #[must_use]
+    pub fn is_open(&self, id: &str) -> bool {
+        self.open.contains(id)
     }
 }
 
@@ -404,24 +422,30 @@ pub fn clearing_accounts(journal: &Journal) -> BTreeSet<String> {
     names.into_iter().map(str::to_string).collect()
 }
 
-/// Whether an account is a **settlement** account: its accrual role is
-/// receivable or payable (plan 45 D-gate). Built from the declarations only,
-/// and asked only about accounts that carry a `match` tag, so it costs
-/// nothing on a journal with no settlement links.
-pub(crate) fn settlement_resolver(journal: &Journal) -> impl Fn(&str) -> bool + '_ {
+/// The settlement role of an account — receivable or payable (plan 45
+/// D-gate) — or `None`. Built from the declarations only, and asked only
+/// about accounts that carry a `match` tag, so it costs nothing on a journal
+/// with no settlement links.
+pub(crate) fn settlement_resolver(
+    journal: &Journal,
+) -> impl Fn(&str) -> Option<crate::accrual::AccrualRole> + '_ {
     let declared = crate::reports::declared_kpi_roles(&journal.accounts);
     let types = AccountTypes::new(&account_decls(journal));
     move |account: &str| {
         crate::accrual::accrual_resolver(&declared, &types)(account)
-            .is_some_and(|(role, _)| role.is_settlement())
+            .map(|(role, _)| role)
+            .filter(|role| role.is_settlement())
     }
 }
+
+/// An account's settlement role, if it has one ([`settlement_resolver`]).
+type SettlementRole<'j> = Box<dyn Fn(&str) -> Option<crate::accrual::AccrualRole> + 'j>;
 
 /// Which postings a link may join: clearing postings, or settlement
 /// postings (plan 45).
 struct Linkable<'j> {
     clearing: BTreeSet<String>,
-    settlement: Box<dyn Fn(&str) -> bool + 'j>,
+    settlement: SettlementRole<'j>,
 }
 
 impl<'j> Linkable<'j> {
@@ -433,7 +457,11 @@ impl<'j> Linkable<'j> {
     }
 
     fn accepts(&self, account: &str) -> bool {
-        self.clearing.contains(account) || (self.settlement)(account)
+        self.clearing.contains(account) || self.is_settlement(account)
+    }
+
+    fn is_settlement(&self, account: &str) -> bool {
+        (self.settlement)(account).is_some()
     }
 }
 
@@ -1505,7 +1533,9 @@ fn broken_reason(
         return Some(BrokenReason::Count(1));
     }
     let all = |test: &dyn Fn(&str) -> bool| postings.iter().all(|(_, p)| test(&p.account.0));
-    if !all(&|account| linkable.clearing.contains(account)) && !all(&*linkable.settlement) {
+    if !all(&|account| linkable.clearing.contains(account))
+        && !all(&|account| linkable.is_settlement(account))
+    {
         return Some(BrokenReason::NotClearing);
     }
     if rest
@@ -1520,6 +1550,48 @@ fn broken_reason(
     }
     (!sums_to_zero(postings.iter().map(|(_, posting)| *posting)))
         .then_some(BrokenReason::DoNotCancel)
+}
+
+/// Whether `postings` — on one settlement account, in their own transactions,
+/// not summing to zero — are an **open** settlement: one cost-free amount
+/// each in one commodity, exactly one on the invoice side (a receivable debit
+/// or payable credit), every other on the payment side, and their sum still
+/// on the invoice side (the payments short of the invoice).
+fn is_open_settlement(linkable: &Linkable<'_>, postings: &[(PostingRef, &Posting)]) -> bool {
+    use crate::accrual::AccrualRole;
+    let Some(((_, first), _)) = postings.split_first() else {
+        return false;
+    };
+    if linkable.clearing.contains(&first.account.0) {
+        return false;
+    }
+    let invoice_positive = match (linkable.settlement)(&first.account.0) {
+        Some(AccrualRole::Receivable) => true,
+        Some(AccrualRole::Payable) => false,
+        _ => return false,
+    };
+    let mut commodity = None;
+    let mut sum = Dec::zero();
+    let mut invoices = 0;
+    for (_, posting) in postings {
+        let [amount] = posting.amounts.as_slice() else {
+            return false;
+        };
+        if amount.cost.is_some()
+            || amount.quantity.is_zero()
+            || *commodity.get_or_insert(&amount.commodity) != &amount.commodity
+        {
+            return false;
+        }
+        if (amount.quantity.mantissa > 0) == invoice_positive {
+            invoices += 1;
+        }
+        let Ok(next) = sum.add(amount.quantity) else {
+            return false;
+        };
+        sum = next;
+    }
+    invoices == 1 && !sum.is_zero() && (sum.mantissa > 0) == invoice_positive
 }
 
 /// Whether every posting has one cost-free amount, all in one commodity, and
@@ -1561,13 +1633,19 @@ pub fn links(journal: &Journal) -> LinkIndex {
         else {
             continue;
         };
-        if let Some(reason) = broken_reason(&linkable, &resolved) {
-            index.broken.push(BrokenLink {
-                id,
-                postings,
-                reason,
-            });
-            continue;
+        match broken_reason(&linkable, &resolved) {
+            None => {}
+            Some(BrokenReason::DoNotCancel) if is_open_settlement(&linkable, &resolved) => {
+                index.open.insert(id.clone());
+            }
+            Some(reason) => {
+                index.broken.push(BrokenLink {
+                    id,
+                    postings,
+                    reason,
+                });
+                continue;
+            }
         }
         for position in postings
             .iter()
