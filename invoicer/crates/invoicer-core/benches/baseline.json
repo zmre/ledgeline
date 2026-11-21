@@ -1,0 +1,18 @@
+{
+  "benches": {
+    "invoicer/check/5000": 3794955.0,
+    "invoicer/list_json/5000": 3230379.0,
+    "invoicer/next_number/5000": 170071.0,
+    "invoicer/open/5000": 121354557.0,
+    "invoicer/refresh_one/5000": 1336501.0,
+    "invoicer/save_draft/5000": 5784085.0,
+    "ledgeline/journal_open/5000": 73587220.0,
+    "ledgeline/journal_reopen/5000": 91940457.0,
+    "table/keystroke_100": 171916.0,
+    "table/recalc_markdown_100": 130061.0,
+    "table/recompute_100": 47216.0,
+    "table/rewrite_one_cell_100": 53382.0
+  },
+  "machine": "Apple M5 Max, 18 cores, 64 GB (Patrick's dev machine); cargo bench profile = release (lto, codegen-units 1)",
+  "threshold": 0.2
+}

@@ -400,6 +400,20 @@ bench-save name="baseline":
 bench-compare name="baseline":
     LEDGELINE_BENCH_SIZES=5000,50000,200000 cargo bench -p ledgeline-core -- --baseline-lenient {{name}}
 
+# The invoicer's benches (table engine, and the document engine on the §5.6
+# corpus of 5,000 invoices), then the gate: any bench more than 20% slower
+# than invoicer/crates/invoicer-core/benches/baseline.json fails. Timings are
+# per machine; see that file's `machine`.
+invoicer-bench-gate:
+    cargo bench -p invoicer-core
+    cargo run -q -p invoicer-core --example bench_gate
+
+# Re-record the invoicer bench baseline from a fresh run (a deliberate act:
+# commit the new baseline.json with the change that moved it).
+invoicer-bench-baseline:
+    cargo bench -p invoicer-core
+    cargo run -q -p invoicer-core --example bench_gate -- --write
+
 # Peak RSS of holding one journal's Snapshot, stage by stage. macOS only
 # (`/usr/bin/time -l`); on Linux swap in `/usr/bin/time -v`. `size` is a v1
 # transaction count or a corpus shape name (`v2`, `v2fx`, `v2dfx`).
