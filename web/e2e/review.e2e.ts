@@ -48,6 +48,16 @@ const position = (page: Page) => page.getByTestId("review-position");
  */
 const cardOf = (page: Page, index: number) => page.locator(`[data-card-index="${index}"]`);
 
+/** What has focus, in words: tag, its label or test id, and the card it is on. */
+const focusedElement = (page: Page) =>
+    page.evaluate(() => {
+        const el = document.activeElement;
+        if (el === null || el === document.body) return "<body>";
+        const name = el.getAttribute("aria-label") ?? el.getAttribute("data-testid") ?? "";
+        const card = el.closest("[data-card-index]")?.getAttribute("data-card-index") ?? "-";
+        return `${el.tagName.toLowerCase()} "${name}" on card ${card}`;
+    });
+
 /** The transaction block in `file` whose header starts with `header`, up to the next blank line. */
 function block(file: string, header: string): string {
     const text = readFileSync(resolve(COPY, file), "utf8").replaceAll("\r\n", "\n");
@@ -101,7 +111,14 @@ test("review unknowns from the keyboard: suggestion, similar, skip and back — 
     await page.keyboard.press("s");
     // `s` focuses the first Similar row after a render tick; ⇧A pressed before
     // that lands mid-move and is lost (seen on CI), so wait for the focus.
-    await expect(cardOf(page, 22).locator("[data-similar-rows] input").first()).toBeFocused();
+    //
+    // This step flakes about once in 16 full e2e runs: the row never gets
+    // focus. The two checks say which way it fails: did `s` open the section
+    // at all, and if it did, what holds focus instead of the row.
+    await expect(cardOf(page, 22).getByTestId("review-similar"), "`s` opened Similar").toHaveAttribute("data-open", "");
+    await expect
+        .poll(() => focusedElement(page), {message: "the first Similar row has focus"})
+        .toBe('input "Apply to 2026-11-15 SQ *BLUE BOTTLE 5555 OAKLAND" on card 22');
     await page.keyboard.press("Shift+A");
     await expect(cardOf(page, 22).getByTestId("review-similar-all")).toBeChecked();
     await page.keyboard.press("ControlOrMeta+Enter");
