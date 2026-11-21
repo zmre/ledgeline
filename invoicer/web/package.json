@@ -1,0 +1,48 @@
+{
+    "name": "invoicer-web",
+    "private": true,
+    "version": "0.2.3",
+    "license": "AGPL-3.0-or-later",
+    "type": "module",
+    "description": "Ledgeline Invoicer's SPA, served under /app by the ledgeline-invoicer binary (invoicer/ARCHITECTURE.md §6.1).",
+    "scripts": {
+        "dev": "vite dev",
+        "build": "vite build",
+        "preview": "vite preview",
+        "prepare": "svelte-kit sync || echo ''",
+        "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && tsc --noEmit",
+        "lint": "prettier --check . && eslint .",
+        "format": "prettier --write .",
+        "test:unit": "vitest run"
+    },
+    "devDependencies": {
+        "@eslint/js": "^10.0.1",
+        "@sveltejs/adapter-static": "^4.0.1",
+        "@sveltejs/kit": "^3.1.1",
+        "@sveltejs/vite-plugin-svelte": "^7.3.1",
+        "@tailwindcss/vite": "^4.3.3",
+        "@types/node": "^24.19.2",
+        "daisyui": "^5.7.50",
+        "eslint": "^10.14.0",
+        "eslint-config-prettier": "^10.1.8",
+        "eslint-plugin-svelte": "^3.23.1",
+        "globals": "^17.13.0",
+        "prettier": "^3.9.10",
+        "prettier-plugin-svelte": "^4.1.1",
+        "prettier-plugin-tailwindcss": "^0.8.1",
+        "svelte": "^5.57.3",
+        "svelte-check": "^4.7.7",
+        "tailwindcss": "^4.3.3",
+        "typescript": "^6.0.3",
+        "typescript-eslint": "^8.72.1",
+        "vite": "^8.3.5",
+        "vitest": "^5.0.5"
+    },
+    "dependencies": {
+        "@ledgeline/ui": "workspace:*"
+    },
+    "imports": {
+        "#lib/*": "./src/lib/*",
+        "#ui/*": "@ledgeline/ui/*"
+    }
+}

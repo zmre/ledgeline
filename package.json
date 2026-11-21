@@ -1,8 +1,8 @@
 {
     "name": "ledgeline-workspace",
     "private": true,
-    "//workspaces": "One bun workspace, one bun.lock, one spaNodeModules FOD in flake.nix. Add \"invoicer/web\" here once it exists (invoicer/PLAN.md, 0d).",
-    "workspaces": ["web", "packages/*"],
+    "//workspaces": "One bun workspace, one bun.lock, one spaNodeModules FOD in flake.nix. A new member's package.json must also join flake.nix's spaWorkspaceManifests.",
+    "workspaces": ["web", "invoicer/web", "packages/*"],
     "overrides": {
         "uuid": "^11.1.1"
     }

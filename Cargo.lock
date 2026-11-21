@@ -2587,6 +2587,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ledgeline-invoicer"
+version = "0.2.3"
+dependencies = [
+ "clap",
+ "invoicer-core",
+]
+
+[[package]]
 name = "ledgeline-shell"
 version = "0.2.3"
 dependencies = [

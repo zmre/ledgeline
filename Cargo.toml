@@ -8,6 +8,7 @@ members = [
     "crates/ledgeline-server",
     "crates/ledgeline-ffi",
     "invoicer/crates/invoicer-core",
+    "invoicer/crates/ledgeline-invoicer",
 ]
 resolver = "3"
 
@@ -38,6 +39,9 @@ itertools = "0.15"
 ledgeline-core = { path = "crates/ledgeline-core", version = "0.2.3" }
 # The same arrangement for the shell `ledgeline` (and the invoicer) build on.
 ledgeline-shell = { path = "crates/ledgeline-shell", version = "0.2.3" }
+# And for `ledgeline-invoicer` on invoicer-core (invoicer PLAN L7). Both are
+# `publish = false` until invoicer Phase 6, but the version is kept in step now.
+invoicer-core = { path = "invoicer/crates/invoicer-core", version = "0.2.3" }
 
 # Plan 30: hledger queries (`= QUERY` auto-posting rules) are case-insensitive
 # infix regular expressions. `regex` is BurntSushi's, pure Rust (so it builds
