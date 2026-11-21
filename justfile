@@ -92,10 +92,8 @@ check:
     cd packages/ui && bun run check
     cd invoicer/web && bun run check
 
-# Gated by NO CI job. `bun run lint` is in web/package.json (and
-# packages/ui's and invoicer/web's) and no workflow ever calls it, so prettier
-# and eslint over them are held clean by whoever remembers to run this.
-# That is why it is in `pre-push` below.
+# CI's `spa` job runs the same three `bun run lint`s (invoicer/PLAN.md I20);
+# it is in `pre-push` below too, so a push never finds out from CI.
 # prettier --check + eslint over both SPAs and the shared UI package
 lint:
     cd web && bun run lint

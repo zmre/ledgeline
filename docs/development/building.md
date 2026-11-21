@@ -504,14 +504,14 @@ Each job installs Nix with `DeterminateSystems/determinate-nix-action@v3` and
 wires `cachix/cachix-action@v17` (cache `zmre`, pulling `nix-community`
 too). Jobs:
 
-| Job            | Runner(s) | Command                                                                                                                                                                      |
-|----------------|-----------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `format-check` | ubuntu    | `nix build -L .#fmt` (runs first)                                                                                                                                            |
-| `clippy`       | ubuntu    | `nix build -L .#clippy`                                                                                                                                                      |
-| `tests`        | ubuntu    | `nix build -L .#tests` (+ pushes the Linux deps layer)                                                                                                                       |
-| `build`        | ubuntu    | `nix build -L .#ledgeline`, `.#linuxDist`, `.#spaShellCsp` (+ pushes and pins release artifacts on `main`)                                                                   |
-| `macos`        | macos-15  | one `nix build -L --no-link --keep-going .#tests .#clippy .#ledgeline .#macDist .#spaShellCsp` (+ pushes the darwin deps layer; pushes and pins release artifacts on `main`) |
-| `spa`          | ubuntu    | `bun install --frozen-lockfile`, then `bun run build`, `bun run test:unit` and `bun run check` in `web/` and `invoicer/web/`, and `test:unit` and `check` in `packages/ui/`  |
+| Job            | Runner(s) | Command                                                                                                                                                                                             |
+|----------------|-----------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `format-check` | ubuntu    | `nix build -L .#fmt` (runs first)                                                                                                                                                                   |
+| `clippy`       | ubuntu    | `nix build -L .#clippy`                                                                                                                                                                             |
+| `tests`        | ubuntu    | `nix build -L .#tests` (+ pushes the Linux deps layer)                                                                                                                                              |
+| `build`        | ubuntu    | `nix build -L .#ledgeline`, `.#linuxDist`, `.#spaShellCsp` (+ pushes and pins release artifacts on `main`)                                                                                          |
+| `macos`        | macos-15  | one `nix build -L --no-link --keep-going .#tests .#clippy .#ledgeline .#macDist .#spaShellCsp` (+ pushes the darwin deps layer; pushes and pins release artifacts on `main`)                        |
+| `spa`          | ubuntu    | `bun install --frozen-lockfile`, then `bun run build`, `bun run test:unit`, `bun run check` and `bun run lint` in `web/` and `invoicer/web/`, and `test:unit`, `check` and `lint` in `packages/ui/` |
 
 macOS is a single job because GitHub's free macOS runners are slow (an M1 with 3 CPUs and
 7 GB) and three separate macOS jobs each fetched, or rebuilt, the same deps layer. One
@@ -534,7 +534,7 @@ from the default branch, so it does nothing on an unmerged branch; trigger it by
 functions) and `components` (jsdom, mounted `*.svelte.test.ts`). Neither needs an
 engine or a browser. See [`web/README.md`](https://github.com/zmre/ledgeline/blob/main/web/README.md) for which to write and why.
 
-`just pre-push` is the local twin of that gate: `version-check`, `spa-hash-check`, `audit`, `engine-check`, `lint`, `check`, `test`, `test-integration`, `engine-test` and `e2e`, cheapest-first so it fails fast. A couple of minutes on a warm cargo cache and several on a cold one, which is the price of not learning the same thing from a red PR twenty minutes after pushing. The pre-push hook runs it (see above). It is also the only thing that runs `just lint` (prettier plus eslint over `web/`), which no CI job calls at all.
+`just pre-push` is the local twin of that gate: `version-check`, `spa-hash-check`, `audit`, `engine-check`, `lint`, `check`, `test`, `test-integration`, `engine-test` and `e2e`, cheapest-first so it fails fast. A couple of minutes on a warm cargo cache and several on a cold one, which is the price of not learning the same thing from a red PR twenty minutes after pushing. The pre-push hook runs it (see above). `just lint` (prettier plus eslint over `web/`, `packages/ui` and `invoicer/web`) is also gated by CI's `spa` job.
 
 Two kinds of failure used to reach CI because a laptop couldn't see them:
 
