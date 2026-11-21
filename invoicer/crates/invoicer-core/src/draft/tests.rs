@@ -109,7 +109,7 @@ invoicer_address: |
 
 Hi Fred.
 
-| SKU  | Description                 | Qty | Unit | Rate          | Amount        | *Account*          |
+| Code | Description                 | Qty | Unit | Rate          | Amount        | *Account*          |
 |:-----|:----------------------------|----:|:-----|--------------:|--------------:|:-------------------|
 | ARCH | Senior architect hours      | 10  | h    | $800          | $8,000.00     | revenue:consulting |
 |      | Friends and family discount |     |      | -10%          | -$800.00      |                    |

@@ -634,7 +634,7 @@ rate        = ["Rate", "Price", "Unit price", "Unit cost"]
 amount      = ["Amount", "Total", "Line total"]
 date        = ["Date", "Service date"]
 unit        = ["Unit"]
-item        = ["SKU", "Code"]
+item        = ["Code", "SKU"]
 subtotal    = ["Subtotal"]                                  # total rows the editor writes mid-table
 total       = ["Total due", "Total", "Balance due", "Amount due"]  # first = the final total row
 deposit     = ["Less deposit"]                              # label for an "apply deposit" row
