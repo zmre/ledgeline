@@ -315,6 +315,76 @@ benches against their baseline, clippy `-D warnings`, and fmt.
     offers to finish (`status: sent`).
   - This is tested by failing the second write, as plan 45 does.
 
+**2b as built (2026-11-21).** `invoicer_core::books`:
+
+| Call                                           | Does                                                                                    |
+|------------------------------------------------|-----------------------------------------------------------------------------------------|
+| `spec::booking_of`                             | Pure: a document to its `InvoiceBooking` (lines, header tags, customer, total)          |
+| `InvoiceBooks::preview`                        | What it would book, what is booked, whether they agree (`in_step`), the `Generation`    |
+| `InvoiceBooks::send`                           | Book (accrual), then `status: sent`, `sent_date`, `sent_via`, `paid: no`                |
+| `InvoiceBooks::rebook`                         | §4.5: replace in place, keep the link and schedule ids; no-op when in step              |
+| `InvoiceBooks::void`                           | Reversal + `match:` (accrual), then `status: void`, `void_date`                         |
+| `InvoiceBooks::open_deposits`                  | A customer's deposits left on the deposit account                                       |
+| `InvoiceBooks::apply_deposit`                  | Write a `Less deposit (Invoice N)` row into a draft and recompute                       |
+| `InvoiceBooks::payment_candidates`             | Cash books: deposits that might pay a sent invoice, best first, each with a `reference` |
+| `InvoiceBooks::apply_payment` / `undo_payment` | Cash books: re-split a deposit; undo from a serializable `PaymentUndo`                  |
+
+Every result is `serde::Serialize` for `--json`; `BooksError::code()` names
+the error. Tests: `tests/books_{spec,accrual,cash}.rs` on fixture copies
+under `target/`, journal text asserted exactly; with
+`LEDGELINE_HLEDGER_INVOICER_CHECK=1` in the dev shell, hledger checks the
+results (`-s check`, `bal tag:invoice=…`). One Ledgeline core change:
+`accrual::apply::plan` takes a negative split row (a deposit applied on a
+cash-books final invoice), behaviour-neutral for Ledgeline.
+
+Decided while building, open to veto:
+
+- **Sending into a closed period is refused** (dated on or before
+  `closed-through`), like re-booking.
+- **Send writes `paid: no`** when the file has no `paid`, so a sent
+  invoice always has its mirror.
+- **Send is idempotent across a crash.** A draft already booked exactly as
+  its file says only has its file finished; booked differently, it is
+  refused. A file already `status: sent` but never booked (a script wrote
+  it) is booked.
+- **Void of a draft** changes the markdown only (the number stays used).
+  A cash-books invoice with a payment applied can't be voided until the
+  payment is undone.
+- **`item:`** names the item rows a line came from, joined with ` + `;
+  a line no item feeds (tax, a deposit) names its own rows.
+- **Tag values:** a comma between digits (`$16,700`) is dropped, every other
+  comma becomes a space. The `document:` path is sanitized the same way, so
+  a file name with a comma won't match its tag (2c's `check` should say so).
+- **The description** is `<invoicee_name> | Invoice <number>`.
+- **A person at a company** with no `ledger_customer` of their own books to
+  the company's customer note (its `ledger_customer` and revenue account).
+- **Apply deposit is for drafts only**; a sent invoice is edited, then
+  re-booked. It doesn't write `deposit_for` (that field says what the
+  deposit is *for*; the row's description names the deposit invoice).
+- **Open deposits** count an invoice's applications from its file, never
+  from the journal, so a draft or an unpaid cash-books invoice already uses
+  its deposit up; an application uses the deposit its row names first, then
+  the oldest.
+- **Cash books, deferred rows:** a payment of a deferred row goes to the
+  account it recognizes into (cash books have no deferred revenue).
+- **Cash books, the last payment** takes each row's remainder rather than
+  its pro-rata share, so the rows end exactly at the invoice's amounts.
+- **Apply payment never writes the markdown**; the 2c reconciler mirrors
+  `paid:`.
+
+Measured on the corpus (`invoicer/send`, `invoicer/preview`): send 291 ms,
+over the 150 ms budget. 72 ms is loading the journal and about 190 ms is
+Ledgeline's `write_document` re-parsing and saving the 9.2 MB journal; the
+invoicer's own part (derive, find, markdown) is under 30 ms. Meeting the
+budget needs L10 (incremental reload) or an in-place re-parse in
+`ledgeline-core`; 2c should decide which.
+
+Left for 2c: the CLI commands, `check` over the books (including the
+booked-draft finding from a failed markdown write), the reconciler and the
+`paid:` mirror, gating the two new benches in `baseline.json`, and fixing
+the fixture's hand-written `item:` on 104 (cut at its comma; the tests patch
+their copy).
+
 **2c. Reconciler and CLI:**
 - `reconcile`: payment state to the `paid:` mirror, with book/markdown
   mismatch findings.

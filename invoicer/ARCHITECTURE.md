@@ -667,6 +667,17 @@ italic header.
 | **Void**                      | A reversing transaction dated the void date, tagged `invoice:` and `void:`, linked to the original AR posting with `match:` so the AR nets to zero. | `status: void`.                                                         |
 | Recognition periods           | Plan 45's due entries, posted by Ledgeline (or `ledgeline-invoicer recognize`), never after today.              | n/a                                                                     |
 
+Details settled in Phase 2b (2026-11-21):
+
+- Sending an invoice dated on or before `closed-through` is refused.
+- Send writes `status: sent`, `sent_date` (when absent), `sent_via` (when
+  given) and `paid: no` (when absent).
+- Voiding a draft changes only its markdown. A cash-books invoice with a
+  payment applied can't be voided until the payment is undone.
+- In cash books, a deferred row's payment goes to the account it recognizes
+  into. A payment that settles the rest takes each row's remainder, so the
+  rows end exactly at the invoice's amounts.
+
 **Drafts never touch the books** (decided 2026-11-19). "Expected billings"
 can still be reported from draft files without polluting the journal.
 
@@ -695,10 +706,17 @@ For the invoice in §3.2, in accrual books:
     the file (and later at estimates or replaced drafts).
   - `due:` and `reference:` give Ledgeline aging and search without reading
     markdown.
-  - `item:` keeps the row description on the posting.
-  - Tag values can't contain commas, so the bridge strips or replaces commas
-    in values it writes. (`reference:` and the `document:` path are the likely
+  - `item:` keeps the row description on the posting: the item rows the line
+    came from, joined with ` + `, or, for a line no item feeds (tax, a
+    deposit applied), its own rows.
+  - Tag values can't contain commas. The bridge drops a comma between digits
+    (`$16,700` → `$16700`) and turns every other comma, and any line break,
+    into a space. (`reference:` and the `document:` path are the likely
     offenders.)
+- **Description and customer.** The description is `<invoicee_name> |
+  Invoice <number>`. `customer:` is the customer note's `ledger_customer`
+  (else its title); a person at a `company:` with no `ledger_customer` of
+  their own books to the company's note (decided 2026-11-21).
 - **Plan 45 vocabulary.** Deferred rows add `recognition:`, `service-start:`,
   `term-months:`, `proration:` and `contract:` on their posting, plus the rule
   group in `recognition.journal`. They are built by
@@ -742,9 +760,19 @@ liability (as in §3.2). That debits the liability, so it clears.
 
 The editor's **Apply deposit** button lists the customer's open deposits:
 
-- each is a credit balance on `deposit-account` with that customer's
-  `customer:` tag;
-- choosing one writes the row and a `deposit_for` back-reference.
+- each is a credit on `deposit-account` with that customer's `customer:`
+  tag, less what has been applied from it;
+- an invoice's applications are counted from its file (its rows booked to
+  the deposit account), never from the journal, so a draft, or an unpaid
+  invoice in cash books, already uses its deposit up; a void invoice counts
+  for nothing;
+- an application uses up the deposit its row names first (`Less deposit
+  (Invoice 104)` names 104), then the oldest;
+- choosing one writes the row into the draft, above its final total, and
+  recomputes the table. The row's description is the back-reference;
+  `deposit_for` keeps what the author wrote (decided 2026-11-21).
+
+`invoicer_core::books` implements this (`open_deposits`, `apply_deposit`).
 
 In cash books, the deposit invoice is booked only when paid, as revenue or as
 a liability per its row.
@@ -966,6 +994,18 @@ produced by a deterministic generator that extends Ledgeline's
 Every budget holds, but the journal reload alone uses most of the 100 ms
 for a journal change, which leaves the reconciler under 10–25 ms. That is
 L10 in §8.
+
+**Measured (Phase 2b, 2026-11-21).** Same corpus and machine:
+
+| Bench                                   | Median | Feeds the budget                          |
+|-----------------------------------------|--------|-------------------------------------------|
+| `invoicer/preview` (load + derive)      | 95 ms  | the books panel (warm in the app: < 1 ms) |
+| `invoicer/send` (load, book, write, md) | 291 ms | send (150 ms) — **over**                  |
+
+Send's time is the journal: 72 ms to load it and about 190 ms in
+`write_document`, which re-parses and saves the whole 9.2 MB file. The
+invoicer's own part is under 30 ms. The budget needs L10, or an in-place
+re-parse in `ledgeline-core`; Phase 2c decides which.
 
 **Correctness is never traded for speed:**
 
