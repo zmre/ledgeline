@@ -83,6 +83,14 @@ The iOS app shows the same SPA bundle with its own navigation bar in place of th
 
 Two related changes key off the device, not off native mode, so they apply in any browser too. Keyboard hints (`<kbd>` and "(v)" suffixes in tooltips, through `hint()` in `lib/keys/hint.svelte.ts`) hide when there is no fine pointer (`any-pointer: fine`), and the journal's calendar is not offered below the `md` breakpoint: no toggle, no `v`, and a `cal=1` link shows its month as the list.
 
+## The invoicer: `invoicer/`
+
+Ledgeline Invoicer lives under `invoicer/` in the same Cargo and bun workspaces, so it can move out later. Its design is `invoicer/ARCHITECTURE.md` and its build order `invoicer/PLAN.md`.
+
+- **`invoicer/crates/invoicer-core`** (lib). Invoice documents, the bill-table engine and the booking bridge, on top of `ledgeline-core`. The same plan 26 rules as core: no globals, no IO, no platform `cfg`.
+- **`invoicer/crates/ledgeline-invoicer`** (bin). The CLI and, later, the desktop app on `ledgeline-shell`. So far it answers `--version` and `--help`.
+- **`invoicer/web`**. A SvelteKit SPA served under `/app` (the root belongs to MBR's router). It imports `packages/ui` as `web/` does, so the themes and UI scale are shared. So far it is an empty themed shell.
+
 ## Adding a native UI
 
 A native desktop UI (egui, GPUI) or a SwiftUI app has two ways in:
