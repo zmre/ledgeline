@@ -16,11 +16,15 @@
 //! - [`catalog`] (§3.6) and [`templates`] (§3.5);
 //! - [`numbering`] (§5.1);
 //! - [`index`]: the in-memory document index (§5.6);
-//! - [`draft`]: creating drafts and saving documents (§5.2).
+//! - [`draft`]: creating drafts and saving documents (§5.2);
+//! - [`books`]: the books bridge — what an invoice books, send, re-book,
+//!   void, deposits and cash-books Apply payment (§4).
 //!
-//! Plan 26 rules apply: no globals, no IO here, no platform `cfg`.
+//! Plan 26 rules apply: no globals, no platform `cfg`, and all IO through a
+//! Ledgeline `Vault`.
 
 pub mod booking;
+pub mod books;
 pub mod catalog;
 pub mod customers;
 pub mod doc;
