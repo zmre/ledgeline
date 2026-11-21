@@ -315,10 +315,13 @@ version-set version:
 # but `cargo package --workspace` packages unpublished members anyway and then
 # rejects its version-less path dependency on the server. Excluding it beats
 # adding a third version literal for scripts/release.sh to keep in step.
+# `--exclude ledgeline-invoicer` likewise: it is `publish = false` until invoicer
+# Phase 6, and cargo cannot resolve its dependency on the unpublished
+# invoicer-core (which itself packages fine, so it stays in).
 # Rehearse the crates.io package locally
 package-crates:
     cd web && bun run build
-    cargo package --workspace --exclude ledgeline-ffi --allow-dirty
+    cargo package --workspace --exclude ledgeline-ffi --exclude ledgeline-invoicer --allow-dirty
     @echo "spa files in the packaged crate: $(tar tzf target/package/ledgeline-[0-9]*.crate | grep -c '/spa/')"
 
 # --- Rust engine (crates/) ---
