@@ -736,6 +736,10 @@ receivable posting. That is unique by construction, because `invoice_num` is
 unique. Its `transaction_fingerprint` is the optimistic-concurrency token for
 a replace.
 
+A final invoice its deposit fully covers has no receivable posting (§4.4),
+so Ledgeline never finds it; the invoicer finds it by `invoice:` plus
+`document:` on a transaction with no settlement leg.
+
 `check` reports these problems:
 
 - an invoice number used twice;
@@ -773,6 +777,13 @@ The editor's **Apply deposit** button lists the customer's open deposits:
   `deposit_for` keeps what the author wrote (decided 2026-11-21).
 
 `invoicer_core::books` implements this (`open_deposits`, `apply_deposit`).
+
+**A deposit that covers the whole final invoice** leaves a total of zero.
+Sending it books the rows against the deposit liability with **no
+receivable posting**: there is nothing to receive, and Ledgeline's
+receivables and matching ignore a zero settlement line by design. Cash
+books book it the same way at send (into the cash accounts), since no
+payment will ever arrive to apply (decided 2026-11-21).
 
 In cash books, the deposit invoice is booked only when paid, as revenue or as
 a liability per its row.
@@ -924,15 +935,20 @@ invoicing app. The risk is re-parsing a lot of text over and over. These
 budgets are release criteria. They are measured on the
 `benches/` corpus described below, on an M-series Mac, in a release build:
 
-| Interaction                                               | Budget (p95) |
-|-----------------------------------------------------------|--------------|
-| Open a books folder → dashboard and invoice list shown    | 300 ms       |
-| Keystroke in the bill table → amounts and books panel updated | 10 ms server time |
-| Keystroke → live preview re-rendered                      | 50 ms        |
-| Save a draft (hash check, atomic write, re-index)         | 20 ms        |
-| Send (book, write the journal, update the markdown)       | 150 ms       |
-| A journal change from Ledgeline → `paid:` mirrors refreshed | 100 ms     |
-| CLI `list --json` / `check` on the corpus                 | 300 ms / 1 s |
+| Interaction                                                   | Budget (p95)                  |
+|---------------------------------------------------------------|-------------------------------|
+| Open a books folder → dashboard and invoice list shown        | 300 ms                        |
+| Keystroke in the bill table → amounts and books panel updated | 10 ms server time             |
+| Keystroke → live preview re-rendered                          | 50 ms                         |
+| Save a draft (hash check, atomic write, re-index)             | 20 ms                         |
+| Send (book, write the journal, update the markdown)           | 300 ms (relaxed; goal 150 ms) |
+| A journal change from Ledgeline → `paid:` mirrors refreshed   | 100 ms                        |
+| CLI `list --json` / `check` on the corpus                     | 300 ms / 1 s                  |
+
+The send budget is **relaxed to 300 ms** for now (Patrick, 2026-11-21):
+almost all of it is Ledgeline loading, re-parsing and saving the whole
+journal, which only L10 (incremental reload) or an in-place re-parse in
+`ledgeline-core` can cut. Bringing it back to 150 ms is a later goal.
 
 The corpus is 5,000 invoices, 500 customers and 10 years of journal. It is
 produced by a deterministic generator that extends Ledgeline's
@@ -1000,12 +1016,14 @@ L10 in §8.
 | Bench                                   | Median | Feeds the budget                          |
 |-----------------------------------------|--------|-------------------------------------------|
 | `invoicer/preview` (load + derive)      | 95 ms  | the books panel (warm in the app: < 1 ms) |
-| `invoicer/send` (load, book, write, md) | 291 ms | send (150 ms) — **over**                  |
+| `invoicer/send` (load, book, write, md) | 291 ms | send (300 ms, relaxed; goal 150 ms)       |
 
 Send's time is the journal: 72 ms to load it and about 190 ms in
 `write_document`, which re-parses and saves the whole 9.2 MB file. The
-invoicer's own part is under 30 ms. The budget needs L10, or an in-place
-re-parse in `ledgeline-core`; Phase 2c decides which.
+invoicer's own part is under 30 ms. Getting back to 150 ms needs L10, or an
+in-place re-parse in `ledgeline-core`. Both benches are gated in
+`baseline.json` (preview 91.6 ms, send 289.1 ms, recorded 2026-11-21 with
+other work running on the machine; only those two entries were added).
 
 **Correctness is never traded for speed:**
 

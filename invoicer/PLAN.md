@@ -372,18 +372,39 @@ Decided while building, open to veto:
 - **Apply payment never writes the markdown**; the 2c reconciler mirrors
   `paid:`.
 
-Measured on the corpus (`invoicer/send`, `invoicer/preview`): send 291 ms,
-over the 150 ms budget. 72 ms is loading the journal and about 190 ms is
-Ledgeline's `write_document` re-parsing and saving the 9.2 MB journal; the
-invoicer's own part (derive, find, markdown) is under 30 ms. Meeting the
-budget needs L10 (incremental reload) or an in-place re-parse in
-`ledgeline-core`; 2c should decide which.
+Answered by Patrick (2026-11-21):
+
+- **The send budget is relaxed to 300 ms** (ARCHITECTURE §5.6) until L10 or
+  an in-place re-parse in `ledgeline-core` lands; 150 ms stays the goal. On
+  the corpus send takes 291 ms: 72 ms loading the journal and about 190 ms
+  in Ledgeline's `write_document` re-parsing and saving the 9.2 MB journal;
+  the invoicer's own part is under 30 ms. `invoicer/send` (289 ms) and
+  `invoicer/preview` (92 ms) are now gated in `baseline.json`; only those
+  two entries were added, recorded with other work running on the machine.
+- **A final invoice its deposit fully covers (a zero total) is booked at
+  send with no receivable posting**: its rows against the deposit
+  liability. A `$0.00` receivable line was rejected: Ledgeline's documents,
+  receivables and matching deliberately ignore a zero settlement posting,
+  and making them count one would change what Ledgeline shows. So core
+  gains `accrual::invoice::build_settled_document` (opt-in; Ledgeline's
+  paths keep the strict builder), and the bridge finds the booking itself
+  by `invoice:` plus `document:` with no settlement leg. Consequences:
+  - it is never in receivables or aging (nothing is owed); the 2c
+    reconciler should mirror `paid:` as the invoice date for it;
+  - re-book moves either way between zero and a positive total, but never
+    drops a receivable with payments linked;
+  - void reverses the rows, with no `match:` (no receivable to net);
+  - cash books book it too, into the cash accounts: no payment will ever
+    arrive to apply, and without it the deposit would stay a liability.
+- **The fixture's 104 `item:`** now reads `($16700)`, as the bridge writes
+  it (hledger ends a tag value at any comma). The root
+  `fixtures/receivables/books.journal` (plan 45's) keeps its own shorter
+  item, which `accrual_library.rs` writes literally; nothing else captures
+  it.
 
 Left for 2c: the CLI commands, `check` over the books (including the
-booked-draft finding from a failed markdown write), the reconciler and the
-`paid:` mirror, gating the two new benches in `baseline.json`, and fixing
-the fixture's hand-written `item:` on 104 (cut at its comma; the tests patch
-their copy).
+booked-draft finding from a failed markdown write), and the reconciler and
+the `paid:` mirror.
 
 **2c. Reconciler and CLI:**
 - `reconcile`: payment state to the `paid:` mirror, with book/markdown
