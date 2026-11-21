@@ -40,7 +40,7 @@ The secondary goals:
 | I13 | Every English word the invoicer matches (column headers, total rows, the customer tag, contact labels) is a setting in `[invoicer.words]`. File-format keys stay fixed. |
 | I14 | **Performance and correctness are release criteria.** The ARCHITECTURE §5.6 budgets are gated by benches on a 5,000-invoice corpus.                            |
 | I15 | Customer `contracts:` take wikilinks or file paths (executed PDFs). `billing_portal:` records vendor-portal delivery.                                           |
-| I16 | MBR ships **one release** once its P0 and P1 changes land. The invoicer pins a git rev until then.                                                              |
+| I16 | MBR ships **one release** once its P0 and P1 changes land. The invoicer pins a git rev until then. *Amended 2026-11-20 (lead): a git rev can't build, because mbr-core's built JS assets are gitignored; the invoicer depends on MBR only from that crates.io release.* |
 | I17 | Cash books get **Apply payment** in v1 (Phase 2): pick an imported deposit and its income side is re-split into the invoice's row accounts, tagged `invoice:`. The invoicer never creates payment transactions. Both bases are first-class: Patrick runs accrual and cash businesses. |
 
 These were decided in drafting and are open to veto. They are listed in
@@ -97,9 +97,9 @@ phases can cite them.
 | Phase | Name                                   | Ships                                                     | Depends on                     |
 |-------|----------------------------------------|-----------------------------------------------------------|--------------------------------|
 | 0     | Foundations                            | AGPL, shared shell/prefs/ui extraction, empty crates, fixtures, CI wiring | —                              |
-| 1     | Document engine + read-only CLI         | `invoicer-core` docs model, table engine, discovery, numbering, index, benches; `new/list/show/set/recalc/check/next-number/config` | 0; MBR main (git rev) |
+| 1     | Document engine + read-only CLI         | `invoicer-core` docs model, table engine, discovery, numbering, index, benches; `new/list/show/set/recalc/check/next-number/config` | 0 (no MBR dependency) |
 | 2     | Books bridge                           | Ledgeline L1–L4; `send/void/rebook/reconcile/receivables/recognize`; deposits; cash vs accrual | 1                              |
-| 3     | App shell, rendering, PDF, branding    | The GUI app boots, MBR mounted, preview, starter templates, `pdf`, icon | 2; MBR M3, M4, M5 (git rev)    |
+| 3     | App shell, rendering, PDF, branding    | The GUI app boots, MBR mounted, preview, starter templates, `pdf`, icon | 2; MBR M3, M4, M5 (crates.io)  |
 | 4     | Editors                                | Invoice, customer, catalog, snippet and template editors   | 3; MBR M1, M2 (M6 optional)    |
 | 5     | Dashboard and lists                    | Receivables dashboard, invoice and customer lists          | 2, 4                           |
 | 6     | Packaging, release, docs               | Signed DMGs in lock-step, crates.io, docs section, README  | 3 (can start in parallel with 4) |
@@ -202,17 +202,19 @@ All of this is in `invoicer-core`. Nothing here writes the journal.
 - **Benches** (criterion, as in `ledgeline-core/benches`): recomputing a
   100-row table and re-writing one cell. Budget: under 1 ms.
 
-**1b. Documents and discovery** (`invoicer_core::{doc, frontmatter, notes, customers, catalog, snippets, templates, numbering}`):
-- Frontmatter read: lossless, to `serde_json::Value`, with MBR's parser once
-  M2 lands. Until then use `yaml-rust2`, the same crate MBR uses.
+**1b. Documents and discovery** (`invoicer_core::{doc, frontmatter, notes, customers, catalog, snippets, templates, numbering, index, draft, settings, problem}`):
+- Frontmatter read: lossless, to `serde_json::Value`, with `yaml-rust2`, the
+  same crate MBR uses. 1b has no MBR dependency (decided 2026-11-20; see
+  I16).
 - Frontmatter edit-by-key, preserving order and comments (ARCHITECTURE §5.5),
   verified by re-parsing.
 - The `Invoice` model: frontmatter fields, prose before, bill table, prose
   after, supporting tables.
 - Validation produces `Vec<Problem>` with a file, a line and a fix-it where
   possible.
-- Discovery through `notes`, a thin wrapper over MBR's repo scan. All MBR
-  calls are confined to this module.
+- Discovery through `notes`: its own walk over `Vault`, following MBR's
+  ignore, type, tag and wikilink rules, behind an API shaped like MBR's `Site`
+  façade (M2) so that it can become a thin wrapper over it.
   - Invoices by `type`.
   - Customers by type plus the `customer` tag, with billing-contact
     selection.
@@ -232,7 +234,7 @@ All of this is in `invoicer-core`. Nothing here writes the journal.
 - **The corpus generator:** 5,000 invoices, 500 customers and 10 years of
   journal, deterministic, extending `ledgeline-core/benches/corpus.rs`.
   Benches for open, list and `check`, with a stored baseline. A >20%
-  regression fails the gate.
+  regression fails the gate (`just invoicer-bench-gate`; ARCHITECTURE §5.6).
 - **Measure Ledgeline's journal reload** on the corpus. If it threatens the
   §5.6 budgets, file the Ledgeline change now rather than in Phase 3.
 
@@ -519,12 +521,12 @@ Worktree agents follow the repo's established practice:
 - agents never run Playwright.
 
 MBR work (MBR-CHANGES.md) runs in parallel in the MBR repo. M3, M4 and M5
-gate Phase 3. M1 and M2 gate Phase 4. Until M2 lands, Phase 1 uses
-`mbr_core::repo::Repo` directly, inside `invoicer_core::notes`. The invoicer
-pins MBR by git rev throughout development. MBR cuts one release after all
-its P0 and P1 changes land (M0), and Phase 6 switches the pin to that
-release before the first invoicer release, because `cargo publish` rejects
-git dependencies.
+gate Phase 3. M1 and M2 gate Phase 4. Phase 1 has no MBR dependency:
+`invoicer_core::notes` walks the vault itself, behind a `Site`-shaped API.
+The invoicer can't pin MBR by git rev, because mbr-core's built JS assets are
+gitignored and a git checkout doesn't compile (found 2026-11-20). So MBR's
+one release after its P0 and P1 changes (M0) now gates Phase 3, where the
+invoicer first needs MBR to render.
 
 ## Risks
 
@@ -533,8 +535,8 @@ git dependencies.
   rule, it gets the full e2e plus iOS build check, and the docs screenshots
   are diffed.
 - **MBR timing.** PDF and templates are already on MBR's main; the risk is
-  the release. The invoicer can't publish to crates.io on a git dependency,
-  so the MBR release (M0) gates Phase 6, not earlier phases.
+  the release. mbr-core can't be used from git at all (its built assets
+  aren't committed), so the MBR release (M0) gates Phase 3.
 - **Arithmetic disagreement between Rust and TypeScript.** The server is the
   only calculator. The grid shows the server's numbers after a debounced
   round trip, and optimistic display is labelled.
