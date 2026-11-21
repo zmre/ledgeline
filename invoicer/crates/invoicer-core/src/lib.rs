@@ -14,7 +14,9 @@
 //! - [`customers`] (§3.4) and [`snippets`] (§3.7);
 //! - [`doc`]: the invoice document and its validation (§3.2);
 //! - [`catalog`] (§3.6) and [`templates`] (§3.5);
-//! - [`numbering`] (§5.1).
+//! - [`numbering`] (§5.1);
+//! - [`index`]: the in-memory document index (§5.6);
+//! - [`draft`]: creating drafts and saving documents (§5.2).
 //!
 //! Plan 26 rules apply: no globals, no IO here, no platform `cfg`.
 
@@ -22,7 +24,9 @@ pub mod booking;
 pub mod catalog;
 pub mod customers;
 pub mod doc;
+pub mod draft;
 pub mod frontmatter;
+pub mod index;
 pub mod notes;
 pub mod numbering;
 mod par;
