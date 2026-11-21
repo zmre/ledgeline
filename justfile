@@ -7,16 +7,19 @@ dev:
 
 # Run the front-end suite: BOTH vitest projects, `unit` (node) and `components`
 # (jsdom, mounted .svelte files), in web/ and in the shared packages/ui (which
-# has the same two projects). See web/README.md for which to write.
+# has the same two projects), plus invoicer/web's (node only, so far). See
+# web/README.md for which to write.
 # Run unit + component tests (vitest)
 test:
     cd web && bun run test:unit
     cd packages/ui && bun run test:unit
+    cd invoicer/web && bun run test:unit
 
 # Run only the pure-function tests (vitest --project=unit)
 test-node:
     cd web && bun run test:node
     cd packages/ui && bun run test:node
+    cd invoicer/web && bun run test:unit
 
 # Run only the mounted-component tests (vitest --project=components)
 test-components:
@@ -82,20 +85,22 @@ docs-screenshots:
     cargo build -p ledgeline --features test-fakes
     cd web && bunx playwright test -c playwright.docs.config.ts
 
-# Typecheck + svelte-check (web/ and packages/ui: svelte-check reports only on
-# its own directory, so the package is checked in its own right)
+# Typecheck + svelte-check (web/, packages/ui and invoicer/web: svelte-check
+# reports only on its own directory, so each is checked in its own right)
 check:
     cd web && bun run check
     cd packages/ui && bun run check
+    cd invoicer/web && bun run check
 
 # Gated by NO CI job. `bun run lint` is in web/package.json (and
-# packages/ui/package.json) and no workflow ever calls it, so prettier and eslint
-# over web/ and packages/ui/ are held clean by whoever remembers to run this.
+# packages/ui's and invoicer/web's) and no workflow ever calls it, so prettier
+# and eslint over them are held clean by whoever remembers to run this.
 # That is why it is in `pre-push` below.
-# prettier --check + eslint over the SPA and the shared UI package
+# prettier --check + eslint over both SPAs and the shared UI package
 lint:
     cd web && bun run lint
     cd packages/ui && bun run lint
+    cd invoicer/web && bun run lint
 
 # Advisory scans of Cargo.lock + bun.lock, with exactly CI's ignore lists.
 # Needs the network. The lists, and why each entry is there, live in
@@ -259,6 +264,10 @@ snapshot-rules-wire port="5079":
 # Production build (static SPA)
 build:
     cd web && bun run build
+
+# Production build of the invoicer's static SPA (invoicer/web/build)
+build-invoicer:
+    cd invoicer/web && bun run build
 
 # The SPA is built inside Nix, so no prior `just build` is needed. The bundle
 # also carries its own `hledger` in Contents/MacOS/ (see docs/development/releasing.md).

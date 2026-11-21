@@ -1,0 +1,6 @@
+/*
+ * The shared look (themes, daisyUI, scale-following breakpoints) comes from
+ * @ledgeline/ui, as it does for Ledgeline's own web/src/app.css. Invoicer-only
+ * rules go after it.
+ */
+@import "@ledgeline/ui/theme.css";

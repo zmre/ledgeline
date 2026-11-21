@@ -515,6 +515,20 @@ jobs:
         working-directory: packages/ui
         run: bun run check
 
+      # Ledgeline Invoicer's SPA (invoicer/web), in the same bun workspace.
+      # Not in `e2e`: it has no Playwright suite yet.
+      - name: Invoicer SPA build
+        working-directory: invoicer/web
+        run: bun run build
+
+      - name: Invoicer SPA unit tests (vitest)
+        working-directory: invoicer/web
+        run: bun run test:unit
+
+      - name: Invoicer SPA type check (svelte-check + tsc)
+        working-directory: invoicer/web
+        run: bun run check
+
   # The two suites that need a REAL engine behind the SPA, sharing one build of
   # the binary:
   #   * the round-trip contract tests (vitest, `describe.runIf(LEDGELINE_API_URL)`)
