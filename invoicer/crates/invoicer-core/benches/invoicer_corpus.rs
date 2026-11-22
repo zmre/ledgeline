@@ -32,8 +32,9 @@ use crate::corpus::{self, Shape, V1};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-/// Bump on any change to the output.
-pub const VERSION: u32 = 1;
+/// Bump on any change to the output. 2: postings carry `item:`, as the
+/// books bridge writes them (PLAN 2b), so every invoice is in step.
+pub const VERSION: u32 = 2;
 /// Invoices.
 pub const INVOICES: usize = 5_000;
 /// Customers.
@@ -336,6 +337,16 @@ fn invoice(i: usize, rng: &mut Rng) -> (String, String, String) {
     );
     let mut running: i64 = 0;
     let mut by_account: Vec<(&'static str, i64)> = Vec::new();
+    // Each account's `item:`: the item rows it came from (§4.2).
+    let mut items_of: Vec<(&'static str, Vec<&'static str>)> = Vec::new();
+    let mut named = |account: &'static str, desc: &'static str| match items_of
+        .iter_mut()
+        .find(|(a, _)| *a == account)
+    {
+        Some((_, names)) if !names.contains(&desc) => names.push(desc),
+        Some(_) => {}
+        None => items_of.push((account, vec![desc])),
+    };
     let items = 2 + i % 5;
     for j in 0..items {
         let (desc, rate, books, code) = SERVICES[(i + j * 3 + rng.below(3)) % SERVICES.len()];
@@ -343,6 +354,7 @@ fn invoice(i: usize, rng: &mut Rng) -> (String, String, String) {
         let amount = qty * rate * 100;
         running += amount;
         add(books, amount, &mut by_account);
+        named(books, desc);
         let _ = writeln!(
             table,
             "| {code} | {desc} | {qty} | {} | {} | {books} |",
@@ -365,6 +377,7 @@ fn invoice(i: usize, rng: &mut Rng) -> (String, String, String) {
         let tax = (running * 825 + 5_000) / 10_000;
         running += tax;
         add("liabilities:sales-tax", tax, &mut by_account);
+        named("liabilities:sales-tax", "Sales tax");
         let _ = writeln!(
             table,
             "| | Sales tax | | 8.25% | {} | liabilities:sales-tax |",
@@ -435,9 +448,14 @@ fn invoice(i: usize, rng: &mut Rng) -> (String, String, String) {
             journal_usd(total)
         );
         for (account, cents) in &by_account {
+            let item = items_of
+                .iter()
+                .find(|(a, _)| a == account)
+                .map(|(_, names)| names.join(" + "))
+                .unwrap_or_default();
             let _ = writeln!(
                 books,
-                "    {account}  {}  ; customer: {name}",
+                "    {account}  {}  ; customer: {name}, item: {item}",
                 journal_usd(-cents)
             );
         }
