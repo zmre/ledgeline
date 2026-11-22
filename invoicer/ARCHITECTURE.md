@@ -605,15 +605,16 @@ when a snippet does. A customer note can name default snippets, for example
 There are no new config files. This follows the rules in
 [Settings files are TOML] and plan 43's precedent for `[sync]`.
 
-| Setting                                           | Where                                    | Written by                    |
-|---------------------------------------------------|------------------------------------------|-------------------------------|
-| `invoices-dir`, `customers-dir`, `templates-dir`, `catalog`, `company` | `ledgeline.toml [invoicer]` | Hand, or the first-run setup action (an explicit action, like `[sync]`) |
-| `receivable-account`, `revenue-account`, `deposit-account`, `discount-account` | `ledgeline.toml [invoicer]` | Hand / first-run setup |
-| `filename`, `number-start`, `pdf-dir`             | `ledgeline.toml [invoicer]`              | Hand                          |
-| Recognized words (below)                          | `ledgeline.toml [invoicer.words]`        | Hand                          |
-| `basis`, `closed-through`, `recognition-file`     | `ledgeline.toml [books]` (plan 45)       | Shared with Ledgeline         |
-| theme, uiScale                                    | `ui-prefs.toml` + `[ui]` pin             | Shared with Ledgeline         |
-| invoicer UI prefs (default template, list sort…)  | `ui-prefs.toml [invoicer]`               | Settings screen               |
+| Setting                                                                                         | Where                              | Written by                                                              |
+|-------------------------------------------------------------------------------------------------|------------------------------------|-------------------------------------------------------------------------|
+| `invoices-dir`, `customers-dir`, `templates-dir`, `catalog`, `company`                          | `ledgeline.toml [invoicer]`        | Hand, or the first-run setup action (an explicit action, like `[sync]`) |
+| `receivable-account`, `revenue-account`, `deposit-account`, `discount-account`                  | `ledgeline.toml [invoicer]`        | Hand / first-run setup                                                  |
+| `cash-deposits`, `payment-allocation` (accounting policy; PLAN "Configurable accounting flows") | `ledgeline.toml [invoicer]`        | Hand                                                                    |
+| `filename`, `number-start`, `pdf-dir`                                                           | `ledgeline.toml [invoicer]`        | Hand                                                                    |
+| Recognized words (below)                                                                        | `ledgeline.toml [invoicer.words]`  | Hand                                                                    |
+| `basis`, `closed-through`, `recognition-file`                                                   | `ledgeline.toml [books]` (plan 45) | Shared with Ledgeline                                                   |
+| theme, uiScale                                                                                  | `ui-prefs.toml` + `[ui]` pin       | Shared with Ledgeline                                                   |
+| invoicer UI prefs (default template, list sort…)                                                | `ui-prefs.toml [invoicer]`         | Settings screen                                                         |
 
 Unset accounts are inferred the same way plan 45's gate does it: by declared
 type or `kpi:` first, and by name only as a fallback. `deposit-account`
@@ -792,8 +793,13 @@ design (decided 2026-11-21).
   revenue, never the liability: the row's own account, or, when the row
   names the deposit account, the customer's `revenue_account`, else
   `[invoicer] revenue-account`, else the books' single revenue account.
-- A final invoice's deposit row books nothing. Its payments are split over
-  the other rows, scaled to what is due.
+- A final invoice's deposit row books nothing. By default
+  (`payment-allocation = "match-rows"`) its payments go where the rows
+  still lack revenue once the deposit is counted, so each account ends at
+  its row; `"pro-rata"` splits every payment by the rows' proportions.
+- `cash-deposits = "liability-until-final"` keeps the earlier treatment
+  instead: the deposit is held in the deposit account until the final
+  invoice's payment (or its send, when fully covered) clears it.
 - A fully covered final invoice books a `$0` marker at send: its header
   tags and a `$0.00` posting per row, each with `customer:` and `item:`.
   It is how the books show the invoice was sent; it is paid on its date.

@@ -58,6 +58,35 @@ ARCHITECTURE.md §3:
 - cash books book an invoice at payment;
 - void is a reversing entry linked with `match:`.
 
+## Configurable accounting flows
+
+> I don't want to predetermine how people do their accounting. There are
+> many valid ways. Sane defaults, but allow for the flows people use.
+> (Patrick, 2026-11-21)
+
+So every accounting-policy choice has a default plus a setting or an
+advanced option: built where it was cheap, planned here otherwise. Settings
+are `ledgeline.toml [invoicer]` keys unless the row says otherwise.
+
+| Policy                                             | Setting                         | Default                                                                                                            | Alternatives                                                                  | State                   |
+|----------------------------------------------------|---------------------------------|--------------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------|-------------------------|
+| Cash books: a deposit's payment                    | `cash-deposits`                 | `income-on-receipt`                                                                                                | `liability-until-final` (held until the final invoice)                        | Built (2b)              |
+| Cash books: a payment over an invoice's rows       | `payment-allocation`            | `match-rows` (each account ends at its row, deposits counted)                                                      | `pro-rata`; planned: `oldest-row-first`                                       | Built (2b), one planned |
+| Cash books: the revenue account a deposit lands in | —                               | the row's account, else the customer's `revenue_account`, `[invoicer] revenue-account`, the single revenue account | planned: a per-deposit-invoice override (frontmatter or the row's books cell) | Planned                 |
+| Cash books: a deferred row's payment               | —                               | into the account it recognizes into                                                                                | planned: `cash-deferred-rows = "defer"` (modified cash: keep the deferral)    | Planned                 |
+| Discounts with a blank books cell                  | `discount-account`              | pro rata over the revenue lines                                                                                    | a contra-revenue account                                                      | Built (1a)              |
+| Sending into a closed period                       | —                               | refused                                                                                                            | planned: book it dated the first open day                                     | Planned                 |
+| Editing a sent invoice                             | —                               | replace the transaction in place (§4.5)                                                                            | planned: reverse and re-book, for an audit trail of every change              | Planned                 |
+| The void's date                                    | `void --date`                   | today                                                                                                              | any date from the invoice's on, outside the closed period                     | Built (2b)              |
+| Which deposit an application uses                  | —                               | the one its row names, then the oldest                                                                             | planned: oldest only, or ask                                                  | Planned                 |
+| Voiding a final invoice that applied a deposit     | —                               | the deposit is open again for a reissue                                                                            | planned: keep it applied (forfeited)                                          | Planned                 |
+| Who a person at a company bills                    | `ledger_customer` on the person | the company's customer note                                                                                        | the person's own `ledger_customer`                                            | Built (2b)              |
+| When an invoice books at all                       | `[books] basis`                 | plan 45's gate (accrual when it has receivable accounts)                                                           | `cash`, `accrual`                                                             | Built (plan 45)         |
+
+Technical choices that are not policy stay fixed: a zero-total accrual
+invoice has no receivable posting (Ledgeline's receivables ignore a zero
+line), tag values drop commas, and journal-then-markdown write order.
+
 ## What is true today
 
 These facts come from surveys on 2026-11-19. They are summarized here so the
@@ -419,7 +448,8 @@ Answered by Patrick (2026-11-21):
     drops a receivable with payments linked;
   - void reverses the rows, with no `match:` (no receivable to net);
   - send writes `paid: <invoice date>` rather than `paid: no` for any zero
-    total, so `list --open` doesn't show it before the reconciler runs;
+    total, so `list --open` doesn't show it before the reconciler runs
+    (approved by Patrick, 2026-11-21);
   - in cash books it is a `$0` marker instead (decision A below).
 - **The fixture's 104 `item:`** now reads `($16700)`, as the bridge writes
   it (hledger ends a tag value at any comma). The root
@@ -439,13 +469,32 @@ liability and the final invoice moves it to revenue). In cash books:
   books' single revenue account; with none of those, Apply payment refuses
   and says what to set. *For veto:* it doesn't try to guess the final
   invoice's rows, which don't exist yet when the deposit arrives.
-- **A final invoice's deposit row books nothing.** A payment is split over
-  the other rows, scaled pro rata to what is due (207: $7,000 due over
-  $8,000 and $4,000 of work is $4,666.67 + $2,333.33), and the payment that
-  settles the rest takes each row's remainder. Revenue by account then
-  differs from the rows: 207's $12,000 lands as $9,666.67 consulting and
-  $2,333.33 delivery, because the $5,000 deposit went to Customer X's
-  revenue account when it arrived. *For veto.*
+- **A final invoice's deposit row books nothing.** How a payment is split
+  over the other rows is `[invoicer] payment-allocation` (Patrick,
+  2026-11-21):
+  - `match-rows` (default): each row account ends at the invoice's row,
+    counting what the deposit already put there. 207: the $5,000 deposit is
+    in consulting, the rows are consulting $8,000 and delivery $4,000, so
+    the $7,000 splits $3,000 / $4,000. A partial payment fills what each
+    row still lacks pro rata; the settling one takes the remainders. A
+    deposit in an account no row uses stays there, and the rows give up
+    that much pro rata. A deposit larger than its row leaves that row at
+    zero (never a negative share) and the excess comes off the other rows
+    pro rata; that account ends over its row, since the deposit can't be
+    moved. Contra rows keep their amount.
+  - `pro-rata`: every payment over the rows' proportions, whatever the
+    deposit booked (207: $4,666.67 / $2,333.33; consulting ends at
+    $9,666.67).
+  - The deposit a row applies is the deposit invoice it names (`Less
+    deposit (Invoice 206)`); its applied payments say which accounts it
+    went to. A row naming none counts as a deposit in an account no row
+    uses.
+- **`[invoicer] cash-deposits`** chooses the deposit treatment:
+  `income-on-receipt` (default, decision A) or `liability-until-final`, the
+  earlier behaviour: the deposit's payment goes to the deposit account, the
+  final invoice's deposit row debits it in the payment split, a fully
+  covered final books its rows against the liability at send, and open
+  deposits are read from the journal as in accrual books.
 - **A fully covered final invoice books a `$0` marker at send**: its
   header (`invoice:`, `document:`, `due:`, `reference:`) and one `$0.00`
   posting per row, the row's cash account (the deposit account for the
