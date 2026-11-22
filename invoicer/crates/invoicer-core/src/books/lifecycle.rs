@@ -5,6 +5,7 @@ use super::{BooksError, Document, InvoiceBooks, check_generation};
 use crate::doc::Status;
 use crate::frontmatter::FieldEdit;
 use crate::index::DocumentIndex;
+use crate::settings::CashDeposits;
 use ledgeline_core::Dec;
 use ledgeline_core::accrual::invoice::{DocumentSpec, build_settled_document, money};
 use ledgeline_core::accrual::ops::{Generation, Loaded, OpsError, SaveRequest, SourceChange};
@@ -487,12 +488,22 @@ impl Plan {
     }
 }
 
-/// A zero-total cash-books invoice's `$0` marker: the invoice's header tags
-/// and description, and one `$0.00` posting per line — each row's cash
+/// A zero-total cash-books invoice's booking at send: the invoice's header
+/// tags and description, and one posting per line — each row's cash
 /// account, or for a deposit applied the deposit account — with `customer:`
-/// and `item:`, so the journal says what was billed and that nothing moved.
-/// hledger reads zero postings as balanced.
-fn cash_marker(loaded: &Loaded, booking: &InvoiceBooking) -> Result<Transaction, BooksError> {
+/// and `item:`.
+///
+/// - Income on receipt (the default): every posting is `$0.00`, a marker
+///   that says what was billed, that it was sent, and that nothing moved
+///   (the deposit was revenue when it arrived). hledger reads zero postings
+///   as balanced.
+/// - Liability until final: the real amounts, the rows credited against the
+///   deposit liability, which this clears.
+fn cash_marker(
+    loaded: &Loaded,
+    booking: &InvoiceBooking,
+    deposits: CashDeposits,
+) -> Result<Transaction, BooksError> {
     let tags = std::iter::once(format!("{INVOICE_TAG}: {}", booking.number))
         .chain(
             booking
@@ -503,19 +514,21 @@ fn cash_marker(loaded: &Loaded, booking: &InvoiceBooking) -> Result<Transaction,
         .collect::<Vec<_>>()
         .join(", ");
     let mut text = format!("{} {}  ; {tags}\n", booking.date, booking.description);
-    let zero = render_amount(&money(
-        loaded.journal(),
-        &booking.commodity,
-        // The total is padded to the commodity's precision: `$0.00`.
-        Dec::new(0, booking.total.places),
-    ));
     for line in &booking.lines {
         let account = line.cash_account().unwrap_or(&line.account);
+        let quantity = match deposits {
+            // The total is padded to the commodity's precision: `$0.00`.
+            CashDeposits::IncomeOnReceipt => Dec::new(0, booking.total.places),
+            CashDeposits::LiabilityUntilFinal => {
+                line.amount.neg().map_err(|_| BooksError::Overflow)?
+            }
+        };
+        let amount = render_amount(&money(loaded.journal(), &booking.commodity, quantity));
         let mut comment = format!("{CUSTOMER_TAG}: {}", booking.customer);
         if let Some(item) = &line.item {
             comment.push_str(&format!(", item: {item}"));
         }
-        text.push_str(&format!("    {account}  {zero}  ; {comment}\n"));
+        text.push_str(&format!("    {account}  {amount}  ; {comment}\n"));
     }
     let parsed = ledgeline_core::parse_journal(&text, "marker.journal")
         .map_err(|e| BooksError::Refused(format!("invoice {}: {e}", booking.number)))?;
@@ -542,7 +555,11 @@ impl InvoiceBooks {
                 let receivable = receivable_account(index.settings(), loaded.journal())?;
                 Plan::Document(booking.document_spec(loaded.journal(), &receivable))
             }
-            Basis::Cash => Plan::Marker(cash_marker(loaded, booking)?),
+            Basis::Cash => Plan::Marker(cash_marker(
+                loaded,
+                booking,
+                index.settings().cash_deposits,
+            )?),
         })
     }
 

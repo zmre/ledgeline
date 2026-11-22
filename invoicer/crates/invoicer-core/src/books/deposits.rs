@@ -18,11 +18,13 @@
 //! Each application uses up the deposit its row names (`Less deposit
 //! (Invoice 104)` names 104, as a whole word) first, then the oldest.
 //!
-//! **Cash books** hold nothing on the deposit account: a deposit is income
-//! the day it arrives (Patrick, 2026-11-21), so a deposit invoice's credit is
+//! **Cash books, income on receipt** (`[invoicer] cash-deposits`, the
+//! default) hold nothing on the deposit account: a deposit is income the day
+//! it arrives, so a deposit invoice's credit is
 //! what has been paid on it (its applied payments, up to its deposit rows),
 //! and the applications are counted from the files as above. Voiding a final
-//! invoice gives its deposit back to the customer for a reissue.
+//! invoice gives its deposit back to the customer for a reissue. With
+//! `liability-until-final`, cash books read the journal as accrual books do.
 //!
 //! [`InvoiceBooks::apply_deposit`] writes that row into a draft, above its
 //! final total, and recomputes the table.
@@ -33,6 +35,7 @@ use super::{BooksError, Document, InvoiceBooks};
 use crate::doc::Status;
 use crate::draft;
 use crate::index::DocumentIndex;
+use crate::settings::CashDeposits;
 use crate::table::books::BooksEntry;
 use crate::table::columns::Role;
 use crate::table::gfm::{self, Grid, Table, escape_cell};
@@ -112,7 +115,7 @@ pub struct DepositApplied {
 }
 
 /// Whether `text` holds `word` with no letter or digit on either side.
-fn names(text: &str, word: &str) -> bool {
+pub(super) fn names(text: &str, word: &str) -> bool {
     !word.is_empty()
         && text.match_indices(word).any(|(at, _)| {
             let before = text[..at].chars().next_back();
@@ -154,7 +157,8 @@ impl InvoiceBooks {
         // Cash books: a deposit is income when it arrives, so nothing is
         // held on the deposit account; a deposit invoice's credit is what it
         // has been paid (its applied payments), up to its deposit rows.
-        let cash = Basis::of(&loaded) == Basis::Cash;
+        let cash = Basis::of(&loaded) == Basis::Cash
+            && settings.cash_deposits == CashDeposits::IncomeOnReceipt;
 
         // Every document by number, and the applications this customer's
         // other documents make.
@@ -223,8 +227,8 @@ impl InvoiceBooks {
             }
         }
 
-        // Accrual books: the journal's credits, and the debits nothing above
-        // counts.
+        // Accrual books (and cash books holding deposits in the liability):
+        // the journal's credits, and the debits nothing above counts.
         for txn in journal.transactions.iter().filter(|_| !cash) {
             let tagged = tag_value(&txn.tags, INVOICE_TAG).map(str::to_string);
             let status = tagged.as_ref().and_then(|n| statuses.get(n).copied());

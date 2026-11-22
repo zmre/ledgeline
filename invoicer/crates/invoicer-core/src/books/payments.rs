@@ -19,12 +19,14 @@
 //!   [`PaymentUndo`] is plain data (serializable), so a later process can
 //!   undo too, as long as the deposit hasn't changed since.
 
+use super::deposits::names;
 use super::lifecycle::{BookedTransaction, applied_payments};
-use super::spec::InvoiceBooking;
+use super::spec::{CashBooking, InvoiceBooking, scale};
 use super::{BooksError, InvoiceBooks, check_generation};
 use crate::books::lifecycle::Basis;
 use crate::doc::Status;
 use crate::index::DocumentIndex;
+use crate::settings::PaymentAllocation;
 use ledgeline_core::Dec;
 use ledgeline_core::accrual::apply::{self, ApplyUndo, CashInvoice};
 use ledgeline_core::accrual::invoice::money;
@@ -132,6 +134,135 @@ fn paid_so_far(
     Ok(paid)
 }
 
+/// Cash books, income on receipt: per account, what the deposits a final
+/// invoice applies already booked as revenue. Each deposit row (`Less
+/// deposit (Invoice 206)`) names its deposit invoice as a whole word; that
+/// invoice's applied payments say where its money went, scaled to the row's
+/// amount. A row naming no paid deposit invoice is put under `""`: an
+/// account no row uses.
+fn deposit_receipts(
+    index: &DocumentIndex,
+    loaded: &Loaded,
+    booking: &InvoiceBooking,
+) -> Result<Vec<(String, Dec)>, BooksError> {
+    let mut out: Vec<(String, Dec)> = Vec::new();
+    let mut add = |account: &str, amount: Dec| -> Result<(), BooksError> {
+        match out.iter_mut().find(|(a, _)| a == account) {
+            Some((_, sum)) => *sum = sum.add(amount).map_err(|_| BooksError::Overflow)?,
+            None => out.push((account.to_string(), amount)),
+        }
+        Ok(())
+    };
+    for line in booking
+        .lines
+        .iter()
+        .filter(|l| l.cash == CashBooking::Nothing)
+    {
+        let applied = line.amount.neg().map_err(|_| BooksError::Overflow)?;
+        let label = line.item.as_deref().unwrap_or_default();
+        let receipt = index
+            .numbers()
+            .filter(|n| *n != booking.number && names(label, n))
+            .find_map(|n| {
+                let by_account = received_by_account(loaded, n, booking).ok()?;
+                (!by_account.is_empty()).then_some(by_account)
+            });
+        match receipt {
+            Some(by_account) => {
+                for (account, amount) in scale(applied, &by_account)? {
+                    add(&account, amount)?;
+                }
+            }
+            None => add("", applied)?,
+        }
+    }
+    Ok(out)
+}
+
+/// What invoice `number`'s applied payments put in each account, for
+/// `booking`'s customer and commodity.
+fn received_by_account(
+    loaded: &Loaded,
+    number: &str,
+    booking: &InvoiceBooking,
+) -> Result<Vec<(String, Dec)>, BooksError> {
+    let mut out: Vec<(String, Dec)> = Vec::new();
+    for txn in applied_payments(loaded, number) {
+        for posting in &txn.postings {
+            if tag_value(&posting.tags, CUSTOMER_TAG) != Some(booking.customer.as_str()) {
+                continue;
+            }
+            for amount in posting
+                .amounts
+                .iter()
+                .filter(|a| a.commodity.0 == booking.commodity)
+            {
+                let credit = amount.quantity.neg().map_err(|_| BooksError::Overflow)?;
+                match out.iter_mut().find(|(a, _)| *a == posting.account.0) {
+                    Some((_, sum)) => *sum = sum.add(credit).map_err(|_| BooksError::Overflow)?,
+                    None => out.push((posting.account.0.clone(), credit)),
+                }
+            }
+        }
+    }
+    out.retain(|(_, d)| d.mantissa > 0);
+    Ok(out)
+}
+
+/// `payment-allocation = "match-rows"`: the split of what is due so that,
+/// once paid, each row account holds the invoice's row for it, counting
+/// what `receipts` (the deposits applied) already put there.
+///
+/// - Each row's target is its amount less the deposit already in its
+///   account.
+/// - A deposit larger than its row's amount leaves that row at zero (a
+///   revenue row is never split negative); the excess comes off the other
+///   rows, pro rata.
+/// - A deposit in an account no row uses stays there; the rows give up the
+///   same amount, pro rata.
+/// - Contra rows (negative, a discount account) keep their amount.
+///
+/// The result sums to what is due.
+fn match_rows(
+    booking: &InvoiceBooking,
+    receipts: &[(String, Dec)],
+) -> Result<Vec<(String, Dec)>, BooksError> {
+    let overflow = |_| BooksError::Overflow;
+    let mut targets: Vec<(String, Dec)> = Vec::new();
+    for (account, row) in booking.cash_rows()? {
+        let deposit = receipts
+            .iter()
+            .find(|(a, _)| *a == account)
+            .map_or(Dec::zero(), |(_, d)| *d);
+        let target = row.sub(deposit).map_err(overflow)?;
+        let target = if row.mantissa > 0 && target.mantissa < 0 {
+            Dec::zero()
+        } else {
+            target
+        };
+        targets.push((account, target));
+    }
+    let sum = sum(targets.iter().map(|(_, d)| *d))?;
+    let over = sum.sub(booking.total).map_err(overflow)?;
+    if !over.is_zero() {
+        let positive: Vec<(String, Dec)> = targets
+            .iter()
+            .filter(|(_, d)| d.mantissa > 0)
+            .cloned()
+            .collect();
+        if positive.is_empty() {
+            return booking.cash_split();
+        }
+        for (account, cut) in scale(over, &positive)? {
+            if let Some((_, target)) = targets.iter_mut().find(|(a, _)| *a == account) {
+                *target = target.sub(cut).map_err(overflow)?;
+            }
+        }
+    }
+    targets.retain(|(_, d)| !d.is_zero());
+    Ok(targets)
+}
+
 fn sum(values: impl IntoIterator<Item = Dec>) -> Result<Dec, BooksError> {
     values
         .into_iter()
@@ -173,7 +304,12 @@ impl InvoiceBooks {
             )));
         }
         let booking = self.booking(index, &document, loaded)?;
-        let split = booking.cash_split()?;
+        let split = match index.settings().payment_allocation {
+            PaymentAllocation::MatchRows if booking.applies_a_received_deposit() => {
+                match_rows(&booking, &deposit_receipts(index, loaded, &booking)?)?
+            }
+            _ => booking.cash_split()?,
+        };
         let paid = paid_so_far(loaded, &booking, &split)?;
         let remaining = booking
             .total
@@ -284,9 +420,12 @@ impl InvoiceBooks {
                     ledgeline_core::edit::render_dec(owed.remaining, '.')
                 ))
             })?;
-        // Paying the rest: each row's remainder, exactly. Paying part: the
-        // whole split as the weights, pro rata.
-        let split: Vec<(String, Dec)> = if candidate.received == owed.remaining {
+        // Paying the rest: each row's remainder, exactly. Paying part: pro
+        // rata over what is left on each row (match-rows), or over the whole
+        // split (pro-rata).
+        let by_remainder = candidate.received == owed.remaining
+            || index.settings().payment_allocation == PaymentAllocation::MatchRows;
+        let split: Vec<(String, Dec)> = if by_remainder {
             owed.split
                 .iter()
                 .zip(&owed.paid)

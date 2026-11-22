@@ -27,7 +27,7 @@ use crate::catalog::Catalog;
 use crate::customers::Customer;
 use crate::doc::{Invoice, Money, Status};
 use crate::problem::{Problem, Severity};
-use crate::settings::Settings;
+use crate::settings::{CashDeposits, Settings};
 use crate::table::books::{AccountName, BooksEntry};
 use crate::table::money::plain;
 use crate::table::{Evaluation, ItemCode, RowKind};
@@ -82,14 +82,16 @@ pub struct BookLine {
 }
 
 /// What a line books in cash books, where revenue is recognized when money
-/// arrives (Patrick, 2026-11-21: a deposit is income on receipt).
+/// arrives. Rows on the deposit account follow `[invoicer] cash-deposits`:
+/// income on receipt (the default) or held in the liability until the final
+/// invoice.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", content = "account", rename_all = "kebab-case")]
 pub enum CashBooking {
     /// A payment of the line goes to this account: the line's own, or for a
     /// deferred line the account it recognizes into (cash books have no
-    /// deferred revenue), or for a deposit invoice's row on the deposit
-    /// account the customer's revenue account.
+    /// deferred revenue), or — income on receipt — for a deposit invoice's
+    /// row on the deposit account the customer's revenue account.
     Account(String),
     /// A deposit applied on a final invoice: the deposit was income when it
     /// arrived, so the row books nothing and no payment is split onto it.
@@ -189,6 +191,38 @@ impl InvoiceBooking {
         if self.total.is_zero() {
             return Ok(Vec::new());
         }
+        let out = self.cash_rows()?;
+        let sum = out
+            .iter()
+            .try_fold(Dec::zero(), |acc, (_, d)| acc.add(*d))
+            .map_err(|_| BooksError::Overflow)?;
+        if sum == self.total {
+            return Ok(out);
+        }
+        if sum.mantissa <= 0 {
+            return Err(BooksError::Refused(format!(
+                "invoice {}: once its deposit is set aside nothing is left to split a payment \
+                 over",
+                self.number
+            )));
+        }
+        scale(self.total, &out)
+    }
+
+    /// Whether a deposit applied on this invoice books nothing in cash books
+    /// (income on receipt).
+    #[must_use]
+    pub fn applies_a_received_deposit(&self) -> bool {
+        self.lines.iter().any(|l| l.cash == CashBooking::Nothing)
+    }
+
+    /// Each row's cash account and amount, merged by account in
+    /// first-appearance order, not scaled: what each account should hold
+    /// once the invoice is paid (deposits included).
+    ///
+    /// # Errors
+    /// As [`cash_split`](Self::cash_split).
+    pub fn cash_rows(&self) -> Result<Vec<(String, Dec)>, BooksError> {
         let mut out: Vec<(String, Dec)> = Vec::new();
         for line in &self.lines {
             let account = match &line.cash {
@@ -209,36 +243,40 @@ impl InvoiceBooking {
             }
         }
         out.retain(|(_, amount)| !amount.is_zero());
-        let sum = out
-            .iter()
-            .try_fold(Dec::zero(), |acc, (_, d)| acc.add(*d))
-            .map_err(|_| BooksError::Overflow)?;
-        if sum == self.total {
-            return Ok(out);
-        }
-        if sum.mantissa <= 0 {
-            return Err(BooksError::Refused(format!(
-                "invoice {}: once its deposit is set aside nothing is left to split a payment \
-                 over",
-                self.number
-            )));
-        }
-        // The remainder goes on the largest row: `allocate` puts it last.
-        let largest = (0..out.len()).fold(
-            0,
-            |best, at| if out[at].1 > out[best].1 { at } else { best },
-        );
-        let mut order: Vec<usize> = (0..out.len()).filter(|&at| at != largest).collect();
-        order.push(largest);
-        let weights: Vec<Dec> = order.iter().map(|&at| out[at].1).collect();
-        let shares = ledgeline_core::decimal::allocate(self.total, &weights)
-            .map_err(|_| BooksError::Overflow)?;
-        let mut scaled = out.clone();
-        for (at, share) in order.into_iter().zip(shares) {
-            scaled[at].1 = share;
-        }
-        Ok(scaled)
+        Ok(out)
     }
+}
+
+/// `total` split over `weights` pro rata, exactly, the remainder on the
+/// largest weight (the first of equals).
+///
+/// # Errors
+/// [`BooksError::Overflow`], or weights summing to zero.
+pub(crate) fn scale(
+    total: Dec,
+    weights: &[(String, Dec)],
+) -> Result<Vec<(String, Dec)>, BooksError> {
+    if weights.is_empty() {
+        return Ok(Vec::new());
+    }
+    // `allocate` puts the remainder last: move the largest there.
+    let largest = (0..weights.len()).fold(0, |best, at| {
+        if weights[at].1 > weights[best].1 {
+            at
+        } else {
+            best
+        }
+    });
+    let mut order: Vec<usize> = (0..weights.len()).filter(|&at| at != largest).collect();
+    order.push(largest);
+    let ordered: Vec<Dec> = order.iter().map(|&at| weights[at].1).collect();
+    let shares =
+        ledgeline_core::decimal::allocate(total, &ordered).map_err(|_| BooksError::Overflow)?;
+    let mut scaled = weights.to_vec();
+    for (at, share) in order.into_iter().zip(shares) {
+        scaled[at].1 = share;
+    }
+    Ok(scaled)
 }
 
 /// What [`booking_of`] reads besides the document: the books folder's
@@ -521,12 +559,19 @@ pub fn booking_of(
         .map(|line| {
             let account = line.books.account().as_str().to_string();
             let recognize_into = line.books.deferral().map(|d| d.target_account.clone());
-            let cash = match (account == deposit, line.amount.mantissa < 0) {
-                (true, true) => CashBooking::Nothing,
-                (true, false) => cash_revenue
+            let cash = match (
+                account == deposit,
+                line.amount.mantissa < 0,
+                cx.settings.cash_deposits,
+            ) {
+                (true, _, CashDeposits::LiabilityUntilFinal) => {
+                    CashBooking::Account(account.clone())
+                }
+                (true, true, CashDeposits::IncomeOnReceipt) => CashBooking::Nothing,
+                (true, false, CashDeposits::IncomeOnReceipt) => cash_revenue
                     .clone()
                     .map_or(CashBooking::Unresolved, CashBooking::Account),
-                (false, _) => {
+                (false, _, _) => {
                     CashBooking::Account(recognize_into.clone().unwrap_or_else(|| account.clone()))
                 }
             };

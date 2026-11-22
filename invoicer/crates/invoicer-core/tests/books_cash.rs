@@ -155,9 +155,10 @@ fn apply_payment_in_full_in_parts_and_undone() {
     assert_eq!(read(&dir, "books.journal"), journal);
 
     // 207 ($7,000: $12,000 of work less the $5,000 deposit 206 paid). In
-    // cash books the deposit was income when it arrived, so the deposit row
-    // books nothing: the $7,000 still due is split over the work rows only,
-    // $8,000 : $4,000 → $4,666.67 + $2,333.33.
+    // cash books the deposit was income when it arrived (into
+    // revenue:consulting), so the deposit row books nothing. By default
+    // (match-rows) the $7,000 goes where the rows still lack it:
+    // consulting $8,000 − $5,000 = $3,000, delivery $4,000.
     // The $9,000 wire is more than is due: never a candidate.
     let candidates = books
         .payment_candidates(&index, "207", TODAY)
@@ -169,7 +170,7 @@ fn apply_payment_in_full_in_parts_and_undone() {
     );
     assert!(!candidates[0].exact && candidates[0].by_number);
 
-    // Half now: the work rows pro rata; nothing onto the deposit row.
+    // Half now: pro rata over what each row still lacks (3,000 : 4,000).
     let first = books
         .apply_payment(&index, &apply("207", &candidates[0].reference))
         .expect("applies");
@@ -177,10 +178,10 @@ fn apply_payment_in_full_in_parts_and_undone() {
     assert_eq!(
         first.applied,
         [
-            ("revenue:consulting".to_string(), "2333.34".to_string()),
+            ("revenue:consulting".to_string(), "1500.00".to_string()),
             (
                 "revenue:consulting:delivery".to_string(),
-                "1166.66".to_string()
+                "2000.00".to_string()
             ),
         ]
     );
@@ -188,8 +189,8 @@ fn apply_payment_in_full_in_parts_and_undone() {
         first.transaction.text,
         "2026-11-17 * WIRE CUSTOMER X INV 207  ; id: wx-7, invoice:207\n\
          \x20   assets:bank:checking   $3,500.00  ; bank-ref: 771\n\
-         \x20   revenue:consulting           $-2333.34  ; customer: Customer X\n\
-         \x20   revenue:consulting:delivery  $-1166.66  ; customer: Customer X\n"
+         \x20   revenue:consulting           $-1500.00  ; customer: Customer X\n\
+         \x20   revenue:consulting:delivery  $-2000.00  ; customer: Customer X\n"
     );
     // The rest: each row's remainder; it is paid.
     let rest = books
@@ -204,10 +205,10 @@ fn apply_payment_in_full_in_parts_and_undone() {
     assert_eq!(
         second.applied,
         [
-            ("revenue:consulting".to_string(), "2333.33".to_string()),
+            ("revenue:consulting".to_string(), "1500.00".to_string()),
             (
                 "revenue:consulting:delivery".to_string(),
-                "1166.67".to_string()
+                "2000.00".to_string()
             ),
         ]
     );
@@ -238,13 +239,14 @@ fn apply_payment_in_full_in_parts_and_undone() {
         &["bal", "tag:invoice=^20[67]$", "--flat", "-O", "csv"],
     ) {
         // 206's deposit (income on receipt) and 207's two payments: $12,000
-        // in the bank and $12,000 of revenue; the liability never moves.
+        // in the bank, and revenue matching 207's rows; the liability never
+        // moves.
         assert_eq!(
             out,
             "\"account\",\"balance\"\n\
              \"assets:bank:checking\",\"$12000.00\"\n\
-             \"revenue:consulting\",\"$-9666.67\"\n\
-             \"revenue:consulting:delivery\",\"$-2333.33\"\n\
+             \"revenue:consulting\",\"$-8000.00\"\n\
+             \"revenue:consulting:delivery\",\"$-4000.00\"\n\
              \"Total:\",\"0\"\n"
         );
     }
@@ -460,5 +462,349 @@ fn a_deposit_is_income_on_receipt_and_a_covered_final_books_a_zero_marker() {
              \"revenue:consulting\",\"$-1000.00\"\n\
              \"Total:\",\"0\"\n"
         );
+    }
+}
+
+/// Cash books with `extra` added to `[invoicer]` and `accounts` declared:
+/// Wingtip's deposit invoice 208 for `deposit` (a wire, applied), and a
+/// final 209 with `rows`, the deposit applied, sent; then a wire paying it.
+fn deposit_then_final(
+    test: &str,
+    extra: &str,
+    accounts: &str,
+    deposit: &str,
+    rows: &str,
+    subtotal: &str,
+) -> (
+    std::path::PathBuf,
+    invoicer_core::books::InvoiceBooks,
+    invoicer_core::index::DocumentIndex,
+) {
+    let dir = scratch("cash", test);
+    write(
+        &dir,
+        "ledgeline.toml",
+        &format!("{}{extra}", read(&dir, "ledgeline.toml")),
+    );
+    write(
+        &dir,
+        "invoices/2026-11-10 Wingtip Invoice 208.md",
+        &wingtip(
+            "208",
+            "2026-11-10",
+            "draft",
+            &format!(
+                "| Deposit on phase 2      | 1   | {deposit} | {deposit} | liabilities:customer-deposits |\n"
+            ),
+            deposit,
+        ),
+    );
+    write(
+        &dir,
+        "invoices/2026-11-17 Wingtip Invoice 209.md",
+        &wingtip("209", "2026-11-17", "draft", rows, subtotal),
+    );
+    let journal = read(&dir, "books.journal").replacen(
+        "account equity:opening",
+        &format!("{accounts}account equity:opening"),
+        1,
+    );
+    write(
+        &dir,
+        "books.journal",
+        &format!(
+            "{journal}\n2026-11-12 * WIRE WINGTIP DEPOSIT  ; id: ww-1\n    assets:bank:checking  {deposit}\n    income:unknown\n"
+        ),
+    );
+    let (books, mut index) = open(&dir);
+    let send = |number: &str| Send {
+        number: number.into(),
+        today: TODAY.into(),
+        sent_via: None,
+        expected: None,
+    };
+    books.send(&mut index, &send("208")).expect("sends 208");
+    let wire = books
+        .payment_candidates(&index, "208", TODAY)
+        .expect("lists")
+        .into_iter()
+        .next()
+        .expect("the deposit wire");
+    books
+        .apply_payment(&index, &apply("208", &wire.reference))
+        .expect("applies the deposit");
+    books
+        .apply_deposit(
+            &mut index,
+            &invoicer_core::books::ApplyDeposit {
+                number: "209".into(),
+                deposit: "208".into(),
+                amount: None,
+            },
+        )
+        .expect("applies the deposit row");
+    books.send(&mut index, &send("209")).expect("sends 209");
+    (dir, books, index)
+}
+
+/// Pay 209 with a wire of `amount` (text) dated today.
+fn pay_209(
+    dir: &std::path::Path,
+    books: invoicer_core::books::InvoiceBooks,
+    amount: &str,
+    id: &str,
+) -> (
+    invoicer_core::books::InvoiceBooks,
+    invoicer_core::books::PaymentApplied,
+) {
+    write(
+        dir,
+        "books.journal",
+        &format!(
+            "{}\n2026-11-17 * WIRE WINGTIP INV 209 {id}  ; id: {id}\n    assets:bank:checking  {amount}\n    income:unknown\n",
+            read(dir, "books.journal")
+        ),
+    );
+    let (books, index) = reopen(books);
+    let wire = books
+        .payment_candidates(&index, "209", TODAY)
+        .expect("lists")
+        .into_iter()
+        .find(|c| c.description.ends_with(id))
+        .expect("the wire");
+    let paid = books
+        .apply_payment(&index, &apply("209", &wire.reference))
+        .expect("applies");
+    (books, paid)
+}
+
+fn applied(paid: &invoicer_core::books::PaymentApplied) -> Vec<(&str, &str)> {
+    paid.applied
+        .iter()
+        .map(|(a, d)| (a.as_str(), d.as_str()))
+        .collect()
+}
+
+#[test]
+fn pro_rata_allocation_splits_every_payment_like_the_rows() {
+    // `payment-allocation = "pro-rata"`: 207's $7,000 over its $8,000 and
+    // $4,000 of work, whatever the deposit already booked.
+    let dir = scratch("cash", "cash-pro-rata");
+    write(
+        &dir,
+        "ledgeline.toml",
+        &format!(
+            "{}payment-allocation = \"pro-rata\"\n",
+            read(&dir, "ledgeline.toml")
+        ),
+    );
+    write(
+        &dir,
+        "books.journal",
+        &format!("{}{IMPORTS}", read(&dir, "books.journal")),
+    );
+    let (books, index) = open(&dir);
+    let candidates = books
+        .payment_candidates(&index, "207", TODAY)
+        .expect("lists");
+    let first = books
+        .apply_payment(&index, &apply("207", &candidates[0].reference))
+        .expect("applies");
+    assert_eq!(
+        applied(&first),
+        [
+            ("revenue:consulting", "2333.34"),
+            ("revenue:consulting:delivery", "1166.66")
+        ]
+    );
+    let rest = books
+        .payment_candidates(&index, "207", TODAY)
+        .expect("lists");
+    let second = books
+        .apply_payment(&index, &apply("207", &rest[0].reference))
+        .expect("applies");
+    assert_eq!(
+        applied(&second),
+        [
+            ("revenue:consulting", "2333.33"),
+            ("revenue:consulting:delivery", "1166.67")
+        ]
+    );
+    if let Some(out) = hledger(
+        &dir,
+        &["books.journal"],
+        &["bal", "tag:invoice=^20[67]$", "--flat", "-O", "csv"],
+    ) {
+        assert_eq!(
+            out,
+            "\"account\",\"balance\"\n\
+             \"assets:bank:checking\",\"$12000.00\"\n\
+             \"revenue:consulting\",\"$-9666.67\"\n\
+             \"revenue:consulting:delivery\",\"$-2333.33\"\n\
+             \"Total:\",\"0\"\n"
+        );
+    }
+}
+
+#[test]
+fn a_deposit_in_an_account_no_row_uses_stays_there() {
+    // The $1,000 deposit went to revenue:consulting; 209's rows are
+    // delivery $3,000 and support $1,000, so $3,000 is due. Consulting keeps
+    // the deposit; the $1,000 the rows give up comes off them pro rata:
+    // delivery $2,250, support $750. Paid in two parts.
+    let (dir, books, _) = deposit_then_final(
+        "cash-unused-account",
+        "",
+        "account revenue:support                ; type: R\n",
+        "$1,000.00",
+        "| Phase 2 delivery        | 1   | $3,000 | $3,000.00 | revenue:consulting:delivery   |\n\
+         | Support                 | 1   | $1,000 | $1,000.00 | revenue:support               |\n",
+        "$4,000.00",
+    );
+    let (books, first) = pay_209(&dir, books, "$1,200.00", "w1");
+    assert_eq!(
+        applied(&first),
+        [
+            ("revenue:consulting:delivery", "900.00"),
+            ("revenue:support", "300.00")
+        ]
+    );
+    let (_, second) = pay_209(&dir, books, "$1,800.00", "w2");
+    assert_eq!(second.remaining, Dec::zero());
+    assert_eq!(
+        applied(&second),
+        [
+            ("revenue:consulting:delivery", "1350.00"),
+            ("revenue:support", "450.00")
+        ]
+    );
+    if let Some(out) = hledger(&dir, &["books.journal"], &["-s", "check"]) {
+        assert_eq!(out, "");
+    }
+    if let Some(out) = hledger(
+        &dir,
+        &["books.journal"],
+        &["bal", "tag:invoice=^20[89]$", "--flat", "-O", "csv"],
+    ) {
+        assert_eq!(
+            out,
+            "\"account\",\"balance\"\n\
+             \"assets:bank:checking\",\"$4000.00\"\n\
+             \"revenue:consulting\",\"$-1000.00\"\n\
+             \"revenue:consulting:delivery\",\"$-2250.00\"\n\
+             \"revenue:support\",\"$-750.00\"\n\
+             \"Total:\",\"0\"\n"
+        );
+    }
+}
+
+#[test]
+fn a_deposit_larger_than_its_row_comes_off_the_others() {
+    // The $5,000 deposit went to revenue:consulting, but 209 bills only
+    // $3,000 of consulting (and $9,000 of delivery): consulting gets nothing
+    // more, never a negative share, and the whole $7,000 goes to delivery.
+    // Consulting ends $2,000 over its row: the deposit can't be moved.
+    let (dir, books, _) = deposit_then_final(
+        "cash-deposit-over-row",
+        "",
+        "",
+        "$5,000.00",
+        "| Phase 2 build           | 1   | $3,000 | $3,000.00 | revenue:consulting            |\n\
+         | Phase 2 delivery        | 1   | $9,000 | $9,000.00 | revenue:consulting:delivery   |\n",
+        "$12,000.00",
+    );
+    let (_, paid) = pay_209(&dir, books, "$7,000.00", "w1");
+    assert_eq!(applied(&paid), [("revenue:consulting:delivery", "7000.00")]);
+    if let Some(out) = hledger(
+        &dir,
+        &["books.journal"],
+        &["bal", "tag:invoice=^20[89]$", "--flat", "-O", "csv"],
+    ) {
+        assert_eq!(
+            out,
+            "\"account\",\"balance\"\n\
+             \"assets:bank:checking\",\"$12000.00\"\n\
+             \"revenue:consulting\",\"$-5000.00\"\n\
+             \"revenue:consulting:delivery\",\"$-7000.00\"\n\
+             \"Total:\",\"0\"\n"
+        );
+    }
+}
+
+#[test]
+fn liability_until_final_holds_the_deposit_and_the_final_clears_it() {
+    // `cash-deposits = "liability-until-final"`: 208's wire goes to the
+    // liability; 209's payment is split over its rows with the deposit row
+    // debiting the liability (the rows match by construction).
+    let (dir, books, index) = deposit_then_final(
+        "cash-liability",
+        "cash-deposits = \"liability-until-final\"\n",
+        "",
+        "$1,000.00",
+        "| Phase 2 build           | 1   | $3,000 | $3,000.00 | revenue:consulting            |\n",
+        "$3,000.00",
+    );
+    assert!(
+        read(&dir, "books.journal").contains(
+            "2026-11-12 * WIRE WINGTIP DEPOSIT  ; id: ww-1, invoice:208\n    assets:bank:checking  $1,000.00\n    liabilities:customer-deposits  $-1000.00  ; customer: Wingtip\n"
+        ),
+        "the deposit is held in the liability"
+    );
+    // Applied by 209's file: nothing left open.
+    assert!(
+        books
+            .open_deposits(&index, "203")
+            .expect("lists")
+            .deposits
+            .is_empty()
+    );
+    let (_, paid) = pay_209(&dir, books, "$2,000.00", "w1");
+    assert_eq!(
+        applied(&paid),
+        [
+            ("revenue:consulting", "3000.00"),
+            ("liabilities:customer-deposits", "-1000.00")
+        ]
+    );
+    if let Some(out) = hledger(
+        &dir,
+        &["books.journal"],
+        &[
+            "bal",
+            "tag:customer=Wingtip",
+            "liabilities:customer-deposits",
+            "--flat",
+            "-O",
+            "csv",
+        ],
+    ) {
+        assert_eq!(out, "\"account\",\"balance\"\n\"Total:\",\"0\"\n");
+    }
+}
+
+#[test]
+fn liability_until_final_books_a_covered_final_against_the_liability() {
+    let (dir, books, index) = deposit_then_final(
+        "cash-liability-zero",
+        "cash-deposits = \"liability-until-final\"\n",
+        "",
+        "$1,000.00",
+        "| Phase 2 build           | 1   | $1,000 | $1,000.00 | revenue:consulting            |\n",
+        "$1,000.00",
+    );
+    let booked = books
+        .preview(&index, "209")
+        .expect("previews")
+        .booked
+        .expect("booked at send")
+        .text;
+    assert_eq!(
+        booked,
+        "2026-11-17 Wingtip | Invoice 209  ; invoice: 209, document: invoices/2026-11-17 Wingtip Invoice 209.md, due: 2026-12-17\n\
+         \x20   revenue:consulting             $-1000.00  ; customer: Wingtip, item: Phase 2 build\n\
+         \x20   liabilities:customer-deposits  $1000.00  ; customer: Wingtip, item: Less deposit (Invoice 208)\n"
+    );
+    if let Some(out) = hledger(&dir, &["books.journal"], &["-s", "check"]) {
+        assert_eq!(out, "");
     }
 }

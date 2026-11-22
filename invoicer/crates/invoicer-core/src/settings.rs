@@ -53,8 +53,42 @@ pub struct Settings {
     pub number_start: Option<String>,
     /// Where final PDFs are kept (ignored by discovery).
     pub pdf_dir: String,
+    /// Cash books: how a deposit invoice's payment is booked.
+    pub cash_deposits: CashDeposits,
+    /// Cash books: how a payment is split over an invoice's rows.
+    pub payment_allocation: PaymentAllocation,
     /// `[invoicer.words]`.
     pub words: Words,
+}
+
+/// `cash-deposits`: how cash books book a deposit (accounting policy; there
+/// is more than one valid way, so it is a setting).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CashDeposits {
+    /// A deposit is income the day it arrives (the default): its payment
+    /// goes to revenue, and the final invoice's deposit row books nothing.
+    #[default]
+    IncomeOnReceipt,
+    /// A deposit is held in the deposit account until the final invoice
+    /// applies it: its payment goes to the liability, and the final
+    /// invoice's payment (or, fully covered, its send) debits it.
+    LiabilityUntilFinal,
+}
+
+/// `payment-allocation`: how a cash-books payment is split over an
+/// invoice's rows (accounting policy).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PaymentAllocation {
+    /// The default: after every payment and the deposit receipts it applies,
+    /// each row account's total moves toward the invoice's row for it, and
+    /// the payment that settles the invoice leaves them equal.
+    #[default]
+    MatchRows,
+    /// Every payment pro rata over the rows (net of any deposit), whatever
+    /// the deposits already booked.
+    ProRata,
 }
 
 fn number_text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
@@ -79,6 +113,8 @@ impl Default for Settings {
             filename: "{date} {customer} Invoice {invoice_num}.md".to_string(),
             number_start: None,
             pdf_dir: "invoices/pdf".to_string(),
+            cash_deposits: CashDeposits::default(),
+            payment_allocation: PaymentAllocation::default(),
             words: Words::default(),
         }
     }
@@ -187,6 +223,16 @@ mod tests {
         assert_eq!(settings.first_number(), "1001");
         assert_eq!(settings.words.quantity.words(), ["Menge"]);
         assert_eq!(settings.customers_dir, "customers");
+        assert_eq!(settings.payment_allocation, PaymentAllocation::MatchRows);
+        let policy = Settings::from_ledgeline_toml(
+            "[invoicer]\ncash-deposits = \"liability-until-final\"\npayment-allocation = \"pro-rata\"\n",
+        )
+        .expect("reads");
+        assert_eq!(policy.cash_deposits, CashDeposits::LiabilityUntilFinal);
+        assert_eq!(policy.payment_allocation, PaymentAllocation::ProRata);
+        assert!(
+            Settings::from_ledgeline_toml("[invoicer]\npayment-allocation = \"fifo\"\n").is_err()
+        );
         let text = Settings::from_ledgeline_toml("[invoicer]\nnumber-start = \"2026-0001\"\n")
             .expect("reads");
         assert_eq!(text.first_number(), "2026-0001");

@@ -6,6 +6,7 @@
   },
   "books_folder": "<BOOKS>",
   "invoicer": {
+    "cash-deposits": "income-on-receipt",
     "catalog": "invoices/catalog.md",
     "company": "[[My Company]]",
     "customers-dir": "customers",
@@ -14,6 +15,7 @@
     "filename": "{date} {customer} Invoice {invoice_num}.md",
     "invoices-dir": "invoices",
     "number-start": null,
+    "payment-allocation": "match-rows",
     "pdf-dir": "invoices/pdf",
     "receivable-account": "assets:accounts receivable",
     "revenue-account": "revenue:consulting",
