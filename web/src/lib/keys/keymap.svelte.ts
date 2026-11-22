@@ -17,6 +17,7 @@
 import {untrack} from "svelte";
 import {handleKey, helpSections, resolveBindings, type HelpSection} from "./dispatch";
 import {isTypingTarget, type TargetLike} from "./target";
+import {keyTrace, recordKey} from "./trace";
 import {CHORD_TIMEOUT_MS, type Layer, type RegisteredLayer, type ResolvedBinding} from "./types";
 
 let layers = $state<RegisteredLayer[]>([]);
@@ -115,11 +116,19 @@ export const keymap = {
 
     /** The one keydown entry point. Wired in `+layout.svelte`. */
     handle(event: KeyboardEvent): void {
+        // e2e only: see trace.ts. Undefined in the app, so nothing is recorded.
+        const trace = keyTrace();
         // A local handler already claimed it (see the file header).
-        if (event.defaultPrevented) return;
+        if (event.defaultPrevented) {
+            if (trace) recordKey(trace, event, "prevented");
+            return;
+        }
         // Mid-IME composition, and the dead-key half of an accented character
         // (Option-e on a US layout in the WKWebView) — neither is a keystroke yet.
-        if (event.isComposing || event.key === "Dead" || event.key === "Unidentified") return;
+        if (event.isComposing || event.key === "Dead" || event.key === "Unidentified") {
+            if (trace) recordKey(trace, event, "composing");
+            return;
+        }
         // Focus is in a field: the app is not listening, Escape included.
         // Escape inside a field belongs to that field, which is the shape the
         // four pre-existing handlers already have. The ONE carve-out is a
@@ -133,6 +142,7 @@ export const keymap = {
                 "",
                 event
             );
+            if (trace) recordKey(trace, event, "field", {layers, cached: active, fresh: decision, decision});
             if (decision.kind === "run") {
                 event.preventDefault();
                 decision.binding.run();
@@ -144,6 +154,7 @@ export const keymap = {
         if (event.key === "Escape") disarm();
 
         const decision = handleKey(active, pending, event);
+        if (trace) recordKey(trace, event, decision.kind, {layers, cached: active, fresh: handleKey(resolveBindings(layers), pending, event), decision});
         if (decision.kind === "ignore") return;
         if (decision.kind === "clear") {
             // Released to the page: `g` then `x` should not be swallowed twice.
