@@ -220,9 +220,19 @@ fn human_output_is_aligned() {
     snapshot("accrual-show-105.txt", &books.text(&["show", "105"]));
     snapshot("accrual-customers.txt", &books.text(&["customers", "list"]));
     assert_eq!(books.text(&["next-number"]), "2005\n");
+    // Plan 45's invoices 2001–2004 are booked without files: warnings.
+    let check = books.text(&["check"]);
     assert_eq!(
-        books.text(&["check"]),
-        "No problems in 8 documents and 6 customers.\n"
+        check.lines().filter(|l| l.contains("has no file")).count(),
+        4
+    );
+    assert!(
+        check.ends_with("4 warnings in 8 documents and 6 customers.\n"),
+        "{check}"
+    );
+    assert_eq!(
+        Books::of("cash").text(&["check"]),
+        "No problems in 7 documents and 6 customers.\n"
     );
 }
 
@@ -242,6 +252,7 @@ fn check_exits_1_on_errors_and_reports_them() {
     let books = Books::of("accrual");
     let clean = books.json(&["check"], 0);
     assert_eq!(clean["errors"], 0);
+    assert_eq!(clean["warnings"], 4, "plan 45's orphans: {clean}");
     assert_eq!(clean["documents"], 8);
 
     let wingtip = "invoices/2026-08-01 Wingtip Invoice 106.md";
@@ -249,15 +260,21 @@ fn check_exits_1_on_errors_and_reports_them() {
     fs::write(books.file(wingtip), text).expect("writes");
     let found = books.json(&["check"], 1);
     snapshot("accrual-check-arithmetic.json", &books.normalized(&found));
-    assert_eq!(found["problems"][0]["code"], "arithmetic");
-    assert_eq!(found["problems"][0]["fix"]["edit"]["kind"], "recalc");
+    let arithmetic = found["problems"]
+        .as_array()
+        .expect("problems")
+        .iter()
+        .find(|p| p["code"] == "arithmetic")
+        .expect("the arithmetic error");
+    assert_eq!(arithmetic["file"], wingtip);
+    assert_eq!(arithmetic["fix"]["edit"]["kind"], "recalc");
 
     let out = books.run(&["check"]);
     assert_eq!(out.status.code(), Some(1));
     let text = String::from_utf8(out.stdout).expect("utf-8");
     assert!(text.contains(&format!("{wingtip}:")), "{text}");
     assert!(
-        text.ends_with("1 error in 8 documents and 6 customers.\n"),
+        text.ends_with("1 error and 4 warnings in 8 documents and 6 customers.\n"),
         "{text}"
     );
 }
@@ -576,7 +593,397 @@ fn version_and_help_name_the_app() {
         "next-number",
         "config",
         "customers",
+        "send",
+        "void",
+        "rebook",
+        "apply-payment",
+        "reconcile",
+        "receivables",
+        "recognize",
     ] {
         assert!(help.contains(&format!("  {command}")), "{command}: {help}");
     }
+}
+
+/// The one contiguous run of lines `after` changes in `before`:
+/// `(removed, added)`.
+fn changed(before: &str, after: &str) -> (String, String) {
+    let b: Vec<&str> = before.split_inclusive('\n').collect();
+    let a: Vec<&str> = after.split_inclusive('\n').collect();
+    let head = b.iter().zip(&a).take_while(|(x, y)| x == y).count();
+    let tail = b[head..]
+        .iter()
+        .rev()
+        .zip(a[head..].iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    (
+        b[head..b.len() - tail].concat(),
+        a[head..a.len() - tail].concat(),
+    )
+}
+
+/// `text` with every `recognition:` id written `<id>` (ids are random).
+fn ids_blanked(text: &str) -> String {
+    text.split_inclusive('\n')
+        .map(|line| match line.find("recognition: ") {
+            Some(at) => {
+                let start = at + "recognition: ".len();
+                let end = line[start..]
+                    .find([',', '\n'])
+                    .map_or(line.len(), |e| start + e);
+                format!("{}<id>{}", &line[..start], &line[end..])
+            }
+            None => line.to_string(),
+        })
+        .collect()
+}
+
+const A_105: &str = "invoices/2026-11-10 Customer X Invoice 105.md";
+const A_106: &str = "invoices/2026-08-01 Wingtip Invoice 106.md";
+const A_107: &str = "invoices/2026-10-15 Contoso Invoice 107.md";
+const A_108: &str = "invoices/2026-11-17 Customer X Invoice 108.md";
+
+#[test]
+fn accrual_books_end_to_end() {
+    let books = Books::of("accrual");
+    let journal = books.read("books.journal");
+    let draft = books.read(A_108);
+
+    // 1. Preview the send: nothing written.
+    let preview = books.json(&["send", "108", "--dry-run"], 0);
+    assert_eq!(preview["status"], "draft");
+    assert_eq!(preview["basis"], "accrual");
+    assert!(preview["booked"].is_null());
+    assert_eq!(books.read("books.journal"), journal);
+
+    // 2. Send: the journal gains 108's transaction; the file is marked sent.
+    let sent = books.json(&["send", "108", "--via", "email"], 0);
+    assert_eq!(
+        (&sent["journal_written"], &sent["markdown_written"]),
+        (&Value::Bool(true), &Value::Bool(true))
+    );
+    let after_send = books.read("books.journal");
+    let (removed, added) = changed(&journal, &after_send);
+    assert_eq!(removed, "");
+    assert_eq!(
+        ids_blanked(&added),
+        "\n2026-11-17 Customer X | Invoice 108  ; invoice: 108, document: invoices/2026-11-17 \
+         Customer X Invoice 108.md, due: 2026-12-17, reference: PO #PY75334\n    assets:accounts \
+         receivable    $13600.00  ; customer: Customer X\n    liabilities:deferred-revenue  \
+         $-12000.00  ; customer: Customer X, recognition: <id>, service-start: 2026-12-01, \
+         term-months: 12, item: Platform subscription 1 year\n    revenue:consulting            \
+         $-1600.00  ; customer: Customer X, item: Senior architect hours\n"
+    );
+    let sent_file = books.read(A_108);
+    assert!(sent_file.contains("status: sent\n"));
+    assert!(sent_file.ends_with(&draft[draft.find("\n---\n").expect("body")..]));
+    for line in ["sent_date: 2026-11-17\n", "sent_via: email\n", "paid: no\n"] {
+        assert!(sent_file.contains(line), "{line}: {sent_file}");
+    }
+    // Sending again is refused (exit 2, with the error's code).
+    let again = books.json(&["send", "108"], 2);
+    assert_eq!(again["code"], "status");
+
+    // 3. Ledgeline links the rest of 107's payment: reconcile mirrors it.
+    let linked = format!(
+        "{after_send}\n2026-11-16 CONTOSO ACH 4  ; invoice: 107\n    assets:bank:checking        \
+         $2000.00\n    assets:accounts receivable  $-2000.00  ; customer: Contoso, match:in0107\n"
+    );
+    fs::write(books.file("books.journal"), &linked).expect("writes");
+    let before_107 = books.read(A_107);
+    assert_eq!(
+        books
+            .json(&["list", "--open"], 0)
+            .as_array()
+            .expect("list")
+            .iter()
+            .filter_map(|d| d["number"].as_str())
+            .collect::<Vec<_>>(),
+        ["108", "105", "106"],
+        "open reads the books, before the mirror is refreshed"
+    );
+    let dry = books.json(&["reconcile", "--dry-run"], 0);
+    snapshot("accrual-reconcile-dry-run.json", &books.normalized(&dry));
+    assert_eq!(books.read(A_107), before_107);
+    let done = books.json(&["reconcile"], 0);
+    assert_eq!(done["changed"][0]["written"], true);
+    assert_eq!(
+        changed(&before_107, &books.read(A_107)),
+        (
+            "paid: partial 2026-11-05 $1,000\n".to_string(),
+            "paid: 2026-11-16\n".to_string()
+        )
+    );
+    assert_eq!(
+        books.read("books.journal"),
+        linked,
+        "reconcile never writes the books"
+    );
+    assert_eq!(
+        books.json(&["reconcile"], 0)["changed"],
+        serde_json::json!([])
+    );
+
+    // 4. Edit 105 after sending: check says the books are out of date;
+    // rebook replaces its transaction in place.
+    let edited = books.read(A_105).replace(
+        "| Junior engineer              | 50  |",
+        "| Junior engineer              | 51  |",
+    );
+    fs::write(books.file(A_105), &edited).expect("writes");
+    books.json(&["recalc", "105"], 0);
+    let check = books.json(&["check"], 0);
+    let stale: Vec<&Value> = check["problems"]
+        .as_array()
+        .expect("problems")
+        .iter()
+        .filter(|p| p["code"] == "books-out-of-date")
+        .collect();
+    assert_eq!(stale.len(), 1);
+    assert_eq!(stale[0]["fix"]["edit"]["command"], "rebook 105");
+    let recalculated = books.read(A_105);
+    let rebooked = books.json(&["rebook", "105"], 0);
+    assert_eq!(rebooked["changed"], true);
+    assert_eq!(
+        books.read(A_105),
+        recalculated,
+        "rebook writes the books only"
+    );
+    let (removed, added) = changed(&linked, &books.read("books.journal"));
+    assert_eq!(
+        (removed.as_str(), added.as_str()),
+        (
+            "    assets:accounts receivable     $8350.00  ; customer: Customer X\n    \
+             revenue:consulting             $-7200.00  ; customer: Customer X, item: Senior \
+             architect hours\n    revenue:consulting:delivery    $-9500.00  ; customer: Customer \
+             X, item: Junior engineer\n",
+            "    assets:accounts receivable     $8540.00  ; customer: Customer X\n    \
+             revenue:consulting             $-7200.00  ; customer: Customer X, item: Senior \
+             architect hours\n    revenue:consulting:delivery    $-9690.00  ; customer: Customer \
+             X, item: Junior engineer\n"
+        )
+    );
+    assert_eq!(books.json(&["check"], 0)["warnings"], 4);
+
+    // 5. Void 106: a reversal linked to its receivable; the file is void.
+    let before_void = books.read("books.journal");
+    let voided = books.json(&["void", "106"], 0);
+    assert_eq!(voided["journal_written"], true);
+    let link = voided["link"].as_str().expect("link").to_string();
+    let after_void = books.read("books.journal");
+    // The receivable joins the reversal's link; the reversal is placed by
+    // date. Nothing else changes.
+    let unlinked = after_void
+        .replace(&format!(", match: {link}"), "")
+        .replace(&format!(", match:{link}"), "");
+    let reversal = "\n2026-11-17 Wingtip | Invoice 106 (void)  ; invoice: 106, void: 2026-11-17\n    \
+                    assets:accounts receivable  $-1200.00  ; customer: Wingtip\n    \
+                    revenue:consulting          $1200.00  ; customer: Wingtip, item: Retainer\n";
+    assert_eq!(unlinked.replacen(reversal, "", 1), before_void);
+    assert_eq!(
+        after_void.matches(&link.to_string()).count(),
+        2,
+        "{after_void}"
+    );
+    let file = books.read(A_106);
+    assert!(file.contains("status: void\n") && file.contains("void_date: 2026-11-17\n"));
+
+    // 6. Receivables: 105 and 108 open; 106 gone with its void.
+    let receivables = books.json(&["receivables"], 0);
+    snapshot("accrual-receivables.json", &books.normalized(&receivables));
+    let open: Vec<&str> = receivables["open"]
+        .as_array()
+        .expect("open")
+        .iter()
+        .filter_map(|o| o["number"].as_str())
+        .collect();
+    assert_eq!(open, ["2001", "2002", "2003", "2004", "105", "108"]);
+    snapshot(
+        "accrual-receivables-aging.txt",
+        &books.text(&["receivables", "--aging"]),
+    );
+
+    // 7. Recognition: listed, refused after today, posted once.
+    let before_recognize = books.read("books.journal");
+    let due = books.json(&["recognize", "--dry-run"], 0);
+    assert_eq!(due["entries"].as_array().map(Vec::len), Some(10));
+    assert_eq!(books.read("books.journal"), before_recognize);
+    let late = books.json(&["recognize", "--through", "2026-11-18"], 2);
+    assert_eq!(late["code"], "refused");
+    let posted = books.json(&["recognize"], 0);
+    assert_eq!(posted["written"], true);
+    let after = books.read("books.journal");
+    assert_eq!(
+        after.matches("Recognized  ; recognition:").count(),
+        before_recognize
+            .matches("Recognized  ; recognition:")
+            .count()
+            + 10
+    );
+    assert_eq!(books.json(&["recognize"], 0)["written"], false);
+
+    // 8. Everything agrees.
+    let last = books.json(&["reconcile"], 0);
+    assert_eq!(
+        (last["changed"].as_array().map(Vec::len), &last["errors"]),
+        (Some(0), &Value::from(0))
+    );
+}
+
+const C_203: &str = "invoices/2026-11-05 Wingtip Invoice 203.md";
+const C_207: &str = "invoices/2026-11-16 Customer X Invoice 207.md";
+
+/// Deposits as Ledgeline's importer writes them.
+const IMPORTS: &str = "
+2026-11-16 * ACH WINGTIP PAYMENTS  ; id: ach-41
+    assets:bank:checking  $1,200.00
+    income:unknown
+
+2026-11-17 * WIRE CUSTOMER X  ; id: wx-7
+    assets:bank:checking   $4,000.00
+    income:unknown        $-4,000.00
+";
+
+#[test]
+fn cash_books_end_to_end() {
+    let books = Books::of("cash");
+    let imported = format!("{}{IMPORTS}", books.read("books.journal"));
+    fs::write(books.file("books.journal"), &imported).expect("writes");
+    let (file_203, file_207) = (books.read(C_203), books.read(C_207));
+
+    // 1. Candidates for 207: the wire, a partial payment. Nothing written.
+    let options = books.json(&["apply-payment", "207"], 0);
+    snapshot("cash-apply-payment-207.json", &books.normalized(&options));
+    assert_eq!(options["remaining"], "7000.00");
+    let wire = options["candidates"]
+        .as_array()
+        .expect("candidates")
+        .iter()
+        .find(|c| c["description"] == "WIRE CUSTOMER X")
+        .and_then(|c| c["reference"].as_str())
+        .expect("the wire")
+        .to_string();
+    assert_eq!(books.read("books.journal"), imported);
+
+    // 2. Apply it by a reference prefix: the deposit is re-split (its bank
+    // leg kept), 207's mirror follows, and an undo record is kept.
+    let applied = books.json(&["apply-payment", "207", "--txn", &wire[..8]], 0);
+    let (removed, added) = changed(&imported, &books.read("books.journal"));
+    assert_eq!(
+        (removed.as_str(), added.as_str()),
+        (
+            "2026-11-17 * WIRE CUSTOMER X  ; id: wx-7\n    assets:bank:checking   $4,000.00\n    \
+             income:unknown        $-4,000.00\n",
+            "2026-11-17 * WIRE CUSTOMER X  ; id: wx-7, invoice:207\n    assets:bank:checking   \
+             $4,000.00\n    revenue:consulting           $-1714.28  ; customer: Customer X\n    \
+             revenue:consulting:delivery  $-2285.72  ; customer: Customer X\n"
+        )
+    );
+    assert_eq!(applied["mirror"]["after"], "partial 2026-11-17 $4,000");
+    assert_eq!(
+        changed(&file_207, &books.read(C_207)),
+        (
+            "paid: no\n".to_string(),
+            "paid: partial 2026-11-17 $4,000\n".to_string()
+        )
+    );
+    let undo_file = applied["undo_file"]
+        .as_str()
+        .expect("undo file")
+        .to_string();
+    assert!(undo_file.starts_with(".ledgeline-invoicer/undo/apply-payment-207-"));
+    let record: Value = serde_json::from_str(&books.read(&undo_file)).expect("json");
+    assert_eq!(
+        record["original_text"],
+        "2026-11-17 * WIRE CUSTOMER X  ; id: wx-7\n    assets:bank:checking   $4,000.00\n    income:unknown        $-4,000.00\n"
+    );
+
+    // 3. 203 paid exactly by its ACH: paid on the deposit's date.
+    let ach = books.json(&["apply-payment", "203"], 0)["candidates"][0]["reference"]
+        .as_str()
+        .expect("reference")
+        .to_string();
+    books.json(&["apply-payment", "203", "--txn", &ach], 0);
+    assert_eq!(
+        changed(&file_203, &books.read(C_203)),
+        ("paid: no\n".to_string(), "paid: 2026-11-16\n".to_string())
+    );
+    // A paid invoice has nothing left to apply.
+    assert_eq!(
+        books.json(&["apply-payment", "203"], 0)["candidates"],
+        serde_json::json!([])
+    );
+    // Cash books refuse to void an invoice with payments applied.
+    assert_eq!(books.json(&["void", "203"], 2)["code"], "refused");
+
+    // 4. Receivables from the files, less what is applied.
+    let receivables = books.json(&["receivables"], 0);
+    snapshot("cash-receivables.json", &books.normalized(&receivables));
+
+    // 5. Undo 207's payment: the deposit is back byte for byte, the mirror
+    // follows, the record is gone.
+    let before_undo = books.read("books.journal");
+    let undone = books.json(&["apply-payment", "207", "--undo"], 0);
+    assert_eq!(undone["mirror"]["after"], "no");
+    let (removed, added) = changed(&before_undo, &books.read("books.journal"));
+    assert!(removed.contains("invoice:207"), "{removed}");
+    assert_eq!(
+        added,
+        "2026-11-17 * WIRE CUSTOMER X  ; id: wx-7\n    assets:bank:checking   $4,000.00\n    \
+         income:unknown        $-4,000.00\n"
+    );
+    assert_eq!(books.read(C_207), file_207);
+    assert!(!books.file(&undo_file).exists());
+    let none = books.json(&["apply-payment", "207", "--undo"], 2);
+    assert!(
+        none["error"]
+            .as_str()
+            .expect("message")
+            .contains("no undo record")
+    );
+
+    // 6. Accrual-only and cash-only commands say so.
+    assert_eq!(
+        Books::of("accrual").json(&["apply-payment", "105"], 2)["code"],
+        "refused"
+    );
+
+    // 7. Everything agrees.
+    let last = books.json(&["reconcile"], 0);
+    assert_eq!(last["changed"], serde_json::json!([]));
+    assert_eq!(last["errors"], 0);
+}
+
+#[test]
+fn reconcile_and_check_exit_1_on_books_errors() {
+    let books = Books::of("accrual");
+    // 107's transaction is gone: a sent invoice with nothing booked.
+    let journal = books.read("books.journal");
+    let start = journal
+        .find("2026-10-15 Contoso | Invoice 107")
+        .expect("107");
+    let end = start + journal[start..].find("\n\n").expect("end") + 2;
+    fs::write(
+        books.file("books.journal"),
+        format!("{}{}", &journal[..start], &journal[end..]),
+    )
+    .expect("writes");
+    let report = books.json(&["reconcile"], 1);
+    let missing: Vec<&Value> = report["problems"]
+        .as_array()
+        .expect("problems")
+        .iter()
+        .filter(|p| p["code"] == "missing-transaction")
+        .collect();
+    assert_eq!(missing.len(), 1);
+    assert_eq!(missing[0]["file"], A_107);
+    assert_eq!(missing[0]["fix"]["edit"]["command"], "send 107");
+    assert_eq!(books.json(&["check"], 1)["errors"], 1);
+    let text = books.run(&["reconcile"]);
+    assert_eq!(text.status.code(), Some(1));
+    // `send` books a sent invoice that was never booked.
+    let sent = books.json(&["send", "107"], 0);
+    assert_eq!(sent["journal_written"], true);
+    assert_eq!(books.json(&["check"], 0)["errors"], 0);
 }

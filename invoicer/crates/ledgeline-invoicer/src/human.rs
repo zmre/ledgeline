@@ -1,12 +1,18 @@
 //! Text output: aligned columns and `key  value` blocks. `--json` prints the
 //! same values with serde instead; nothing here decides anything.
 
-use invoicer_core::doc::{Header, Paid};
+use invoicer_core::books::{
+    Basis, PaymentApplied, PaymentOptions, Preview, Rebooked, Recognized, Sent, Voided,
+};
+use invoicer_core::doc::{Header, Money, Paid};
 use invoicer_core::edit::{Created, RecalcReport, SetOutcome};
 use invoicer_core::problem::Problem;
+use invoicer_core::receivables::ReceivablesView;
+use invoicer_core::reconcile::{MirrorChange, Reconciled};
 use invoicer_core::views::{
     CheckReport, ConfigView, Counts, CustomerDetail, CustomerEntry, DocDetail, DocEntry,
 };
+use ledgeline_core::vault::VaultPath;
 use std::fmt::Write as _;
 use unicode_width::UnicodeWidthStr;
 
@@ -571,6 +577,409 @@ pub fn recalc(report: &RecalcReport, dry_run: bool) -> String {
     }
     if out.is_empty() {
         out.push_str("Every amount already agrees with its arithmetic.\n");
+    }
+    out
+}
+
+/// `value` in `commodity`, as the journal writes money.
+fn cash(money: &Money, commodity: Option<&str>, value: ledgeline_core::Dec) -> String {
+    money.style(commodity).format(value)
+}
+
+fn indent_block(text: &str) -> String {
+    text.lines().map(|l| format!("    {l}\n")).collect()
+}
+
+fn basis_name(basis: Basis) -> &'static str {
+    match basis {
+        Basis::Accrual => "accrual",
+        Basis::Cash => "cash",
+    }
+}
+
+/// `send --dry-run` and `rebook --dry-run`.
+pub fn preview(p: &Preview, money: &Money) -> String {
+    let mut out = format!(
+        "Invoice {} ({}, {} books): {}\n",
+        p.number,
+        p.path,
+        basis_name(p.basis),
+        cash(money, Some(&p.booking.commodity), p.booking.total)
+    );
+    match (&p.would_book, &p.booked) {
+        (None, _) => {
+            out.push_str("  Cash books book nothing at send; Apply payment books its payments.\n")
+        }
+        (Some(would), None) => {
+            let _ = write!(out, "  Would book:\n{}", indent_block(would));
+        }
+        (Some(would), Some(booked)) => {
+            if p.in_step == Some(true) {
+                let _ = write!(
+                    out,
+                    "  Booked, as its file says:\n{}",
+                    indent_block(&booked.text)
+                );
+            } else {
+                let _ = write!(
+                    out,
+                    "  Booked:\n{}  Its file now says to book:\n{}",
+                    indent_block(&booked.text),
+                    indent_block(would)
+                );
+            }
+        }
+    }
+    if p.linked {
+        out.push_str("  Payments are linked to it.\n");
+    }
+    out
+}
+
+/// `send`.
+pub fn sent(s: &Sent) -> String {
+    let mut out = format!("Sent invoice {} ({})\n", s.number, s.path);
+    match (&s.booked, s.journal_written) {
+        (Some(txn), true) => {
+            let _ = write!(out, "  Booked:\n{}", indent_block(&txn.text));
+        }
+        (Some(_), false) => out.push_str("  Already booked; only its file was finished.\n"),
+        (None, _) => out.push_str("  Cash books: nothing booked until it is paid.\n"),
+    }
+    out
+}
+
+/// `void`.
+pub fn voided(v: &Voided) -> String {
+    let mut out = format!("Voided invoice {} ({})\n", v.number, v.path);
+    match (&v.reversal, v.journal_written) {
+        (Some(txn), true) => {
+            let _ = write!(out, "  Reversed:\n{}", indent_block(&txn.text));
+        }
+        (Some(_), false) => out.push_str("  Already reversed; only its file was finished.\n"),
+        (None, _) => out.push_str("  Nothing was booked; only its file changed.\n"),
+    }
+    out
+}
+
+fn mirror_line(mirror: Option<&MirrorChange>) -> String {
+    mirror.map_or_else(String::new, |m| {
+        format!(
+            "  paid: {} → {}{}\n",
+            m.before.as_deref().unwrap_or("(none)"),
+            m.after,
+            if m.written { "" } else { " (not written)" }
+        )
+    })
+}
+
+/// `rebook`.
+pub fn rebooked(r: &Rebooked, mirror: Option<&MirrorChange>) -> String {
+    let mut out = if r.changed {
+        let mut out = format!("Re-booked invoice {} ({})\n", r.number, r.path);
+        if let Some(txn) = &r.booked {
+            let _ = write!(out, "  Now:\n{}", indent_block(&txn.text));
+        }
+        out
+    } else if r.booked.is_some() {
+        format!(
+            "Invoice {}'s books already agree with its file.\n",
+            r.number
+        )
+    } else {
+        format!(
+            "Invoice {}: {} books hold nothing to re-book.\n",
+            r.number,
+            basis_name(r.basis)
+        )
+    };
+    for w in &r.warnings {
+        let _ = writeln!(out, "  warning: {w}");
+    }
+    out.push_str(&mirror_line(mirror));
+    out
+}
+
+fn short(reference: &str) -> String {
+    reference.chars().take(12).collect()
+}
+
+/// `apply-payment NUM` (no `--txn`).
+pub fn payment_options(o: &PaymentOptions, money: &Money) -> String {
+    let c = Some(o.commodity.as_str());
+    let mut out = format!(
+        "Invoice {}: total {}, paid {}, due {}\n",
+        o.number,
+        cash(money, c, o.total),
+        cash(money, c, o.paid),
+        cash(money, c, o.remaining)
+    );
+    if o.candidates.is_empty() {
+        out.push_str(if o.remaining.mantissa > 0 {
+            "No deposit in the books fits it.\n"
+        } else {
+            "Nothing is due.\n"
+        });
+        return out;
+    }
+    let c_commodity = c;
+    let rows: Vec<Vec<String>> = o
+        .candidates
+        .iter()
+        .map(|c| {
+            let mut why = Vec::new();
+            if c.by_number {
+                why.push("number");
+            }
+            if c.by_customer {
+                why.push("customer");
+            }
+            why.push(if c.exact { "exact" } else { "partial" });
+            vec![
+                short(&c.reference),
+                c.date.clone(),
+                c.description.clone(),
+                cash(money, c_commodity, c.received),
+                why.join(", "),
+            ]
+        })
+        .collect();
+    out.push('\n');
+    out.push_str(&columns(
+        &[
+            left("Ref"),
+            left("Date"),
+            left("Description"),
+            right("Received"),
+            left("Matches"),
+        ],
+        &rows,
+    ));
+    let _ = write!(
+        out,
+        "\nApply one: ledgeline-invoicer apply-payment {} --txn REF\n",
+        o.number
+    );
+    out
+}
+
+/// `apply-payment NUM --txn REF`.
+pub fn payment_applied(
+    p: &PaymentApplied,
+    money: &Money,
+    undo_file: Option<&VaultPath>,
+    mirror: Option<&MirrorChange>,
+    warnings: &[String],
+) -> String {
+    let mut out = format!(
+        "Applied {} to invoice {} ({} still due)\n",
+        cash(money, None, p.received),
+        p.number,
+        cash(money, None, p.remaining)
+    );
+    let _ = write!(out, "{}", indent_block(&p.transaction.text));
+    if let Some(file) = undo_file {
+        let _ = writeln!(
+            out,
+            "  Undo: ledgeline-invoicer apply-payment {} --undo --txn {} (record in {file})",
+            p.number,
+            short(&p.undo.reference)
+        );
+    }
+    out.push_str(&mirror_line(mirror));
+    for w in warnings {
+        let _ = writeln!(out, "  warning: {w}");
+    }
+    out
+}
+
+/// `apply-payment NUM --undo`.
+pub fn payment_undone(
+    number: &str,
+    date: &str,
+    description: &str,
+    mirror: Option<&MirrorChange>,
+    warnings: &[String],
+) -> String {
+    let mut out = format!(
+        "Undid the payment applied to invoice {number}: {date} {description} is as it was\n"
+    );
+    out.push_str(&mirror_line(mirror));
+    for w in warnings {
+        let _ = writeln!(out, "  warning: {w}");
+    }
+    out
+}
+
+/// `reconcile`.
+pub fn reconciled(r: &Reconciled, dry_run: bool) -> String {
+    let mut out = String::new();
+    let verb = if dry_run { "Would mirror" } else { "Mirrored" };
+    for c in &r.changed {
+        let _ = writeln!(
+            out,
+            "{verb} {}: paid: {} → {}",
+            c.path,
+            c.before.as_deref().unwrap_or("(none)"),
+            c.after
+        );
+    }
+    for f in &r.failed {
+        let _ = writeln!(out, "Failed {}: {}", f.path, f.error);
+    }
+    for p in &r.problems {
+        let _ = writeln!(out, "{p}");
+    }
+    let mut summary = format!(
+        "{} checked ({} books)",
+        plural(r.checked, "sent invoice", "sent invoices"),
+        basis_name(r.basis)
+    );
+    if r.changed.is_empty() && r.failed.is_empty() {
+        summary.push_str("; every paid: mirror agrees with the books");
+    }
+    let notes = counts_note(r.counts);
+    if !notes.is_empty() {
+        let _ = write!(summary, "; {}", notes.join(" and "));
+    }
+    let _ = writeln!(out, "{summary}.");
+    out
+}
+
+/// `receivables [--aging]`.
+pub fn receivables(v: &ReceivablesView, money: &Money, aging: bool) -> String {
+    let mut out = String::new();
+    if v.open.is_empty() {
+        let _ = writeln!(
+            out,
+            "Nothing is owed ({} books, {}).",
+            basis_name(v.basis),
+            v.today
+        );
+    } else {
+        let rows: Vec<Vec<String>> = v
+            .open
+            .iter()
+            .map(|o| {
+                vec![
+                    o.number.clone().unwrap_or_default(),
+                    o.customer.clone().unwrap_or_default(),
+                    o.date.clone(),
+                    o.due.clone(),
+                    if o.days_past_due > 0 {
+                        o.days_past_due.to_string()
+                    } else {
+                        String::new()
+                    },
+                    cash(money, Some(&o.commodity), o.amount),
+                    cash(money, Some(&o.commodity), o.outstanding),
+                ]
+            })
+            .collect();
+        let _ = writeln!(
+            out,
+            "Open invoices ({} books, {}{}):\n",
+            basis_name(v.basis),
+            v.today,
+            if v.basis == Basis::Cash {
+                "; owed by their files, less payments applied"
+            } else {
+                ""
+            }
+        );
+        out.push_str(&columns(
+            &[
+                left("Number"),
+                left("Customer"),
+                left("Date"),
+                left("Due"),
+                right("Late"),
+                right("Amount"),
+                right("Owed"),
+            ],
+            &rows,
+        ));
+    }
+    if aging && !v.aging.is_empty() {
+        out.push_str("\nAging:\n\n");
+        let mut cols = vec![left("Account")];
+        let labels: Vec<&'static str> = v
+            .aging
+            .first()
+            .map(|a| a.buckets.iter().map(|b| b.label).collect())
+            .unwrap_or_default();
+        cols.extend(labels.iter().map(|l| right(l)));
+        cols.push(right("Total"));
+        let rows: Vec<Vec<String>> = v
+            .aging
+            .iter()
+            .map(|a| {
+                let c = Some(a.commodity.as_str());
+                let mut row = vec![a.account.clone().unwrap_or_else(|| "(cash books)".into())];
+                row.extend(a.buckets.iter().map(|b| cash(money, c, b.amount)));
+                row.push(cash(money, c, a.total));
+                row
+            })
+            .collect();
+        out.push_str(&columns(&cols, &rows));
+    }
+    let mut facts = Vec::new();
+    for d in &v.dso {
+        if let Some(value) = &d.value {
+            facts.push(format!(
+                "DSO {value} days ({}, over {} days)",
+                d.commodity, d.days
+            ));
+        }
+    }
+    if let Some(average) = &v.average_days_to_pay.average {
+        facts.push(format!(
+            "average days to pay {average} (over {})",
+            plural(v.average_days_to_pay.invoices, "invoice", "invoices")
+        ));
+    }
+    if !v.unapplied.is_empty() {
+        facts.push(plural(
+            v.unapplied.len(),
+            "unapplied payment",
+            "unapplied payments",
+        ));
+    }
+    if !v.drafts.is_empty() {
+        facts.push(plural(v.drafts.len(), "draft waiting", "drafts waiting"));
+    }
+    if !facts.is_empty() {
+        let _ = writeln!(out, "\n{}.", capitalize(&facts.join("; ")));
+    }
+    out
+}
+
+/// `recognize`.
+pub fn recognized(r: &Recognized) -> String {
+    let mut out = String::new();
+    let verb = if r.written { "Posted" } else { "Due" };
+    if r.entries.is_empty() && r.adjustments.is_empty() {
+        let _ = writeln!(out, "Nothing is due through {}.", r.through);
+    } else {
+        let _ = writeln!(
+            out,
+            "{verb} through {}: {}",
+            r.through,
+            plural(r.entries.len(), "entry", "entries")
+        );
+        for e in &r.entries {
+            let _ = writeln!(out, "  {}  {}", e.date, e.id);
+        }
+        for id in &r.adjustments {
+            let _ = writeln!(out, "  closed-period adjustment  {id}");
+        }
+    }
+    if !r.closed.is_empty() {
+        let _ = writeln!(
+            out,
+            "{} in closed periods left unposted (--include-closed folds them into adjustments).",
+            plural(r.closed.len(), "entry", "entries")
+        );
     }
     out
 }

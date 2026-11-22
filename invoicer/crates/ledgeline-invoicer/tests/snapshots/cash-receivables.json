@@ -1,0 +1,92 @@
+{
+  "aging": [
+    {
+      "account": null,
+      "buckets": [
+        {
+          "amount": "4500.00",
+          "count": 2,
+          "label": "Current"
+        },
+        {
+          "amount": "0",
+          "count": 0,
+          "label": "1–30"
+        },
+        {
+          "amount": "0",
+          "count": 0,
+          "label": "31–60"
+        },
+        {
+          "amount": "0",
+          "count": 0,
+          "label": "61–90"
+        },
+        {
+          "amount": "0",
+          "count": 0,
+          "label": "91+"
+        }
+      ],
+      "commodity": "$",
+      "oldest_overdue": null,
+      "total": "4500.00"
+    }
+  ],
+  "average_days_to_pay": {
+    "average": "10.7",
+    "invoices": 3
+  },
+  "basis": "cash",
+  "drafts": [
+    {
+      "customer": "Customer X",
+      "date": "2026-11-17",
+      "number": "204",
+      "path": "invoices/2026-11-17 Customer X Invoice 204.md",
+      "total": "$3,200.00"
+    }
+  ],
+  "dso": [
+    {
+      "billed": "18200.00",
+      "commodity": "$",
+      "days": 90,
+      "outstanding": "4500.00",
+      "value": "22.3"
+    }
+  ],
+  "open": [
+    {
+      "account": null,
+      "amount": "2000.00",
+      "bucket": "Current",
+      "commodity": "$",
+      "customer": "Fabrikam",
+      "date": "2026-11-01",
+      "days_past_due": -14,
+      "due": "2026-12-01",
+      "number": "202",
+      "outstanding": "1500.00",
+      "path": "invoices/2026-11-01 Fabrikam Invoice 202.md",
+      "source": "markdown"
+    },
+    {
+      "account": null,
+      "amount": "7000.00",
+      "bucket": "Current",
+      "commodity": "$",
+      "customer": "Customer X",
+      "date": "2026-11-16",
+      "days_past_due": -29,
+      "due": "2026-12-16",
+      "number": "207",
+      "outstanding": "3000.00",
+      "path": "invoices/2026-11-16 Customer X Invoice 207.md",
+      "source": "markdown"
+    }
+  ],
+  "today": "2026-11-17",
+  "unapplied": []
+}

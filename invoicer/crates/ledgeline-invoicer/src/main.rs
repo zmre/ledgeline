@@ -1,26 +1,37 @@
 //! `ledgeline-invoicer` — Ledgeline Invoicer's binary (`invoicer/ARCHITECTURE.md`
 //! §2.2, §6.4).
 //!
-//! The read-only CLI (invoicer PLAN 1c): `new`, `list`, `show`, `set`,
-//! `recalc`, `check`, `next-number`, `config` and `customers list|show`.
-//! "Read-only" is about the books: `new`, `set` and `recalc` write markdown
-//! documents, never the journal (I2). Every command takes `--json`.
+//! The documents (invoicer PLAN 1c): `new`, `list`, `show`, `set`, `recalc`,
+//! `check`, `next-number`, `config` and `customers list|show` write markdown
+//! only, never the journal (I2). The books (PLAN 2c): `send`, `void`,
+//! `rebook`, `apply-payment`, `reconcile`, `receivables` and `recognize`.
+//! Every command takes `--json`.
 //!
 //! This file parses arguments, opens the books and prints; each operation is
-//! one `invoicer_core` function (`session`, `views`, `edit`), shared with the
-//! API to come. The GUI arrives in Phase 3.
+//! one `invoicer_core` function (`session`, `views`, `edit`, `books`,
+//! `reconcile`, `receivables`), shared with the API to come. The GUI
+//! arrives in Phase 3.
 //!
-//! Exit codes: 0 done; 1 `check` found problems; 2 the command couldn't run
-//! (a usage error, books that don't open, a refused write).
+//! Every write to the books is retried once when the journal or the file
+//! changed between reading and writing (Ledgeline saved meanwhile): nothing
+//! was written by the first attempt, and the second reads afresh.
+//!
+//! Exit codes: 0 done; 1 `check` or `reconcile` found errors; 2 the command
+//! couldn't run (a usage error, books that don't open, a refused write).
 
 mod human;
 
 use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser, Subcommand};
+use invoicer_core::books::{
+    self, ApplyPayment, BooksError, InvoiceBooks, Rebook, Recognize, Send, UndoRecord, Void,
+};
 use invoicer_core::doc::{DocType, Status};
 use invoicer_core::draft::{DraftRow, NewInvoice};
 use invoicer_core::edit::{self, WriteError};
 use invoicer_core::frontmatter::FieldEdit;
+use invoicer_core::index::DocumentIndex;
 use invoicer_core::index::ListFilter;
+use invoicer_core::reconcile::{self, MirrorChange, ReconcileOptions};
 use invoicer_core::session::Session;
 use invoicer_core::table::books::is_iso_date;
 use invoicer_core::views::{self, ListQuery};
@@ -91,6 +102,102 @@ enum Command {
     /// Customers: person and organization notes tagged as customers.
     #[command(subcommand)]
     Customers(CustomersCommand),
+    /// Send an invoice: book it (accrual books), then mark it sent.
+    Send(SendArgs),
+    /// Void an invoice: reverse its booking, then mark it void.
+    Void(VoidArgs),
+    /// Re-book a sent invoice after an edit (nothing when it already agrees).
+    Rebook(RebookArgs),
+    /// Cash books: list the deposits that might pay an invoice, apply one,
+    /// or undo one.
+    ApplyPayment(ApplyPaymentArgs),
+    /// Mirror the books' payment state into each sent invoice's `paid:`, and
+    /// report where the books and the files disagree. Exit 1 on errors.
+    Reconcile(ReconcileArgs),
+    /// Open invoices, aging, DSO and average days to pay.
+    Receivables(ReceivablesArgs),
+    /// Post the recognition entries due through a date (never after today).
+    Recognize(RecognizeArgs),
+}
+
+#[derive(clap::Args, Debug)]
+struct SendArgs {
+    /// A number (`105`) or a file in the books folder.
+    document: String,
+    /// How it was delivered (`sent_via`): email, portal, mail…
+    #[arg(long, value_name = "HOW")]
+    via: Option<String>,
+    /// Show what would be booked; write nothing.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(clap::Args, Debug)]
+struct VoidArgs {
+    /// A number (`105`) or a file in the books folder.
+    document: String,
+    /// The void's date (YYYY-MM-DD): the reversal's and `void_date`.
+    /// Default: today.
+    #[arg(long, value_name = "DATE")]
+    date: Option<String>,
+}
+
+#[derive(clap::Args, Debug)]
+struct RebookArgs {
+    /// A number (`105`) or a file in the books folder.
+    document: String,
+    /// Show what is booked and what would be; write nothing.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(clap::Args, Debug)]
+struct ApplyPaymentArgs {
+    /// A number (`207`) or a file in the books folder.
+    document: String,
+    /// The deposit to apply (a candidate's reference, or its first 6+
+    /// characters). Without it, the candidates are listed. With --undo, the
+    /// applied deposit to undo.
+    #[arg(long, value_name = "REF")]
+    txn: Option<String>,
+    /// Undo a payment applied to this invoice (the only one, or --txn's),
+    /// writing the deposit back exactly as it was.
+    #[arg(long)]
+    undo: bool,
+}
+
+#[derive(clap::Args, Debug)]
+struct ReconcileArgs {
+    /// Numbers or files. Default: every sent invoice.
+    documents: Vec<String>,
+    /// Report what would change without writing.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+#[derive(clap::Args, Debug)]
+struct ReceivablesArgs {
+    /// Show the aging buckets too (`--json` always includes them).
+    #[arg(long)]
+    aging: bool,
+    /// The days sales outstanding window, in days.
+    #[arg(long, value_name = "DAYS", default_value_t = 90)]
+    dso_days: u32,
+}
+
+#[derive(clap::Args, Debug)]
+struct RecognizeArgs {
+    /// Post entries dated on or before this (YYYY-MM-DD, never after
+    /// today). Default: today.
+    #[arg(long, value_name = "DATE")]
+    through: Option<String>,
+    /// Also fold the entries due in closed periods into one adjustment per
+    /// schedule, dated today.
+    #[arg(long)]
+    include_closed: bool,
+    /// List what is due; write nothing.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(clap::Args, Debug)]
@@ -182,13 +289,63 @@ enum CustomersCommand {
     },
 }
 
-/// A failure that stops a command (exit 2).
-struct Failure(String);
+/// A failure that stops a command (exit 2), with a stable code for the books
+/// errors ([`BooksError::code`]).
+struct Failure(String, Option<&'static str>);
 
 impl<E: Display> From<E> for Failure {
     fn from(error: E) -> Self {
-        Self(error.to_string())
+        Self(error.to_string(), None)
     }
+}
+fn books_failure(error: BooksError) -> Failure {
+    Failure(error.to_string(), Some(error.code()))
+}
+
+/// Run a books write, retried once when the files changed under it.
+fn retrying<T>(op: impl FnMut() -> Result<T, BooksError>) -> Result<T, Failure> {
+    let (result, retried) = books::retry_once(op);
+    if retried {
+        eprintln!(
+            "ledgeline-invoicer: the books or the file changed while writing (nothing was \
+             written); read them again and retried"
+        );
+    }
+    result.map_err(books_failure)
+}
+
+/// The number of the document `target` names.
+fn number_of(session: &Session, target: &str) -> Result<String, Failure> {
+    let path = document_path(session, target)?;
+    session
+        .index()
+        .doc(&path)
+        .and_then(|d| d.number())
+        .map(str::to_string)
+        .ok_or_else(|| Failure(format!("{path} has no `invoice_num`"), None))
+}
+
+/// Refresh one invoice's `paid:` mirror after a write that moved its
+/// payments (the books read afresh). `None` when nothing changed or the
+/// books can't say.
+fn mirror_one(
+    books: &InvoiceBooks,
+    index: &mut DocumentIndex,
+    number: &str,
+) -> Option<MirrorChange> {
+    let loaded = books.load().ok()?;
+    reconcile::reconcile(
+        books,
+        index,
+        &loaded,
+        &ReconcileOptions {
+            only: Some(vec![number.to_string()]),
+            dry_run: false,
+        },
+    )
+    .changed
+    .into_iter()
+    .next()
 }
 
 /// Where the journal came from, for the note printed when it was a guess.
@@ -204,11 +361,10 @@ fn resolve_journal(cli: &Cli) -> Result<(PathBuf, Source), Failure> {
     if let (Some(a), Some(b)) = (&cli.journal, &cli.file)
         && a != b
     {
-        return Err(Failure(format!(
-            "two journals given: {} and -f {}",
-            a.display(),
-            b.display()
-        )));
+        return Err(Failure(
+            format!("two journals given: {} and -f {}", a.display(), b.display()),
+            None,
+        ));
     }
     if let Some(path) = cli.journal.clone().or_else(|| cli.file.clone()) {
         return Ok((path, Source::Given));
@@ -221,7 +377,7 @@ fn resolve_journal(cli: &Cli) -> Result<(PathBuf, Source), Failure> {
         .ok_or_else(|| {
             Failure(format!(
                 "no journal: pass one (ledgeline-invoicer -f books.journal list) or set ${FIXTURE_ENV}"
-            ))
+            ), None)
         })
 }
 
@@ -244,7 +400,10 @@ fn open(cli: &Cli) -> Result<Session, Failure> {
 fn today(cli: &Cli) -> Result<String, Failure> {
     match &cli.today {
         Some(date) if is_iso_date(date) => Ok(date.clone()),
-        Some(date) => Err(Failure(format!("--today {date}: not a date (YYYY-MM-DD)"))),
+        Some(date) => Err(Failure(
+            format!("--today {date}: not a date (YYYY-MM-DD)"),
+            None,
+        )),
         None => Ok(chrono::Local::now().format("%Y-%m-%d").to_string()),
     }
 }
@@ -368,7 +527,7 @@ fn run_new(cli: &Cli, args: &NewArgs, matches: Option<&ArgMatches>) -> Result<Ex
 }
 
 fn parse_status(text: &str) -> Result<Status, Failure> {
-    Status::parse(text).ok_or_else(|| Failure(format!("--status {text}: not a status")))
+    Status::parse(text).ok_or_else(|| Failure(format!("--status {text}: not a status"), None))
 }
 
 fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
@@ -376,6 +535,7 @@ fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
         return Err(Failure(
             "the invoicer's window arrives in a later release; run a command (see --help)"
                 .to_string(),
+            None,
         ));
     };
     match command {
@@ -389,7 +549,7 @@ fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
                         .as_deref()
                         .map(|t| {
                             DocType::parse(t)
-                                .ok_or_else(|| Failure(format!("--type {t}: not a type")))
+                                .ok_or_else(|| Failure(format!("--type {t}: not a type"), None))
                         })
                         .transpose()?,
                     status: args.status.as_deref().map(parse_status).transpose()?,
@@ -398,8 +558,14 @@ fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
                 open: args.open,
                 overdue: args.overdue,
             };
-            let problems = views::problems(&session);
-            let entries = views::list(session.index(), &problems, &query, &today(cli)?);
+            let problems = views::document_problems(&session);
+            let entries = views::list(
+                session.index(),
+                Some(session.book_states()),
+                &problems,
+                &query,
+                &today(cli)?,
+            );
             emit(cli.json, &entries, |e| human::list(e));
             Ok(ExitCode::SUCCESS)
         }
@@ -409,8 +575,11 @@ fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
             let doc = session
                 .index()
                 .doc(&path)
-                .ok_or_else(|| Failure(format!("{path} isn't a document")))?;
-            let problems = views::problems(&session);
+                .ok_or_else(|| Failure(format!("{path} isn't a document"), None))?;
+            let mut problems = views::document_problems(&session);
+            if let Some(number) = doc.number() {
+                problems.extend(views::books_problems(&session, Some(&[number.to_string()])));
+            }
             let detail = views::show(&session, doc, &problems, &today(cli)?)?;
             emit(cli.json, &detail, human::show);
             Ok(ExitCode::SUCCESS)
@@ -419,6 +588,7 @@ fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
             if args.assignments.is_empty() && args.unset.is_empty() {
                 return Err(Failure(
                     "nothing to set: give key=value or --unset key".into(),
+                    None,
                 ));
             }
             let mut session = open(cli)?;
@@ -489,7 +659,7 @@ fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
         }
         Command::Customers(CustomersCommand::List) => {
             let session = open(cli)?;
-            let all = views::customers(session.index());
+            let all = views::customers(session.index(), Some(session.book_states()));
             emit(cli.json, &all, |c| human::customers(c));
             Ok(ExitCode::SUCCESS)
         }
@@ -497,19 +667,325 @@ fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
             let session = open(cli)?;
             let customer = views::find_customer(session.index(), name).map_err(|e| match e {
                 invoicer_core::customers::CustomerLookup::NotFound => {
-                    Failure(format!("no customer is called {name:?}"))
+                    Failure(format!("no customer is called {name:?}"), None)
                 }
-                invoicer_core::customers::CustomerLookup::NotACustomer(path) => Failure(format!(
-                    "{path} isn't a person or organization tagged `{}`",
-                    session.settings().words.customer_tag
-                )),
+                invoicer_core::customers::CustomerLookup::NotACustomer(path) => Failure(
+                    format!(
+                        "{path} isn't a person or organization tagged `{}`",
+                        session.settings().words.customer_tag
+                    ),
+                    None,
+                ),
             })?;
-            let problems = views::problems(&session);
+            let problems = views::document_problems(&session);
             let detail = views::customer_detail(&session, &customer, &problems, &today(cli)?);
             emit(cli.json, &detail, human::customer);
             Ok(ExitCode::SUCCESS)
         }
+        Command::Send(args) => run_send(cli, args),
+        Command::Void(args) => run_void(cli, args),
+        Command::Rebook(args) => run_rebook(cli, args),
+        Command::ApplyPayment(args) => run_apply_payment(cli, args),
+        Command::Reconcile(args) => run_reconcile(cli, args),
+        Command::Receivables(args) => {
+            let session = open(cli)?;
+            let view = invoicer_core::receivables::receivables(
+                session.index(),
+                session.book_states(),
+                &today(cli)?,
+                args.dso_days,
+            );
+            emit(cli.json, &view, |v| {
+                human::receivables(v, session.index().money(), args.aging)
+            });
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Recognize(args) => {
+            let session = open(cli)?;
+            let books = session.invoice_books();
+            let request = Recognize {
+                today: today(cli)?,
+                through: args.through.clone(),
+                include_closed: args.include_closed,
+                dry_run: args.dry_run,
+                expected: None,
+            };
+            let done = retrying(|| books.recognize(&request))?;
+            emit(cli.json, &done, human::recognized);
+            Ok(ExitCode::SUCCESS)
+        }
     }
+}
+
+fn run_send(cli: &Cli, args: &SendArgs) -> Result<ExitCode, Failure> {
+    let mut session = open(cli)?;
+    let number = number_of(&session, &args.document)?;
+    let books = session.invoice_books();
+    if args.dry_run {
+        let preview = books
+            .preview(session.index(), &number)
+            .map_err(books_failure)?;
+        emit(cli.json, &preview, |p| {
+            human::preview(p, session.index().money())
+        });
+        return Ok(ExitCode::SUCCESS);
+    }
+    let request = Send {
+        number,
+        today: today(cli)?,
+        sent_via: args.via.clone(),
+        expected: None,
+    };
+    let (index, _) = session.parts_mut();
+    let sent = retrying(|| books.send(index, &request))?;
+    emit(cli.json, &sent, human::sent);
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_void(cli: &Cli, args: &VoidArgs) -> Result<ExitCode, Failure> {
+    let mut session = open(cli)?;
+    let number = number_of(&session, &args.document)?;
+    let books = session.invoice_books();
+    let today = today(cli)?;
+    let request = Void {
+        number,
+        date: args.date.clone().unwrap_or_else(|| today.clone()),
+        today,
+        expected: None,
+    };
+    let (index, _) = session.parts_mut();
+    let voided = retrying(|| books.void(index, &request))?;
+    emit(cli.json, &voided, human::voided);
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_rebook(cli: &Cli, args: &RebookArgs) -> Result<ExitCode, Failure> {
+    let mut session = open(cli)?;
+    let number = number_of(&session, &args.document)?;
+    let books = session.invoice_books();
+    if args.dry_run {
+        let preview = books
+            .preview(session.index(), &number)
+            .map_err(books_failure)?;
+        emit(cli.json, &preview, |p| {
+            human::preview(p, session.index().money())
+        });
+        return Ok(ExitCode::SUCCESS);
+    }
+    let request = Rebook {
+        number: number.clone(),
+        today: today(cli)?,
+        expected: None,
+    };
+    let (index, _) = session.parts_mut();
+    let rebooked = retrying(|| books.rebook(index, &request))?;
+    // A new total can move the payment state (accrual: a link to check).
+    let mirror = if rebooked.changed {
+        mirror_one(&books, index, &number)
+    } else {
+        None
+    };
+    #[derive(Serialize)]
+    struct Out {
+        #[serde(flatten)]
+        rebooked: books::Rebooked,
+        mirror: Option<MirrorChange>,
+    }
+    emit(cli.json, &Out { rebooked, mirror }, |o| {
+        human::rebooked(&o.rebooked, o.mirror.as_ref())
+    });
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_apply_payment(cli: &Cli, args: &ApplyPaymentArgs) -> Result<ExitCode, Failure> {
+    let mut session = open(cli)?;
+    let number = number_of(&session, &args.document)?;
+    let books = session.invoice_books();
+    let today = today(cli)?;
+    if args.undo {
+        return undo_payment(cli, &mut session, &books, &number, args.txn.as_deref());
+    }
+    let Some(reference) = &args.txn else {
+        let options = books
+            .payment_options(session.index(), &number, &today)
+            .map_err(books_failure)?;
+        emit(cli.json, &options, |o| {
+            human::payment_options(o, session.index().money())
+        });
+        return Ok(ExitCode::SUCCESS);
+    };
+    let request = ApplyPayment {
+        number: number.clone(),
+        reference: reference.clone(),
+        today: today.clone(),
+        expected: None,
+    };
+    let money = session.index().money().clone();
+    let (index, vault) = session.parts_mut();
+    let applied = retrying(|| books.apply_payment(index, &request))?;
+    let mut warnings = Vec::new();
+    let undo_file = match books::undo::save(vault, &UndoRecord::of(&applied, &today)) {
+        Ok(path) => Some(path),
+        Err(error) => {
+            warnings.push(format!(
+                "the payment is applied, but its undo record wasn't written ({error}); undo it \
+                 by hand from the deposit's text"
+            ));
+            None
+        }
+    };
+    let mirror = mirror_one(&books, index, &number);
+    #[derive(Serialize)]
+    struct Out {
+        #[serde(flatten)]
+        applied: books::PaymentApplied,
+        undo_file: Option<VaultPath>,
+        mirror: Option<MirrorChange>,
+        warnings: Vec<String>,
+    }
+    emit(
+        cli.json,
+        &Out {
+            applied,
+            undo_file,
+            mirror,
+            warnings,
+        },
+        |o| {
+            human::payment_applied(
+                &o.applied,
+                &money,
+                o.undo_file.as_ref(),
+                o.mirror.as_ref(),
+                &o.warnings,
+            )
+        },
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+fn undo_payment(
+    cli: &Cli,
+    session: &mut Session,
+    books: &InvoiceBooks,
+    number: &str,
+    txn: Option<&str>,
+) -> Result<ExitCode, Failure> {
+    let (index, vault) = session.parts_mut();
+    let records: Vec<_> = books::undo::records(vault, number)
+        .into_iter()
+        .filter(|(_, r)| txn.is_none_or(|t| r.reference.starts_with(t.trim())))
+        .collect();
+    let (file, record) = match records.as_slice() {
+        [] => {
+            return Err(Failure(
+                format!(
+                    "no undo record for a payment applied to invoice {number}{} (in {}); undo it \
+                     by hand from the deposit's text",
+                    txn.map(|t| format!(" matching {t}")).unwrap_or_default(),
+                    books::UNDO_DIR
+                ),
+                None,
+            ));
+        }
+        [one] => one.clone(),
+        many => {
+            let listed: Vec<String> = many
+                .iter()
+                .map(|(_, r)| {
+                    format!(
+                        "{} ({} {})",
+                        r.reference.chars().take(12).collect::<String>(),
+                        r.deposit_date,
+                        r.deposit_description
+                    )
+                })
+                .collect();
+            return Err(Failure(
+                format!(
+                    "{} payments are applied to invoice {number}; name one with --txn: {}",
+                    many.len(),
+                    listed.join(", ")
+                ),
+                None,
+            ));
+        }
+    };
+    let undo = record.undo();
+    retrying(|| books.undo_payment(&undo, None))?;
+    let mut warnings = Vec::new();
+    if let Err(error) = books::undo::remove(vault, &file) {
+        warnings.push(format!("the undo record {file} wasn't removed: {error}"));
+    }
+    let mirror = mirror_one(books, index, number);
+    #[derive(Serialize)]
+    struct Out {
+        number: String,
+        reference: String,
+        deposit_date: String,
+        deposit_description: String,
+        restored_text: String,
+        undo_file: VaultPath,
+        mirror: Option<MirrorChange>,
+        warnings: Vec<String>,
+    }
+    emit(
+        cli.json,
+        &Out {
+            number: number.to_string(),
+            reference: record.reference.clone(),
+            deposit_date: record.deposit_date.clone(),
+            deposit_description: record.deposit_description.clone(),
+            restored_text: record.original_text.clone(),
+            undo_file: file,
+            mirror,
+            warnings,
+        },
+        |o| {
+            human::payment_undone(
+                &o.number,
+                &o.deposit_date,
+                &o.deposit_description,
+                o.mirror.as_ref(),
+                &o.warnings,
+            )
+        },
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_reconcile(cli: &Cli, args: &ReconcileArgs) -> Result<ExitCode, Failure> {
+    let mut session = open(cli)?;
+    let only = if args.documents.is_empty() {
+        None
+    } else {
+        Some(
+            args.documents
+                .iter()
+                .map(|d| number_of(&session, d))
+                .collect::<Result<Vec<_>, _>>()?,
+        )
+    };
+    let books = session.invoice_books();
+    let loaded = books.load().map_err(books_failure)?;
+    let (index, _) = session.parts_mut();
+    let report = reconcile::reconcile(
+        &books,
+        index,
+        &loaded,
+        &ReconcileOptions {
+            only,
+            dry_run: args.dry_run,
+        },
+    );
+    emit(cli.json, &report, |r| human::reconciled(r, args.dry_run));
+    Ok(if !report.failed.is_empty() {
+        ExitCode::from(2)
+    } else if report.counts.errors > 0 {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    })
 }
 
 fn main() -> ExitCode {
@@ -521,9 +997,13 @@ fn main() -> ExitCode {
     let sub = matches.subcommand().map(|(_, m)| m);
     match run(&cli, sub) {
         Ok(code) => code,
-        Err(Failure(message)) => {
+        Err(Failure(message, code)) => {
             if cli.json {
-                out(&format!("{}\n", serde_json::json!({ "error": message })));
+                let value = match code {
+                    Some(code) => serde_json::json!({ "error": message, "code": code }),
+                    None => serde_json::json!({ "error": message }),
+                };
+                out(&format!("{value}\n"));
             } else {
                 eprintln!("ledgeline-invoicer: error: {message}");
             }

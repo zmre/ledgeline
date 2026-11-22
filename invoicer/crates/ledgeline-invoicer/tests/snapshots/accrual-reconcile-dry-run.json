@@ -1,0 +1,63 @@
+{
+  "basis": "accrual",
+  "changed": [
+    {
+      "after": "2026-11-16",
+      "before": "partial 2026-11-05 $1,000",
+      "number": "107",
+      "paid": {
+        "date": "2026-11-16",
+        "state": "full"
+      },
+      "path": "invoices/2026-10-15 Contoso Invoice 107.md",
+      "written": false
+    }
+  ],
+  "checked": 7,
+  "errors": 0,
+  "failed": [],
+  "problems": [
+    {
+      "code": "orphan-transaction",
+      "file": "books.journal",
+      "fix": {
+        "message": "restore or renumber its file, or leave it if another app booked it"
+      },
+      "line": 136,
+      "message": "the books have a booking for invoice 2001, which has no file",
+      "severity": "warning"
+    },
+    {
+      "code": "orphan-transaction",
+      "file": "books.journal",
+      "fix": {
+        "message": "restore or renumber its file, or leave it if another app booked it"
+      },
+      "line": 277,
+      "message": "the books have a booking for invoice 2002, which has no file",
+      "severity": "warning"
+    },
+    {
+      "code": "orphan-transaction",
+      "file": "books.journal",
+      "fix": {
+        "message": "restore or renumber its file, or leave it if another app booked it"
+      },
+      "line": 329,
+      "message": "the books have a booking for invoice 2003, which has no file",
+      "severity": "warning"
+    },
+    {
+      "code": "orphan-transaction",
+      "file": "books.journal",
+      "fix": {
+        "message": "restore or renumber its file, or leave it if another app booked it"
+      },
+      "line": 347,
+      "message": "the books have a booking for invoice 2004, which has no file",
+      "severity": "warning"
+    }
+  ],
+  "unchanged": 6,
+  "warnings": 4
+}
