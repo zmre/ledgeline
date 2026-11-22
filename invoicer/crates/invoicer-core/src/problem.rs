@@ -69,6 +69,23 @@ pub enum ProblemCode {
     Catalog,
     /// A `[[wikilink]]` that names nothing.
     BrokenLink,
+    /// A sent invoice the books have no transaction for.
+    MissingTransaction,
+    /// A transaction in the books whose invoice has no file.
+    OrphanTransaction,
+    /// A booking whose `document:` tag doesn't name its file.
+    DocumentPath,
+    /// A draft the books already hold (a send stopped after the journal).
+    BookedDraft,
+    /// A sent invoice booked differently from what its file now says.
+    BooksOutOfDate,
+    /// A void in the file or the books, but not both.
+    VoidMismatch,
+    /// The invoice can't be booked as written (an account that doesn't
+    /// resolve, a total that can't be split).
+    Booking,
+    /// The books can't be read for the books checks.
+    Books,
 }
 
 /// A change that fixes a problem, for the CLI and the editor to offer.
@@ -91,6 +108,11 @@ pub enum FixEdit {
     },
     /// Rewrite the bill table's computed amounts (`recalc`).
     Recalc,
+    /// Run a `ledgeline-invoicer` command (`send 105`, `rebook 105`).
+    Command {
+        /// The command and its arguments, as typed after the binary.
+        command: String,
+    },
 }
 
 /// How to fix a problem.

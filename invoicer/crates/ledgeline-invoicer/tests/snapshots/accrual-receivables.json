@@ -1,0 +1,157 @@
+{
+  "aging": [
+    {
+      "account": "assets:accounts receivable",
+      "buckets": [
+        {
+          "amount": "23940.00",
+          "count": 3,
+          "label": "Current"
+        },
+        {
+          "amount": "5000.00",
+          "count": 1,
+          "label": "1–30"
+        },
+        {
+          "amount": "1500.00",
+          "count": 1,
+          "label": "31–60"
+        },
+        {
+          "amount": "0",
+          "count": 0,
+          "label": "61–90"
+        },
+        {
+          "amount": "3000.00",
+          "count": 1,
+          "label": "91+"
+        }
+      ],
+      "commodity": "$",
+      "oldest_overdue": "2026-07-15",
+      "total": "33440.00"
+    }
+  ],
+  "average_days_to_pay": {
+    "average": "27.0",
+    "invoices": 4
+  },
+  "basis": "accrual",
+  "drafts": [],
+  "dso": [
+    {
+      "billed": "48690.00",
+      "commodity": "$",
+      "days": 90,
+      "outstanding": "33440.00",
+      "value": "61.8"
+    }
+  ],
+  "open": [
+    {
+      "account": "assets:accounts receivable",
+      "amount": "3000.00",
+      "bucket": "91+",
+      "commodity": "$",
+      "customer": "Tailspin",
+      "date": "2026-06-15",
+      "days_past_due": 125,
+      "due": "2026-07-15",
+      "number": "2001",
+      "outstanding": "3000.00",
+      "path": null,
+      "source": "books"
+    },
+    {
+      "account": "assets:accounts receivable",
+      "amount": "1500.00",
+      "bucket": "31–60",
+      "commodity": "$",
+      "customer": "Wingtip",
+      "date": "2026-09-05",
+      "days_past_due": 43,
+      "due": "2026-10-05",
+      "number": "2002",
+      "outstanding": "1500.00",
+      "path": null,
+      "source": "books"
+    },
+    {
+      "account": "assets:accounts receivable",
+      "amount": "5000.00",
+      "bucket": "1–30",
+      "commodity": "$",
+      "customer": "Adatum",
+      "date": "2026-10-15",
+      "days_past_due": 3,
+      "due": "2026-11-14",
+      "number": "2003",
+      "outstanding": "5000.00",
+      "path": null,
+      "source": "books"
+    },
+    {
+      "account": "assets:accounts receivable",
+      "amount": "1800.00",
+      "bucket": "Current",
+      "commodity": "$",
+      "customer": "Fourth Coffee",
+      "date": "2026-11-02",
+      "days_past_due": -15,
+      "due": "2026-12-02",
+      "number": "2004",
+      "outstanding": "1800.00",
+      "path": null,
+      "source": "books"
+    },
+    {
+      "account": "assets:accounts receivable",
+      "amount": "8540.00",
+      "bucket": "Current",
+      "commodity": "$",
+      "customer": "Customer X",
+      "date": "2026-11-10",
+      "days_past_due": -23,
+      "due": "2026-12-10",
+      "number": "105",
+      "outstanding": "8540.00",
+      "path": "invoices/2026-11-10 Customer X Invoice 105.md",
+      "source": "books"
+    },
+    {
+      "account": "assets:accounts receivable",
+      "amount": "13600.00",
+      "bucket": "Current",
+      "commodity": "$",
+      "customer": "Customer X",
+      "date": "2026-11-17",
+      "days_past_due": -30,
+      "due": "2026-12-17",
+      "number": "108",
+      "outstanding": "13600.00",
+      "path": "invoices/2026-11-17 Customer X Invoice 108.md",
+      "source": "books"
+    }
+  ],
+  "today": "2026-11-17",
+  "unapplied": [
+    {
+      "account": "assets:accounts receivable",
+      "amount": "2970.00",
+      "commodity": "$",
+      "customer": null,
+      "date": "2026-07-20",
+      "number": null
+    },
+    {
+      "account": "assets:accounts receivable",
+      "amount": "1500.00",
+      "commodity": "$",
+      "customer": null,
+      "date": "2026-09-25",
+      "number": null
+    }
+  ]
+}

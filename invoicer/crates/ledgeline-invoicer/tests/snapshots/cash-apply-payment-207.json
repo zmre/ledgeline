@@ -1,0 +1,32 @@
+{
+  "candidates": [
+    {
+      "by_customer": false,
+      "by_number": false,
+      "date": "2026-11-16",
+      "description": "ACH WINGTIP PAYMENTS",
+      "exact": false,
+      "gap_days": 0,
+      "received": "1200.00",
+      "reference": "67-4c2d985b1b04073a",
+      "text": "2026-11-16 * ACH WINGTIP PAYMENTS  ; id: ach-41\n    assets:bank:checking  $1,200.00\n    income:unknown\n"
+    },
+    {
+      "by_customer": false,
+      "by_number": false,
+      "date": "2026-11-17",
+      "description": "WIRE CUSTOMER X",
+      "exact": false,
+      "gap_days": 1,
+      "received": "4000.00",
+      "reference": "73-a85acca15a417dfe",
+      "text": "2026-11-17 * WIRE CUSTOMER X  ; id: wx-7\n    assets:bank:checking   $4,000.00\n    income:unknown        $-4,000.00\n"
+    }
+  ],
+  "commodity": "$",
+  "number": "207",
+  "paid": "0",
+  "path": "invoices/2026-11-16 Customer X Invoice 207.md",
+  "remaining": "7000.00",
+  "total": "7000.00"
+}

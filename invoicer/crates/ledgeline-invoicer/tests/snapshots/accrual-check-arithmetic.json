@@ -4,6 +4,46 @@
   "errors": 1,
   "problems": [
     {
+      "code": "orphan-transaction",
+      "file": "books.journal",
+      "fix": {
+        "message": "restore or renumber its file, or leave it if another app booked it"
+      },
+      "line": 136,
+      "message": "the books have a booking for invoice 2001, which has no file",
+      "severity": "warning"
+    },
+    {
+      "code": "orphan-transaction",
+      "file": "books.journal",
+      "fix": {
+        "message": "restore or renumber its file, or leave it if another app booked it"
+      },
+      "line": 277,
+      "message": "the books have a booking for invoice 2002, which has no file",
+      "severity": "warning"
+    },
+    {
+      "code": "orphan-transaction",
+      "file": "books.journal",
+      "fix": {
+        "message": "restore or renumber its file, or leave it if another app booked it"
+      },
+      "line": 329,
+      "message": "the books have a booking for invoice 2003, which has no file",
+      "severity": "warning"
+    },
+    {
+      "code": "orphan-transaction",
+      "file": "books.journal",
+      "fix": {
+        "message": "restore or renumber its file, or leave it if another app booked it"
+      },
+      "line": 347,
+      "message": "the books have a booking for invoice 2004, which has no file",
+      "severity": "warning"
+    },
+    {
       "code": "arithmetic",
       "file": "invoices/2026-08-01 Wingtip Invoice 106.md",
       "fix": {
@@ -17,5 +57,5 @@
       "severity": "error"
     }
   ],
-  "warnings": 0
+  "warnings": 4
 }

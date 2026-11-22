@@ -2,6 +2,7 @@
 
 use super::spec::{DOCUMENT_TAG, InvoiceBooking, receivable_account};
 use super::{BooksError, Document, InvoiceBooks, check_generation};
+use crate::catalog::Catalog;
 use crate::doc::Status;
 use crate::frontmatter::FieldEdit;
 use crate::index::DocumentIndex;
@@ -14,7 +15,7 @@ use ledgeline_core::accrual::{
     is_posted_entry, tag_value,
 };
 use ledgeline_core::edit::{Fingerprint, format_transaction, render_amount};
-use ledgeline_core::matching::{MATCH_TAG, NOMATCH_TAG};
+use ledgeline_core::matching::{IdGenerator, MATCH_TAG, NOMATCH_TAG};
 use ledgeline_core::model::{Amount, Tindex, Transaction};
 use ledgeline_core::vault::VaultPath;
 use serde::Serialize;
@@ -250,7 +251,12 @@ fn shape(txn: &Transaction) -> Shape {
 /// The transaction `spec` builds (with placeholder schedule ids). A zero
 /// total builds with no settlement posting, as it is written.
 fn built(loaded: &Loaded, spec: &DocumentSpec) -> Result<Transaction, BooksError> {
-    let mut ids = loaded.id_generator();
+    built_with(spec, &mut loaded.id_generator())
+}
+
+/// [`built`] with ids from `ids` (their values never matter: [`shape`]
+/// blanks them).
+fn built_with(spec: &DocumentSpec, ids: &mut IdGenerator) -> Result<Transaction, BooksError> {
     Ok(build_settled_document(spec, &mut || ids.next_id())
         .map_err(OpsError::from)?
         .transaction)
@@ -485,6 +491,123 @@ impl Plan {
             Self::Document(spec) => built(loaded, spec),
             Self::Marker(txn) => Ok(txn.clone()),
         }
+    }
+}
+
+/// Compares many documents with their bookings in one pass over loaded
+/// books (`check` and the reconciler, ARCHITECTURE §4.5 "Books out of
+/// date"): the catalogs are read once, the receivable account looked up
+/// once, and one id generator serves every comparison.
+pub struct StepCheck<'a> {
+    books: &'a InvoiceBooks,
+    index: &'a DocumentIndex,
+    loaded: &'a Loaded,
+    basis: Basis,
+    /// Read on first use (a check of nothing reads nothing).
+    catalogs: Option<Vec<Catalog>>,
+    accounts: Option<super::spec::JournalAccounts>,
+    receivable: Option<Result<String, String>>,
+    ids: IdGenerator,
+    roles: Option<&'a AccrualRoles>,
+}
+
+impl<'a> StepCheck<'a> {
+    /// A comparer over `loaded`.
+    #[must_use]
+    pub fn new(books: &'a InvoiceBooks, index: &'a DocumentIndex, loaded: &'a Loaded) -> Self {
+        Self {
+            books,
+            index,
+            loaded,
+            basis: Basis::of(loaded),
+            catalogs: None,
+            accounts: None,
+            receivable: None,
+            // Ids are blanked in the comparison, so none need avoiding.
+            ids: IdGenerator::avoiding(Vec::new()),
+            roles: None,
+        }
+    }
+
+    /// Use `roles` (the journal's, already inferred) rather than inferring
+    /// them again: each inference scans every posting.
+    #[must_use]
+    pub fn with_roles(mut self, roles: &'a AccrualRoles) -> Self {
+        self.roles = Some(roles);
+        self
+    }
+
+    /// The books' basis.
+    #[must_use]
+    pub fn basis(&self) -> Basis {
+        self.basis
+    }
+
+    /// What `document` books, derived from its markdown.
+    ///
+    /// # Errors
+    /// As [`InvoiceBooks::booking`].
+    pub fn booking(&mut self, document: &Document) -> Result<InvoiceBooking, BooksError> {
+        let customer = self.books.customer(self.index, document)?;
+        let (books, index, journal) = (self.books, self.index, self.loaded.journal());
+        let catalogs = self.catalogs.get_or_insert_with(|| books.catalogs(index));
+        let roles = self.roles;
+        let accounts = self.accounts.get_or_insert_with(|| match roles {
+            Some(roles) => super::spec::JournalAccounts::of_roles(index.settings(), journal, roles),
+            None => super::spec::JournalAccounts::of(index.settings(), journal),
+        });
+        super::spec::booking_of(
+            &document.invoice,
+            &document.path,
+            &super::spec::SpecContext {
+                settings: self.index.settings(),
+                money: self.index.money(),
+                journal: self.loaded.journal(),
+                customer: &customer,
+                catalogs,
+                accounts: Some(accounts),
+            },
+        )
+    }
+
+    /// Whether `booked` (the transaction booked under `document`'s number)
+    /// is what `document` says to book.
+    ///
+    /// # Errors
+    /// When `document`'s booking can't be derived (as
+    /// [`InvoiceBooks::booking`]), or the receivable account can't be found.
+    pub fn in_step(
+        &mut self,
+        document: &Document,
+        booked: &Transaction,
+    ) -> Result<bool, BooksError> {
+        let booking = self.booking(document)?;
+        if !books_it(self.basis, &booking) {
+            // Cash books booked a zero total that isn't zero any more.
+            return Ok(false);
+        }
+        let would = match self.basis {
+            Basis::Accrual => {
+                let (settings, journal, roles) =
+                    (self.index.settings(), self.loaded.journal(), self.roles);
+                let receivable = match self.receivable.get_or_insert_with(|| {
+                    match roles {
+                        Some(roles) => super::spec::receivable_account_in(settings, roles),
+                        None => receivable_account(settings, journal),
+                    }
+                    .map_err(|e| e.to_string())
+                }) {
+                    Ok(account) => account.clone(),
+                    Err(why) => return Err(BooksError::Setup(why.clone())),
+                };
+                built_with(
+                    &booking.document_spec(self.loaded.journal(), &receivable),
+                    &mut self.ids,
+                )?
+            }
+            Basis::Cash => cash_marker(self.loaded, &booking, self.index.settings().cash_deposits)?,
+        };
+        Ok(shape(booked) == shape(&would))
     }
 }
 

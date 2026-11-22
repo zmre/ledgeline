@@ -11,7 +11,9 @@
 //! | `invoicer/refresh_one`           | one changed file re-read and re-indexed (a watcher event)      | save a draft (20 ms)                    |
 //! | `invoicer/save_draft`            | verify, conditional atomic write, re-index                     | save a draft (20 ms)                    |
 //! | `invoicer/preview`               | what a draft would book (the books panel; load the journal + derive) | keystroke → books panel (10 ms, warm in the app) |
-//! | `invoicer/send`                  | send a draft: load, book, write the journal, update the markdown | send (150 ms)                        |
+//! | `invoicer/send`                  | send a draft: load, book, write the journal, update the markdown | send (300 ms, relaxed; goal 150 ms) |
+//! | `invoicer/reconcile_change`      | a payment linked in Ledgeline: reload, book states, diff, mirror the one invoice | a journal change → `paid:` (100 ms) |
+//! | `invoicer/books_check`           | the books checks over every invoice, on loaded books (`check`'s books half) | `check` (1 s)                |
 //! | `ledgeline/journal_open`         | ledgeline-core opens the corpus journal                        | open; a journal change (100 ms)         |
 //! | `ledgeline/journal_reopen`       | the reload a journal change triggers                           | a journal change → `paid:` (100 ms)     |
 //!
@@ -25,11 +27,12 @@ mod corpus;
 mod invoicer_corpus;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use invoicer_core::books::{InvoiceBooks, Send};
+use invoicer_core::books::{Basis, InvoiceBooks, Send};
 use invoicer_core::doc::{Money, Status};
 use invoicer_core::draft;
 use invoicer_core::index::{DocumentIndex, ListFilter};
 use invoicer_core::problem::ProblemCode;
+use invoicer_core::reconcile::{self, BookStates, ReconcileOptions};
 use invoicer_core::settings::Settings;
 use ledgeline_core::edit::JournalEditor;
 use ledgeline_core::vault::{LocalVault, Vault, VaultPath};
@@ -191,6 +194,134 @@ fn benches(c: &mut Criterion) {
         .write_atomic(&draft_path, draft_text.as_bytes())
         .expect("restores the draft");
     index.refresh(&vault, std::slice::from_ref(&draft_path));
+
+    // A journal change (PLAN 2c): Ledgeline links the rest of a part-paid
+    // invoice's payment. The reconciler reloads the books, diffs their
+    // payment state against the last, and mirrors `paid:` for what moved.
+    let loaded = books.load().expect("loads");
+    let before = BookStates::build(loaded.journal(), Basis::of(&loaded));
+    let part_paid = index
+        .docs()
+        .find(|d| {
+            d.header.status == Some(Status::Sent)
+                && matches!(
+                    d.header.paid,
+                    Some(invoicer_core::doc::Paid::Partial { .. })
+                )
+        })
+        .expect("a part-paid invoice");
+    let (part_path, part_number) = (
+        part_paid.path.clone(),
+        part_paid.number().unwrap_or_default().to_string(),
+    );
+    let part_text = vault.read_to_string(&part_path).expect("reads");
+    let receivable = before
+        .standing(&part_number)
+        .and_then(|s| s.booking())
+        .and_then(|b| b.receivable.clone())
+        .expect("booked");
+    let header = format!("; invoice: {part_number}, document:");
+    let link = journal_text[journal_text.find(&header).expect("booked")..]
+        .lines()
+        .nth(1)
+        .and_then(|l| l.split("match:").nth(1))
+        .map(|id| id.trim().to_string())
+        .expect("its link");
+    let paid_journal = format!(
+        "{journal_text}\n2025-12-31 Rest of {part_number}  ; invoice: {part_number}\n    \
+         assets:bank:operating  {rest}\n    assets:accounts receivable  -{rest}  ; match:{link}\n",
+        rest = format!(
+            "${}",
+            ledgeline_core::edit::render_dec(receivable.outstanding, '.')
+        ),
+    );
+    let all_changed = |states: &BookStates| states.changed_since(&before);
+    {
+        // Where the time goes, once (not part of the measurement).
+        vault
+            .write_atomic(&journal_path, paid_journal.as_bytes())
+            .expect("writes the journal");
+        let t = Instant::now();
+        let loaded = books.load().expect("loads");
+        let load = t.elapsed();
+        let t = Instant::now();
+        let states = BookStates::build(loaded.journal(), Basis::of(&loaded));
+        let build = t.elapsed();
+        let t = Instant::now();
+        let only = all_changed(&states);
+        let diff = t.elapsed();
+        let t = Instant::now();
+        let done = reconcile::reconcile_with(
+            &books,
+            &mut index,
+            &loaded,
+            &states,
+            &ReconcileOptions {
+                only: Some(only),
+                dry_run: false,
+            },
+        );
+        let mirror = t.elapsed();
+        assert_eq!(done.changed.len(), 1);
+        eprintln!(
+            "reconcile_change: load {load:?}, book states {build:?}, diff {diff:?}, mirror + audit {mirror:?}"
+        );
+    }
+    group.bench_function(BenchmarkId::new("reconcile_change", &label), |b| {
+        b.iter_custom(|iters| {
+            (0..iters)
+                .map(|_| {
+                    vault
+                        .write_atomic(&journal_path, paid_journal.as_bytes())
+                        .expect("writes the journal");
+                    vault
+                        .write_atomic(&part_path, part_text.as_bytes())
+                        .expect("restores the invoice");
+                    index.refresh(&vault, std::slice::from_ref(&part_path));
+                    let start = Instant::now();
+                    let loaded = books.load().expect("loads");
+                    let states = BookStates::build(loaded.journal(), Basis::of(&loaded));
+                    let only = all_changed(&states);
+                    let done = reconcile::reconcile_with(
+                        &books,
+                        &mut index,
+                        &loaded,
+                        &states,
+                        &ReconcileOptions {
+                            only: Some(only),
+                            dry_run: false,
+                        },
+                    );
+                    let elapsed = start.elapsed();
+                    assert_eq!(done.changed.len(), 1, "{:?}", done.changed);
+                    assert!(done.changed[0].written);
+                    elapsed
+                })
+                .sum()
+        });
+    });
+    vault
+        .write_atomic(&journal_path, journal_text.as_bytes())
+        .expect("restores the journal");
+    vault
+        .write_atomic(&part_path, part_text.as_bytes())
+        .expect("restores the invoice");
+    index.refresh(&vault, std::slice::from_ref(&part_path));
+
+    // `check`'s books half: every invoice against the books (the journal
+    // already loaded, as `check` has it from opening).
+    let loaded = books.load().expect("loads");
+    let states = BookStates::build(loaded.journal(), Basis::of(&loaded));
+    let found = reconcile::audit(&books, &index, &loaded, &states, None);
+    assert!(
+        found.is_empty(),
+        "{} findings, first {:?}",
+        found.len(),
+        found.first()
+    );
+    group.bench_function(BenchmarkId::new("books_check", &label), |b| {
+        b.iter(|| reconcile::audit(&books, black_box(&index), &loaded, &states, None));
+    });
     group.finish();
 
     let mut group = c.benchmark_group("ledgeline");

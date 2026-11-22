@@ -4,17 +4,23 @@
 //! its API will hold one.
 //!
 //! Opening reads the journal through ledgeline-core but never writes it:
-//! nothing a [`Session`] does touches the books (I2).
+//! nothing a [`Session`] does touches the books (I2). It keeps the parsed
+//! journal, so the books' payment state ([`Session::book_states`]) and the
+//! first books operation ([`Session::invoice_books`]) don't parse it again.
 
+use crate::books::{Basis, InvoiceBooks};
 use crate::doc::{InvoiceNumber, Money};
 use crate::index::{DocumentIndex, IndexedDoc};
 use crate::numbering::{self, NumberingError};
+use crate::reconcile::BookStates;
 use crate::settings::{Settings, SettingsError};
 use ledgeline_core::accrual::books_config::{self, BooksConfig, BooksError};
+use ledgeline_core::accrual::ops::{Books, Loaded, OpsError};
+use ledgeline_core::accrual::{AccrualRoles, accrual_gate};
 use ledgeline_core::edit::{EditError, JournalEditor};
 use ledgeline_core::vault::{LocalVault, Vault, VaultError, VaultPath};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use thiserror::Error;
 
 /// Why the books can't be opened.
@@ -67,6 +73,8 @@ pub struct Session {
     books: BooksConfig,
     booked: Vec<String>,
     index: DocumentIndex,
+    editor: JournalEditor,
+    states: OnceLock<BookStates>,
 }
 
 impl std::fmt::Debug for Session {
@@ -102,7 +110,44 @@ impl Session {
             books,
             booked,
             index,
+            editor,
+            states: OnceLock::new(),
         })
+    }
+
+    /// The books' basis: plan 45's gate under `[books] basis`.
+    #[must_use]
+    pub fn basis(&self) -> Basis {
+        let journal = self.editor.journal();
+        if accrual_gate(&AccrualRoles::of(journal), self.books.basis).enabled {
+            Basis::Accrual
+        } else {
+            Basis::Cash
+        }
+    }
+
+    /// The books' payment state of every invoice number, as the journal
+    /// was when the session opened (built on first use).
+    pub fn book_states(&self) -> &BookStates {
+        self.states
+            .get_or_init(|| BookStates::build(self.editor.journal(), self.basis()))
+    }
+
+    /// The books as the session read them (no second parse), for read-only
+    /// use: `check`'s books checks.
+    ///
+    /// # Errors
+    /// [`OpsError`] when `[books]` or the recognition file is unusable.
+    pub fn loaded(&self) -> Result<Loaded, OpsError> {
+        Books::open_in(Arc::clone(&self.vault), self.main.clone()).load_from(&self.editor)
+    }
+
+    /// The books bridge over this books folder; its first load reuses the
+    /// session's parse.
+    #[must_use]
+    pub fn invoice_books(&self) -> InvoiceBooks {
+        InvoiceBooks::open_in(Arc::clone(&self.vault), self.main.clone())
+            .with_editor(self.editor.clone())
     }
 
     /// Open the books whose main journal is the local file `journal`; the

@@ -1,10 +1,12 @@
 {
   "benches": {
+    "invoicer/books_check/5000": 276110000.0,
     "invoicer/check/5000": 3794955.0,
     "invoicer/list_json/5000": 3230379.0,
     "invoicer/next_number/5000": 170071.0,
     "invoicer/open/5000": 121354557.0,
     "invoicer/preview/5000": 91604951.0,
+    "invoicer/reconcile_change/5000": 99200000.0,
     "invoicer/refresh_one/5000": 1336501.0,
     "invoicer/save_draft/5000": 5784085.0,
     "invoicer/send/5000": 289072385.0,

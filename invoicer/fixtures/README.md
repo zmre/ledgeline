@@ -29,8 +29,8 @@ included), with the receivables fixture's invoices booked at the end of
 Customer X has a billing portal that requires a `reference`, contracts as a
 wikilink and a file path, open POs and a default snippet. Fred Smith is a
 person at Customer X, so invoices to him bill Customer X. The books also
-hold plan 45's invoices 2001–2004, which have no files: Phase 2's `check`
-reports them. Numbering over files and books gives 2005; the bill `PA-9`
+hold plan 45's invoices 2001–2004, which have no files: `check` reports
+them as four orphan-transaction warnings. Numbering over files and books gives 2005; the bill `PA-9`
 is a payable, in its own namespace, so it doesn't count.
 
 ## `cash/`

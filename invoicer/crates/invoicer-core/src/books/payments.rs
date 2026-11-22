@@ -35,6 +35,7 @@ use ledgeline_core::accrual::schedule::{Party, PartyKind};
 use ledgeline_core::accrual::settle::{Fit, SettleSettings};
 use ledgeline_core::accrual::{CUSTOMER_TAG, tag_value};
 use ledgeline_core::model::Tindex;
+use ledgeline_core::vault::VaultPath;
 use serde::{Deserialize, Serialize};
 
 /// A deposit that might pay an invoice.
@@ -62,13 +63,40 @@ pub struct PaymentCandidate {
     pub text: String,
 }
 
+/// What Apply payment can do for an invoice: what is due, and the deposits
+/// that might pay it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PaymentOptions {
+    /// The invoice.
+    pub number: String,
+    /// The file.
+    pub path: VaultPath,
+    /// The commodity.
+    pub commodity: String,
+    /// Its total.
+    #[serde(serialize_with = "super::dec_text")]
+    pub total: Dec,
+    /// What its applied payments have paid.
+    #[serde(serialize_with = "super::dec_text")]
+    pub paid: Dec,
+    /// What is still due.
+    #[serde(serialize_with = "super::dec_text")]
+    pub remaining: Dec,
+    /// The deposits that might pay it, best first (none once it is paid).
+    pub candidates: Vec<PaymentCandidate>,
+}
+
+/// The shortest reference prefix [`ApplyPayment::reference`] accepts.
+pub const MIN_REFERENCE_PREFIX: usize = 6;
+
 /// **Apply payment**: re-split the deposit `reference` into invoice
 /// `number`'s rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplyPayment {
     /// The invoice.
     pub number: String,
-    /// The deposit: a [`PaymentCandidate::reference`].
+    /// The deposit: a [`PaymentCandidate::reference`], or a prefix of one
+    /// at least [`MIN_REFERENCE_PREFIX`] long that names only it.
     pub reference: String,
     /// Today: candidates are looked for within the lookback before it.
     pub today: String,
@@ -273,6 +301,7 @@ fn sum(values: impl IntoIterator<Item = Dec>) -> Result<Dec, BooksError> {
 /// An invoice's cash position: its split, what each row has received, and
 /// the rest.
 struct Owed {
+    path: VaultPath,
     booking: InvoiceBooking,
     split: Vec<(String, Dec)>,
     paid: Vec<Dec>,
@@ -316,6 +345,7 @@ impl InvoiceBooks {
             .sub(sum(paid.iter().copied())?)
             .map_err(|_| BooksError::Overflow)?;
         Ok(Owed {
+            path: document.path,
             booking,
             split,
             paid,
@@ -379,12 +409,35 @@ impl InvoiceBooks {
         number: &str,
         today: &str,
     ) -> Result<Vec<PaymentCandidate>, BooksError> {
+        Ok(self.payment_options(index, number, today)?.candidates)
+    }
+
+    /// What is due on sent invoice `number` (cash books) and the deposits
+    /// that might pay it, best first.
+    ///
+    /// # Errors
+    /// As [`InvoiceBooks::payment_candidates`].
+    pub fn payment_options(
+        &self,
+        index: &DocumentIndex,
+        number: &str,
+        today: &str,
+    ) -> Result<PaymentOptions, BooksError> {
         let loaded = self.load()?;
         let owed = self.owed(index, number, &loaded)?;
-        Ok(Self::candidates_of(&loaded, &owed, today)
+        let candidates = Self::candidates_of(&loaded, &owed, today)
             .into_iter()
             .map(|(_, c)| c)
-            .collect())
+            .collect();
+        Ok(PaymentOptions {
+            number: number.to_string(),
+            path: owed.path.clone(),
+            commodity: owed.booking.commodity.clone(),
+            total: owed.booking.total,
+            paid: sum(owed.paid.iter().copied())?,
+            remaining: owed.remaining,
+            candidates,
+        })
     }
 
     /// **Apply payment** (I17): re-split the deposit `request.reference`
@@ -408,9 +461,29 @@ impl InvoiceBooks {
         let mut loaded = self.load()?;
         check_generation(&loaded, request.expected.as_ref())?;
         let owed = self.owed(index, &request.number, &loaded)?;
-        let (tindex, candidate) = Self::candidates_of(&loaded, &owed, &request.today)
-            .into_iter()
-            .find(|(_, c)| c.reference == request.reference)
+        let candidates = Self::candidates_of(&loaded, &owed, &request.today);
+        let wanted = request.reference.trim();
+        let exact = candidates.iter().position(|(_, c)| c.reference == wanted);
+        let by_prefix: Vec<usize> = candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, c))| {
+                wanted.len() >= MIN_REFERENCE_PREFIX && c.reference.starts_with(wanted)
+            })
+            .map(|(at, _)| at)
+            .collect();
+        let chosen = match (exact, by_prefix.as_slice()) {
+            (Some(at), _) | (None, &[at]) => Some(at),
+            (None, []) => None,
+            (None, _) => {
+                return Err(BooksError::Refused(format!(
+                    "{wanted} names {} deposits; give more of its reference",
+                    by_prefix.len()
+                )));
+            }
+        };
+        let (tindex, candidate) = chosen
+            .and_then(|at| candidates.into_iter().nth(at))
             .ok_or_else(|| {
                 BooksError::Refused(format!(
                     "{} is not a deposit that can pay invoice {} (it changed since it was \
