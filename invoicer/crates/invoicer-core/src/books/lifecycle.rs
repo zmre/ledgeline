@@ -1,14 +1,15 @@
 //! Preview, send, re-book and void (ARCHITECTURE §4.1, §4.5).
 
-use super::spec::{DOCUMENT_TAG, InvoiceBooking, deposit_account, receivable_account};
+use super::spec::{DOCUMENT_TAG, InvoiceBooking, receivable_account};
 use super::{BooksError, Document, InvoiceBooks, check_generation};
 use crate::doc::Status;
 use crate::frontmatter::FieldEdit;
 use crate::index::DocumentIndex;
-use ledgeline_core::accrual::invoice::{DocumentSpec, build_settled_document};
+use ledgeline_core::Dec;
+use ledgeline_core::accrual::invoice::{DocumentSpec, build_settled_document, money};
 use ledgeline_core::accrual::ops::{Generation, Loaded, OpsError, SaveRequest, SourceChange};
 use ledgeline_core::accrual::{
-    AccrualRole, AccrualRoles, INVOICE_TAG, RECOGNITION_TAG, VOID_TAG, is_iso_date,
+    AccrualRole, AccrualRoles, CUSTOMER_TAG, INVOICE_TAG, RECOGNITION_TAG, VOID_TAG, is_iso_date,
     is_posted_entry, tag_value,
 };
 use ledgeline_core::edit::{Fingerprint, format_transaction, render_amount};
@@ -460,33 +461,88 @@ fn status_error(document: &Document, hint: &str) -> BooksError {
 
 /// Whether the books get a transaction for `booking`: always in accrual
 /// books; in cash books only for a zero total (a final invoice its deposit
-/// covers: no payment will ever arrive to apply, so sending it moves the
-/// revenue off the deposit liability).
+/// covers), as a `$0` marker: no payment will ever arrive to apply, and the
+/// marker is how the books (and `check`, and the reconciler) know it was
+/// sent.
 fn books_it(basis: Basis, booking: &InvoiceBooking) -> bool {
     basis == Basis::Accrual || booking.total.is_zero()
 }
 
+/// What sending writes for an invoice.
+enum Plan {
+    /// Accrual books: Ledgeline's document (with no receivable posting for
+    /// a zero total).
+    Document(DocumentSpec),
+    /// Cash books, a zero total: a `$0` marker.
+    Marker(Transaction),
+}
+
+impl Plan {
+    /// The transaction as it would be written (placeholder schedule ids).
+    fn transaction(&self, loaded: &Loaded) -> Result<Transaction, BooksError> {
+        match self {
+            Self::Document(spec) => built(loaded, spec),
+            Self::Marker(txn) => Ok(txn.clone()),
+        }
+    }
+}
+
+/// A zero-total cash-books invoice's `$0` marker: the invoice's header tags
+/// and description, and one `$0.00` posting per line — each row's cash
+/// account, or for a deposit applied the deposit account — with `customer:`
+/// and `item:`, so the journal says what was billed and that nothing moved.
+/// hledger reads zero postings as balanced.
+fn cash_marker(loaded: &Loaded, booking: &InvoiceBooking) -> Result<Transaction, BooksError> {
+    let tags = std::iter::once(format!("{INVOICE_TAG}: {}", booking.number))
+        .chain(
+            booking
+                .tags
+                .iter()
+                .map(|(name, value)| format!("{name}: {value}")),
+        )
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut text = format!("{} {}  ; {tags}\n", booking.date, booking.description);
+    let zero = render_amount(&money(
+        loaded.journal(),
+        &booking.commodity,
+        // The total is padded to the commodity's precision: `$0.00`.
+        Dec::new(0, booking.total.places),
+    ));
+    for line in &booking.lines {
+        let account = line.cash_account().unwrap_or(&line.account);
+        let mut comment = format!("{CUSTOMER_TAG}: {}", booking.customer);
+        if let Some(item) = &line.item {
+            comment.push_str(&format!(", item: {item}"));
+        }
+        text.push_str(&format!("    {account}  {zero}  ; {comment}\n"));
+    }
+    let parsed = ledgeline_core::parse_journal(&text, "marker.journal")
+        .map_err(|e| BooksError::Refused(format!("invoice {}: {e}", booking.number)))?;
+    parsed.transactions.into_iter().next().ok_or_else(|| {
+        BooksError::Refused(format!(
+            "invoice {}'s marker didn't read back",
+            booking.number
+        ))
+    })
+}
+
 impl InvoiceBooks {
-    /// The transaction `booking` books in `loaded`'s basis.
-    fn spec_for(
+    /// What sending `booking` writes in `loaded`'s basis (only called when
+    /// [`books_it`]).
+    fn plan_for(
         &self,
         index: &DocumentIndex,
         loaded: &Loaded,
         booking: &InvoiceBooking,
         basis: Basis,
-    ) -> Result<DocumentSpec, BooksError> {
+    ) -> Result<Plan, BooksError> {
         Ok(match basis {
             Basis::Accrual => {
                 let receivable = receivable_account(index.settings(), loaded.journal())?;
-                booking.document_spec(loaded.journal(), &receivable)
+                Plan::Document(booking.document_spec(loaded.journal(), &receivable))
             }
-            // Cash books: rows into the accounts a payment would have gone
-            // to. With a zero total there is no settlement posting, so the
-            // settlement account is never written.
-            Basis::Cash => booking.cash_document_spec(
-                loaded.journal(),
-                &deposit_account(index.settings(), loaded.journal()),
-            ),
+            Basis::Cash => Plan::Marker(cash_marker(loaded, booking)?),
         })
     }
 
@@ -514,15 +570,15 @@ impl InvoiceBooks {
             generation: loaded.generation(),
         };
         if books_it(basis, &preview.booking) {
-            let spec = self.spec_for(index, &loaded, &preview.booking, basis)?;
-            let would = built(&loaded, &spec)?;
+            let plan = self.plan_for(index, &loaded, &preview.booking, basis)?;
+            let would = plan.transaction(&loaded)?;
             if let Some(found) = booked(&loaded, number)? {
                 preview.in_step = Some(shape(&found.transaction) == shape(&would));
                 preview.linked = found.linked();
                 preview.booked = BookedTransaction::of(&loaded, found.tindex);
             }
             preview.would_book = Some(format_transaction(&would));
-            if basis == Basis::Accrual {
+            if let Plan::Document(spec) = plan {
                 preview.receivable = Some(spec.settlement_account);
             }
         }
@@ -530,12 +586,12 @@ impl InvoiceBooks {
     }
 
     /// **Send** (§4.1): book the invoice, then set `status: sent`,
-    /// `sent_date` (when it has none), `sent_via` (when given) and `paid: no`
-    /// (when it has no `paid`).
+    /// `sent_date` (when it has none), `sent_via` (when given) and `paid`
+    /// (when it has none): `no`, or for a zero total the invoice date.
     ///
-    /// - Accrual books book every invoice; cash books only one with a zero
-    ///   total (its deposit covers it). A zero total is booked with no
-    ///   receivable posting: the rows against the deposit liability.
+    /// - Accrual books book every invoice; a zero total (its deposit covers
+    ///   it) with no receivable posting, the rows against the deposit
+    ///   liability. Cash books book only a zero total, as a `$0` marker.
     /// - A draft already booked under its number, exactly as its file says,
     ///   is an earlier send whose markdown write failed: only the file is
     ///   written. Booked differently, it is refused.
@@ -570,7 +626,7 @@ impl InvoiceBooks {
         let mut journal_written = false;
         let mut booked_now = None;
         if books_it(basis, &booking) {
-            let spec = self.spec_for(index, &loaded, &booking, basis)?;
+            let plan = self.plan_for(index, &loaded, &booking, basis)?;
             match booked(&loaded, &request.number)? {
                 Some(_) if already_sent => {
                     return Err(status_error(
@@ -579,7 +635,7 @@ impl InvoiceBooks {
                     ));
                 }
                 Some(found) => {
-                    if shape(&found.transaction) != shape(&built(&loaded, &spec)?) {
+                    if shape(&found.transaction) != shape(&plan.transaction(&loaded)?) {
                         return Err(BooksError::Refused(format!(
                             "invoice {} is already booked ({}), and not as its file says; mark \
                              it `status: sent` and re-book it, or remove that transaction",
@@ -590,19 +646,31 @@ impl InvoiceBooks {
                 }
                 None => {
                     check_open(&loaded, &request.number, &booking.date)?;
-                    if booking.total.is_zero() {
-                        let mut ids = loaded.id_generator();
-                        let built = build_settled_document(&spec, &mut || ids.next_id())
-                            .map_err(OpsError::from)?;
-                        loaded.save(&SaveRequest {
-                            source: SourceChange::Add(Box::new(built.transaction)),
-                            schedules: built.schedules,
-                            today: request.today.clone(),
-                            create_file: true,
-                            expected: None,
-                        })?;
-                    } else {
-                        loaded.write_document(&spec, &request.today, true, None)?;
+                    match &plan {
+                        Plan::Document(spec) if booking.total.is_zero() => {
+                            let mut ids = loaded.id_generator();
+                            let built = build_settled_document(spec, &mut || ids.next_id())
+                                .map_err(OpsError::from)?;
+                            loaded.save(&SaveRequest {
+                                source: SourceChange::Add(Box::new(built.transaction)),
+                                schedules: built.schedules,
+                                today: request.today.clone(),
+                                create_file: true,
+                                expected: None,
+                            })?;
+                        }
+                        Plan::Document(spec) => {
+                            loaded.write_document(spec, &request.today, true, None)?;
+                        }
+                        Plan::Marker(marker) => {
+                            loaded.save(&SaveRequest {
+                                source: SourceChange::Add(Box::new(marker.clone())),
+                                schedules: Vec::new(),
+                                today: request.today.clone(),
+                                create_file: false,
+                                expected: None,
+                            })?;
+                        }
                     }
                     journal_written = true;
                     booked_now = booked_text(&loaded, &request.number);
@@ -627,7 +695,14 @@ impl InvoiceBooks {
             edits.push(set("sent_via", via));
         }
         if fields.get("paid").is_none_or(Value::is_null) {
-            edits.push(set("paid", "no"));
+            // Nothing is owed on a zero total: paid on its date (what the
+            // reconciler will say too).
+            let paid = if booking.total.is_zero() {
+                booking.date.as_str()
+            } else {
+                "no"
+            };
+            edits.push(set("paid", paid));
         }
         let markdown_written = !edits.is_empty();
         if markdown_written {
@@ -704,8 +779,8 @@ impl InvoiceBooks {
                 request.number
             )));
         };
-        let spec = if books_it(basis, &booking) {
-            self.spec_for(index, &loaded, &booking, basis)?
+        let plan = if books_it(basis, &booking) {
+            self.plan_for(index, &loaded, &booking, basis)?
         } else {
             return Err(BooksError::Refused(format!(
                 "invoice {} is booked with a zero total, and its total isn't zero any more; in \
@@ -714,7 +789,7 @@ impl InvoiceBooks {
             )));
         };
         rebooked.previous = BookedTransaction::of(&loaded, found.tindex);
-        if shape(&found.transaction) == shape(&built(&loaded, &spec)?) {
+        if shape(&found.transaction) == shape(&plan.transaction(&loaded)?) {
             rebooked.booked = rebooked.previous.clone();
             return Ok(rebooked);
         }
@@ -732,41 +807,59 @@ impl InvoiceBooks {
                 request.number
             ));
         }
-        if found.settlement.is_some() && !booking.total.is_zero() {
-            loaded.rebook_document(&spec, &request.today, true, None)?;
-        } else {
-            // A zero total on either side: replace it here, as Ledgeline's
-            // re-book would, keeping the schedule ids.
-            check_open(&loaded, &request.number, &found.transaction.date)?;
-            check_open(&loaded, &request.number, &booking.date)?;
-            let old_ids = schedule_ids(&found.transaction);
-            let mut reused = old_ids.clone().into_iter();
-            let mut fresh = loaded.id_generator();
-            let built = build_settled_document(&spec, &mut || {
-                reused.next().unwrap_or_else(|| fresh.next_id())
-            })
-            .map_err(OpsError::from)?;
-            if let Some(dropped) = old_ids
-                .iter()
-                .find(|id| !built.schedules.iter().any(|s| &s.id == *id))
-            {
-                return Err(BooksError::Refused(format!(
-                    "re-booking invoice {} would drop its schedule {dropped}; end that contract \
-                     first",
-                    request.number
-                )));
+        match &plan {
+            Plan::Document(spec) if found.settlement.is_some() && !booking.total.is_zero() => {
+                loaded.rebook_document(spec, &request.today, true, None)?;
             }
-            loaded.save(&SaveRequest {
-                source: SourceChange::Replace {
-                    tindex: found.tindex,
-                    fingerprint: found.fingerprint,
-                    transaction: Box::new(built.transaction),
-                },
-                schedules: built.schedules,
-                today: request.today.clone(),
-                create_file: true,
-                expected: None,
-            })?;
+            Plan::Document(spec) => {
+                // A zero total on either side: replace it here, as
+                // Ledgeline's re-book would, keeping the schedule ids.
+                check_open(&loaded, &request.number, &found.transaction.date)?;
+                check_open(&loaded, &request.number, &booking.date)?;
+                let old_ids = schedule_ids(&found.transaction);
+                let mut reused = old_ids.clone().into_iter();
+                let mut fresh = loaded.id_generator();
+                let built = build_settled_document(spec, &mut || {
+                    reused.next().unwrap_or_else(|| fresh.next_id())
+                })
+                .map_err(OpsError::from)?;
+                if let Some(dropped) = old_ids
+                    .iter()
+                    .find(|id| !built.schedules.iter().any(|s| &s.id == *id))
+                {
+                    return Err(BooksError::Refused(format!(
+                        "re-booking invoice {} would drop its schedule {dropped}; end that \
+                         contract first",
+                        request.number
+                    )));
+                }
+                loaded.save(&SaveRequest {
+                    source: SourceChange::Replace {
+                        tindex: found.tindex,
+                        fingerprint: found.fingerprint,
+                        transaction: Box::new(built.transaction),
+                    },
+                    schedules: built.schedules,
+                    today: request.today.clone(),
+                    create_file: true,
+                    expected: None,
+                })?;
+            }
+            Plan::Marker(marker) => {
+                check_open(&loaded, &request.number, &found.transaction.date)?;
+                check_open(&loaded, &request.number, &booking.date)?;
+                loaded.save(&SaveRequest {
+                    source: SourceChange::Replace {
+                        tindex: found.tindex,
+                        fingerprint: found.fingerprint,
+                        transaction: Box::new(marker.clone()),
+                    },
+                    schedules: Vec::new(),
+                    today: request.today.clone(),
+                    create_file: false,
+                    expected: None,
+                })?;
+            }
         }
         rebooked.changed = true;
         rebooked.booked = booked_text(&loaded, &request.number);

@@ -154,7 +154,10 @@ fn apply_payment_in_full_in_parts_and_undone() {
         .expect("applies again");
     assert_eq!(read(&dir, "books.journal"), journal);
 
-    // 207 ($7,000: $12,000 of work less the $5,000 deposit 206 paid).
+    // 207 ($7,000: $12,000 of work less the $5,000 deposit 206 paid). In
+    // cash books the deposit was income when it arrived, so the deposit row
+    // books nothing: the $7,000 still due is split over the work rows only,
+    // $8,000 : $4,000 → $4,666.67 + $2,333.33.
     // The $9,000 wire is more than is due: never a candidate.
     let candidates = books
         .payment_candidates(&index, "207", TODAY)
@@ -166,7 +169,7 @@ fn apply_payment_in_full_in_parts_and_undone() {
     );
     assert!(!candidates[0].exact && candidates[0].by_number);
 
-    // Half now: every row pro rata, the deposit row debited.
+    // Half now: the work rows pro rata; nothing onto the deposit row.
     let first = books
         .apply_payment(&index, &apply("207", &candidates[0].reference))
         .expect("applies");
@@ -174,14 +177,10 @@ fn apply_payment_in_full_in_parts_and_undone() {
     assert_eq!(
         first.applied,
         [
-            ("revenue:consulting".to_string(), "4000.00".to_string()),
+            ("revenue:consulting".to_string(), "2333.34".to_string()),
             (
                 "revenue:consulting:delivery".to_string(),
-                "2000.00".to_string()
-            ),
-            (
-                "liabilities:customer-deposits".to_string(),
-                "-2500.00".to_string()
+                "1166.66".to_string()
             ),
         ]
     );
@@ -189,9 +188,8 @@ fn apply_payment_in_full_in_parts_and_undone() {
         first.transaction.text,
         "2026-11-17 * WIRE CUSTOMER X INV 207  ; id: wx-7, invoice:207\n\
          \x20   assets:bank:checking   $3,500.00  ; bank-ref: 771\n\
-         \x20   revenue:consulting             $-4000.00  ; customer: Customer X\n\
-         \x20   revenue:consulting:delivery    $-2000.00  ; customer: Customer X\n\
-         \x20   liabilities:customer-deposits  $2500.00  ; customer: Customer X\n"
+         \x20   revenue:consulting           $-2333.34  ; customer: Customer X\n\
+         \x20   revenue:consulting:delivery  $-1166.66  ; customer: Customer X\n"
     );
     // The rest: each row's remainder; it is paid.
     let rest = books
@@ -203,6 +201,16 @@ fn apply_payment_in_full_in_parts_and_undone() {
         .apply_payment(&index, &apply("207", &rest[0].reference))
         .expect("applies");
     assert_eq!(second.remaining, Dec::zero());
+    assert_eq!(
+        second.applied,
+        [
+            ("revenue:consulting".to_string(), "2333.33".to_string()),
+            (
+                "revenue:consulting:delivery".to_string(),
+                "1166.67".to_string()
+            ),
+        ]
+    );
     assert!(
         books
             .payment_candidates(&index, "207", TODAY)
@@ -229,14 +237,14 @@ fn apply_payment_in_full_in_parts_and_undone() {
         &["books.journal"],
         &["bal", "tag:invoice=^20[67]$", "--flat", "-O", "csv"],
     ) {
-        // 206's deposit and 207's two payments: $12,000 of revenue, the
-        // liability back to zero.
+        // 206's deposit (income on receipt) and 207's two payments: $12,000
+        // in the bank and $12,000 of revenue; the liability never moves.
         assert_eq!(
             out,
             "\"account\",\"balance\"\n\
              \"assets:bank:checking\",\"$12000.00\"\n\
-             \"revenue:consulting\",\"$-8000.00\"\n\
-             \"revenue:consulting:delivery\",\"$-4000.00\"\n\
+             \"revenue:consulting\",\"$-9666.67\"\n\
+             \"revenue:consulting:delivery\",\"$-2333.33\"\n\
              \"Total:\",\"0\"\n"
         );
     }
@@ -283,10 +291,9 @@ fn voiding_an_unpaid_cash_invoice_writes_only_the_markdown() {
 }
 
 #[test]
-fn a_final_invoice_its_deposit_covers_books_at_send_in_cash_books() {
-    // Wingtip: a $1,000 deposit invoice (208), paid by wire and applied;
-    // then a $1,000 final (209) the deposit covers. No payment will ever
-    // arrive for 209, so sending it moves the revenue off the liability.
+fn a_deposit_is_income_on_receipt_and_a_covered_final_books_a_zero_marker() {
+    // Wingtip: a $1,000 deposit invoice (208), paid by wire; then a $1,000
+    // final (209) the deposit covers in full.
     let dir = scratch("cash", "cash-zero");
     write(
         &dir,
@@ -324,17 +331,28 @@ fn a_final_invoice_its_deposit_covers_books_at_send_in_cash_books() {
         expected: None,
     };
     books.send(&mut index, &send("208")).expect("sends");
+
+    // The wire is income the day it arrives: Wingtip has no revenue_account,
+    // so `[invoicer] revenue-account` takes it, not the deposit liability.
     let wire = books
         .payment_candidates(&index, "208", TODAY)
         .expect("lists")
         .into_iter()
         .next()
         .expect("the wire");
-    books
+    let paid = books
         .apply_payment(&index, &apply("208", &wire.reference))
         .expect("applies");
+    assert_eq!(
+        paid.transaction.text,
+        "2026-11-12 * WIRE WINGTIP DEPOSIT  ; id: ww-1, invoice:208\n\
+         \x20   assets:bank:checking  $1,000.00\n\
+         \x20   revenue:consulting  $-1000.00  ; customer: Wingtip\n"
+    );
+    // Still a credit for Wingtip to apply: what 208 was paid.
     let open_deposits = books.open_deposits(&index, "209").expect("lists");
     assert_eq!(open_deposits.deposits.len(), 1);
+    assert_eq!(open_deposits.deposits[0].number.as_deref(), Some("208"));
     assert_eq!(open_deposits.deposits[0].remaining, Dec::new(100_000, 2));
     let applied = books
         .apply_deposit(
@@ -348,19 +366,28 @@ fn a_final_invoice_its_deposit_covers_books_at_send_in_cash_books() {
         .expect("applies the deposit");
     assert_eq!(applied.total, Dec::zero());
 
+    // Send 209: a $0 marker, so the books show it was sent; paid on its date.
     let before = read(&dir, "books.journal");
+    let markdown = read(&dir, final_209);
     let sent = books.send(&mut index, &send("209")).expect("sends");
     assert!(sent.journal_written && sent.markdown_written);
     let booked = sent.booked.expect("booked").text;
     assert_eq!(
         booked,
         "2026-11-17 Wingtip | Invoice 209  ; invoice: 209, document: invoices/2026-11-17 Wingtip Invoice 209.md, due: 2026-12-17\n\
-         \x20   revenue:consulting             $-1000.00  ; customer: Wingtip, item: Phase 2 build\n\
-         \x20   liabilities:customer-deposits  $1000.00  ; customer: Wingtip, item: Less deposit (Invoice 208)\n"
+         \x20   revenue:consulting             $0.00  ; customer: Wingtip, item: Phase 2 build\n\
+         \x20   liabilities:customer-deposits  $0.00  ; customer: Wingtip, item: Less deposit (Invoice 208)\n"
     );
     let (removed, added) = diff(&before, &read(&dir, "books.journal"));
     assert_eq!((removed.as_str(), added), ("", format!("\n{booked}")));
-    // Nothing to pay, nothing left on the deposit; the bridge finds it.
+    assert_eq!(
+        read(&dir, final_209),
+        replace_once(
+            &replace_once(&markdown, "status: draft\n", "status: sent\n"),
+            "  1234 Background Blvd.\n---\n",
+            "  1234 Background Blvd.\nsent_date: 2026-11-17\npaid: 2026-11-17\n---\n"
+        )
+    );
     assert!(
         books
             .payment_candidates(&index, "209", TODAY)
@@ -374,10 +401,9 @@ fn a_final_invoice_its_deposit_covers_books_at_send_in_cash_books() {
             .deposits
             .is_empty()
     );
-    assert_eq!(
-        books.preview(&index, "209").expect("previews").in_step,
-        Some(true)
-    );
+    let preview = books.preview(&index, "209").expect("previews");
+    assert_eq!(preview.in_step, Some(true));
+    assert_eq!(preview.receivable, None);
     // An ordinary cash-books invoice still books nothing at send.
     assert!(
         books
@@ -386,6 +412,36 @@ fn a_final_invoice_its_deposit_covers_books_at_send_in_cash_books() {
             .would_book
             .is_none()
     );
+    if let Some(out) = hledger(&dir, &["books.journal"], &["-s", "check"]) {
+        assert_eq!(out, "");
+    }
+
+    // Void 209: the marker reversed. The deposit is Wingtip's again, for a
+    // reissue.
+    let journal = read(&dir, "books.journal");
+    let voided = books
+        .void(
+            &mut index,
+            &Void {
+                number: "209".into(),
+                date: TODAY.into(),
+                today: TODAY.into(),
+                expected: None,
+            },
+        )
+        .expect("voids");
+    assert!(voided.journal_written && voided.link.is_none());
+    let reversal = voided.reversal.expect("reversal").text;
+    assert_eq!(
+        reversal,
+        "2026-11-17 Wingtip | Invoice 209 (void)  ; invoice: 209, void: 2026-11-17\n\
+         \x20   revenue:consulting             $0.00  ; customer: Wingtip, item: Phase 2 build\n\
+         \x20   liabilities:customer-deposits  $0.00  ; customer: Wingtip, item: Less deposit (Invoice 208)\n"
+    );
+    let (removed, added) = diff(&journal, &read(&dir, "books.journal"));
+    assert_eq!((removed.as_str(), added), ("", format!("\n{reversal}")));
+    let open_again = books.open_deposits(&index, "203").expect("lists");
+    assert_eq!(open_again.balance, Dec::new(100_000, 2));
 
     if let Some(out) = hledger(&dir, &["books.journal"], &["-s", "check"]) {
         assert_eq!(out, "");
@@ -393,15 +449,16 @@ fn a_final_invoice_its_deposit_covers_books_at_send_in_cash_books() {
     if let Some(out) = hledger(
         &dir,
         &["books.journal"],
-        &[
-            "bal",
-            "tag:customer=Wingtip",
-            "liabilities:customer-deposits",
-            "--flat",
-            "-O",
-            "csv",
-        ],
+        &["bal", "tag:invoice=^20[89]$", "--flat", "-O", "csv"],
     ) {
-        assert_eq!(out, "\"account\",\"balance\"\n\"Total:\",\"0\"\n");
+        // The deposit was revenue on receipt; the marker and its void move
+        // nothing.
+        assert_eq!(
+            out,
+            "\"account\",\"balance\"\n\
+             \"assets:bank:checking\",\"$1000.00\"\n\
+             \"revenue:consulting\",\"$-1000.00\"\n\
+             \"Total:\",\"0\"\n"
+        );
     }
 }

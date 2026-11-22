@@ -77,15 +77,38 @@ pub struct BookLine {
     pub item: Option<String>,
     /// The body rows (0-based) it came from.
     pub rows: Vec<usize>,
+    /// What it books in cash books.
+    pub cash: CashBooking,
+}
+
+/// What a line books in cash books, where revenue is recognized when money
+/// arrives (Patrick, 2026-11-21: a deposit is income on receipt).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "account", rename_all = "kebab-case")]
+pub enum CashBooking {
+    /// A payment of the line goes to this account: the line's own, or for a
+    /// deferred line the account it recognizes into (cash books have no
+    /// deferred revenue), or for a deposit invoice's row on the deposit
+    /// account the customer's revenue account.
+    Account(String),
+    /// A deposit applied on a final invoice: the deposit was income when it
+    /// arrived, so the row books nothing and no payment is split onto it.
+    Nothing,
+    /// A deposit invoice's row with no revenue account to book its receipt
+    /// to (no customer `revenue_account`, no `[invoicer] revenue-account`,
+    /// no single revenue account in the books).
+    Unresolved,
 }
 
 impl BookLine {
-    /// Where a cash-books payment of this line goes: the account itself, or
-    /// for a deferred line the account it recognizes into (cash books have no
-    /// deferred revenue: revenue is recognized when paid).
+    /// Where a cash-books payment of this line goes; `None` when it books
+    /// nothing (or can't: see [`CashBooking::Unresolved`]).
     #[must_use]
-    pub fn cash_account(&self) -> &str {
-        self.recognize_into.as_deref().unwrap_or(&self.account)
+    pub fn cash_account(&self) -> Option<&str> {
+        match &self.cash {
+            CashBooking::Account(account) => Some(account),
+            CashBooking::Nothing | CashBooking::Unresolved => None,
+        }
     }
 }
 
@@ -123,20 +146,6 @@ impl InvoiceBooking {
     /// no receivable posting.
     #[must_use]
     pub fn document_spec(&self, journal: &Journal, receivable: &str) -> DocumentSpec {
-        self.spec_with(journal, receivable, false)
-    }
-
-    /// The cash-books transaction of a zero-total invoice: each line into
-    /// its [`cash_account`](BookLine::cash_account), with no deferral (cash
-    /// books recognize revenue when it is paid, and a deposit paid it).
-    /// `settlement` is never written (the total is zero) but must name an
-    /// account.
-    #[must_use]
-    pub fn cash_document_spec(&self, journal: &Journal, settlement: &str) -> DocumentSpec {
-        self.spec_with(journal, settlement, true)
-    }
-
-    fn spec_with(&self, journal: &Journal, settlement: &str, cash: bool) -> DocumentSpec {
         DocumentSpec {
             direction: Direction::Revenue,
             date: self.date.clone(),
@@ -146,18 +155,14 @@ impl InvoiceBooking {
                 kind: PartyKind::Customer,
                 name: self.customer.clone(),
             }),
-            settlement_account: settlement.to_string(),
+            settlement_account: receivable.to_string(),
             lines: self
                 .lines
                 .iter()
                 .map(|line| DocumentLine {
-                    account: if cash {
-                        line.cash_account().to_string()
-                    } else {
-                        line.account.clone()
-                    },
+                    account: line.account.clone(),
                     amount: money(journal, &self.commodity, line.amount),
-                    deferral: if cash { None } else { line.deferral.clone() },
+                    deferral: line.deferral.clone(),
                     tags: line
                         .item
                         .iter()
@@ -170,22 +175,69 @@ impl InvoiceBooking {
     }
 
     /// What a cash-books payment is re-split into: each line's
-    /// [`cash_account`](BookLine::cash_account) and amount, merged by
-    /// account in first-appearance order, zero lines dropped.
+    /// [`cash_account`](BookLine::cash_account), merged by account in
+    /// first-appearance order, scaled pro rata to the amount due. A deposit
+    /// applied books nothing, so the rows that remain share what is due
+    /// after it (`$12,000` of work less a `$5,000` deposit: `$7,000` split
+    /// over the work rows). Empty for a zero total.
     ///
     /// # Errors
+    /// [`BooksError::Setup`] for a deposit row with no revenue account;
+    /// [`BooksError::Refused`] when the rows left sum to nothing;
     /// [`BooksError::Overflow`].
     pub fn cash_split(&self) -> Result<Vec<(String, Dec)>, BooksError> {
+        if self.total.is_zero() {
+            return Ok(Vec::new());
+        }
         let mut out: Vec<(String, Dec)> = Vec::new();
         for line in &self.lines {
-            let account = line.cash_account();
+            let account = match &line.cash {
+                CashBooking::Account(account) => account,
+                CashBooking::Nothing => continue,
+                CashBooking::Unresolved => {
+                    return Err(BooksError::Setup(format!(
+                        "invoice {}: in cash books a deposit is income when it arrives, and \
+                         its row on {} has no revenue account to book it to; set the \
+                         customer's revenue_account or [invoicer] revenue-account",
+                        self.number, line.account
+                    )));
+                }
+            };
             match out.iter_mut().find(|(a, _)| a == account) {
                 Some((_, sum)) => *sum = sum.add(line.amount).map_err(|_| BooksError::Overflow)?,
-                None => out.push((account.to_string(), line.amount)),
+                None => out.push((account.clone(), line.amount)),
             }
         }
         out.retain(|(_, amount)| !amount.is_zero());
-        Ok(out)
+        let sum = out
+            .iter()
+            .try_fold(Dec::zero(), |acc, (_, d)| acc.add(*d))
+            .map_err(|_| BooksError::Overflow)?;
+        if sum == self.total {
+            return Ok(out);
+        }
+        if sum.mantissa <= 0 {
+            return Err(BooksError::Refused(format!(
+                "invoice {}: once its deposit is set aside nothing is left to split a payment \
+                 over",
+                self.number
+            )));
+        }
+        // The remainder goes on the largest row: `allocate` puts it last.
+        let largest = (0..out.len()).fold(
+            0,
+            |best, at| if out[at].1 > out[best].1 { at } else { best },
+        );
+        let mut order: Vec<usize> = (0..out.len()).filter(|&at| at != largest).collect();
+        order.push(largest);
+        let weights: Vec<Dec> = order.iter().map(|&at| out[at].1).collect();
+        let shares = ledgeline_core::decimal::allocate(self.total, &weights)
+            .map_err(|_| BooksError::Overflow)?;
+        let mut scaled = out.clone();
+        for (at, share) in order.into_iter().zip(shares) {
+            scaled[at].1 = share;
+        }
+        Ok(scaled)
     }
 }
 
@@ -426,6 +478,21 @@ pub fn booking_of(
         .ok_or_else(|| invalid("there is no bill table"))?;
     let style = cx.money.for_table(table);
     let defaults = account_defaults(cx.settings, cx.journal, cx.customer, cx.catalogs);
+    // Cash books: a deposit invoice's row on the deposit account is income
+    // when the deposit arrives, into the customer's revenue account (else
+    // the default one).
+    let deposit = deposit_account(cx.settings, cx.journal);
+    let cash_revenue: Option<String> = defaults
+        .customer
+        .as_ref()
+        .map(|entry| {
+            entry.deferral().map_or_else(
+                || entry.account().as_str().to_string(),
+                |d| d.target_account.clone(),
+            )
+        })
+        .or_else(|| defaults.settings.as_ref().map(|a| a.as_str().to_string()))
+        .or_else(|| defaults.inferred.as_ref().map(|a| a.as_str().to_string()));
     let Booking { total, lines } =
         booking::split(&evaluation, &defaults, &style).map_err(|source| BooksError::Booking {
             path: path.clone(),
@@ -452,13 +519,25 @@ pub fn booking_of(
     let lines: Vec<BookLine> = lines
         .into_iter()
         .map(|line| {
+            let account = line.books.account().as_str().to_string();
+            let recognize_into = line.books.deferral().map(|d| d.target_account.clone());
+            let cash = match (account == deposit, line.amount.mantissa < 0) {
+                (true, true) => CashBooking::Nothing,
+                (true, false) => cash_revenue
+                    .clone()
+                    .map_or(CashBooking::Unresolved, CashBooking::Account),
+                (false, _) => {
+                    CashBooking::Account(recognize_into.clone().unwrap_or_else(|| account.clone()))
+                }
+            };
             Ok(BookLine {
-                account: line.books.account().as_str().to_string(),
-                recognize_into: line.books.deferral().map(|d| d.target_account.clone()),
+                account,
+                recognize_into,
                 deferral: line.books.deferral().cloned(),
                 amount: padded(line.amount)?,
                 item: item_of(&line.rows, &evaluation),
                 rows: line.rows,
+                cash,
             })
         })
         .collect::<Result<_, BooksError>>()?;

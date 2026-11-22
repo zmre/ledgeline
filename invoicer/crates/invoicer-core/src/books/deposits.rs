@@ -18,9 +18,16 @@
 //! Each application uses up the deposit its row names (`Less deposit
 //! (Invoice 104)` names 104, as a whole word) first, then the oldest.
 //!
+//! **Cash books** hold nothing on the deposit account: a deposit is income
+//! the day it arrives (Patrick, 2026-11-21), so a deposit invoice's credit is
+//! what has been paid on it (its applied payments, up to its deposit rows),
+//! and the applications are counted from the files as above. Voiding a final
+//! invoice gives its deposit back to the customer for a reissue.
+//!
 //! [`InvoiceBooks::apply_deposit`] writes that row into a draft, above its
 //! final total, and recomputes the table.
 
+use super::lifecycle::{Basis, applied_payments};
 use super::spec::deposit_account;
 use super::{BooksError, Document, InvoiceBooks};
 use crate::doc::Status;
@@ -144,11 +151,17 @@ impl InvoiceBooks {
             |t| money.for_table(t).commodity().to_string(),
         );
 
+        // Cash books: a deposit is income when it arrives, so nothing is
+        // held on the deposit account; a deposit invoice's credit is what it
+        // has been paid (its applied payments), up to its deposit rows.
+        let cash = Basis::of(&loaded) == Basis::Cash;
+
         // Every document by number, and the applications this customer's
         // other documents make.
         let mut statuses: BTreeMap<String, Option<Status>> = BTreeMap::new();
         let mut paths: BTreeMap<String, VaultPath> = BTreeMap::new();
         let mut uses: Vec<Use> = Vec::new();
+        let mut deposits: Vec<OpenDeposit> = Vec::new();
         for doc in index.docs() {
             let Some(n) = doc.number() else { continue };
             statuses.insert(n.to_string(), doc.header.status);
@@ -172,25 +185,47 @@ impl InvoiceBooks {
             let Ok(Some(evaluation)) = other.invoice.evaluate(&settings.words, money) else {
                 continue;
             };
+            let mut deposited = Dec::zero();
             for row in &evaluation.rows {
                 let books = row.books.as_ref().map(BooksEntry::account);
                 if let (Some(books), Some(amount)) = (books, row.amount)
                     && books.as_str() == account
-                    && amount.mantissa < 0
                     && row.kind != RowKind::Total
                 {
-                    uses.push(Use {
-                        date: other.invoice.header().date.clone().unwrap_or_default(),
-                        description: row.at.description.clone(),
-                        amount: amount.neg().map_err(|_| BooksError::Overflow)?,
+                    if amount.mantissa < 0 {
+                        uses.push(Use {
+                            date: other.invoice.header().date.clone().unwrap_or_default(),
+                            description: row.at.description.clone(),
+                            amount: amount.neg().map_err(|_| BooksError::Overflow)?,
+                        });
+                    } else {
+                        deposited = deposited.add(amount).map_err(|_| BooksError::Overflow)?;
+                    }
+                }
+            }
+            if cash && deposited.mantissa > 0 && doc.header.status == Some(Status::Sent) {
+                let received = received_on(&loaded, n, &customer.ledger_customer, &commodity)?;
+                let credited = if received < deposited {
+                    received
+                } else {
+                    deposited
+                };
+                if credited.mantissa > 0 {
+                    deposits.push(OpenDeposit {
+                        number: Some(n.to_string()),
+                        path: Some(doc.path.clone()),
+                        date: doc.header.date.clone().unwrap_or_default(),
+                        description: doc.title.clone(),
+                        credited,
+                        remaining: credited,
                     });
                 }
             }
         }
 
-        // The journal: credits, and debits nothing above counts.
-        let mut deposits: Vec<OpenDeposit> = Vec::new();
-        for txn in &journal.transactions {
+        // Accrual books: the journal's credits, and the debits nothing above
+        // counts.
+        for txn in journal.transactions.iter().filter(|_| !cash) {
             let tagged = tag_value(&txn.tags, INVOICE_TAG).map(str::to_string);
             let status = tagged.as_ref().and_then(|n| statuses.get(n).copied());
             if status == Some(Some(Status::Void)) {
@@ -410,6 +445,34 @@ impl InvoiceBooks {
             total: recalc.evaluation.total,
         })
     }
+}
+
+/// Cash books: what the payments applied to invoice `number` brought in —
+/// their postings tagged with the customer, in `commodity`, negated.
+fn received_on(
+    loaded: &ledgeline_core::accrual::ops::Loaded,
+    number: &str,
+    customer: &str,
+    commodity: &str,
+) -> Result<Dec, BooksError> {
+    let mut received = Dec::zero();
+    for txn in applied_payments(loaded, number) {
+        for posting in &txn.postings {
+            if tag_value(&posting.tags, CUSTOMER_TAG) != Some(customer) {
+                continue;
+            }
+            for amount in posting
+                .amounts
+                .iter()
+                .filter(|a| a.commodity.0 == commodity)
+            {
+                received = received
+                    .sub(amount.quantity)
+                    .map_err(|_| BooksError::Overflow)?;
+            }
+        }
+    }
+    Ok(received)
 }
 
 fn save(

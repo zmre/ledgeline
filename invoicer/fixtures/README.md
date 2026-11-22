@@ -37,17 +37,19 @@ is a payable, in its own namespace, so it doesn't count.
 
 The receivables fixture's cash books (Apply payment already re-split 201 and
 202), a deposit wire for 206, and `[books] basis = "cash"`. Cash books book
-an invoice at payment only, so no invoice has a receivable posting.
+an invoice at payment only, so no invoice has a receivable posting, and a
+deposit is income the day it arrives: 206's wire went to revenue, and 207's
+deposit row books nothing.
 
-| Invoice | Customer   | Case                                   |
-|---------|------------|----------------------------------------|
-| 201     | Contoso    | Paid (Stripe payout, re-split)         |
-| 202     | Fabrikam   | Partly paid ($500 wire, pro rata)      |
-| 203     | Wingtip    | Sent, unpaid                           |
-| 204     | Customer X | Draft                                  |
-| 205     | Tailspin   | Void                                   |
-| 206     | Customer X | Deposit, paid by wire to the liability |
-| 207     | Customer X | Final, applying 206; unpaid            |
+| Invoice | Customer   | Case                                                |
+|---------|------------|-----------------------------------------------------|
+| 201     | Contoso    | Paid (Stripe payout, re-split)                      |
+| 202     | Fabrikam   | Partly paid ($500 wire, pro rata)                   |
+| 203     | Wingtip    | Sent, unpaid                                        |
+| 204     | Customer X | Draft                                               |
+| 205     | Tailspin   | Void                                                |
+| 206     | Customer X | Deposit, paid by wire: income on receipt            |
+| 207     | Customer X | Final, applying 206; unpaid ($7,000 left to pay)    |
 
 ## Check the books with hledger
 
