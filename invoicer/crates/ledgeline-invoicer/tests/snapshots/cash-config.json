@@ -1,0 +1,80 @@
+{
+  "books": {
+    "basis": "cash",
+    "closed-through": null,
+    "recognition-file": null
+  },
+  "books_folder": "<BOOKS>",
+  "invoicer": {
+    "catalog": "invoices/catalog.md",
+    "company": "[[My Company]]",
+    "customers-dir": "customers",
+    "deposit-account": "liabilities:customer-deposits",
+    "discount-account": null,
+    "filename": "{date} {customer} Invoice {invoice_num}.md",
+    "invoices-dir": "invoices",
+    "number-start": "201",
+    "pdf-dir": "invoices/pdf",
+    "receivable-account": null,
+    "revenue-account": "revenue:consulting",
+    "templates-dir": "invoices/tpl",
+    "words": {
+      "amount": [
+        "Amount",
+        "Total",
+        "Line total"
+      ],
+      "billing-labels": [
+        "billing",
+        "work"
+      ],
+      "customer-tag": "customer",
+      "date": [
+        "Date",
+        "Service date"
+      ],
+      "deposit": [
+        "Less deposit"
+      ],
+      "description": [
+        "Description",
+        "Item",
+        "Service",
+        "Product"
+      ],
+      "item": [
+        "Code",
+        "SKU"
+      ],
+      "quantity": [
+        "Qty",
+        "Quantity",
+        "Hours",
+        "Units"
+      ],
+      "rate": [
+        "Rate",
+        "Price",
+        "Unit price",
+        "Unit cost"
+      ],
+      "subtotal": [
+        "Subtotal"
+      ],
+      "tax": [
+        "Sales tax"
+      ],
+      "total": [
+        "Total due",
+        "Total",
+        "Balance due",
+        "Amount due"
+      ],
+      "unit": [
+        "Unit"
+      ]
+    }
+  },
+  "journal": "<BOOKS>/books.journal",
+  "warnings": []
+}

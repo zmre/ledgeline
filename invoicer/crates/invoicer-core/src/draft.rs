@@ -443,7 +443,11 @@ pub fn render(
 
 /// Refuse text that doesn't read back as a sound document: frontmatter that
 /// doesn't parse, no bill table, or a table that doesn't read or add up.
-fn verify(text: &str, settings: &Settings, money: &crate::doc::Money) -> Result<(), DraftError> {
+pub(crate) fn verify(
+    text: &str,
+    settings: &Settings,
+    money: &crate::doc::Money,
+) -> Result<(), DraftError> {
     let invoice = Invoice::parse(text, &settings.words);
     let fatal: Vec<Problem> = invoice
         .problems(&settings.words, money)

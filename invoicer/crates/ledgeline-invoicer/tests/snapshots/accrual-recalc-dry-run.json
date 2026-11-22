@@ -1,0 +1,27 @@
+{
+  "changed": [
+    {
+      "changes": [
+        {
+          "after": "$1,600.00",
+          "before": "$1,500",
+          "description": "Senior architect hours",
+          "line": 31,
+          "row": 2
+        }
+      ],
+      "number": "108",
+      "path": "invoices/2026-11-17 Customer X Invoice 108.md",
+      "status": "draft",
+      "written": false
+    }
+  ],
+  "failed": [],
+  "skipped": [
+    {
+      "number": "106",
+      "path": "invoices/2026-08-01 Wingtip Invoice 106.md",
+      "reason": "it is sent; name it to recalculate it (then re-book it)"
+    }
+  ]
+}

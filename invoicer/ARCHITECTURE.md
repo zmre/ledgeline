@@ -801,6 +801,14 @@ are an error at save. Numbers aren't forced to be integers: if the maximum
 is `2026-0042`, the next is `2026-0043`, because a trailing digit run
 increments. There is no counter file.
 
+"In the books" means every `invoice:` tag on a transaction or a posting
+(`numbering::booked_numbers`), so a number used by a void reversal or a
+cash Apply payment still counts. One exception: a vendor's bill carries the
+same tag in its own namespace (plan 45), so a transaction whose settlement
+posting is payable-side is left out. In the accrual fixture, plan 45's
+invoices 2001–2004 have no files and the bill `PA-9` is skipped, so the next
+number is 2005.
+
 ### 5.2 Creating an invoice
 
 1. Choose a customer and a template. The customer's `invoice_template` is
@@ -1101,6 +1109,91 @@ ledgeline-invoicer recognize [--through DATE]        # plan 45 post_due, never a
 
 The CLI and the API share one library function per operation, as
 `run_cli_import` does in Ledgeline.
+
+**As built (Phase 1c, 2026-11-21).** The document commands are in:
+`new`, `list`, `show`, `set`, `recalc`, `check`, `next-number`, `config`
+and `customers list|show`. The rest arrive with Phase 2 (books) and 3 (PDF,
+GUI). `main.rs` only parses, opens and prints; each command is one
+`invoicer_core` function:
+
+| Module                   | Holds                                                                                         |
+|--------------------------|-----------------------------------------------------------------------------------------------|
+| `invoicer_core::session` | `Session`: the vault, `[books]`, the journal's money styles and `invoice:` numbers, the index |
+| `invoicer_core::views`   | `list`, `show`, `check`, `customers`, `customer_detail`, `config`: serializable shapes        |
+| `invoicer_core::edit`    | `create` (`new`), `set`, `recalc`, and the `--row` / `--from-catalog` grammars                |
+
+- **Opening the books.** `JOURNAL` (positional, before the command) or
+  `-f JOURNAL` (anywhere), then `$LEDGELINE_FIXTURE`, then the most recent
+  journal in the recents Ledgeline shares (`ledgeline_shell::recents`). The
+  last two print a note on stderr. `$LEDGER_FILE` is never read. The CLI
+  doesn't record recents; opening a books folder in a window does.
+- **Today.** `--today DATE` overrides the local date. It is `new`'s default
+  date and what "overdue" is measured against.
+- **Exit codes.** 0 done; 1 `check` found errors (with `--strict`, warnings
+  too); 2 the command couldn't run: a usage error, books that don't open, a
+  document that isn't found, or a refused write.
+- **`--json`.** One JSON value on stdout. Field names are a contract: they
+  are added, never renamed. A failure prints `{"error": "…"}` and exits 2.
+- **Paths** in output are vault-relative (`invoices/…md`). Documents are
+  named by number or by path (vault-relative, local, `.md` optional).
+
+| Command                  | `--json` prints                                                                                                                                                             |
+|--------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `list`                   | `[DocEntry]`: `path`, `title`, the header fields, `total`, `commodity`, `open`, `overdue`, `problems {errors, warnings}`                                                    |
+| `show NUM`               | `DocEntry`'s fields plus `frontmatter` (every field, lossless), `table {commodity, total, rows, discrepancies}`, `prose_before`, `prose_after`, `problems`                  |
+| `check`                  | `{documents, customers, errors, warnings, problems: [Problem]}`                                                                                                             |
+| `new`                    | `{path, number, total, written, problems}`, plus `text` with `--dry-run`                                                                                                    |
+| `set NUM k=v… --unset k` | `{path, number, changed: [key], written, problems}`                                                                                                                         |
+| `recalc [NUM…]`          | `{changed: [{path, number, status, changes: [{row, line, description, before, after}], written}], skipped, failed}`                                                         |
+| `next-number`            | `{next}`                                                                                                                                                                    |
+| `config`                 | `{journal, books_folder, books {basis, closed-through, recognition-file}, invoicer {…, words}, warnings}`                                                                   |
+| `customers list`         | `[{path, title, kind, ledger_customer, terms, billing, portal, invoices, open}]`                                                                                            |
+| `customers show NAME`    | a `customers list` row plus `contact`, `revenue_account`, `invoice_template`, `contracts` (with `found`), `billing_portal`, `open_pos`, `snippets`, `documents`, `problems` |
+
+The header fields are `doc_type`, `number`, `date`, `status`, `template`,
+`invoicee` and `invoicer` (`{link, name, email, address}`), `terms`,
+`due_date`, `reference`, `paid` (`{"state": "no" | "partial" | "full", …}`),
+`sent_date`, `sent_via`, `void_date` and `deposit_for`. A table row is
+`{row, line, kind, description, code, quantity, unit, rate, amount,
+written, computed, applies_to, books, account, deferral}`; `kind` is `item`,
+`adjustment`, `fixed-adjustment`, `total` or `spacer`. The
+`ledgeline-invoicer/tests/snapshots/` files are worked examples of every
+shape.
+
+Rules the commands follow:
+
+- **Open and overdue read the `paid:` mirror** until Phase 2's reconciler
+  keeps it in step with the books. Open means sent and `paid:` isn't a date.
+  Overdue means open with `due_date` before today.
+- **`check`** covers the documents, the customers and the catalog. The books
+  checks are Phase 2's. `check --full` is left out, because a CLI run builds
+  its index fresh, so there is nothing to diff.
+- **`new --row 'DESC|QTY|RATE|ACCOUNT'`.** Trailing fields may be left off,
+  and `\|` is a literal pipe. With no quantity, a percentage rate makes an
+  adjustment (`Discount||-10%`). With no quantity, a money rate is the row's
+  amount (`Less deposit||-$5,000|liabilities:customer-deposits`). A total
+  word alone (`Subtotal`) writes a total row. `--from-catalog CODE[:QTY]`
+  fills a row from the catalog. Rows keep their command-line order across
+  both flags. `--field key=value` adds custom fields. `--dry-run` prints the
+  draft without writing it.
+- **`set` values.** `key=value` writes text. A whole number that reads back
+  the same is written as a number, so `terms=45` is a number and
+  `invoice_num=0042` stays text. `key:=JSON` writes any value.
+- **`set` refuses** three edits that would make a document disagree with
+  its books. `status` is a lifecycle step, left to send and void. `paid` is
+  the reconciler's mirror (I7). `invoice_num` is how the books find a sent
+  document (§4.3), so it can change only on a draft. A new number must be
+  unused. A document whose bill table already fails verification can still
+  have its frontmatter set, because `set` makes nothing worse.
+- **`recalc`** with no arguments rewrites drafts only. Sent and void
+  documents with wrong amounts are reported as skipped, and are rewritten
+  only when named, since their books need re-booking after (Phase 2).
+  Rewriting re-aligns the whole table.
+
+**Measured (2026-11-21).** On the §5.6 corpus, the release binary (on an
+Apple M5 Max, wall clock, opening the journal and the index from scratch)
+runs `list --json` in 0.24 s against a 300 ms budget, and `check` in
+0.23 s against 1 s.
 
 ## 7. Future features this design leaves room for
 

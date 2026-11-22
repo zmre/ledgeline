@@ -1,0 +1,7 @@
+CUSTOMER    KIND          TERMS   BILLING EMAIL                      PORTAL  DOCS  OPEN
+Contoso     organization  net 30  ap@contoso.example                            2     1
+Customer X  organization  net 30  accounts_receivable@customerx.com  Coupa      3     1
+Fabrikam    organization  net 30  ap@fabrikam.example                           1     0
+Fred Smith  person                accounts_receivable@customerx.com             0     0
+Tailspin    organization  net 30  ap@tailspin.example                           1     0
+Wingtip     organization  net 30  ap@wingtip.example                            1     1

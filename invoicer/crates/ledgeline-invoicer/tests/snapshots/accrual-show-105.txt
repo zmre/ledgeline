@@ -1,0 +1,27 @@
+Invoice 105 (sent)  invoices/2026-11-10 Customer X Invoice 105.md
+  Date         2026-11-10
+  Due          2026-12-10 (net 30)
+  Customer     Customer X  [[Customer X]]
+               accounts_receivable@customerx.com
+               1234 Main St. #555
+               Springfield, CO 80000
+  From         My Company  [[My Company]]
+               finance@mycompany.com
+               1234 Background Blvd.
+               Anywhere, CA 90000
+  Reference    PO #PY75334, rev. 2
+  Template     /invoices/tpl/myco-default.html
+  Paid         no
+  State        open
+  Sent         2026-11-10 via portal
+
+  #  KIND              DESCRIPTION                  QTY       RATE      AMOUNT  ACCOUNT
+  1  item              Senior architect hours        10       $800   $8,000.00  revenue:consulting
+  2  adjustment        Friends and family discount            -10%    -$800.00
+  3  item              Junior engineer               50       $200  $10,000.00  revenue:consulting:delivery
+  4  adjustment        Friends and family discount             -5%    -$500.00
+  5  total                                                Subtotal  $16,700.00
+  6  fixed-adjustment  Less deposit (Invoice 104)                   -$8,350.00  liabilities:customer-deposits
+  7  total                                               Total due   $8,350.00
+
+  Total due  $8,350.00
