@@ -35,9 +35,26 @@ test.beforeEach(async ({page}) => {
             // insightsOpen: false — see keys.e2e.ts: the expanded charts squeeze
             // the table at this viewport.
             localStorage.setItem("ledgeline.settings.v1", JSON.stringify({serverUrl: url, serverToken: token, insightsOpen: false}));
+            // The keymap records every keystroke and what it did with it
+            // (src/lib/keys/trace.ts), printed below when a test fails.
+            (window as unknown as {__ledgelineKeyTrace: unknown[]}).__ledgelineKeyTrace = [];
         },
         [API_URL, API_TOKEN]
     );
+});
+
+// A keystroke is dropped about once in 16 full runs (`s` once, ⇧A once). On a
+// failure, print the last keystrokes: what each reached, and for an ignored
+// one, every binding for that key and whether it was enabled.
+test.afterEach(async ({page}, testInfo) => {
+    if (testInfo.status === testInfo.expectedStatus) return;
+    const trace = await page.evaluate(() => (window as unknown as {__ledgelineKeyTrace?: unknown[]}).__ledgelineKeyTrace ?? []).catch(() => []);
+    const text = trace
+        .slice(-20)
+        .map((entry) => JSON.stringify(entry))
+        .join("\n");
+    console.log(`key trace (last 20 of ${trace.length}):\n${text}`);
+    await testInfo.attach("key-trace.json", {body: JSON.stringify(trace, null, 2), contentType: "application/json"});
 });
 
 const position = (page: Page) => page.getByTestId("review-position");
@@ -80,6 +97,9 @@ test("review unknowns from the keyboard: suggestion, similar, skip and back — 
     await expect(page.getByTestId("review-overlay")).toBeVisible();
     await expect(position(page)).toHaveText("1 of 8");
     await expect(cardOf(page, 25)).toBeFocused();
+    // The key trace is live (so a failure below can print it): `u` ran a binding.
+    const firstKey = await page.evaluate(() => (window as unknown as {__ledgelineKeyTrace: {key: string; outcome: string}[]}).__ledgelineKeyTrace[0]);
+    expect(firstKey).toMatchObject({key: "u", outcome: "run"});
     await expect(cardOf(page, 25).getByTestId("review-payee")).toContainText("Venmo payment 8812");
     await expect(cardOf(page, 25).getByTestId("review-primary")).toBeDisabled();
     // The journal's `j` is blind under the modal layer: nothing moves.
