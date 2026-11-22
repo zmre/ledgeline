@@ -743,12 +743,24 @@ A final invoice its deposit fully covers has no receivable posting (§4.4),
 so Ledgeline never finds it; the invoicer finds it by `invoice:` plus
 `document:` on a transaction with no settlement leg.
 
-`check` reports these problems:
+`check` reports these problems (`reconcile::audit`, Phase 2c), each with a
+fix-it, a command where one fixes it (`FixEdit::Command`):
 
-- an invoice number used twice;
-- a sent invoice with no transaction;
-- a transaction with no invoice file;
-- a `document:` path that has moved, offering to repair it.
+| Finding                                                                  | Severity | Fix                                                    |
+|--------------------------------------------------------------------------|----------|--------------------------------------------------------|
+| An invoice number booked twice                                           | error    | remove the extra transaction                           |
+| A sent invoice with no transaction (accrual, or a cash zero total)       | error    | `send N` books it                                      |
+| A transaction (booking, payment applied, void) with no invoice file      | warning  | restore the file, or leave it if another app booked it |
+| A `document:` that names another path                                    | warning  | `rebook N`; by hand in a closed period                 |
+| A file name a tag can't hold exactly (a comma, a run of spaces)          | warning  | rename it, then re-book                                |
+| A draft already booked as its file says (a send stopped after the books) | error    | `send N` finishes it                                   |
+| A draft booked differently                                               | error    | mark it sent and re-book, or remove the transaction    |
+| Void in the file, not reversed in the books                              | error    | by hand: `status: sent`, then `void N`                 |
+| Reversed in the books, sent in the file (a void stopped after the books) | error    | `void N --date D` finishes it                          |
+| Cash books: void with payments applied                                   | warning  | `apply-payment N --undo`                               |
+| Booked differently from what the file now says (§4.5)                    | warning  | `rebook N`; in a closed period, undo the edit or void  |
+| A booking that can't be derived (an account that doesn't resolve)        | error    | fix the row                                            |
+| `paid:` disagrees with the books                                         | warning  | the edit that sets it (`reconcile` does it)            |
 
 ### 4.4 Deposits (partial up-front billing)
 
@@ -929,6 +941,34 @@ For each sent invoice it:
 Ledgeline never writes markdown, so when a payment is matched in Ledgeline,
 the invoicer picks up the change through its watcher, or on the next run.
 
+**As built (Phase 2c).** `invoicer_core::reconcile`:
+
+- **`BookStates`** reads the journal once: per invoice number, its
+  bookings (a receivable document, or a zero-total booking or cash `$0`
+  marker found by `invoice:` plus `document:`), its void reversals, and its
+  payments. Accrual books take settlement from Ledgeline's `receivables`
+  (N:1 links, voids apart); cash books take the deposits Apply payment
+  tagged `invoice:` (no `document:`, no `void:`), each paying what its
+  `customer:`-tagged postings off the cash accounts hold (the gross).
+  Bills (payable side) are another namespace and skipped.
+- **The mirror** (`BookStates::paid`): a zero total is paid on its date;
+  accrual: open is `no`, partial lists the payments and credits (merged by
+  day), paid is the date of the one that completed it; cash: the applied
+  payments against the table's total. Amounts are written in the table's
+  money style, whole amounts without cents. A written mirror that says the
+  same (same dates, same amounts however written) is left alone.
+- **`reconcile`** mirrors every sent invoice (or the numbers asked for)
+  whose `paid:` differs, each file re-read and written only over the
+  revision read, and returns the findings of `audit` (below) for the same
+  numbers. A file changed meanwhile is reported as `failed` and left for
+  the next run.
+- **Incremental** (§5.6): `BookStates::changed_since(&before)` names the
+  numbers a journal change touched, so the app reloads, diffs and
+  reconciles only those (`reconcile_with`).
+- **Open and overdue** (`list`, `show`, `customers`) read `BookStates`, so
+  they are right before the mirror is refreshed; an invoice the books can't
+  speak for falls back to its mirror.
+
 ### 5.5 Frontmatter editing
 
 Rust has no YAML library that preserves formatting. The invoicer therefore
@@ -1050,6 +1090,27 @@ invoicer's own part is under 30 ms. Getting back to 150 ms needs L10, or an
 in-place re-parse in `ledgeline-core`. Both benches are gated in
 `baseline.json` (preview 91.6 ms, send 289.1 ms, recorded 2026-11-21 with
 other work running on the machine; only those two entries were added).
+
+**Measured (Phase 2c, 2026-11-22).** Same machine; the corpus is v2 (its
+bookings carry `item:`, as the bridge writes them, so every invoice is in
+step):
+
+| Bench                                                                                                       | Median | Feeds the budget                              |
+|-------------------------------------------------------------------------------------------------------------|--------|-----------------------------------------------|
+| `invoicer/reconcile_change` (a payment linked: reload, book states, diff, mirror one invoice, its findings) | 99 ms  | a journal change → `paid:` refreshed (100 ms) |
+| `invoicer/books_check` (the books checks over 5,000 invoices, books loaded)                                 | 277 ms | `check` (1 s): with a cold open, about 0.6 s  |
+| `invoicer/send`                                                                                             | 297 ms | send (300 ms, relaxed; goal 150 ms)           |
+
+`reconcile_change` is 70 ms of Ledgeline's journal load, 27 ms building the
+book states (Ledgeline's receivables and role inference over 59,250
+transactions), 1 ms diffing them and 14 ms writing the one mirror with its
+findings. It meets the budget with no margin; L10 (an incremental reload)
+is what would give it room. `books_check` is mostly reading each booked
+invoice's file again (about 90 µs each); deriving and comparing a booking
+takes about 20 µs once the journal's account defaults are computed once per
+pass (`JournalAccounts`: before, each invoice re-inferred the books' roles,
+3.6 ms, and the pass took 15 s). Both are gated in `baseline.json` (only
+those two entries were added, recorded with other work on the machine).
 
 **Correctness is never traded for speed:**
 
@@ -1238,12 +1299,14 @@ shape.
 
 Rules the commands follow:
 
-- **Open and overdue read the `paid:` mirror** until Phase 2's reconciler
-  keeps it in step with the books. Open means sent and `paid:` isn't a date.
-  Overdue means open with `due_date` before today.
-- **`check`** covers the documents, the customers and the catalog. The books
-  checks are Phase 2's. `check --full` is left out, because a CLI run builds
-  its index fresh, so there is nothing to diff.
+- **Open and overdue read the books** (Phase 2c; until then, the `paid:`
+  mirror): open means sent and not paid in full by the books, or by the
+  mirror when the books can't say. Overdue means open with `due_date`
+  before today.
+- **`check`** covers the documents, the customers, the catalog and (Phase
+  2c) the books (§4.3). `list` and `customers` count the document checks
+  only; `show N` adds N's books checks. `check --full` is left out, because
+  a CLI run builds its index fresh, so there is nothing to diff.
 - **`new --row 'DESC|QTY|RATE|ACCOUNT'`.** Trailing fields may be left off,
   and `\|` is a literal pipe. With no quantity, a percentage rate makes an
   adjustment (`Discount||-10%`). With no quantity, a money rate is the row's
@@ -1265,6 +1328,52 @@ Rules the commands follow:
   documents with wrong amounts are reported as skipped, and are rewritten
   only when named, since their books need re-booking after (Phase 2).
   Rewriting re-aligns the whole table.
+
+**As built (Phase 2c, 2026-11-22).** The books commands are in: `send`,
+`void`, `rebook`, `apply-payment`, `reconcile`, `receivables` and
+`recognize`; `check` gains the books checks (§4.3). Each is one
+`invoicer_core` call (`books`, `reconcile`, `receivables`).
+
+| Command                                                  | `--json` prints                                                                                                                                                                           |
+|----------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `send N [--via HOW]`                                     | `{number, path, basis, booked: {date, description, text} \| null, journal_written, markdown_written}`                                                                                     |
+| `send N --dry-run`, `rebook N --dry-run`                 | `{number, path, status, basis, booking, receivable, would_book, booked, in_step, linked, generation}`                                                                                     |
+| `void N [--date D]`                                      | `{number, path, basis, reversal, link, journal_written, markdown_written}`                                                                                                                |
+| `rebook N`                                               | `{number, path, basis, changed, previous, booked, warnings, mirror}`                                                                                                                      |
+| `apply-payment N`                                        | `{number, path, commodity, total, paid, remaining, candidates: [{reference, date, description, received, exact, by_number, by_customer, gap_days, text}]}`                                |
+| `apply-payment N --txn REF`                              | `{number, transaction, received, applied: [[account, amount]], remaining, undo, undo_file, mirror, warnings}`                                                                             |
+| `apply-payment N --undo [--txn REF]`                     | `{number, reference, deposit_date, deposit_description, restored_text, undo_file, mirror, warnings}`                                                                                      |
+| `reconcile [N…] [--dry-run]`                             | `{basis, checked, unchanged, changed: [{path, number, before, after, paid, written}], failed: [{path, number, code, error}], errors, warnings, problems}`                                 |
+| `receivables [--aging] [--dso-days D]`                   | `{basis, today, open: [{number, path, customer, account, commodity, date, due, amount, outstanding, days_past_due, bucket, source}], aging, dso, average_days_to_pay, unapplied, drafts}` |
+| `recognize [--through D] [--include-closed] [--dry-run]` | `{today, through, written, entries: [{id, date}], adjustments, closed}`                                                                                                                   |
+
+`mirror` is a `reconcile` change (`{path, number, before, after, paid,
+written}`) or `null`; `paid` is `{"state": "no" | "partial" | "full", …}`.
+Amounts in these shapes are plain decimals (`"8350.00"`) beside their
+`commodity`. A books error prints `{"error": "…", "code": "…"}` (codes:
+`not-found`, `ambiguous`, `invalid`, `booking`, `status`, `setup`,
+`refused`, `external-change`, `stale`, `books`, `markdown-not-written`,
+`markdown`, `frontmatter`, `storage`, `overflow`).
+
+- **Retried once.** Every books write runs again, once, when the journal
+  or the file changed between its read and its write (`external-change`:
+  nothing was written). A note goes to stderr.
+- **The mirror follows a payment write.** `apply-payment`, its `--undo`,
+  and a `rebook` that changed the books refresh that invoice's `paid:` and
+  report it as `mirror`.
+- **Undo records** for Apply payment are kept in
+  `.ledgeline-invoicer/undo/` in the books folder (PLAN 2c).
+- **`receivables`** reads the books in accrual books (every receivable still
+  owed, numbered or not, with Ledgeline's aging, DSO and days to pay) and
+  the files in cash books (sent invoices less what is applied, labelled
+  `markdown`). `--aging` adds the buckets to the text; `--json` always has
+  them.
+- **`recognize`** posts plan 45's due entries through `--through` (default
+  today) and refuses a later date; entries due in a closed period are
+  listed, and posted as one adjustment per schedule with
+  `--include-closed`.
+- **Exit codes.** `reconcile` exits 1 on error findings (like `check`) and
+  2 when a mirror couldn't be written.
 
 **Measured (2026-11-21).** On the §5.6 corpus, the release binary (on an
 Apple M5 Max, wall clock, opening the journal and the index from scratch)

@@ -23,28 +23,28 @@ The secondary goals:
 
 ## Decisions (Patrick, 2026-11-19)
 
-| #   | Decision                                                                                                                                                       |
-|-----|----------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| I1  | Ledgeline and the invoicer both become **AGPL-3.0-or-later**. MBR (GPL-3.0+) is then linkable.                                                                  |
-| I2  | **Drafts never touch the books.** Sending books the invoice.                                                                                                   |
-| I3  | Discounts, subtotals and taxes are **inline positional rows** in the one bill table. An adjustment applies to the nearest item or total row above it, skipping other adjustments. |
-| I4  | Invoices name their template with MBR's **`template:` path** (`/invoices/tpl/x.html`). MBR renders styled invoices everywhere.                                   |
-| I5  | Per-row accounting lives in a **books column**: the last column, with an italic header, hidden by CSS. A blank cell means the default account.                 |
-| I6  | Partial up-front billing is a **separate deposit invoice**. The final invoice applies it with a row against the deposit liability. In accrual books, undelivered work books to deferred revenue or deposits. |
-| I7  | `status: draft\|sent\|void` is intent. `paid:` is a mirror refreshed from the books: `no`, `partial 2026-10-28 $1,500, 2026-11-19 $3,500`, or a date.          |
-| I8  | A sent invoice may be **edited and re-booked**. Rewriting it is refused on or before `closed-through`; void and reissue (later, a credit note) is offered instead. |
-| I9  | `po_num` becomes **`reference`** (free text: `PO #105`).                                                                                                        |
-| I10 | The binary is **`ledgeline-invoicer`**.                                                                                                                         |
-| I11 | The default deposit account is **`liabilities:deferred-revenue`**, overridable with `[invoicer] deposit-account`.                                               |
-| I12 | Final PDFs are **kept** in `pdf-dir` (default `invoices/pdf/`), with earlier exports kept too. Users delete old ones as they please.                            |
-| I13 | Every English word the invoicer matches (column headers, total rows, the customer tag, contact labels) is a setting in `[invoicer.words]`. File-format keys stay fixed. |
-| I14 | **Performance and correctness are release criteria.** The ARCHITECTURE §5.6 budgets are gated by benches on a 5,000-invoice corpus.                            |
-| I15 | Customer `contracts:` take wikilinks or file paths (executed PDFs). `billing_portal:` records vendor-portal delivery.                                           |
-| I16 | MBR ships **one release** once its P0 and P1 changes land. The invoicer uses it from crates.io: a git rev cannot work, because `mbr-core` embeds built JS bundles that only the crates.io package contains. The release gates Phase 3. |
+| #   | Decision                                                                                                                                                                                                                                                                              |
+|-----|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| I1  | Ledgeline and the invoicer both become **AGPL-3.0-or-later**. MBR (GPL-3.0+) is then linkable.                                                                                                                                                                                        |
+| I2  | **Drafts never touch the books.** Sending books the invoice.                                                                                                                                                                                                                          |
+| I3  | Discounts, subtotals and taxes are **inline positional rows** in the one bill table. An adjustment applies to the nearest item or total row above it, skipping other adjustments.                                                                                                     |
+| I4  | Invoices name their template with MBR's **`template:` path** (`/invoices/tpl/x.html`). MBR renders styled invoices everywhere.                                                                                                                                                        |
+| I5  | Per-row accounting lives in a **books column**: the last column, with an italic header, hidden by CSS. A blank cell means the default account.                                                                                                                                        |
+| I6  | Partial up-front billing is a **separate deposit invoice**. The final invoice applies it with a row against the deposit liability. In accrual books, undelivered work books to deferred revenue or deposits.                                                                          |
+| I7  | `status: draft\|sent\|void` is intent. `paid:` is a mirror refreshed from the books: `no`, `partial 2026-10-28 $1,500, 2026-11-19 $3,500`, or a date.                                                                                                                                 |
+| I8  | A sent invoice may be **edited and re-booked**. Rewriting it is refused on or before `closed-through`; void and reissue (later, a credit note) is offered instead.                                                                                                                    |
+| I9  | `po_num` becomes **`reference`** (free text: `PO #105`).                                                                                                                                                                                                                              |
+| I10 | The binary is **`ledgeline-invoicer`**.                                                                                                                                                                                                                                               |
+| I11 | The default deposit account is **`liabilities:deferred-revenue`**, overridable with `[invoicer] deposit-account`.                                                                                                                                                                     |
+| I12 | Final PDFs are **kept** in `pdf-dir` (default `invoices/pdf/`), with earlier exports kept too. Users delete old ones as they please.                                                                                                                                                  |
+| I13 | Every English word the invoicer matches (column headers, total rows, the customer tag, contact labels) is a setting in `[invoicer.words]`. File-format keys stay fixed.                                                                                                               |
+| I14 | **Performance and correctness are release criteria.** The ARCHITECTURE §5.6 budgets are gated by benches on a 5,000-invoice corpus.                                                                                                                                                   |
+| I15 | Customer `contracts:` take wikilinks or file paths (executed PDFs). `billing_portal:` records vendor-portal delivery.                                                                                                                                                                 |
+| I16 | MBR ships **one release** once its P0 and P1 changes land. The invoicer uses it from crates.io: a git rev cannot work, because `mbr-core` embeds built JS bundles that only the crates.io package contains. The release gates Phase 3.                                                |
 | I17 | Cash books get **Apply payment** in v1 (Phase 2): pick an imported deposit and its income side is re-split into the invoice's row accounts, tagged `invoice:`. The invoicer never creates payment transactions. Both bases are first-class: Patrick runs accrual and cash businesses. |
-| I18 | **No Intel Mac build of the invoicer** (Patrick, 2026-11-20). It ships for Apple Silicon macOS and Linux only. Ledgeline keeps its x86_64-darwin build.         |
-| I19 | **The invoicer crates stay `publish = false`** until Patrick decides to share them (2026-11-20). Nothing about the invoicer goes to crates.io before then.      |
-| I20 | **Quality is paramount: CI lints every web directory** (`web/`, `packages/ui`, `invoicer/web`) with prettier and eslint, not only pre-push (2026-11-20).        |
+| I18 | **No Intel Mac build of the invoicer** (Patrick, 2026-11-20). It ships for Apple Silicon macOS and Linux only. Ledgeline keeps its x86_64-darwin build.                                                                                                                               |
+| I19 | **The invoicer crates stay `publish = false`** until Patrick decides to share them (2026-11-20). Nothing about the invoicer goes to crates.io before then.                                                                                                                            |
+| I20 | **Quality is paramount: CI lints every web directory** (`web/`, `packages/ui`, `invoicer/web`) with prettier and eslint, not only pre-push (2026-11-20).                                                                                                                              |
 
 These were decided in drafting and are open to veto. They are listed in
 ARCHITECTURE.md §3:
@@ -82,10 +82,16 @@ are `ledgeline.toml [invoicer]` keys unless the row says otherwise.
 | Voiding a final invoice that applied a deposit     | —                               | the deposit is open again for a reissue                                                                            | planned: keep it applied (forfeited)                                          | Planned                 |
 | Who a person at a company bills                    | `ledger_customer` on the person | the company's customer note                                                                                        | the person's own `ledger_customer`                                            | Built (2b)              |
 | When an invoice books at all                       | `[books] basis`                 | plan 45's gate (accrual when it has receivable accounts)                                                           | `cash`, `accrual`                                                             | Built (plan 45)         |
+| What the `paid:` mirror counts as paid (accrual)   | —                               | every payment and credit linked to the receivable (`match:`); paid on the date of the one that completes it        | planned: a credit note or write-off mirrored as its own state                 | Planned                 |
+| Recognition due in a closed period                 | `recognize --include-closed`    | left unposted (listed), as Ledgeline leaves it                                                                     | one catch-up adjustment per schedule, dated today                             | Built (2c)              |
+| The DSO window                                     | `receivables --dso-days`        | 90 days                                                                                                            | any number of days                                                            | Built (2c)              |
+| Aging buckets                                      | —                               | Ledgeline's: Current, 1–30, 31–60, 61–90, 91+ days past due                                                        | planned: custom bucket edges, in `ledgeline-core` so both apps share them     | Planned                 |
 
 Technical choices that are not policy stay fixed: a zero-total accrual
 invoice has no receivable posting (Ledgeline's receivables ignore a zero
-line), tag values drop commas, and journal-then-markdown write order.
+line), tag values drop commas, journal-then-markdown write order, a books
+write retried once when the files changed under it, and where Apply
+payment's undo records live (2c).
 
 ## What is true today
 
@@ -287,16 +293,16 @@ environment on its own fixture copy in `CARGO_TARGET_TMPDIR`. The snapshots
 are committed files in `tests/snapshots/` (`insta` isn't in the lockfile),
 re-recorded with `UPDATE_SNAPSHOTS=1`. These decisions are open to veto:
 
-| #   | Decision                                                                                                                                                          |
-|-----|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| C1  | Numbering already counts the books' `invoice:` tags (§5.1), except bills on the payable side. The accrual fixture's next number is 2005, not 109.                 |
-| C2  | `set` refuses `status`, `paid`, and `invoice_num` on a sent or void document. Those changes wait for send/void/rebook; hand edits stay possible.                  |
-| C3  | `recalc` with no arguments rewrites drafts only. Sent and void documents are reported as skipped and rewritten only when named.                                   |
-| C4  | `check` exits 1 on errors only; `--strict` makes warnings fail too. Any failure to run exits 2.                                                                   |
-| C5  | "Open" and "overdue" read the `paid:` mirror until the Phase 2 reconciler exists. Today is the **local** date (`--today` overrides); Ledgeline's server uses UTC. |
-| C6  | The journal comes from `JOURNAL` or `-f JOURNAL` (hledger's flag), then `$LEDGELINE_FIXTURE`, then recents. The CLI never records recents.                        |
-| C7  | `--row` takes `DESC\|QTY\|RATE\|ACCOUNT`. With no quantity, a money rate becomes the amount. A bare `Subtotal` writes a total row.                                |
-| C8  | `--json` failures print `{"error": "…"}` on stdout (exit 2), so a script reads one JSON value either way.                                                         |
+| #   | Decision                                                                                                                                                                                                  |
+|-----|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| C1  | Numbering already counts the books' `invoice:` tags (§5.1), except bills on the payable side. The accrual fixture's next number is 2005, not 109.                                                         |
+| C2  | `set` refuses `status`, `paid`, and `invoice_num` on a sent or void document. Those changes wait for send/void/rebook; hand edits stay possible.                                                          |
+| C3  | `recalc` with no arguments rewrites drafts only. Sent and void documents are reported as skipped and rewritten only when named.                                                                           |
+| C4  | `check` exits 1 on errors only; `--strict` makes warnings fail too. Any failure to run exits 2.                                                                                                           |
+| C5  | "Open" and "overdue" read the `paid:` mirror until the Phase 2 reconciler exists (superseded in 2c: they read the books). Today is the **local** date (`--today` overrides); Ledgeline's server uses UTC. |
+| C6  | The journal comes from `JOURNAL` or `-f JOURNAL` (hledger's flag), then `$LEDGELINE_FIXTURE`, then recents. The CLI never records recents.                                                                |
+| C7  | `--row` takes `DESC\|QTY\|RATE\|ACCOUNT`. With no quantity, a money rate becomes the amount. A bare `Subtotal` writes a total row.                                                                        |
+| C8  | `--json` failures print `{"error": "…"}` on stdout (exit 2), so a script reads one JSON value either way.                                                                                                 |
 
 Left for later: `new --status sent` (send is Phase 2), `customers new` and
 `import-csv`, `check --full` (a CLI index is always fresh), and prose
@@ -535,6 +541,88 @@ the `paid:` mirror.
     journal text and the markdown after each step;
   - a concurrent write (Ledgeline's editor saves between load and save),
     which must give `ExternalChange`, write nothing, and retry once.
+
+**2c as built (2026-11-22).** ARCHITECTURE §6.4 "As built (Phase 2c)" has
+the commands and their `--json` shapes; §5.4 the reconciler.
+
+| Piece                                     | Does                                                                                                       |
+|-------------------------------------------|------------------------------------------------------------------------------------------------------------|
+| `reconcile::BookStates`                   | One pass over the journal: each number's bookings, voids, settlements (accrual) or applied payments (cash) |
+| `BookStates::paid`                        | The books' `paid:` for a document; `None` when the books can't say                                         |
+| `BookStates::changed_since`               | The numbers a journal change touched, so the app re-reconciles only those (§5.6)                           |
+| `reconcile::reconcile` / `reconcile_with` | Mirror `paid:` where it differs (one key, conditional on the revision read), plus the findings             |
+| `reconcile::audit`                        | The books checks `check` adds (below), each with a fix-it; scoped to some numbers or all                   |
+| `receivables::receivables`                | Open invoices, aging, DSO, days to pay, unapplied payments, drafts waiting                                 |
+| `InvoiceBooks::recognize`                 | Plan 45's `post_due` through a date, never after today; `--dry-run` lists                                  |
+| `InvoiceBooks::payment_options`           | Cash books: total, paid, due, and the candidates                                                           |
+| `books::undo`                             | Apply payment's undo records (`.ledgeline-invoicer/undo/*.json`)                                           |
+| `books::retry_once`                       | Re-run a books write once after `external-change`                                                          |
+| `StepCheck`                               | Compare many documents with their bookings in one pass (catalogs, account, id generator read once)         |
+
+`check` now finds, over the books: a number booked twice (error), a sent
+invoice with no transaction (error; fix `send N`), a transaction with no
+invoice file (warning; the accrual fixture's plan 45 invoices 2001–2004 are
+four), a `document:` that no longer names its file (warning; fix `rebook N`,
+or by hand in a closed period) or a file name a tag can't hold exactly (a
+comma), a booked draft (error; in step, fix `send N` to finish a send whose
+markdown write failed), a void on one side only (error; fix `void N --date
+D` when the books have it), books out of date (warning; fix `rebook N`
+outside the closed period), a cash-books void with payments applied
+(warning), and a stale `paid:` (warning; the fix sets it). A new
+`FixEdit::Command` carries the command. `list` and `customers` count the
+document checks only; `show N` adds N's books checks.
+
+Decided while building, open to veto:
+
+- **Open and overdue read the books** (C5 is superseded): settlement links
+  in accrual books, applied payments in cash books, a zero total paid on
+  its date. An invoice the books can't speak for (accrual, never booked)
+  falls back to its mirror, and `check` reports it. `list --open` is right
+  before `reconcile` runs.
+- **The mirror's text**: `no`; `partial 2026-11-05 $1,000, 2026-11-20 $500`
+  (payments on one day merged, amounts in the table's money style, whole
+  amounts without cents, as I7's example); or the date of the payment that
+  completed it. A mirror that already says the same, however its amounts
+  are written, is left alone, so the fixtures' `$1,000` stays.
+- **Only sent invoices are mirrored.** A void invoice keeps whatever its
+  mirror says.
+- **Cash books: what a payment paid** is what its income side was re-split
+  into (its `customer:`-tagged postings off the cash accounts): the gross,
+  before a processor's fee, which is your expense.
+- **Credits count as paid** in the accrual mirror (a credit note or write-off
+  linked to the receivable). A planned alternative is in the flows table.
+- **Every CLI books write is retried once** when the journal or the file
+  changed between reading and writing (Ledgeline saved meanwhile). The first
+  attempt wrote nothing; the second reads afresh; a note goes to stderr.
+  A second change in a row is returned (`code: external-change`).
+- **The CLI refreshes the mirror after a write that moves payments**
+  (`apply-payment`, its `--undo`, and a `rebook` that changed the books),
+  reporting it as `mirror`. `send` writes `paid` itself; `void` leaves it.
+- **Apply payment's undo records** are JSON files in the books folder under
+  `.ledgeline-invoicer/undo/`, one per applied deposit
+  (`apply-payment-<number>-<ref>.json`): the invoice, the deposit's date and
+  description, and its text before and after. Hidden, so discovery skips
+  them; not in the journal; readable by hand. `apply-payment N --undo`
+  writes the deposit back exactly and deletes the record; with several, it
+  asks for `--txn`. A record whose deposit was edited since is refused by
+  the books and kept.
+- **`--txn` takes a prefix** of a candidate's reference (6 characters or
+  more) when it names only one.
+- **`--json` errors from the books carry a `code`** beside `error`
+  (`BooksError::code`: `status`, `refused`, `external-change`, …); added,
+  per the shapes rule.
+- **`reconcile` exits 1 on error findings** (like `check`) and 2 when a
+  mirror couldn't be written.
+- **The CLI parses the journal once.** The session keeps its parse;
+  the first books load reuses it (`InvoiceBooks::with_editor`), and later
+  loads read the files again.
+- **The perf corpus books `item:`** (v2), as the bridge writes it, so every
+  corpus invoice is in step and `books_check` measures a clean pass.
+
+Left for later: an `--only-books` or `--fast` `check` (the books checks
+read every booked invoice's file; see the bench), mirroring `sent_hash`
+(Phase 3c), and `customers` open counts from the books for cash books'
+deposits.
 
 **Gate:** everything from Phase 1, plus `just test-integration`. Ledgeline's
 API shapes are untouched, but run it anyway, since `accrual_api` uses the
