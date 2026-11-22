@@ -1,0 +1,745 @@
+//! What the read commands show (ARCHITECTURE §6.4): `list`, `show`,
+//! `check`, `customers list|show` and `config`, as serializable shapes the
+//! CLI prints with `--json` and the HTTP API will return. The shapes are a
+//! contract for scripts: fields are added, never renamed or removed.
+//!
+//! "Open" and "overdue" read the `paid:` mirror until Phase 2's reconciler
+//! keeps it in step with the books: a sent invoice is open unless `paid:`
+//! is a date, and overdue when open with `due_date` before `today`.
+
+use crate::catalog;
+use crate::customers::{self, BillingContact, ContactKind, ContractRef, Customer, CustomerLookup};
+use crate::doc::{Header, Invoice, Paid, Status};
+use crate::frontmatter::Fields;
+use crate::index::{DocumentIndex, IndexedDoc, ListFilter};
+use crate::problem::{Problem, Severity};
+use crate::session::Session;
+use crate::settings::Settings;
+use crate::table::books::BooksEntry;
+use crate::table::columns::Role;
+use crate::table::{BillTable, RowKind};
+use ledgeline_core::accrual::schedule::{Proration, Term};
+use ledgeline_core::vault::{VaultError, VaultPath};
+use serde::Serialize;
+use std::collections::HashMap;
+
+/// Whether a document is open: sent, and `paid:` isn't a date.
+#[must_use]
+pub fn is_open(header: &Header) -> bool {
+    header.status == Some(Status::Sent) && !matches!(header.paid, Some(Paid::Full { .. }))
+}
+
+/// Whether a document is overdue on `today`: open, and due before it.
+#[must_use]
+pub fn is_overdue(header: &Header, today: &str) -> bool {
+    is_open(header) && header.due_date.as_deref().is_some_and(|due| due < today)
+}
+
+/// Error and warning counts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct Counts {
+    /// Errors.
+    pub errors: usize,
+    /// Warnings.
+    pub warnings: usize,
+}
+
+impl Counts {
+    fn of<'a>(problems: impl IntoIterator<Item = &'a Problem>) -> Self {
+        problems
+            .into_iter()
+            .fold(Self::default(), |c, p| match p.severity {
+                Severity::Error => Self {
+                    errors: c.errors + 1,
+                    ..c
+                },
+                Severity::Warning => Self {
+                    warnings: c.warnings + 1,
+                    ..c
+                },
+            })
+    }
+}
+
+/// One row of `list`.
+#[derive(Debug, Clone, Serialize)]
+pub struct DocEntry<'a> {
+    /// The file, vault-relative.
+    pub path: &'a VaultPath,
+    /// Its title.
+    pub title: &'a str,
+    /// The frontmatter fields the invoicer reads.
+    #[serde(flatten)]
+    pub header: &'a Header,
+    /// The amount due, as the table writes it; `None` when the table doesn't
+    /// read.
+    pub total: Option<&'a str>,
+    /// The commodity.
+    pub commodity: Option<&'a str>,
+    /// Sent and not paid in full (by the `paid:` mirror).
+    pub open: bool,
+    /// Open and past `due_date`.
+    pub overdue: bool,
+    /// What `check` finds in this file.
+    pub problems: Counts,
+}
+
+/// `list`'s filters beyond [`ListFilter`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ListQuery {
+    /// Type, status and customer.
+    pub filter: ListFilter,
+    /// Only open documents.
+    pub open: bool,
+    /// Only overdue documents.
+    pub overdue: bool,
+}
+
+fn problem_counts(problems: &[Problem]) -> HashMap<&VaultPath, Counts> {
+    let mut by_file: HashMap<&VaultPath, Vec<&Problem>> = HashMap::new();
+    for problem in problems {
+        if let Some(file) = &problem.file {
+            by_file.entry(file).or_default().push(problem);
+        }
+    }
+    by_file
+        .into_iter()
+        .map(|(file, found)| (file, Counts::of(found)))
+        .collect()
+}
+
+fn entry<'a>(doc: &'a IndexedDoc, today: &str, counts: Counts) -> DocEntry<'a> {
+    DocEntry {
+        path: &doc.path,
+        title: &doc.title,
+        header: &doc.header,
+        total: doc.summary.as_ref().map(|s| s.total_text.as_str()),
+        commodity: doc.summary.as_ref().map(|s| s.commodity.as_str()),
+        open: is_open(&doc.header),
+        overdue: is_overdue(&doc.header, today),
+        problems: counts,
+    }
+}
+
+/// `list`: matching documents, newest first, each with its `check` counts
+/// (`problems`, from [`DocumentIndex::check`]).
+#[must_use]
+pub fn list<'a>(
+    index: &'a DocumentIndex,
+    problems: &[Problem],
+    query: &ListQuery,
+    today: &str,
+) -> Vec<DocEntry<'a>> {
+    let counts = problem_counts(problems);
+    index
+        .list(&query.filter)
+        .into_iter()
+        .filter(|d| !query.open || is_open(&d.header))
+        .filter(|d| !query.overdue || is_overdue(&d.header, today))
+        .map(|d| entry(d, today, counts.get(&d.path).copied().unwrap_or_default()))
+        .collect()
+}
+
+/// A deferred row's recognition terms.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DeferralView {
+    /// The account it is recognized into.
+    pub target_account: String,
+    /// Whole months, for `N months`.
+    pub months: Option<u32>,
+    /// The last day, for `through D`.
+    pub through: Option<String>,
+    /// The first day of service, when written.
+    pub service_start: Option<String>,
+    /// Calendar-month proration.
+    pub calendar: bool,
+}
+
+/// One bill-table row, as written and as computed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RowView {
+    /// 1-based row number in the table.
+    pub row: usize,
+    /// 1-based line in the document.
+    pub line: usize,
+    /// `item`, `adjustment`, `fixed-adjustment`, `total` or `spacer`.
+    pub kind: &'static str,
+    /// The description cell.
+    pub description: String,
+    /// The code cell.
+    pub code: Option<String>,
+    /// The quantity cell.
+    pub quantity: Option<String>,
+    /// The unit cell.
+    pub unit: Option<String>,
+    /// The rate cell (money, or a percentage on an adjustment).
+    pub rate: Option<String>,
+    /// The amount the arithmetic gives, formatted (`None` for a spacer).
+    pub amount: Option<String>,
+    /// The amount cell as written.
+    pub written: String,
+    /// Whether the amount is computed rather than as written.
+    pub computed: bool,
+    /// For an adjustment: the 1-based row it applies to.
+    pub applies_to: Option<usize>,
+    /// The books cell, canonical (`a → b, 12 months`).
+    pub books: Option<String>,
+    /// The account the row posts to.
+    pub account: Option<String>,
+    /// A deferred row's terms.
+    pub deferral: Option<DeferralView>,
+}
+
+/// A written amount the arithmetic disagrees with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DiscrepancyView {
+    /// 1-based row.
+    pub row: usize,
+    /// 1-based line.
+    pub line: usize,
+    /// As written (empty when blank).
+    pub written: String,
+    /// What the arithmetic gives.
+    pub expected: String,
+}
+
+/// The bill table, computed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TableView {
+    /// The commodity.
+    pub commodity: String,
+    /// The amount due: the last total.
+    pub total: String,
+    /// Every body row.
+    pub rows: Vec<RowView>,
+    /// Written amounts that disagree (`recalc` fixes them).
+    pub discrepancies: Vec<DiscrepancyView>,
+}
+
+fn kind_name(kind: RowKind) -> &'static str {
+    match kind {
+        RowKind::Spacer => "spacer",
+        RowKind::Total => "total",
+        RowKind::Adjustment(_) => "adjustment",
+        RowKind::FixedAdjustment => "fixed-adjustment",
+        RowKind::Item => "item",
+    }
+}
+
+fn deferral_view(books: &BooksEntry) -> Option<DeferralView> {
+    books.deferral().map(|d| DeferralView {
+        target_account: d.target_account.clone(),
+        months: match &d.term {
+            Term::Months(n) => Some(*n),
+            Term::Through(_) => None,
+        },
+        through: match &d.term {
+            Term::Months(_) => None,
+            Term::Through(end) => Some(end.clone()),
+        },
+        service_start: d.service_start.clone(),
+        calendar: d.proration == Proration::Calendar,
+    })
+}
+
+fn cell(table: &BillTable, row: usize, role: Role) -> Option<String> {
+    let text = crate::table::money::plain(table.cell(row, role)).trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+/// The bill table as [`TableView`].
+///
+/// # Errors
+/// The table's [`crate::table::TableError`], as text.
+pub fn table_view(
+    table: &BillTable,
+    words: &crate::table::words::Words,
+    money: &crate::doc::Money,
+) -> Result<TableView, crate::table::TableError> {
+    let style = money.for_table(table);
+    let evaluation = table.evaluate(words, &style)?;
+    let discrepancies = table
+        .check(words, &style)?
+        .into_iter()
+        .map(|d| DiscrepancyView {
+            row: d.at.index + 1,
+            line: d.at.line,
+            written: d.written,
+            expected: d.expected,
+        })
+        .collect();
+    let rows = evaluation
+        .rows
+        .iter()
+        .map(|r| {
+            let i = r.at.index;
+            RowView {
+                row: i + 1,
+                line: r.at.line,
+                kind: kind_name(r.kind),
+                description: crate::table::money::plain(&r.at.description)
+                    .trim()
+                    .to_string(),
+                code: cell(table, i, Role::Item),
+                quantity: cell(table, i, Role::Quantity),
+                unit: cell(table, i, Role::Unit),
+                rate: cell(table, i, Role::Rate),
+                amount: r.amount.map(|a| style.format(a)),
+                written: table.cell(i, Role::Amount).trim().to_string(),
+                computed: r.computed,
+                applies_to: r.applies_to.map(|t| t + 1),
+                books: r.books.as_ref().map(ToString::to_string),
+                account: r.books.as_ref().map(|b| b.account().as_str().to_string()),
+                deferral: r.books.as_ref().and_then(deferral_view),
+            }
+        })
+        .collect();
+    Ok(TableView {
+        commodity: style.commodity().to_string(),
+        total: style.format(evaluation.total),
+        rows,
+        discrepancies,
+    })
+}
+
+/// `show`: one document in full.
+#[derive(Debug, Clone, Serialize)]
+pub struct DocDetail<'a> {
+    /// The file, vault-relative.
+    pub path: &'a VaultPath,
+    /// Its title.
+    pub title: &'a str,
+    /// The fields the invoicer reads.
+    #[serde(flatten)]
+    pub header: &'a Header,
+    /// Sent and not paid in full.
+    pub open: bool,
+    /// Open and past due.
+    pub overdue: bool,
+    /// Every frontmatter field, lossless (custom fields included).
+    pub frontmatter: Fields,
+    /// The bill table, computed; `None` when there is none or it doesn't
+    /// read (`problems` says why).
+    pub table: Option<TableView>,
+    /// Prose above the bill table, as written.
+    pub prose_before: String,
+    /// Prose below it (supporting tables included), as written.
+    pub prose_after: String,
+    /// What `check` finds in this file.
+    pub problems: Vec<Problem>,
+}
+
+/// `show` for `doc`, reading its file once.
+///
+/// # Errors
+/// When the file can't be read.
+pub fn show<'a>(
+    session: &'a Session,
+    doc: &'a IndexedDoc,
+    problems: &[Problem],
+    today: &str,
+) -> Result<DocDetail<'a>, VaultError> {
+    let settings = session.settings();
+    let money = session.index().money();
+    let source = session.vault().read_to_string(&doc.path)?;
+    let invoice = Invoice::parse(source, &settings.words);
+    let table = invoice
+        .bill_table()
+        .ok()
+        .flatten()
+        .and_then(|t| table_view(t, &settings.words, money).ok());
+    Ok(DocDetail {
+        path: &doc.path,
+        title: &doc.title,
+        header: &doc.header,
+        open: is_open(&doc.header),
+        overdue: is_overdue(&doc.header, today),
+        frontmatter: invoice.frontmatter().fields.clone(),
+        table,
+        prose_before: invoice.prose_before().trim().to_string(),
+        prose_after: invoice.prose_after().trim().to_string(),
+        problems: problems
+            .iter()
+            .filter(|p| p.file.as_ref() == Some(&doc.path))
+            .cloned()
+            .collect(),
+    })
+}
+
+/// `check`'s report.
+#[derive(Debug, Clone, Serialize)]
+pub struct CheckReport {
+    /// Documents checked.
+    pub documents: usize,
+    /// Customers checked.
+    pub customers: usize,
+    /// Errors and warnings found.
+    #[serde(flatten)]
+    pub counts: Counts,
+    /// Every problem, by file and line.
+    pub problems: Vec<Problem>,
+}
+
+/// Every problem in the documents, customers and catalog (books checks come
+/// with Phase 2), sorted by file and line.
+#[must_use]
+pub fn problems(session: &Session) -> Vec<Problem> {
+    let index = session.index();
+    let mut out = index.check(session.vault());
+    let (_, catalog) = catalog::load(
+        session.vault(),
+        index.site(),
+        &index.settings().words,
+        index.money(),
+    );
+    out.extend(catalog);
+    out.sort_by(|a, b| {
+        a.file
+            .cmp(&b.file)
+            .then_with(|| a.line.cmp(&b.line))
+            .then_with(|| a.message.cmp(&b.message))
+    });
+    out
+}
+
+/// `check`.
+#[must_use]
+pub fn check(session: &Session) -> CheckReport {
+    let problems = problems(session);
+    CheckReport {
+        documents: session.index().docs().count(),
+        customers: session.index().customers().len(),
+        counts: Counts::of(&problems),
+        problems,
+    }
+}
+
+/// One row of `customers list`.
+#[derive(Debug, Clone, Serialize)]
+pub struct CustomerEntry {
+    /// The note.
+    pub path: VaultPath,
+    /// Its title.
+    pub title: String,
+    /// `person` or `organization`.
+    pub kind: ContactKind,
+    /// The `customer:` tag value in the books.
+    pub ledger_customer: String,
+    /// Net days.
+    pub terms: Option<u32>,
+    /// Who invoices go to.
+    pub billing: BillingContact,
+    /// The billing portal's name, when invoices go through one.
+    pub portal: Option<String>,
+    /// Documents billed to it.
+    pub invoices: usize,
+    /// Of those, the open ones.
+    pub open: usize,
+}
+
+fn billed_to<'a>(index: &'a DocumentIndex, customer: &Customer) -> Vec<&'a IndexedDoc> {
+    let site = index.site();
+    index
+        .list(&ListFilter::default())
+        .into_iter()
+        .filter(|d| {
+            d.header.invoicee.link.as_deref().is_some_and(|link| {
+                site.resolve_wikilink(&d.path, link)
+                    .is_some_and(|n| n.path == customer.contact.path)
+            })
+        })
+        .collect()
+}
+
+fn customer_entry(index: &DocumentIndex, customer: &Customer) -> CustomerEntry {
+    let docs = billed_to(index, customer);
+    CustomerEntry {
+        path: customer.contact.path.clone(),
+        title: customer.contact.title.clone(),
+        kind: customer.contact.kind,
+        ledger_customer: customer.ledger_customer.clone(),
+        terms: customer.terms,
+        billing: customer.billing_contact(index.site(), &index.settings().words),
+        portal: customer.billing_portal.as_ref().map(|p| {
+            p.name
+                .clone()
+                .or_else(|| p.url.clone())
+                .unwrap_or_else(|| "portal".to_string())
+        }),
+        invoices: docs.len(),
+        open: docs.iter().filter(|d| is_open(&d.header)).count(),
+    }
+}
+
+/// `customers list`, by title.
+#[must_use]
+pub fn customers(index: &DocumentIndex) -> Vec<CustomerEntry> {
+    let mut all: Vec<CustomerEntry> = index
+        .customers()
+        .iter()
+        .map(|c| customer_entry(index, c))
+        .collect();
+    all.sort_by(|a, b| {
+        crate::notes::normalize_name(&a.title)
+            .cmp(&crate::notes::normalize_name(&b.title))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    all
+}
+
+/// A `contracts:` entry and where it is.
+#[derive(Debug, Clone, Serialize)]
+pub struct ContractView {
+    /// As written.
+    #[serde(flatten)]
+    pub entry: ContractRef,
+    /// The note or file it names; `None` when it doesn't exist.
+    pub found: Option<VaultPath>,
+}
+
+/// `customers show`.
+#[derive(Debug, Clone, Serialize)]
+pub struct CustomerDetail<'a> {
+    /// The list row.
+    #[serde(flatten)]
+    pub entry: CustomerEntry,
+    /// The contact fields: emails, addresses, company.
+    pub contact: &'a crate::customers::Contact,
+    /// `revenue_account`.
+    pub revenue_account: Option<&'a str>,
+    /// `invoice_template`.
+    pub invoice_template: Option<&'a str>,
+    /// `contracts:`, resolved.
+    pub contracts: Vec<ContractView>,
+    /// `billing_portal:`.
+    pub billing_portal: Option<&'a crate::customers::BillingPortal>,
+    /// `open_pos:`.
+    pub open_pos: &'a [crate::customers::OpenPo],
+    /// `snippets:` (default snippets, as written).
+    pub snippets: &'a [String],
+    /// Its documents, newest first.
+    pub documents: Vec<DocEntry<'a>>,
+    /// What `check` finds in the customer note.
+    pub problems: Vec<Problem>,
+}
+
+/// The customer `name` names: a title, alias, file stem or `[[wikilink]]`.
+///
+/// # Errors
+/// [`CustomerLookup`].
+pub fn find_customer(index: &DocumentIndex, name: &str) -> Result<Customer, CustomerLookup> {
+    customers::find_customer(
+        index.site(),
+        &VaultPath::root(),
+        name,
+        &index.settings().words,
+    )
+}
+
+/// `customers show` for `customer`.
+#[must_use]
+pub fn customer_detail<'a>(
+    session: &'a Session,
+    customer: &'a Customer,
+    problems: &[Problem],
+    today: &str,
+) -> CustomerDetail<'a> {
+    let index = session.index();
+    let counts = problem_counts(problems);
+    let contracts = customer
+        .contracts
+        .iter()
+        .map(|c| ContractView {
+            entry: c.clone(),
+            found: customer
+                .resolve_contract(c, index.site(), session.vault())
+                .map(|t| match t {
+                    customers::ContractTarget::Note(p) | customers::ContractTarget::File(p) => p,
+                }),
+        })
+        .collect();
+    CustomerDetail {
+        entry: customer_entry(index, customer),
+        contact: &customer.contact,
+        revenue_account: customer.revenue_account.as_deref(),
+        invoice_template: customer.invoice_template.as_deref(),
+        contracts,
+        billing_portal: customer.billing_portal.as_ref(),
+        open_pos: &customer.open_pos,
+        snippets: &customer.snippets,
+        documents: billed_to(index, customer)
+            .into_iter()
+            .map(|d| entry(d, today, counts.get(&d.path).copied().unwrap_or_default()))
+            .collect(),
+        problems: problems
+            .iter()
+            .filter(|p| p.file.as_ref() == Some(&customer.contact.path))
+            .cloned()
+            .collect(),
+    }
+}
+
+/// `[books]`, as `config` shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct BooksView {
+    /// `basis`, when set.
+    pub basis: Option<&'static str>,
+    /// `closed-through`, when set.
+    pub closed_through: Option<String>,
+    /// `recognition-file`, when set.
+    pub recognition_file: Option<String>,
+}
+
+/// `config`: where the books are and the effective settings.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConfigView<'a> {
+    /// The main journal, as a local path.
+    pub journal: String,
+    /// The books folder (the vault root).
+    pub books_folder: String,
+    /// `ledgeline.toml [books]` (shared with Ledgeline).
+    pub books: BooksView,
+    /// `ledgeline.toml [invoicer]`, defaults filled in, words included.
+    pub invoicer: &'a Settings,
+    /// What `[books]` ignored, and why.
+    pub warnings: &'a [String],
+}
+
+/// `config`.
+#[must_use]
+pub fn config(session: &Session) -> ConfigView<'_> {
+    let books = session.books_config();
+    ConfigView {
+        journal: session.local_path(session.main()).display().to_string(),
+        books_folder: session.vault().root().display().to_string(),
+        books: BooksView {
+            basis: books.basis.map(|b| b.code()),
+            closed_through: books.closed_through.clone(),
+            recognition_file: books.recognition_file.clone(),
+        },
+        invoicer: session.settings(),
+        warnings: &books.warnings,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn session(name: &str) -> Session {
+        let journal = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures")
+            .join(name)
+            .join("books.journal");
+        Session::open_local(&journal).expect("opens")
+    }
+
+    #[test]
+    fn open_and_overdue_read_the_paid_mirror() {
+        let session = session("accrual");
+        let problems = problems(&session);
+        let numbers = |query: ListQuery| -> Vec<String> {
+            list(session.index(), &problems, &query, "2026-11-17")
+                .iter()
+                .map(|d| {
+                    d.header
+                        .number
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_default()
+                })
+                .collect()
+        };
+        assert_eq!(
+            numbers(ListQuery {
+                open: true,
+                ..ListQuery::default()
+            }),
+            ["105", "107", "106"]
+        );
+        let overdue = numbers(ListQuery {
+            overdue: true,
+            ..ListQuery::default()
+        });
+        assert!(overdue.contains(&"106".to_string()), "{overdue:?}");
+        assert!(!overdue.contains(&"105".to_string()), "{overdue:?}");
+    }
+
+    #[test]
+    fn show_computes_the_table() {
+        let session = session("accrual");
+        let problems = problems(&session);
+        let doc = session.find("105").expect("105");
+        let detail = show(&session, doc, &problems, "2026-11-17").expect("reads");
+        let table = detail.table.expect("table");
+        assert_eq!(table.total, "$8,350.00");
+        let kinds: Vec<&str> = table.rows.iter().map(|r| r.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                "item",
+                "adjustment",
+                "item",
+                "adjustment",
+                "total",
+                "fixed-adjustment",
+                "total"
+            ]
+        );
+        assert_eq!(table.rows[1].applies_to, Some(1));
+        assert!(table.discrepancies.is_empty());
+        assert!(detail.prose_after.contains("## Timesheet"));
+        let draft = session.find("108").expect("108");
+        let detail = show(&session, draft, &problems, "2026-11-17").expect("reads");
+        let deferred = detail.table.expect("table").rows[0]
+            .deferral
+            .clone()
+            .expect("deferred");
+        assert_eq!(deferred.target_account, "revenue:saas");
+        assert_eq!(deferred.months, Some(12));
+        assert_eq!(detail.frontmatter["support_tier"], "gold");
+    }
+
+    #[test]
+    fn customers_count_their_documents() {
+        let session = session("accrual");
+        let all = customers(session.index());
+        let x = all
+            .iter()
+            .find(|c| c.title == "Customer X")
+            .expect("Customer X");
+        assert_eq!(x.portal.as_deref(), Some("Coupa"));
+        assert_eq!(x.invoices, 3);
+        let customer = find_customer(session.index(), "Customer X").expect("found");
+        let detail = customer_detail(&session, &customer, &problems(&session), "2026-11-17");
+        assert!(detail.contracts.iter().all(|c| c.found.is_some()));
+        assert_eq!(detail.documents.len(), 3);
+    }
+
+    #[test]
+    fn the_fixtures_check_clean() {
+        for name in ["accrual", "cash"] {
+            let report = check(&session(name));
+            assert_eq!(
+                report.counts,
+                Counts::default(),
+                "{name}: {:#?}",
+                report.problems
+            );
+            assert!(report.documents > 0 && report.customers > 0);
+        }
+    }
+
+    #[test]
+    fn config_shows_books_and_invoicer() {
+        let session = session("cash");
+        let view = config(&session);
+        assert_eq!(view.books.basis, Some("cash"));
+        assert_eq!(view.invoicer.first_number(), "201");
+        let json = serde_json::to_value(&view).expect("json");
+        assert_eq!(json["invoicer"]["number-start"], "201");
+        assert_eq!(json["invoicer"]["words"]["total"][0], "Total due");
+    }
+}

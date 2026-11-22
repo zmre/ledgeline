@@ -1,0 +1,9 @@
+NUMBER  DATE        STATUS  CUSTOMER         TOTAL  DUE         PAID                       NOTES
+108     2026-11-17  draft   Customer X  $13,600.00  2026-12-17
+105     2026-11-10  sent    Customer X   $8,350.00  2026-12-10  no
+107     2026-10-15  sent    Contoso      $3,000.00  2026-11-14  partial 2026-11-05 $1,000  overdue
+104     2026-10-01  sent    Customer X   $8,350.00  2026-10-31  2026-10-08
+103     2026-10-01  void    Tailspin       $800.00  2026-10-31  no
+102     2026-09-15  sent    Fabrikam     $2,900.00  2026-10-15  2026-10-20
+101     2026-09-01  sent    Contoso      $4,000.00  2026-10-01  2026-10-05
+106     2026-08-01  sent    Wingtip      $1,200.00  2026-08-31  no                         overdue

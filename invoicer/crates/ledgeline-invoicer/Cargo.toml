@@ -15,4 +15,23 @@ path = "src/main.rs"
 
 [dependencies]
 invoicer-core = { workspace = true }
+ledgeline-core = { workspace = true }
+# Opening the books the way Ledgeline does: the positional journal, then
+# `$LEDGELINE_FIXTURE`, then recents (`ledgeline_shell::recents`, through the
+# shared config directory). The default features only: no GUI yet.
+ledgeline-shell = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 clap = { version = "4", features = ["derive"] }
+# `config` prints the effective settings as the TOML they are written in.
+# Already in Cargo.lock (invoicer-core reads `[invoicer]` with it).
+toml = "0.9"
+# Aligned human output by display width. Already in Cargo.lock.
+unicode-width = "0.2"
+# Today's local date, the default for `new --date` and "overdue". The same
+# features as ledgeline-server's, so no crate is added.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[dev-dependencies]
+# Each integration test runs on its own copy of a fixture.
+tempfile = "3"

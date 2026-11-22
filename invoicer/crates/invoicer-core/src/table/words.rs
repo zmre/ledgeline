@@ -3,12 +3,12 @@
 //! [invoicer.words]`. Setting a key replaces that key's whole default list;
 //! the first entry of a list is the word the invoicer writes.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// A non-empty list of words, matched case-insensitively with runs of
 /// whitespace treated as one space.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(try_from = "Vec<String>")]
 pub struct WordList(Vec<String>);
 
@@ -65,7 +65,7 @@ pub fn same_word(a: &str, b: &str) -> bool {
 }
 
 /// The recognized-word settings.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Words {
     /// Description column headers.

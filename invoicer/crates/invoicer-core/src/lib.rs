@@ -17,6 +17,9 @@
 //! - [`numbering`] (§5.1);
 //! - [`index`]: the in-memory document index (§5.6);
 //! - [`draft`]: creating drafts and saving documents (§5.2);
+//! - [`session`]: an open books folder (§6.4);
+//! - [`views`]: what the read commands show, for the CLI and the API;
+//! - [`edit`]: the commands that write documents (`new`, `set`, `recalc`);
 //! - [`books`]: the books bridge — what an invoice books, send, re-book,
 //!   void, deposits and cash-books Apply payment (§4).
 //!
@@ -29,13 +32,16 @@ pub mod catalog;
 pub mod customers;
 pub mod doc;
 pub mod draft;
+pub mod edit;
 pub mod frontmatter;
 pub mod index;
 pub mod notes;
 pub mod numbering;
 mod par;
 pub mod problem;
+pub mod session;
 pub mod settings;
 pub mod snippets;
 pub mod table;
 pub mod templates;
+pub mod views;

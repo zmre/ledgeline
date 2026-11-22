@@ -7,11 +7,15 @@
 //! as text, so `105` < `2026-0042` and `INV-9` < `INV-10`. Numbers with no
 //! trailing digits (`2026-A`) can't be incremented and are skipped.
 //!
-//! The numbers in use come from the files and, in Phase 2, from the books'
-//! `invoice:` tags ([`next_number`]'s `books` argument is that seam).
+//! The numbers in use come from the files and from the books' `invoice:`
+//! tags ([`booked_numbers`], [`next_number`]'s `books` argument).
 
 use crate::doc::InvoiceNumber;
+use ledgeline_core::Journal;
+use ledgeline_core::accrual::documents::document_posting;
+use ledgeline_core::accrual::{AccrualRole, AccrualRoles, INVOICE_TAG};
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use thiserror::Error;
 
 /// Why no next number could be made.
@@ -133,10 +137,51 @@ pub fn next_number<'a>(
     }
 }
 
+/// Every `invoice:` tag value in the books, on a transaction or one of its
+/// postings, deduplicated in first-use order: the numbers the books have
+/// used, whether or not a file still names them (plan 45's invoices, an
+/// applied payment, a void reversal). [`next_number`]'s `books`.
+///
+/// A vendor's bill carries the same tag in its own namespace (plan 45: a
+/// bill 105 is not your invoice 105), so transactions whose settlement
+/// posting is payable-side are left out.
+#[must_use]
+pub fn booked_numbers(journal: &Journal) -> Vec<String> {
+    let roles = AccrualRoles::of(journal);
+    let mut seen: HashSet<&str> = HashSet::new();
+    journal
+        .transactions
+        .iter()
+        .filter(|t| !matches!(document_posting(t, &roles), Some((_, AccrualRole::Payable))))
+        .flat_map(|t| {
+            t.tags
+                .iter()
+                .chain(t.postings.iter().flat_map(|p| p.tags.iter()))
+        })
+        .filter(|(name, _)| name == INVOICE_TAG)
+        .map(|(_, value)| value.trim())
+        .filter(|value| !value.is_empty() && seen.insert(value))
+        .map(str::to_string)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn booked_numbers_read_transaction_and_posting_tags() {
+        let journal = ledgeline_core::parse_journal(
+            "2026-01-01 A  ; invoice: 2001\n    assets:ar  $1\n    revenue\n\n\
+             2026-01-02 B\n    assets:bank  $1  ; invoice: 2002\n    revenue  ; invoice: 2001\n\n\
+             2026-01-03 C  ; invoiced: 9\n    assets:bank  $1\n    revenue\n\n\
+             2026-01-04 Vendor bill  ; invoice: PA-9\n    expenses:rent  $1\n    liabilities:accounts payable\n",
+            "books.journal",
+        )
+        .expect("parses");
+        assert_eq!(booked_numbers(&journal), ["2001", "2002"]);
+    }
 
     fn next(files: &[&str]) -> String {
         next_number(files.iter().copied(), [], "1")

@@ -5,7 +5,7 @@
 
 use crate::table::words::Words;
 use ledgeline_core::vault::{Vault, VaultPath};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// The settings file, beside the main journal.
@@ -20,8 +20,9 @@ enum NumberText {
     Text(String),
 }
 
-/// `[invoicer]`, with the defaults filled in.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// `[invoicer]`, with the defaults filled in. It serializes back to the
+/// same kebab-case keys (`config` prints it).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Settings {
     /// Where new invoices go.
