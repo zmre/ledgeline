@@ -671,12 +671,14 @@ Details settled in Phase 2b (2026-11-21):
 
 - Sending an invoice dated on or before `closed-through` is refused.
 - Send writes `status: sent`, `sent_date` (when absent), `sent_via` (when
-  given) and `paid: no` (when absent).
+  given) and `paid` (when absent): `no`, or the invoice date for a zero
+  total.
 - Voiding a draft changes only its markdown. A cash-books invoice with a
   payment applied can't be voided until the payment is undone.
 - In cash books, a deferred row's payment goes to the account it recognizes
   into. A payment that settles the rest takes each row's remainder, so the
-  rows end exactly at the invoice's amounts.
+  rows end exactly at what is due on them.
+- In cash books a deposit is income on receipt (§4.4).
 
 **Drafts never touch the books** (decided 2026-11-19). "Expected billings"
 can still be reported from draft files without polluting the journal.
@@ -779,14 +781,24 @@ The editor's **Apply deposit** button lists the customer's open deposits:
 `invoicer_core::books` implements this (`open_deposits`, `apply_deposit`).
 
 **A deposit that covers the whole final invoice** leaves a total of zero.
-Sending it books the rows against the deposit liability with **no
-receivable posting**: there is nothing to receive, and Ledgeline's
-receivables and matching ignore a zero settlement line by design. Cash
-books book it the same way at send (into the cash accounts), since no
-payment will ever arrive to apply (decided 2026-11-21).
+In accrual books, sending it books the rows against the deposit liability
+with **no receivable posting**: there is nothing to receive, and
+Ledgeline's receivables and matching ignore a zero settlement line by
+design (decided 2026-11-21).
 
-In cash books, the deposit invoice is booked only when paid, as revenue or as
-a liability per its row.
+**Cash books: a deposit is income on receipt** (Patrick, 2026-11-21).
+
+- The deposit invoice is booked only when paid, and its payment goes to
+  revenue, never the liability: the row's own account, or, when the row
+  names the deposit account, the customer's `revenue_account`, else
+  `[invoicer] revenue-account`, else the books' single revenue account.
+- A final invoice's deposit row books nothing. Its payments are split over
+  the other rows, scaled to what is due.
+- A fully covered final invoice books a `$0` marker at send: its header
+  tags and a `$0.00` posting per row, each with `customer:` and `item:`.
+  It is how the books show the invoice was sent; it is paid on its date.
+- Open deposits are what deposit invoices were paid, less the applications
+  in the files, so voiding a final invoice gives its deposit back.
 
 ### 4.5 Editing after sending
 

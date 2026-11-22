@@ -357,8 +357,9 @@ the error. Tests: `tests/books_{spec,accrual,cash}.rs` on fixture copies
 under `target/`, journal text asserted exactly; with
 `LEDGELINE_HLEDGER_INVOICER_CHECK=1` in the dev shell, hledger checks the
 results (`-s check`, `bal tag:invoice=…`). One Ledgeline core change:
-`accrual::apply::plan` takes a negative split row (a deposit applied on a
-cash-books final invoice), behaviour-neutral for Ledgeline.
+`accrual::apply::plan` takes a negative split row (a discount booked to a
+contra-revenue account; after decision A below, no longer a deposit
+applied), behaviour-neutral for Ledgeline.
 
 Decided while building, open to veto:
 
@@ -417,13 +418,53 @@ Answered by Patrick (2026-11-21):
   - re-book moves either way between zero and a positive total, but never
     drops a receivable with payments linked;
   - void reverses the rows, with no `match:` (no receivable to net);
-  - cash books book it too, into the cash accounts: no payment will ever
-    arrive to apply, and without it the deposit would stay a liability.
+  - send writes `paid: <invoice date>` rather than `paid: no` for any zero
+    total, so `list --open` doesn't show it before the reconciler runs;
+  - in cash books it is a `$0` marker instead (decision A below).
 - **The fixture's 104 `item:`** now reads `($16700)`, as the bridge writes
   it (hledger ends a tag value at any comma). The root
   `fixtures/receivables/books.journal` (plan 45's) keeps its own shorter
   item, which `accrual_library.rs` writes literally; nothing else captures
   it.
+
+**Cash-books deposits: decision A, income on receipt** (Patrick,
+2026-11-21). Accrual books are unchanged (the deposit is held in the
+liability and the final invoice moves it to revenue). In cash books:
+
+- **A deposit invoice's payment is revenue the day it arrives.** Apply
+  payment re-splits the bank deposit into revenue, never the liability.
+  The account: the deposit row's own when it is not the deposit account;
+  when it is (the usual case, `liabilities:customer-deposits`), the
+  customer's `revenue_account`, else `[invoicer] revenue-account`, else the
+  books' single revenue account; with none of those, Apply payment refuses
+  and says what to set. *For veto:* it doesn't try to guess the final
+  invoice's rows, which don't exist yet when the deposit arrives.
+- **A final invoice's deposit row books nothing.** A payment is split over
+  the other rows, scaled pro rata to what is due (207: $7,000 due over
+  $8,000 and $4,000 of work is $4,666.67 + $2,333.33), and the payment that
+  settles the rest takes each row's remainder. Revenue by account then
+  differs from the rows: 207's $12,000 lands as $9,666.67 consulting and
+  $2,333.33 delivery, because the $5,000 deposit went to Customer X's
+  revenue account when it arrived. *For veto.*
+- **A fully covered final invoice books a `$0` marker at send**: its
+  header (`invoice:`, `document:`, `due:`, `reference:`) and one `$0.00`
+  posting per row, the row's cash account (the deposit account for the
+  deposit row), each with `customer:` and `item:`. hledger reads it as
+  balanced (`-s check` passes). It lets `check` and the reconciler see it
+  was sent; the reconciler should mirror `paid:` as the invoice date, and
+  send already writes that. Re-book replaces it; void reverses it (another
+  `$0` transaction tagged `void:`).
+- **Voiding a final invoice gives its deposit back** for a reissue: open
+  deposits in cash books are what deposit invoices were paid (their applied
+  payments, up to their deposit rows), less the applications in non-void
+  files. *For veto.*
+- A cash-books deposit held in the liability by hand (a journal credit on
+  the deposit account) is not counted as an open deposit.
+- The cash fixture's 206 wire now lands in `revenue:consulting`; 207's
+  markdown is unchanged (its deposit row is what the customer sees). The
+  CLI snapshots (#86) are unaffected; the CLI's open/overdue read only the
+  `paid:` mirror.
+- Core's `build_settled_document` stays: accrual books need it.
 
 Left for 2c: the CLI commands, `check` over the books (including the
 booked-draft finding from a failed markdown write), and the reconciler and
