@@ -394,7 +394,7 @@ include books-2025.journal
 
 2026-10-01 Customer X | Invoice 104  ; invoice: 104, document: invoices/2026-10-01 Customer X Invoice 104.md, due: 2026-10-31, reference: PO #PY75334
     assets:accounts receivable     $8350.00  ; customer: Customer X, match:in0104
-    liabilities:customer-deposits  $-8350.00  ; customer: Customer X, item: Deposit: 50% of proposal P-12
+    liabilities:customer-deposits  $-8350.00  ; customer: Customer X, item: Deposit: 50% of proposal P-12 ($16700)
 
 2026-10-05 CONTOSO ACH 2  ; invoice: 101
     assets:bank:checking        $2500.00

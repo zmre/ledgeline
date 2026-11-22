@@ -1,7 +1,8 @@
 ; Invoicer cash fixture books (invoicer PLAN 0d): a copy of the receivables
 ; fixture's cash books (fixtures/receivables/cash.journal), where Apply payment
-; (I17) re-split 201's and 202's deposits, plus a deposit invoice paid by wire.
-; Cash books book an invoice at payment only. Synthetic. Clock: 2026-11-17.
+; (I17) re-split 201's and 202's deposits, plus a deposit invoice paid by wire
+; (income on receipt). Cash books book an invoice at payment only. Synthetic.
+; Clock: 2026-11-17.
 commodity $1,000.00
 
 account assets:bank:checking           ; type: C
@@ -29,4 +30,4 @@ account equity:opening                 ; type: E
 
 2026-11-08 * WIRE CUSTOMER X DEPOSIT  ; id: wx-3, invoice:206
     assets:bank:checking             $5000.00
-    liabilities:customer-deposits   $-5000.00  ; customer: Customer X
+    revenue:consulting              $-5000.00  ; customer: Customer X

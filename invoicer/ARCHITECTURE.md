@@ -605,15 +605,16 @@ when a snippet does. A customer note can name default snippets, for example
 There are no new config files. This follows the rules in
 [Settings files are TOML] and plan 43's precedent for `[sync]`.
 
-| Setting                                           | Where                                    | Written by                    |
-|---------------------------------------------------|------------------------------------------|-------------------------------|
-| `invoices-dir`, `customers-dir`, `templates-dir`, `catalog`, `company` | `ledgeline.toml [invoicer]` | Hand, or the first-run setup action (an explicit action, like `[sync]`) |
-| `receivable-account`, `revenue-account`, `deposit-account`, `discount-account` | `ledgeline.toml [invoicer]` | Hand / first-run setup |
-| `filename`, `number-start`, `pdf-dir`             | `ledgeline.toml [invoicer]`              | Hand                          |
-| Recognized words (below)                          | `ledgeline.toml [invoicer.words]`        | Hand                          |
-| `basis`, `closed-through`, `recognition-file`     | `ledgeline.toml [books]` (plan 45)       | Shared with Ledgeline         |
-| theme, uiScale                                    | `ui-prefs.toml` + `[ui]` pin             | Shared with Ledgeline         |
-| invoicer UI prefs (default template, list sort…)  | `ui-prefs.toml [invoicer]`               | Settings screen               |
+| Setting                                                                                         | Where                              | Written by                                                              |
+|-------------------------------------------------------------------------------------------------|------------------------------------|-------------------------------------------------------------------------|
+| `invoices-dir`, `customers-dir`, `templates-dir`, `catalog`, `company`                          | `ledgeline.toml [invoicer]`        | Hand, or the first-run setup action (an explicit action, like `[sync]`) |
+| `receivable-account`, `revenue-account`, `deposit-account`, `discount-account`                  | `ledgeline.toml [invoicer]`        | Hand / first-run setup                                                  |
+| `cash-deposits`, `payment-allocation` (accounting policy; PLAN "Configurable accounting flows") | `ledgeline.toml [invoicer]`        | Hand                                                                    |
+| `filename`, `number-start`, `pdf-dir`                                                           | `ledgeline.toml [invoicer]`        | Hand                                                                    |
+| Recognized words (below)                                                                        | `ledgeline.toml [invoicer.words]`  | Hand                                                                    |
+| `basis`, `closed-through`, `recognition-file`                                                   | `ledgeline.toml [books]` (plan 45) | Shared with Ledgeline                                                   |
+| theme, uiScale                                                                                  | `ui-prefs.toml` + `[ui]` pin       | Shared with Ledgeline                                                   |
+| invoicer UI prefs (default template, list sort…)                                                | `ui-prefs.toml [invoicer]`         | Settings screen                                                         |
 
 Unset accounts are inferred the same way plan 45's gate does it: by declared
 type or `kpi:` first, and by name only as a fallback. `deposit-account`
@@ -667,6 +668,19 @@ italic header.
 | **Void**                      | A reversing transaction dated the void date, tagged `invoice:` and `void:`, linked to the original AR posting with `match:` so the AR nets to zero. | `status: void`.                                                         |
 | Recognition periods           | Plan 45's due entries, posted by Ledgeline (or `ledgeline-invoicer recognize`), never after today.              | n/a                                                                     |
 
+Details settled in Phase 2b (2026-11-21):
+
+- Sending an invoice dated on or before `closed-through` is refused.
+- Send writes `status: sent`, `sent_date` (when absent), `sent_via` (when
+  given) and `paid` (when absent): `no`, or the invoice date for a zero
+  total.
+- Voiding a draft changes only its markdown. A cash-books invoice with a
+  payment applied can't be voided until the payment is undone.
+- In cash books, a deferred row's payment goes to the account it recognizes
+  into. A payment that settles the rest takes each row's remainder, so the
+  rows end exactly at what is due on them.
+- In cash books a deposit is income on receipt (§4.4).
+
 **Drafts never touch the books** (decided 2026-11-19). "Expected billings"
 can still be reported from draft files without polluting the journal.
 
@@ -695,10 +709,17 @@ For the invoice in §3.2, in accrual books:
     the file (and later at estimates or replaced drafts).
   - `due:` and `reference:` give Ledgeline aging and search without reading
     markdown.
-  - `item:` keeps the row description on the posting.
-  - Tag values can't contain commas, so the bridge strips or replaces commas
-    in values it writes. (`reference:` and the `document:` path are the likely
+  - `item:` keeps the row description on the posting: the item rows the line
+    came from, joined with ` + `, or, for a line no item feeds (tax, a
+    deposit applied), its own rows.
+  - Tag values can't contain commas. The bridge drops a comma between digits
+    (`$16,700` → `$16700`) and turns every other comma, and any line break,
+    into a space. (`reference:` and the `document:` path are the likely
     offenders.)
+- **Description and customer.** The description is `<invoicee_name> |
+  Invoice <number>`. `customer:` is the customer note's `ledger_customer`
+  (else its title); a person at a `company:` with no `ledger_customer` of
+  their own books to the company's note (decided 2026-11-21).
 - **Plan 45 vocabulary.** Deferred rows add `recognition:`, `service-start:`,
   `term-months:`, `proration:` and `contract:` on their posting, plus the rule
   group in `recognition.journal`. They are built by
@@ -717,6 +738,10 @@ header tag `invoice:` (an exact match, `^105$`) on a transaction with a
 receivable posting. That is unique by construction, because `invoice_num` is
 unique. Its `transaction_fingerprint` is the optimistic-concurrency token for
 a replace.
+
+A final invoice its deposit fully covers has no receivable posting (§4.4),
+so Ledgeline never finds it; the invoicer finds it by `invoice:` plus
+`document:` on a transaction with no settlement leg.
 
 `check` reports these problems:
 
@@ -742,12 +767,44 @@ liability (as in §3.2). That debits the liability, so it clears.
 
 The editor's **Apply deposit** button lists the customer's open deposits:
 
-- each is a credit balance on `deposit-account` with that customer's
-  `customer:` tag;
-- choosing one writes the row and a `deposit_for` back-reference.
+- each is a credit on `deposit-account` with that customer's `customer:`
+  tag, less what has been applied from it;
+- an invoice's applications are counted from its file (its rows booked to
+  the deposit account), never from the journal, so a draft, or an unpaid
+  invoice in cash books, already uses its deposit up; a void invoice counts
+  for nothing;
+- an application uses up the deposit its row names first (`Less deposit
+  (Invoice 104)` names 104), then the oldest;
+- choosing one writes the row into the draft, above its final total, and
+  recomputes the table. The row's description is the back-reference;
+  `deposit_for` keeps what the author wrote (decided 2026-11-21).
 
-In cash books, the deposit invoice is booked only when paid, as revenue or as
-a liability per its row.
+`invoicer_core::books` implements this (`open_deposits`, `apply_deposit`).
+
+**A deposit that covers the whole final invoice** leaves a total of zero.
+In accrual books, sending it books the rows against the deposit liability
+with **no receivable posting**: there is nothing to receive, and
+Ledgeline's receivables and matching ignore a zero settlement line by
+design (decided 2026-11-21).
+
+**Cash books: a deposit is income on receipt** (Patrick, 2026-11-21).
+
+- The deposit invoice is booked only when paid, and its payment goes to
+  revenue, never the liability: the row's own account, or, when the row
+  names the deposit account, the customer's `revenue_account`, else
+  `[invoicer] revenue-account`, else the books' single revenue account.
+- A final invoice's deposit row books nothing. By default
+  (`payment-allocation = "match-rows"`) its payments go where the rows
+  still lack revenue once the deposit is counted, so each account ends at
+  its row; `"pro-rata"` splits every payment by the rows' proportions.
+- `cash-deposits = "liability-until-final"` keeps the earlier treatment
+  instead: the deposit is held in the deposit account until the final
+  invoice's payment (or its send, when fully covered) clears it.
+- A fully covered final invoice books a `$0` marker at send: its header
+  tags and a `$0.00` posting per row, each with `customer:` and `item:`.
+  It is how the books show the invoice was sent; it is paid on its date.
+- Open deposits are what deposit invoices were paid, less the applications
+  in the files, so voiding a final invoice gives its deposit back.
 
 ### 4.5 Editing after sending
 
@@ -904,15 +961,20 @@ invoicing app. The risk is re-parsing a lot of text over and over. These
 budgets are release criteria. They are measured on the
 `benches/` corpus described below, on an M-series Mac, in a release build:
 
-| Interaction                                               | Budget (p95) |
-|-----------------------------------------------------------|--------------|
-| Open a books folder → dashboard and invoice list shown    | 300 ms       |
-| Keystroke in the bill table → amounts and books panel updated | 10 ms server time |
-| Keystroke → live preview re-rendered                      | 50 ms        |
-| Save a draft (hash check, atomic write, re-index)         | 20 ms        |
-| Send (book, write the journal, update the markdown)       | 150 ms       |
-| A journal change from Ledgeline → `paid:` mirrors refreshed | 100 ms     |
-| CLI `list --json` / `check` on the corpus                 | 300 ms / 1 s |
+| Interaction                                                   | Budget (p95)                  |
+|---------------------------------------------------------------|-------------------------------|
+| Open a books folder → dashboard and invoice list shown        | 300 ms                        |
+| Keystroke in the bill table → amounts and books panel updated | 10 ms server time             |
+| Keystroke → live preview re-rendered                          | 50 ms                         |
+| Save a draft (hash check, atomic write, re-index)             | 20 ms                         |
+| Send (book, write the journal, update the markdown)           | 300 ms (relaxed; goal 150 ms) |
+| A journal change from Ledgeline → `paid:` mirrors refreshed   | 100 ms                        |
+| CLI `list --json` / `check` on the corpus                     | 300 ms / 1 s                  |
+
+The send budget is **relaxed to 300 ms** for now (Patrick, 2026-11-21):
+almost all of it is Ledgeline loading, re-parsing and saving the whole
+journal, which only L10 (incremental reload) or an in-place re-parse in
+`ledgeline-core` can cut. Bringing it back to 150 ms is a later goal.
 
 The corpus is 5,000 invoices, 500 customers and 10 years of journal. It is
 produced by a deterministic generator that extends Ledgeline's
@@ -974,6 +1036,20 @@ produced by a deterministic generator that extends Ledgeline's
 Every budget holds, but the journal reload alone uses most of the 100 ms
 for a journal change, which leaves the reconciler under 10–25 ms. That is
 L10 in §8.
+
+**Measured (Phase 2b, 2026-11-21).** Same corpus and machine:
+
+| Bench                                   | Median | Feeds the budget                          |
+|-----------------------------------------|--------|-------------------------------------------|
+| `invoicer/preview` (load + derive)      | 95 ms  | the books panel (warm in the app: < 1 ms) |
+| `invoicer/send` (load, book, write, md) | 291 ms | send (300 ms, relaxed; goal 150 ms)       |
+
+Send's time is the journal: 72 ms to load it and about 190 ms in
+`write_document`, which re-parses and saves the whole 9.2 MB file. The
+invoicer's own part is under 30 ms. Getting back to 150 ms needs L10, or an
+in-place re-parse in `ledgeline-core`. Both benches are gated in
+`baseline.json` (preview 91.6 ms, send 289.1 ms, recorded 2026-11-21 with
+other work running on the machine; only those two entries were added).
 
 **Correctness is never traded for speed:**
 

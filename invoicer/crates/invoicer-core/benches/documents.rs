@@ -10,6 +10,8 @@
 //! | `invoicer/next_number`           | numbering over the index                                       | —                                       |
 //! | `invoicer/refresh_one`           | one changed file re-read and re-indexed (a watcher event)      | save a draft (20 ms)                    |
 //! | `invoicer/save_draft`            | verify, conditional atomic write, re-index                     | save a draft (20 ms)                    |
+//! | `invoicer/preview`               | what a draft would book (the books panel; load the journal + derive) | keystroke → books panel (10 ms, warm in the app) |
+//! | `invoicer/send`                  | send a draft: load, book, write the journal, update the markdown | send (150 ms)                        |
 //! | `ledgeline/journal_open`         | ledgeline-core opens the corpus journal                        | open; a journal change (100 ms)         |
 //! | `ledgeline/journal_reopen`       | the reload a journal change triggers                           | a journal change → `paid:` (100 ms)     |
 //!
@@ -23,13 +25,14 @@ mod corpus;
 mod invoicer_corpus;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use invoicer_core::doc::Money;
+use invoicer_core::books::{InvoiceBooks, Send};
+use invoicer_core::doc::{Money, Status};
 use invoicer_core::draft;
 use invoicer_core::index::{DocumentIndex, ListFilter};
 use invoicer_core::problem::ProblemCode;
 use invoicer_core::settings::Settings;
 use ledgeline_core::edit::JournalEditor;
-use ledgeline_core::vault::{LocalVault, Vault};
+use ledgeline_core::vault::{LocalVault, Vault, VaultPath};
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
@@ -134,6 +137,60 @@ fn benches(c: &mut Criterion) {
     vault
         .write_atomic(&target, original.as_bytes())
         .expect("restores");
+
+    // Send (PLAN 2b): the newest draft, booked and marked sent; the journal
+    // and the file are put back between iterations (untimed).
+    let books = InvoiceBooks::open(&main).expect("the corpus books open");
+    let draft_doc = index
+        .list(&ListFilter {
+            status: Some(Status::Draft),
+            ..ListFilter::default()
+        })
+        .first()
+        .map(|d| (d.path.clone(), d.number().unwrap_or_default().to_string()))
+        .expect("a draft");
+    let (draft_path, draft_number) = draft_doc;
+    let draft_text = vault.read_to_string(&draft_path).expect("reads");
+    let journal_path = VaultPath::new("books.journal").expect("path");
+    let journal_text = vault.read_to_string(&journal_path).expect("reads");
+    group.bench_function(BenchmarkId::new("preview", &label), |b| {
+        b.iter(|| {
+            books
+                .preview(black_box(&index), &draft_number)
+                .expect("previews")
+        });
+    });
+    let request = Send {
+        number: draft_number.clone(),
+        today: "2036-12-31".into(),
+        sent_via: None,
+        expected: None,
+    };
+    group.bench_function(BenchmarkId::new("send", &label), |b| {
+        b.iter_custom(|iters| {
+            (0..iters)
+                .map(|_| {
+                    vault
+                        .write_atomic(&journal_path, journal_text.as_bytes())
+                        .expect("restores the journal");
+                    vault
+                        .write_atomic(&draft_path, draft_text.as_bytes())
+                        .expect("restores the draft");
+                    index.refresh(&vault, std::slice::from_ref(&draft_path));
+                    let start = Instant::now();
+                    black_box(books.send(&mut index, &request).expect("sends"));
+                    start.elapsed()
+                })
+                .sum()
+        });
+    });
+    vault
+        .write_atomic(&journal_path, journal_text.as_bytes())
+        .expect("restores the journal");
+    vault
+        .write_atomic(&draft_path, draft_text.as_bytes())
+        .expect("restores the draft");
+    index.refresh(&vault, std::slice::from_ref(&draft_path));
     group.finish();
 
     let mut group = c.benchmark_group("ledgeline");

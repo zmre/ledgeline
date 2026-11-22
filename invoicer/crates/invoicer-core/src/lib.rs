@@ -19,11 +19,15 @@
 //! - [`draft`]: creating drafts and saving documents (§5.2);
 //! - [`session`]: an open books folder (§6.4);
 //! - [`views`]: what the read commands show, for the CLI and the API;
-//! - [`edit`]: the commands that write documents (`new`, `set`, `recalc`).
+//! - [`edit`]: the commands that write documents (`new`, `set`, `recalc`);
+//! - [`books`]: the books bridge — what an invoice books, send, re-book,
+//!   void, deposits and cash-books Apply payment (§4).
 //!
-//! Plan 26 rules apply: no globals, no IO here, no platform `cfg`.
+//! Plan 26 rules apply: no globals, no platform `cfg`, and all IO through a
+//! Ledgeline `Vault`.
 
 pub mod booking;
+pub mod books;
 pub mod catalog;
 pub mod customers;
 pub mod doc;

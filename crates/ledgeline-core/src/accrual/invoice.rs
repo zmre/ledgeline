@@ -290,7 +290,7 @@ fn signed(amount: &Amount, negative: bool) -> Result<Amount, DocumentError> {
     })
 }
 
-fn check(spec: &DocumentSpec) -> Result<(), DocumentError> {
+fn check(spec: &DocumentSpec, settled: bool) -> Result<(), DocumentError> {
     if !is_iso_date(&spec.date) {
         return invalid(format!("`{}` is not a date", spec.date));
     }
@@ -351,7 +351,7 @@ fn check(spec: &DocumentSpec) -> Result<(), DocumentError> {
     {
         return Err(DocumentError::MixedCommodities);
     }
-    if total.mantissa <= 0 {
+    if total.mantissa < 0 || (total.is_zero() && !settled) {
         return invalid(
             "the lines total zero or less: a document's total must run with its direction \
              (a credit note is a document of its own)",
@@ -392,7 +392,38 @@ pub(crate) fn build_document_with(
     spec: &DocumentSpec,
     next_id: &mut dyn FnMut() -> String,
 ) -> Result<BuiltDocument, DocumentError> {
-    check(spec)?;
+    build(spec, next_id, false)
+}
+
+/// [`build_document`] for a document that may already be **settled when
+/// written**: its lines may net to zero — a final invoice whose deposit
+/// covers all of it (invoicer, PLAN 2b), where the revenue lines are booked
+/// straight against the deposit liability. Such a document is written with
+/// **no** settlement posting (there is nothing to receive or pay, and a
+/// zero receivable would be noise), so [`super::documents`] — and with it
+/// `find_document`, receivables and matching — never sees it; its writer
+/// finds it again by its `invoice:` tag. A document with a positive total
+/// builds exactly as [`build_document`] builds it. Ledgeline's own paths
+/// never call this.
+///
+/// Each new schedule's id comes from `next_id`, in line order (a re-book
+/// hands back the existing ids first).
+///
+/// # Errors
+/// As [`build_document`], less the zero total.
+pub fn build_settled_document(
+    spec: &DocumentSpec,
+    next_id: &mut dyn FnMut() -> String,
+) -> Result<BuiltDocument, DocumentError> {
+    build(spec, next_id, true)
+}
+
+fn build(
+    spec: &DocumentSpec,
+    next_id: &mut dyn FnMut() -> String,
+    settled: bool,
+) -> Result<BuiltDocument, DocumentError> {
+    check(spec, settled)?;
     let revenue = spec.direction == Direction::Revenue;
     let party_tag = spec
         .party
@@ -452,14 +483,16 @@ pub(crate) fn build_document_with(
         ..spec.lines[0].amount.clone()
     };
     let party_only: Vec<(&str, String)> = party_tag.iter().cloned().collect();
-    postings.insert(
-        0,
-        posting(
-            &spec.settlement_account,
-            signed(&settlement, !revenue)?,
-            &party_only,
-        ),
-    );
+    if !total.is_zero() {
+        postings.insert(
+            0,
+            posting(
+                &spec.settlement_account,
+                signed(&settlement, !revenue)?,
+                &party_only,
+            ),
+        );
+    }
     let header: Vec<(&str, &str)> = spec
         .number
         .as_deref()
@@ -535,7 +568,9 @@ fn read_back(spec: &DocumentSpec, transaction: &Transaction) -> Result<(), Docum
     if let Some(tag) = spec.tags.iter().find(|tag| !has(&transaction.tags, tag)) {
         return invalid(format!("the header tag `{}` would not read back", tag.0));
     }
-    for (line, posting) in spec.lines.iter().zip(&transaction.postings[1..]) {
+    // The lines follow the settlement posting, when there is one.
+    let first = transaction.postings.len().saturating_sub(spec.lines.len());
+    for (line, posting) in spec.lines.iter().zip(&transaction.postings[first..]) {
         if let Some(tag) = line.tags.iter().find(|tag| !has(&posting.tags, tag)) {
             return invalid(format!(
                 "the tag `{}` on the line on {} would not read back",
@@ -643,6 +678,70 @@ mod tests {
 
     fn tag(name: &str, value: &str) -> (String, String) {
         (name.to_string(), value.to_string())
+    }
+
+    #[test]
+    fn a_settled_document_nets_to_zero_with_no_settlement_posting() {
+        // $4,000 of work, all of it covered by a $4,000 deposit.
+        let journal = parse_journal("commodity $1,000.00\n", "books.journal").expect("parses");
+        let usd = |cents: i128| money(&journal, "$", Dec::new(cents, 2));
+        let spec = DocumentSpec {
+            direction: Direction::Revenue,
+            date: "2026-11-17".into(),
+            description: "Customer X | Invoice 111".into(),
+            number: Some("111".into()),
+            party: customer_x(),
+            settlement_account: "assets:accounts receivable".into(),
+            lines: vec![
+                DocumentLine {
+                    tags: vec![tag("item", "Phase 2")],
+                    ..DocumentLine::new("revenue:consulting", usd(400_000))
+                },
+                DocumentLine {
+                    tags: vec![tag("item", "Less deposit")],
+                    ..DocumentLine::new("liabilities:customer-deposits", usd(-400_000))
+                },
+            ],
+            tags: vec![tag("document", "invoices/111.md")],
+        };
+        // The strict builder (Ledgeline's paths) still refuses it.
+        let mut ids = IdGenerator::avoiding(Vec::new());
+        assert!(matches!(
+            build_document(&spec, &mut ids),
+            Err(DocumentError::Invalid(_))
+        ));
+        let built = build_settled_document(&spec, &mut || "x1".to_string()).expect("builds");
+        assert_eq!(
+            crate::edit::format_transaction(&built.transaction),
+            "2026-11-17 Customer X | Invoice 111  ; invoice: 111, document: invoices/111.md\n    \
+             revenue:consulting             $-4000.00  ; customer: Customer X, item: Phase 2\n    \
+             liabilities:customer-deposits  $4000.00  ; customer: Customer X, item: Less deposit\n"
+        );
+        // Never a document: nothing to receive.
+        let roles = crate::accrual::AccrualRoles::of(&journal);
+        assert_eq!(
+            crate::accrual::documents::document_posting(&built.transaction, &roles),
+            None
+        );
+        // A positive total builds exactly as the strict builder does; a
+        // negative one is still refused.
+        let positive = DocumentSpec {
+            lines: vec![DocumentLine::new("revenue:consulting", usd(400_000))],
+            ..spec.clone()
+        };
+        assert_eq!(
+            build_settled_document(&positive, &mut || "x1".to_string())
+                .expect("builds")
+                .transaction,
+            build_document(&positive, &mut IdGenerator::avoiding(Vec::new()))
+                .expect("builds")
+                .transaction
+        );
+        let negative = DocumentSpec {
+            lines: vec![DocumentLine::new("liabilities:customer-deposits", usd(-1))],
+            ..spec
+        };
+        assert!(build_settled_document(&negative, &mut || "x1".to_string()).is_err());
     }
 
     /// ARCHITECTURE §4.2's invoice 105: two revenue rows with `item:`, the

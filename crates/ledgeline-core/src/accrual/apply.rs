@@ -12,6 +12,9 @@
 //!   rata over the rows with exact [`Dec`] shares that sum to what was
 //!   received, the remainder on the largest row. More: refused (one deposit
 //!   paying two invoices is M:N, later).
+//! - A row may run against the invoice: a final invoice applying a deposit
+//!   has a negative row on the deposit liability, which the payment debits
+//!   (its share pro rata too, when partial).
 //! - The header gains `invoice:` and each new posting `customer:`; nothing
 //!   else changes. The transaction is never a document ([`super::documents`]
 //!   needs a settlement posting), so `find_document` never finds it.
@@ -48,8 +51,10 @@ pub struct ApplyPayment {
     /// The customer (`customer:` on each new posting).
     pub party: Option<Party>,
     /// The invoice's split: each row account and its total on the invoice,
-    /// a positive magnitude in the deposit's commodity. An account named
-    /// twice is merged.
+    /// in the deposit's commodity, signed as the invoice runs — positive for
+    /// revenue, negative for a row against it (a deposit applied on a final
+    /// invoice debits the deposit liability). An account named twice is
+    /// merged; the split must sum to more than zero.
     pub split: Vec<(String, Dec)>,
 }
 
@@ -72,7 +77,8 @@ pub struct AppliedPayment {
     pub transaction: Transaction,
     /// What the income side held: a positive magnitude.
     pub received: Dec,
-    /// Each row account and what it received, in split order.
+    /// Each row account and what it received, in split order (negative for
+    /// a row against the invoice, such as a deposit applied).
     pub applied: Vec<(String, Dec)>,
     /// Whether it pays less than the invoice.
     pub partial: bool,
@@ -168,7 +174,8 @@ fn income_side<'t>(
 }
 
 /// `received` split over `weights` pro rata, exactly, the remainder on the
-/// largest weight (the first of equals).
+/// largest weight (the first of equals). A negative weight (a deposit
+/// applied) gets its negative share; the weights sum to more than zero.
 fn pro_rata(received: Dec, weights: &[Dec]) -> Result<Vec<Dec>, OpsError> {
     let largest = weights.iter().enumerate().fold(
         0,
@@ -192,7 +199,7 @@ fn pro_rata(received: Dec, weights: &[Dec]) -> Result<Vec<Dec>, OpsError> {
 /// # Errors
 /// [`OpsError::Refused`] when `txn` isn't a cash-books deposit (no cash
 /// debit, no income side, a settlement leg, mixed commodities), is already
-/// tagged `invoice:`, the split is empty or not positive, or the deposit is
+/// tagged `invoice:`, the split is empty or sums to zero or less, or the deposit is
 /// more than the invoice; [`OpsError::Document`] for an unusable account or
 /// tag value.
 pub fn plan(
@@ -222,8 +229,8 @@ pub fn plan(
     for (account, amount) in &request.split {
         crate::periodic::check_account(account)
             .map_err(|e| OpsError::Document(DocumentError::Invalid(e.to_string())))?;
-        if amount.mantissa <= 0 {
-            return refused(format!("the split's amount on {account} must be positive"));
+        if amount.is_zero() {
+            return refused(format!("the split's amount on {account} is zero"));
         }
         match split.iter_mut().find(|(a, _)| a == account) {
             Some((_, total)) => {
@@ -234,6 +241,7 @@ pub fn plan(
             None => split.push((account.clone(), *amount)),
         }
     }
+    split.retain(|(_, amount)| !amount.is_zero());
     if split.is_empty() {
         return refused("the invoice's split is empty");
     }
@@ -241,6 +249,9 @@ pub fn plan(
         .iter()
         .try_fold(Dec::zero(), |sum, (_, amount)| sum.add(*amount))
         .map_err(|_| OpsError::Document(DocumentError::Overflow))?;
+    if invoiced.mantissa <= 0 {
+        return refused("the invoice's split must sum to more than zero");
+    }
     let partial = match received.cmp(&invoiced) {
         std::cmp::Ordering::Greater => {
             return refused(format!(
@@ -588,6 +599,63 @@ account liabilities:loan  ; type: L
                 &journal,
                 &journal.transactions[0],
                 &request(&journal, 0, &[])
+            ),
+            Err(OpsError::Refused(_))
+        ));
+    }
+
+    #[test]
+    fn a_row_against_the_invoice_is_debited_with_its_share() {
+        // A final invoice of $1,000: $1,200 of work less a $200 deposit.
+        let journal = parse_journal(BOOKS, "inline.journal").expect("parses");
+        let split = [
+            ("revenue:consulting", 120_000),
+            ("liabilities:customer-deposits", -20_000),
+        ];
+        let exact = plan(
+            &journal,
+            &journal.transactions[0],
+            &request(&journal, 0, &split),
+        )
+        .expect("plans");
+        assert!(!exact.partial);
+        assert_eq!(
+            exact.applied,
+            vec![
+                ("revenue:consulting".to_string(), Dec::new(120_000, 2)),
+                (
+                    "liabilities:customer-deposits".to_string(),
+                    Dec::new(-20_000, 2)
+                )
+            ]
+        );
+        let EditOp::ReplacePostings { with, .. } = &exact.ops[0] else {
+            panic!("a posting replacement");
+        };
+        let amounts: Vec<Dec> = with.iter().map(|p| p.amounts[0].quantity).collect();
+        assert_eq!(amounts, vec![Dec::new(-120_000, 2), Dec::new(20_000, 2)]);
+        // $250 of it: 300 / -50, pro rata.
+        let partial = plan(
+            &journal,
+            &journal.transactions[3],
+            &request(&journal, 3, &split),
+        )
+        .expect("plans");
+        assert!(partial.partial);
+        assert_eq!(
+            partial.applied.iter().map(|(_, d)| *d).collect::<Vec<_>>(),
+            vec![Dec::new(30_000, 2), Dec::new(-5_000, 2)]
+        );
+        // A split summing to nothing (or less) is refused.
+        assert!(matches!(
+            plan(
+                &journal,
+                &journal.transactions[0],
+                &request(
+                    &journal,
+                    0,
+                    &[("revenue:consulting", 20_000), ("liabilities:x", -20_000)]
+                ),
             ),
             Err(OpsError::Refused(_))
         ));
