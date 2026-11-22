@@ -37,7 +37,32 @@ test.beforeEach(async ({page}) => {
             localStorage.setItem("ledgeline.settings.v1", JSON.stringify({serverUrl: url, serverToken: token, insightsOpen: false}));
             // The keymap records every keystroke and what it did with it
             // (src/lib/keys/trace.ts), printed below when a test fails.
-            (window as unknown as {__ledgelineKeyTrace: unknown[]}).__ledgelineKeyTrace = [];
+            const trace: unknown[] = [];
+            (window as unknown as {__ledgelineKeyTrace: unknown[]}).__ledgelineKeyTrace = trace;
+            // The flake's third shape: Similar opens but focus ends on <body>.
+            // Record each focus loss to nowhere, and whether the element that
+            // lost it is still in the document a tick later (if not, the card
+            // was re-rendered under the focus).
+            document.addEventListener(
+                "focusout",
+                (event) => {
+                    if (event.relatedTarget !== null) return;
+                    const el = event.target as Element;
+                    const name = el.getAttribute?.("aria-label") ?? el.getAttribute?.("data-testid") ?? "";
+                    const card = el.closest?.("[data-card-index]")?.getAttribute("data-card-index") ?? "-";
+                    const entry = {
+                        at: Math.round(performance.now()),
+                        outcome: "blur-to-nothing",
+                        target: `${el.tagName?.toLowerCase()} "${name}" card ${card}`,
+                        detail: "",
+                    };
+                    trace.push(entry);
+                    setTimeout(() => {
+                        entry.detail = el.isConnected ? "still in the document" : "REMOVED from the document";
+                    }, 0);
+                },
+                true
+            );
         },
         [API_URL, API_TOKEN]
     );
@@ -98,7 +123,9 @@ test("review unknowns from the keyboard: suggestion, similar, skip and back — 
     await expect(position(page)).toHaveText("1 of 8");
     await expect(cardOf(page, 25)).toBeFocused();
     // The key trace is live (so a failure below can print it): `u` ran a binding.
-    const firstKey = await page.evaluate(() => (window as unknown as {__ledgelineKeyTrace: {key: string; outcome: string}[]}).__ledgelineKeyTrace[0]);
+    const firstKey = await page.evaluate(() =>
+        (window as unknown as {__ledgelineKeyTrace: {key?: string; outcome: string}[]}).__ledgelineKeyTrace.find((entry) => entry.key !== undefined)
+    );
     expect(firstKey).toMatchObject({key: "u", outcome: "run"});
     await expect(cardOf(page, 25).getByTestId("review-payee")).toContainText("Venmo payment 8812");
     await expect(cardOf(page, 25).getByTestId("review-primary")).toBeDisabled();
