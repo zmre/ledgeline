@@ -21,7 +21,10 @@
 //! - [`views`]: what the read commands show, for the CLI and the API;
 //! - [`edit`]: the commands that write documents (`new`, `set`, `recalc`);
 //! - [`books`]: the books bridge — what an invoice books, send, re-book,
-//!   void, deposits and cash-books Apply payment (§4).
+//!   void, deposits, cash-books Apply payment and recognition (§4);
+//! - [`reconcile`]: the books' payment state, the `paid:` mirror, and the
+//!   books checks (§5.4, §4.3, §4.5);
+//! - [`receivables`]: open invoices, aging, DSO (§4.6).
 //!
 //! Plan 26 rules apply: no globals, no platform `cfg`, and all IO through a
 //! Ledgeline `Vault`.
@@ -39,6 +42,8 @@ pub mod notes;
 pub mod numbering;
 mod par;
 pub mod problem;
+pub mod receivables;
+pub mod reconcile;
 pub mod session;
 pub mod settings;
 pub mod snippets;

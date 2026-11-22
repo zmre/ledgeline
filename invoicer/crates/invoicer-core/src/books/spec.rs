@@ -294,6 +294,41 @@ pub struct SpecContext<'a> {
     pub customer: &'a Customer,
     /// Every catalog.
     pub catalogs: &'a [Catalog],
+    /// The journal's account defaults, when the caller computed them once
+    /// for many documents (each is a scan of the journal); `None` computes
+    /// them here.
+    pub accounts: Option<&'a JournalAccounts>,
+}
+
+/// The account defaults [`booking_of`] infers from the journal: computed
+/// once per pass over many documents (`check`, the reconciler), since each
+/// scans every posting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JournalAccounts {
+    /// [`deposit_account`].
+    pub deposit: String,
+    /// [`inferred_revenue_account`].
+    pub inferred_revenue: Option<String>,
+}
+
+impl JournalAccounts {
+    /// The defaults of `journal` under `settings`.
+    #[must_use]
+    pub fn of(settings: &Settings, journal: &Journal) -> Self {
+        Self {
+            deposit: deposit_account(settings, journal),
+            inferred_revenue: inferred_revenue_account(journal),
+        }
+    }
+
+    /// [`JournalAccounts::of`] with the journal's roles already inferred.
+    #[must_use]
+    pub fn of_roles(settings: &Settings, journal: &Journal, roles: &AccrualRoles) -> Self {
+        Self {
+            deposit: deposit_account_in(settings, roles),
+            inferred_revenue: inferred_revenue_account(journal),
+        }
+    }
 }
 
 /// The single account declared with `kpi: revenue`, else the single one
@@ -335,7 +370,20 @@ pub fn receivable_account(settings: &Settings, journal: &Journal) -> Result<Stri
     if let Some(account) = &settings.receivable_account {
         return Ok(account.clone());
     }
-    let roles = AccrualRoles::of(journal);
+    receivable_account_in(settings, &AccrualRoles::of(journal))
+}
+
+/// [`receivable_account`] with the journal's roles already inferred.
+///
+/// # Errors
+/// As [`receivable_account`].
+pub fn receivable_account_in(
+    settings: &Settings,
+    roles: &AccrualRoles,
+) -> Result<String, BooksError> {
+    if let Some(account) = &settings.receivable_account {
+        return Ok(account.clone());
+    }
     let found: Vec<&str> = roles
         .iter()
         .filter(|(_, role, _)| *role == AccrualRole::Receivable)
@@ -365,7 +413,15 @@ pub fn deposit_account(settings: &Settings, journal: &Journal) -> String {
     if let Some(account) = &settings.deposit_account {
         return account.clone();
     }
-    let roles = AccrualRoles::of(journal);
+    deposit_account_in(settings, &AccrualRoles::of(journal))
+}
+
+/// [`deposit_account`] with the journal's roles already inferred.
+#[must_use]
+pub fn deposit_account_in(settings: &Settings, roles: &AccrualRoles) -> String {
+    if let Some(account) = &settings.deposit_account {
+        return account.clone();
+    }
     let declared: Vec<&str> = roles
         .iter()
         .filter(|(_, role, source)| {
@@ -388,6 +444,20 @@ pub fn account_defaults(
     customer: &Customer,
     catalogs: &[Catalog],
 ) -> AccountDefaults {
+    defaults_with(
+        settings,
+        inferred_revenue_account(journal).as_deref(),
+        customer,
+        catalogs,
+    )
+}
+
+fn defaults_with(
+    settings: &Settings,
+    inferred: Option<&str>,
+    customer: &Customer,
+    catalogs: &[Catalog],
+) -> AccountDefaults {
     let account = |name: &str| AccountName::new(name).ok();
     let mut catalog: BTreeMap<ItemCode, BooksEntry> = BTreeMap::new();
     for item in catalogs.iter().flat_map(|c| &c.items) {
@@ -404,9 +474,7 @@ pub fn account_defaults(
             .as_deref()
             .and_then(|text| BooksEntry::parse(text).ok().flatten()),
         settings: settings.revenue_account.as_deref().and_then(account),
-        inferred: inferred_revenue_account(journal)
-            .as_deref()
-            .and_then(account),
+        inferred: inferred.and_then(account),
         discount: settings.discount_account.as_deref().and_then(account),
     }
 }
@@ -515,11 +583,24 @@ pub fn booking_of(
         .flatten()
         .ok_or_else(|| invalid("there is no bill table"))?;
     let style = cx.money.for_table(table);
-    let defaults = account_defaults(cx.settings, cx.journal, cx.customer, cx.catalogs);
+    let computed;
+    let accounts = match cx.accounts {
+        Some(accounts) => accounts,
+        None => {
+            computed = JournalAccounts::of(cx.settings, cx.journal);
+            &computed
+        }
+    };
+    let defaults = defaults_with(
+        cx.settings,
+        accounts.inferred_revenue.as_deref(),
+        cx.customer,
+        cx.catalogs,
+    );
     // Cash books: a deposit invoice's row on the deposit account is income
     // when the deposit arrives, into the customer's revenue account (else
     // the default one).
-    let deposit = deposit_account(cx.settings, cx.journal);
+    let deposit = accounts.deposit.clone();
     let cash_revenue: Option<String> = defaults
         .customer
         .as_ref()

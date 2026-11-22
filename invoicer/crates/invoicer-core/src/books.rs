@@ -37,14 +37,18 @@
 pub mod deposits;
 mod lifecycle;
 pub mod payments;
+pub mod recognize;
 pub mod spec;
+pub mod undo;
 
 pub use deposits::{ApplyDeposit, DepositApplied, OpenDeposit, OpenDeposits};
 pub use lifecycle::{
-    Basis, BookedTransaction, Preview, Rebook, Rebooked, Send, Sent, Void, Voided,
+    Basis, BookedTransaction, Preview, Rebook, Rebooked, Send, Sent, StepCheck, Void, Voided,
 };
-pub use payments::{ApplyPayment, PaymentApplied, PaymentCandidate, PaymentUndo};
+pub use payments::{ApplyPayment, PaymentApplied, PaymentCandidate, PaymentOptions, PaymentUndo};
+pub use recognize::{Recognize, Recognized};
 pub use spec::{BookLine, InvoiceBooking, SpecContext, booking_of};
+pub use undo::{UNDO_DIR, UndoRecord};
 
 use crate::booking::BookingError;
 use crate::catalog::{self, Catalog};
@@ -56,9 +60,10 @@ use crate::index::DocumentIndex;
 use crate::problem::Problem;
 use ledgeline_core::Dec;
 use ledgeline_core::accrual::ops::{Books, Generation, Loaded, OpsError};
+use ledgeline_core::edit::JournalEditor;
 use ledgeline_core::vault::{LocalVault, Revision, Vault, VaultError, VaultPath};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 /// The largest invoice file read: far beyond any real one.
@@ -220,10 +225,40 @@ impl Document {
 
 /// One books folder: its vault (the main journal's folder) and its
 /// Ledgeline books.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct InvoiceBooks {
     vault: Arc<dyn Vault>,
     books: Books,
+    /// A journal the caller already parsed (the CLI's session), used by the
+    /// next [`load`](Self::load) only: after that load the files may change
+    /// (this process writes them), so later loads read them again.
+    warm: Arc<Mutex<Option<JournalEditor>>>,
+}
+
+impl std::fmt::Debug for InvoiceBooks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InvoiceBooks")
+            .field("vault", &self.vault)
+            .field("books", &self.books)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Run `op`, and once more if the books or the file changed under it
+/// ([`BooksError::code`] `external-change`: Ledgeline or an editor saved
+/// between the read and the write, and nothing was written). Every
+/// operation reads the files afresh, so the second run sees the change.
+/// Returns the result and whether it was retried.
+///
+/// # Errors
+/// The second run's error, or the first's when it isn't a change on disk.
+pub fn retry_once<T>(
+    mut op: impl FnMut() -> Result<T, BooksError>,
+) -> (Result<T, BooksError>, bool) {
+    match op() {
+        Err(error) if error.code() == "external-change" => (op(), true),
+        other => (other, false),
+    }
 }
 
 impl InvoiceBooks {
@@ -242,7 +277,24 @@ impl InvoiceBooks {
     #[must_use]
     pub fn open_in(vault: Arc<dyn Vault>, main: VaultPath) -> Self {
         let books = Books::open_in(Arc::clone(&vault), main);
-        Self { vault, books }
+        Self {
+            vault,
+            books,
+            warm: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// These books, whose next [`load`](Self::load) reuses `editor` (a
+    /// journal just parsed, as the CLI's session has) instead of reading
+    /// the journal again. If the files moved on since, the write is refused
+    /// with `ExternalChange` and nothing is written ([`retry_once`] then
+    /// reads them afresh).
+    #[must_use]
+    pub fn with_editor(self, editor: JournalEditor) -> Self {
+        if let Ok(mut warm) = self.warm.lock() {
+            *warm = Some(editor);
+        }
+        self
     }
 
     /// The vault.
@@ -262,7 +314,41 @@ impl InvoiceBooks {
     /// # Errors
     /// [`BooksError::Ops`].
     pub fn load(&self) -> Result<Loaded, BooksError> {
-        Ok(self.books.load()?)
+        let warm = self.warm.lock().ok().and_then(|mut w| w.take());
+        Ok(match warm {
+            Some(editor) => self.books.load_from(&editor)?,
+            None => self.books.load()?,
+        })
+    }
+
+    /// Read the document at `path` from disk, with its revision.
+    ///
+    /// # Errors
+    /// [`BooksError::Storage`].
+    pub fn document_at(
+        &self,
+        index: &DocumentIndex,
+        path: &VaultPath,
+    ) -> Result<Document, BooksError> {
+        let (bytes, revision) = self
+            .vault
+            .read_pinned(path, Some(MAX_DOCUMENT_BYTES))
+            .map_err(|source| BooksError::Storage {
+                path: path.clone(),
+                source,
+            })?;
+        let text = String::from_utf8(bytes).map_err(|_| BooksError::Storage {
+            path: path.clone(),
+            source: VaultError::from_io(
+                path,
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "not UTF-8"),
+            ),
+        })?;
+        Ok(Document {
+            path: path.clone(),
+            invoice: Invoice::parse(text, &index.settings().words),
+            revision,
+        })
     }
 
     /// Read the document numbered `number` from disk (not from the index,
@@ -287,26 +373,7 @@ impl InvoiceBooks {
                 });
             }
         };
-        let (bytes, revision) = self
-            .vault
-            .read_pinned(&path, Some(MAX_DOCUMENT_BYTES))
-            .map_err(|source| BooksError::Storage {
-                path: path.clone(),
-                source,
-            })?;
-        let text = String::from_utf8(bytes).map_err(|_| BooksError::Storage {
-            path: path.clone(),
-            source: VaultError::from_io(
-                &path,
-                std::io::Error::new(std::io::ErrorKind::InvalidData, "not UTF-8"),
-            ),
-        })?;
-        let invoice = Invoice::parse(text, &index.settings().words);
-        let document = Document {
-            path,
-            invoice,
-            revision,
-        };
+        let document = self.document_at(index, &path)?;
         if document.number() != number {
             // Renumbered since the index read it.
             return Err(BooksError::NotFound(number.to_string()));
@@ -396,13 +463,14 @@ impl InvoiceBooks {
                 journal: loaded.journal(),
                 customer: &customer,
                 catalogs: &catalogs,
+                accounts: None,
             },
         )
     }
 
     /// Write `edits` to `document`'s frontmatter, conditional on the
     /// revision it was read at, and re-index it.
-    fn write_fields(
+    pub(crate) fn write_fields(
         &self,
         index: &mut DocumentIndex,
         document: &Document,

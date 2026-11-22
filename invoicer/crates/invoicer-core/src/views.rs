@@ -3,16 +3,20 @@
 //! CLI prints with `--json` and the HTTP API will return. The shapes are a
 //! contract for scripts: fields are added, never renamed or removed.
 //!
-//! "Open" and "overdue" read the `paid:` mirror until Phase 2's reconciler
-//! keeps it in step with the books: a sent invoice is open unless `paid:`
-//! is a date, and overdue when open with `due_date` before `today`.
+//! "Open" and "overdue" read the books when they can say
+//! ([`BookStates::is_open`]: settlement links in accrual books, applied
+//! payments in cash books, a zero total paid on its date), so a list is
+//! right even before `reconcile` refreshes the `paid:` mirrors; an invoice
+//! the books can't speak for (accrual, never booked) falls back to its
+//! mirror. Overdue is open with `due_date` before `today`.
 
 use crate::catalog;
 use crate::customers::{self, BillingContact, ContactKind, ContractRef, Customer, CustomerLookup};
 use crate::doc::{Header, Invoice, Paid, Status};
 use crate::frontmatter::Fields;
 use crate::index::{DocumentIndex, IndexedDoc, ListFilter};
-use crate::problem::{Problem, Severity};
+use crate::problem::{Problem, ProblemCode, Severity};
+use crate::reconcile::{self, BookStates};
 use crate::session::Session;
 use crate::settings::Settings;
 use crate::table::books::BooksEntry;
@@ -23,10 +27,30 @@ use ledgeline_core::vault::{VaultError, VaultPath};
 use serde::Serialize;
 use std::collections::HashMap;
 
-/// Whether a document is open: sent, and `paid:` isn't a date.
+/// Whether a document is open by its `paid:` mirror alone: sent, and
+/// `paid:` isn't a date.
 #[must_use]
 pub fn is_open(header: &Header) -> bool {
     header.status == Some(Status::Sent) && !matches!(header.paid, Some(Paid::Full { .. }))
+}
+
+/// Whether `doc` is open: by the books when given (and they can say), else
+/// by its mirror.
+#[must_use]
+pub fn open_in(states: Option<&BookStates>, doc: &IndexedDoc) -> bool {
+    states.map_or_else(|| is_open(&doc.header), |s| s.is_open(doc))
+}
+
+/// Whether `doc` is overdue on `today`: open (as [`open_in`]) and due
+/// before it.
+#[must_use]
+pub fn overdue_in(states: Option<&BookStates>, doc: &IndexedDoc, today: &str) -> bool {
+    open_in(states, doc)
+        && doc
+            .header
+            .due_date
+            .as_deref()
+            .is_some_and(|due| due < today)
 }
 
 /// Whether a document is overdue on `today`: open, and due before it.
@@ -45,7 +69,8 @@ pub struct Counts {
 }
 
 impl Counts {
-    fn of<'a>(problems: impl IntoIterator<Item = &'a Problem>) -> Self {
+    /// The counts of `problems`.
+    pub fn of<'a>(problems: impl IntoIterator<Item = &'a Problem>) -> Self {
         problems
             .into_iter()
             .fold(Self::default(), |c, p| match p.severity {
@@ -76,7 +101,7 @@ pub struct DocEntry<'a> {
     pub total: Option<&'a str>,
     /// The commodity.
     pub commodity: Option<&'a str>,
-    /// Sent and not paid in full (by the `paid:` mirror).
+    /// Sent and not paid in full (by the books; else the `paid:` mirror).
     pub open: bool,
     /// Open and past `due_date`.
     pub overdue: bool,
@@ -108,24 +133,31 @@ fn problem_counts(problems: &[Problem]) -> HashMap<&VaultPath, Counts> {
         .collect()
 }
 
-fn entry<'a>(doc: &'a IndexedDoc, today: &str, counts: Counts) -> DocEntry<'a> {
+fn entry<'a>(
+    doc: &'a IndexedDoc,
+    states: Option<&BookStates>,
+    today: &str,
+    counts: Counts,
+) -> DocEntry<'a> {
     DocEntry {
         path: &doc.path,
         title: &doc.title,
         header: &doc.header,
         total: doc.summary.as_ref().map(|s| s.total_text.as_str()),
         commodity: doc.summary.as_ref().map(|s| s.commodity.as_str()),
-        open: is_open(&doc.header),
-        overdue: is_overdue(&doc.header, today),
+        open: open_in(states, doc),
+        overdue: overdue_in(states, doc, today),
         problems: counts,
     }
 }
 
 /// `list`: matching documents, newest first, each with its `check` counts
-/// (`problems`, from [`DocumentIndex::check`]).
+/// (`problems`, from [`problems`]). Open and overdue read `states` (the
+/// books) when given, else the `paid:` mirrors.
 #[must_use]
 pub fn list<'a>(
     index: &'a DocumentIndex,
+    states: Option<&BookStates>,
     problems: &[Problem],
     query: &ListQuery,
     today: &str,
@@ -134,9 +166,16 @@ pub fn list<'a>(
     index
         .list(&query.filter)
         .into_iter()
-        .filter(|d| !query.open || is_open(&d.header))
-        .filter(|d| !query.overdue || is_overdue(&d.header, today))
-        .map(|d| entry(d, today, counts.get(&d.path).copied().unwrap_or_default()))
+        .filter(|d| !query.open || open_in(states, d))
+        .filter(|d| !query.overdue || overdue_in(states, d, today))
+        .map(|d| {
+            entry(
+                d,
+                states,
+                today,
+                counts.get(&d.path).copied().unwrap_or_default(),
+            )
+        })
         .collect()
 }
 
@@ -352,8 +391,8 @@ pub fn show<'a>(
         path: &doc.path,
         title: &doc.title,
         header: &doc.header,
-        open: is_open(&doc.header),
-        overdue: is_overdue(&doc.header, today),
+        open: open_in(Some(session.book_states()), doc),
+        overdue: overdue_in(Some(session.book_states()), doc, today),
         frontmatter: invoice.frontmatter().fields.clone(),
         table,
         prose_before: invoice.prose_before().trim().to_string(),
@@ -380,10 +419,10 @@ pub struct CheckReport {
     pub problems: Vec<Problem>,
 }
 
-/// Every problem in the documents, customers and catalog (books checks come
-/// with Phase 2), sorted by file and line.
+/// Every problem in the documents, customers and catalog, sorted by file and
+/// line, without the books checks (`list` and `show` count these).
 #[must_use]
-pub fn problems(session: &Session) -> Vec<Problem> {
+pub fn document_problems(session: &Session) -> Vec<Problem> {
     let index = session.index();
     let mut out = index.check(session.vault());
     let (_, catalog) = catalog::load(
@@ -393,12 +432,50 @@ pub fn problems(session: &Session) -> Vec<Problem> {
         index.money(),
     );
     out.extend(catalog);
+    sort(&mut out);
+    out
+}
+
+fn sort(out: &mut [Problem]) {
     out.sort_by(|a, b| {
         a.file
             .cmp(&b.file)
             .then_with(|| a.line.cmp(&b.line))
             .then_with(|| a.message.cmp(&b.message))
     });
+}
+
+/// The books checks ([`reconcile::audit`]): duplicate numbers, missing and
+/// orphan transactions, moved `document:` paths, booked drafts, voids on
+/// one side, books out of date and stale mirrors.
+/// `only` limits them to those invoice numbers.
+#[must_use]
+pub fn books_problems(session: &Session, only: Option<&[String]>) -> Vec<Problem> {
+    match session.loaded() {
+        Ok(loaded) => reconcile::audit(
+            &session.invoice_books(),
+            session.index(),
+            &loaded,
+            session.book_states(),
+            only,
+        ),
+        Err(error) => vec![
+            Problem::error(
+                ProblemCode::Books,
+                format!("the books can't be read for the books checks: {error}"),
+            )
+            .in_file(session.main()),
+        ],
+    }
+}
+
+/// Every problem in the documents, customers, catalog and books, sorted by
+/// file and line.
+#[must_use]
+pub fn problems(session: &Session) -> Vec<Problem> {
+    let mut out = document_problems(session);
+    out.extend(books_problems(session, None));
+    sort(&mut out);
     out
 }
 
@@ -451,7 +528,11 @@ fn billed_to<'a>(index: &'a DocumentIndex, customer: &Customer) -> Vec<&'a Index
         .collect()
 }
 
-fn customer_entry(index: &DocumentIndex, customer: &Customer) -> CustomerEntry {
+fn customer_entry(
+    index: &DocumentIndex,
+    states: Option<&BookStates>,
+    customer: &Customer,
+) -> CustomerEntry {
     let docs = billed_to(index, customer);
     CustomerEntry {
         path: customer.contact.path.clone(),
@@ -467,17 +548,18 @@ fn customer_entry(index: &DocumentIndex, customer: &Customer) -> CustomerEntry {
                 .unwrap_or_else(|| "portal".to_string())
         }),
         invoices: docs.len(),
-        open: docs.iter().filter(|d| is_open(&d.header)).count(),
+        open: docs.iter().filter(|d| open_in(states, d)).count(),
     }
 }
 
-/// `customers list`, by title.
+/// `customers list`, by title. Open counts read `states` (the books) when
+/// given.
 #[must_use]
-pub fn customers(index: &DocumentIndex) -> Vec<CustomerEntry> {
+pub fn customers(index: &DocumentIndex, states: Option<&BookStates>) -> Vec<CustomerEntry> {
     let mut all: Vec<CustomerEntry> = index
         .customers()
         .iter()
-        .map(|c| customer_entry(index, c))
+        .map(|c| customer_entry(index, states, c))
         .collect();
     all.sort_by(|a, b| {
         crate::notes::normalize_name(&a.title)
@@ -558,8 +640,9 @@ pub fn customer_detail<'a>(
                 }),
         })
         .collect();
+    let states = Some(session.book_states());
     CustomerDetail {
-        entry: customer_entry(index, customer),
+        entry: customer_entry(index, states, customer),
         contact: &customer.contact,
         revenue_account: customer.revenue_account.as_deref(),
         invoice_template: customer.invoice_template.as_deref(),
@@ -569,7 +652,14 @@ pub fn customer_detail<'a>(
         snippets: &customer.snippets,
         documents: billed_to(index, customer)
             .into_iter()
-            .map(|d| entry(d, today, counts.get(&d.path).copied().unwrap_or_default()))
+            .map(|d| {
+                entry(
+                    d,
+                    states,
+                    today,
+                    counts.get(&d.path).copied().unwrap_or_default(),
+                )
+            })
             .collect(),
         problems: problems
             .iter()
@@ -641,16 +731,22 @@ mod tests {
         let session = session("accrual");
         let problems = problems(&session);
         let numbers = |query: ListQuery| -> Vec<String> {
-            list(session.index(), &problems, &query, "2026-11-17")
-                .iter()
-                .map(|d| {
-                    d.header
-                        .number
-                        .as_ref()
-                        .map(ToString::to_string)
-                        .unwrap_or_default()
-                })
-                .collect()
+            list(
+                session.index(),
+                Some(session.book_states()),
+                &problems,
+                &query,
+                "2026-11-17",
+            )
+            .iter()
+            .map(|d| {
+                d.header
+                    .number
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_default()
+            })
+            .collect()
         };
         assert_eq!(
             numbers(ListQuery {
@@ -705,7 +801,7 @@ mod tests {
     #[test]
     fn customers_count_their_documents() {
         let session = session("accrual");
-        let all = customers(session.index());
+        let all = customers(session.index(), Some(session.book_states()));
         let x = all
             .iter()
             .find(|c| c.title == "Customer X")
@@ -719,17 +815,34 @@ mod tests {
     }
 
     #[test]
-    fn the_fixtures_check_clean() {
-        for name in ["accrual", "cash"] {
-            let report = check(&session(name));
-            assert_eq!(
-                report.counts,
-                Counts::default(),
-                "{name}: {:#?}",
-                report.problems
-            );
-            assert!(report.documents > 0 && report.customers > 0);
-        }
+    fn the_fixtures_check_clean_but_for_plan_45s_orphans() {
+        let cash = check(&session("cash"));
+        assert_eq!(cash.counts, Counts::default(), "{:#?}", cash.problems);
+        assert!(cash.documents > 0 && cash.customers > 0);
+        // Plan 45's invoices 2001–2004 are booked with no files
+        // (fixtures/README.md): warnings, nothing else.
+        let accrual = check(&session("accrual"));
+        let found: Vec<(ProblemCode, String)> = accrual
+            .problems
+            .iter()
+            .map(|p| (p.code, p.to_string()))
+            .collect();
+        assert_eq!(
+            found,
+            ["2001", "2002", "2003", "2004"]
+                .iter()
+                .zip([136, 277, 329, 347])
+                .map(|(n, line)| (
+                    ProblemCode::OrphanTransaction,
+                    format!(
+                        "books.journal:{line}: warning: the books have a booking for invoice {n}, \
+                         which has no file (restore or renumber its file, or leave it if another \
+                         app booked it)"
+                    )
+                ))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(accrual.counts.errors, 0);
     }
 
     #[test]

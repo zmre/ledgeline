@@ -149,6 +149,24 @@ impl MoneyStyle {
         }
     }
 
+    /// [`format`](Self::format), with no fractional digits on a whole
+    /// amount (`$1,500`, `$1,500.50`): the `paid:` mirror's amounts.
+    #[must_use]
+    pub fn format_compact(&self, value: Dec) -> String {
+        let rounded = value.rounded(self.precision()).unwrap_or(value);
+        let whole = rounded.rounded(0).is_ok_and(|w| w == rounded);
+        if !whole {
+            return self.format(rounded);
+        }
+        let magnitude = rounded.abs().unwrap_or(rounded);
+        let text = format_amount(self.commodity(), magnitude, &self.style, 0);
+        if rounded.mantissa < 0 {
+            format!("-{text}")
+        } else {
+            text
+        }
+    }
+
     /// Read a money cell. The symbol may be on either side or absent, and
     /// the sign before or after it: `-$800`, `$-800`, `800`, `1.234,56 €`.
     ///
