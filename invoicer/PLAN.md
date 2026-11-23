@@ -641,6 +641,60 @@ changed core.
   triggers the reconciler.
 - The same token and Host guard. Theme and scale come from shared prefs.
 
+*3a built (2026-11-22).* The app is `ledgeline-invoicer/src/app/`: `mod.rs`
+(identity, router), `books.rs` (the open books: session plus MBR), `api.rs`,
+`mbr.rs` (MBR's mount and its gate), `prefs.rs`, `watch.rs`, `serve.rs`
+(`--server`) and `gui.rs` (the window). The router tests run in-process on
+a fixture copy (`app/tests.rs`). The API so far: `GET /api/version`,
+`/api/books`, `/api/invoices` (`list --json`), `/api/invoices/{num}` (`show
+--json`), `/api/customers`, `GET`/`PATCH /api/ui-prefs`, and `POST
+/api/session`. The SPA stub loads the saved theme and scale and asks for the
+session cookie; `vite dev` and `preview` run on 4273 and proxy `/api` to
+5199. Decided while building, open to veto:
+
+| #  | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                |
+|----|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| A1 | **GUI or CLI.** A subcommand is always a CLI job, in any build. With no subcommand, `--server` runs the headless server and otherwise the window opens. Features: `server` (API, SPA, MBR, watcher), `gui` (implies `server`; the default, as Ledgeline's is). `--no-default-features` is the CLI alone, and with no subcommand it asks for one. `--json` with no subcommand is an error in every build: a script never wants a window. |
+| A2 | **MBR's pages are gated.** They are the books' notes, so they need the token like `/api`. A browser loads them by navigation, which can't send a header, so `POST /api/session` (token-gated) sets a second per-process secret as an `HttpOnly`, `SameSite=Strict` cookie, named after the port. A page is served with the bearer token or that cookie; otherwise `401`.                                                                |
+| A3 | **MBR's pages get their own CSP**: inline scripts allowed (MBR's page config needs them), `https:` images, media and frames, `connect-src 'self'`, `frame-ancestors 'self'` (so the SPA can frame a page). The SPA shell keeps the shell's script-hash policy.                                                                                                                                                                          |
+| A4 | **MBR's in-browser editing is off** (`edit_enabled = false`, also applied when its `.mbr/config.toml` reloads). Every write goes through the invoicer's token-gated, hash-checked API. MBR runs as a `LiveServer` read at the books folder (`Config::read_at_root`), with its own watcher on.                                                                                                                                           |
+| A5 | **The token globals are Ledgeline's** (`__LEDGELINE_TOKEN__`, `__LEDGELINE_EMBEDDED__`): the shared API client in `packages/ui` reads them. The token variable is the invoicer's own: `LEDGELINE_INVOICER_TOKEN`. The e2e switch is shared: `LEDGELINE_UI_PREFS_IN_BROWSER`.                                                                                                                                                            |
+| A6 | **`--server` needs a journal** (JOURNAL, `-f`, `$LEDGELINE_FIXTURE` or recents) and never records recents, since it runs over fixtures; the window records the books it opens. With nothing to open, the window starts with no books (File → Open).                                                                                                                                                                                     |
+| A7 | **The watcher** covers the books folder recursively (hidden folders skipped) plus the folder of any journal file outside it, debounced 250 ms. Markdown changes refresh the index; a journal change reloads the journal and `[books]` (`Session::reload_books`) and reconciles only the invoices whose payment state moved; a `ledgeline.toml` change reopens the session and reconciles all. The reconciler also runs once on open.    |
+| A8 | **The invoicer's UI-prefs schema** is the two common keys (`theme`, `uiScale`), both pinnable. A key only Ledgeline knows is refused by `PATCH` and survives this app's saves.                                                                                                                                                                                                                                                          |
+| A9 | **File → New Invoice** loads `/app/new`, the page 4a builds; until then the SPA shows its empty shell there.                                                                                                                                                                                                                                                                                                                            |
+
+**MBR 0.7.4** (crates.io, pinned `=0.7.4`; `mbr-server` with `watcher`)
+has everything MBR-CHANGES asks for P0/P1: `site::Site` (M2),
+`frontmatter_links` (M1), `standalone::render_note_source` (M3),
+`pdf_export::ExportSession::start` in `mbr-markdown-browser` (M4, with
+`@page` winning), `/.mbr/_export_ready.html` (M5), `<mbr-markdown-field>`
+(M6), `ServerConfig::{extra_head_html, theme_vars}` (M8), the
+frontmatter-cap fallback (M9) and `render_source_with_template` (M10). Gaps:
+
+- **M7** (P2, `data-col` on table cells) isn't in 0.7.4. Not needed: the
+  books column uses the `:has()` rule.
+- **`Server::retire` is `pub(crate)`.** An embedder swapping folders can't
+  stop a plain `Server`'s background tasks. Worked around by using
+  `LiveServer`, whose `Drop` retires its server; the old one stops once its
+  router's last request ends.
+- **Tera turns on serde_json's `preserve_order`**, workspace-wide in any
+  build that includes the app: JSON objects keep insertion order instead of
+  sorting. `cargo build -p ledgeline` (and `.#ledgeline`) is unaffected,
+  but a workspace build or `.#tests` is. Three places assumed sorted keys:
+  bank sync's `extra` column (`feeds::simplefin`, now sorted explicitly, so
+  its CSV is the same either way), the CLI snapshot tests (now normalized
+  with sorted keys) and one frontmatter test (accepts both). The invoicer's
+  `--json` frontmatter maps follow insertion order in the app build.
+
+Left for later: the `notes` → `mbr_core::Site` swap (not low-risk: the two
+APIs differ in path types, note stamps and line lookup, and it would put
+mbr-core into the CLI-only build; Phase 4, or once `Site` can be shared
+with the server's own via `Server::site()`), pushing the theme into MBR's
+chrome (M8 `theme_vars`, 3b), saving the View-menu zoom back to the prefs,
+the recognition file in the watcher, and an e2e harness on 5199/4273 (the
+lead).
+
 **3b. Templates and preview:**
 - Two starter templates in `invoicer/crates/ledgeline-invoicer/templates/`,
   copied into the user's `invoices/tpl/` on first use. Each has:
