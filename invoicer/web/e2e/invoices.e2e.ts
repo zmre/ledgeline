@@ -162,7 +162,8 @@ test.describe("the invoicer over the accrual fixture (:5199)", () => {
         const text = execFileSync("pdftotext", ["-layout", file, "-"], {encoding: "utf8"});
         expect(text).toContain("Bill to Customer X");
         expect(text).toContain("Less deposit (Invoice 104)");
-        expect(text).toContain("8,350.00");
+        // The fixture's template prints amounts as the bill table writes them.
+        expect(text).toMatch(/Total due\s+\$8,350\b/);
         // The books column is in the page but hidden by the template.
         expect(text).not.toContain("liabilities:customer-deposits");
         expect(read(INVOICE_105)).toMatch(/^sent_hash: [0-9a-f]{16}$/m);
