@@ -232,7 +232,7 @@ frontmatter.
 | `status`                         | yes      | Author intent: `draft` \| `sent` \| `void`. Estimates use `estimate-open` \| `estimate-closed`.                               |
 | `template`                       | yes      | MBR's per-file template path (`/`-rooted, `.html`). MBR itself renders the styled invoice.                                    |
 | `customer`                       | yes      | Wikilink to the customer note. This is the stable link. The `invoicee_*` fields are a snapshot of what was sent.              |
-| `invoicee_name`, `_email`, `_address` | yes  | A snapshot copied from the customer at creation. Edits to the customer later don't change sent invoices. Use `\|` (literal) for addresses, never `>`, which folds lines. |
+| `invoicee_name`, `_email`, `_phone`, `_address` | yes  | A snapshot copied from the customer at creation. Edits to the customer later don't change sent invoices. Use `\|` (literal) for addresses, never `>`, which folds lines. `_phone` is optional (copied when the customer has `phones:`). |
 | `invoicer`, `invoicer_*`         | yes      | The same pattern for your own company.                                                                                        |
 | `terms`                          | no       | Net days (integer). The customer's default is copied in.                                                                      |
 | `due_date`                       | no       | Written for grep and templates: `date + terms` unless set by hand. Overdue is always derived from it, never stored.          |
@@ -451,6 +451,8 @@ tags: [customer]
 emails:
   - billing: accounts_receivable@customerx.com
   - work: hello@customerx.com
+phones:                             # MBR's labelled list, chosen as emails are
+  - billing: "+1 (303) 555-0142"
 addresses:
   - billing: |
       1234 Main St. #555

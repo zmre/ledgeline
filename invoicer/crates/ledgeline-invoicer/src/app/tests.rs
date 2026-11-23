@@ -404,6 +404,9 @@ async fn preview_renders_saved_and_unsaved_text_and_writes_nothing() {
     assert_eq!(status, StatusCode::OK, "{page}");
     assert!(page.contains("Invoice 105"), "{page}");
     assert!(page.contains("Bill to Customer X"), "{page}");
+    // The snapshot's phone numbers, the company's and the customer's.
+    assert!(page.contains("+1 (555) 010-2000"), "{page}");
+    assert!(page.contains("+1 (303) 555-0142"), "{page}");
     assert_bill_table_105(&page);
     // Both parties' addresses and contacts.
     for party in [
@@ -486,6 +489,10 @@ async fn the_starters_render_every_kind_of_row_and_state() {
             open.contains("November 10, 2026") || open.contains("Nov 10, 2026"),
             "{template}: {open}"
         );
+        // Both phone numbers: the company's and the bill-to's.
+        for phone in ["+1 (555) 010-2000", "+1 (303) 555-0142"] {
+            assert!(open.contains(phone), "{template}: {phone}");
+        }
 
         // A deposit invoice says what it is a deposit for.
         let (status, deposit, _) = render("104").await;

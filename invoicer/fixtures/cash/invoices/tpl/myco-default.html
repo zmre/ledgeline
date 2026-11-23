@@ -110,6 +110,9 @@
       {%- if fm.invoicer_email %}
       <p class="party-line">{{ fm.invoicer_email }}</p>
       {%- endif %}
+      {%- if fm.invoicer_phone %}
+      <p class="party-line">{{ fm.invoicer_phone }}</p>
+      {%- endif %}
     </div>
     <div>
       <p class="party-head">Bill to {{ fm.invoicee_name }}</p>
@@ -118,6 +121,9 @@
       {%- endif %}
       {%- if fm.invoicee_email %}
       <p class="party-line">{{ fm.invoicee_email }}</p>
+      {%- endif %}
+      {%- if fm.invoicee_phone %}
+      <p class="party-line">{{ fm.invoicee_phone }}</p>
       {%- endif %}
     </div>
   </div>

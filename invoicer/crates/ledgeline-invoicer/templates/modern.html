@@ -126,7 +126,7 @@
     text-transform: uppercase;
   }
   .meta .name { font-weight: 600; }
-  .meta .email { color: var(--muted); }
+  .meta :is(.email, .phone) { color: var(--muted); }
   .meta .facts { margin: 0; }
   .meta .fact { margin: 0 0 0.5rem; }
 
@@ -199,6 +199,7 @@
       <div class="company-contact">
         {%- if fm.invoicer_address %}{{ fm.invoicer_address | trim | escape | linebreaksbr | safe }}{% endif %}
         {%- if fm.invoicer_email %}<br>{{ fm.invoicer_email }}{% endif %}
+        {%- if fm.invoicer_phone %}<br>{{ fm.invoicer_phone }}{% endif %}
       </div>
     </div>
     <div class="doc-title">
@@ -223,6 +224,9 @@
       {%- endif %}
       {%- if fm.invoicee_email %}
       <div class="email">{{ fm.invoicee_email }}</div>
+      {%- endif %}
+      {%- if fm.invoicee_phone %}
+      <div class="phone">{{ fm.invoicee_phone }}</div>
       {%- endif %}
     </div>
     <div class="facts">

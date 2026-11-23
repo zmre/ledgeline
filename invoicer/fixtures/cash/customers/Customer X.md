@@ -5,6 +5,9 @@ tags: [customer]
 emails:
   - billing: accounts_receivable@customerx.com
   - work: hello@customerx.com
+phones:
+  - work: "+1 (303) 555-0100"
+  - billing: "+1 (303) 555-0142"
 addresses:
   - billing: |
       1234 Main St. #555

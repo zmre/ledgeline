@@ -294,7 +294,7 @@ pub fn show(detail: &DocDetail<'_>) -> String {
 }
 
 /// The frontmatter keys `show` already prints (or that are noise there).
-const STANDARD_KEYS: [&str; 24] = [
+const STANDARD_KEYS: [&str; 26] = [
     "title",
     "type",
     "template",
@@ -307,10 +307,12 @@ const STANDARD_KEYS: [&str; 24] = [
     "customer",
     "invoicee_name",
     "invoicee_email",
+    "invoicee_phone",
     "invoicee_address",
     "invoicer",
     "invoicer_name",
     "invoicer_email",
+    "invoicer_phone",
     "invoicer_address",
     "paid",
     "sent_date",
@@ -341,6 +343,7 @@ fn party(p: &invoicer_core::doc::Party) -> String {
         (None, None) => {}
     }
     lines.extend(p.email.clone());
+    lines.extend(p.phone.clone());
     lines.extend(p.address.as_deref().map(|a| a.trim_end().to_string()));
     lines.join("\n")
 }
@@ -410,6 +413,7 @@ pub fn customer(detail: &CustomerDetail<'_>) -> String {
     let billing = [
         Some(e.billing.name.clone()),
         e.billing.email.clone(),
+        e.billing.phone.clone(),
         e.billing
             .address
             .as_deref()

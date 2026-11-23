@@ -4,6 +4,8 @@ type: organization
 tags: [customer]
 emails:
   - billing: ap@contoso.example
+phones:
+  - "+1 (217) 555-0123"
 addresses:
   - billing:
       street: 1 Contoso Way

@@ -121,7 +121,7 @@
     text-transform: uppercase;
   }
   .bill-to .name { font-size: 12pt; font-weight: 600; }
-  .bill-to .email { color: var(--muted); }
+  .bill-to :is(.email, .phone) { color: var(--muted); }
   .details { border-collapse: collapse; }
   .details th {
     padding: 0.1rem 1.2rem 0.1rem 0;
@@ -233,6 +233,7 @@
       <div class="company-contact">
         {%- if fm.invoicer_address %}{{ fm.invoicer_address | trim | escape | linebreaksbr | safe }}{% endif %}
         {%- if fm.invoicer_email %}<br>{{ fm.invoicer_email }}{% endif %}
+        {%- if fm.invoicer_phone %}<br>{{ fm.invoicer_phone }}{% endif %}
       </div>
     </div>
     <div class="doc-title">
@@ -257,6 +258,9 @@
       {%- endif %}
       {%- if fm.invoicee_email %}
       <div class="email">{{ fm.invoicee_email }}</div>
+      {%- endif %}
+      {%- if fm.invoicee_phone %}
+      <div class="phone">{{ fm.invoicee_phone }}</div>
       {%- endif %}
     </div>
     <table class="details">

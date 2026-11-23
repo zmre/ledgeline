@@ -9,6 +9,7 @@ export type Paid = {state: "no"} | {state: "partial"; parts: {date: string; amou
 export interface Party {
     name: string | null;
     email: string | null;
+    phone: string | null;
     address: string | null;
     link: string | null;
 }

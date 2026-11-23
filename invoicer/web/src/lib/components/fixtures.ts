@@ -7,6 +7,7 @@ import type {InvoiceBooks, InvoiceEntry} from "#lib/invoices.js";
 const customerX = {
     name: "Customer X",
     email: "accounts_receivable@customerx.com",
+    phone: "+1 (303) 555-0142",
     address: "1234 Main St. #555\nSpringfield, CO 80000\n",
     link: "[[Customer X]]",
 };
