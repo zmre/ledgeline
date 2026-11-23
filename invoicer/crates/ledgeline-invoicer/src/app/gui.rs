@@ -130,6 +130,7 @@ fn open_books(
 ) -> Result<Arc<OpenBooks>, String> {
     let _entered = runtime.enter();
     let books = OpenBooks::open(journal, true)?;
+    books.install_starters();
     books.reconcile_all();
     recents::record(app_dirs, books.journal());
     Ok(Arc::new(books))

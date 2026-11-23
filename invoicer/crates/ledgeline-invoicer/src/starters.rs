@@ -11,7 +11,17 @@
 //! used. The copy is made once the invoice is written (a dry run copies
 //! nothing). A preview with a starter that isn't copied yet renders the
 //! shipped text and writes nothing (`POST /api/preview`).
+//!
+//! It also means choosing one for an existing invoice (`set
+//! template=…`, the app's "Use this template") and naming one by hand: an
+//! invoice whose `template:` is a starter's path that isn't there yet is
+//! what the user plainly meant, so the app copies the starter in when it
+//! opens the books and when the watcher sees such a file
+//! ([`install_referenced`]). Without the copy, MBR's page for the invoice
+//! is a "template was not found" error (PLAN, Phase 3 feedback F9).
 
+#[cfg(feature = "server")]
+use invoicer_core::session::Session;
 use ledgeline_core::vault::{Vault, VaultError, VaultPath};
 
 /// A template shipped in the binary.
@@ -113,6 +123,58 @@ pub(crate) fn install(
         }),
         Err(error) => Err(error),
     }
+}
+
+/// Copy in the starter `template` names (a `template:` value), if it names
+/// one: [`install`] for it, or `Ok(None)` when it names no starter.
+///
+/// # Errors
+/// As [`install`].
+pub(crate) fn install_named(
+    vault: &dyn Vault,
+    dir: &str,
+    template: &str,
+) -> Result<Option<Installed>, VaultError> {
+    named(dir, template)
+        .map(|starter| install(vault, dir, starter))
+        .transpose()
+}
+
+/// Copy in every starter the documents at `paths` (or all documents) name
+/// by `template:` and that isn't in the books yet, then index the copies so
+/// the documents' `unknown-template` warning goes at once. Returns the
+/// files copied now and, for each copy that failed, the file and why.
+#[cfg(feature = "server")]
+pub(crate) fn install_referenced(
+    session: &mut Session,
+    paths: Option<&[VaultPath]>,
+) -> (Vec<VaultPath>, Vec<(String, String)>) {
+    let dir = session.settings().templates_dir.clone();
+    let mut wanted: Vec<&'static Starter> = Vec::new();
+    for doc in session.index().docs() {
+        if paths.is_some_and(|only| !only.contains(&doc.path)) {
+            continue;
+        }
+        if let Some(starter) = doc.header.template.as_deref().and_then(|t| named(&dir, t))
+            && !wanted.contains(&starter)
+        {
+            wanted.push(starter);
+        }
+    }
+    let mut copied = Vec::new();
+    let mut failed = Vec::new();
+    for starter in wanted {
+        match install(session.vault(), &dir, starter) {
+            Ok(done) if done.written => copied.push(done.path),
+            Ok(_) => {}
+            Err(error) => failed.push((starter.file.to_string(), error.to_string())),
+        }
+    }
+    if !copied.is_empty() {
+        let (index, vault) = session.parts_mut();
+        index.refresh(vault, &copied);
+    }
+    (copied, failed)
 }
 
 #[cfg(test)]

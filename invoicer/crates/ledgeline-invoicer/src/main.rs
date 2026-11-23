@@ -49,6 +49,7 @@ use invoicer_core::views::{self, ListQuery};
 use ledgeline_core::vault::VaultPath;
 use ledgeline_shell::AppDirs;
 use serde::Serialize;
+use serde_json::Value;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -713,7 +714,45 @@ fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
                 .collect::<Result<_, WriteError>>()?;
             let (index, vault) = session.parts_mut();
             let outcome = edit::set(index, vault, &path, &edits)?;
-            emit(cli.json, &outcome, human::set);
+            // A `template:` naming a starter copies it in on first use (B1),
+            // as `new` does; never over a file already there.
+            let dir = session.settings().templates_dir.clone();
+            let mut copied = None;
+            for change in &edits {
+                if let FieldEdit::Set(key, Value::String(template)) = change
+                    && key == "template"
+                {
+                    let installed = starters::install_named(session.vault(), &dir, template)
+                        .map_err(|e| Failure(format!("copying the starter template: {e}"), None))?;
+                    if let Some(done) = installed.filter(|d| d.written) {
+                        let (index, vault) = session.parts_mut();
+                        index.refresh(vault, std::slice::from_ref(&done.path));
+                        copied = Some(done.path);
+                    }
+                }
+            }
+            #[derive(Serialize)]
+            struct Out<'a> {
+                #[serde(flatten)]
+                outcome: &'a edit::SetOutcome,
+                /// The starter template it now names, copied in on first use.
+                #[serde(skip_serializing_if = "Option::is_none")]
+                template_copied: Option<&'a VaultPath>,
+            }
+            emit(
+                cli.json,
+                &Out {
+                    outcome: &outcome,
+                    template_copied: copied.as_ref(),
+                },
+                |out| {
+                    let mut text = human::set(out.outcome);
+                    if let Some(path) = out.template_copied {
+                        text.push_str(&format!("  copied the starter template to {path}\n"));
+                    }
+                    text
+                },
+            );
             Ok(ExitCode::SUCCESS)
         }
         Command::Recalc(args) => {

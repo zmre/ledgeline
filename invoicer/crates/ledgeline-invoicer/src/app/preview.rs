@@ -368,7 +368,11 @@ pub(crate) struct TemplateEntry {
 
 /// The templates list.
 pub(crate) fn templates(books: &OpenBooks) -> Vec<TemplateEntry> {
-    let session = books.session();
+    templates_in(&books.session())
+}
+
+/// The templates list, from a session already locked.
+pub(crate) fn templates_in(session: &invoicer_core::session::Session) -> Vec<TemplateEntry> {
     let dir = session.settings().templates_dir.clone();
     let found = invoicer_core::templates::discover(session.vault(), session.index().site());
     let mut out: Vec<TemplateEntry> = found

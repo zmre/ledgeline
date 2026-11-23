@@ -127,7 +127,7 @@ impl From<PdfError> for ApiError {
     }
 }
 
-fn books_error(error: &BooksError) -> ApiError {
+pub(crate) fn books_error(error: &BooksError) -> ApiError {
     let status = match error.code() {
         "not-found" => StatusCode::NOT_FOUND,
         "external-change" | "stale" => StatusCode::CONFLICT,

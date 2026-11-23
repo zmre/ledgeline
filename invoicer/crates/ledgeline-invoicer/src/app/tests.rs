@@ -1540,3 +1540,386 @@ async fn the_watcher_sends_an_event_for_an_edit() {
     let (_, detail) = json_of(&app, authed("/api/invoices/108")).await;
     assert!(detail.to_string().contains("Platform licence"), "{detail}");
 }
+
+// ---------------------------------------------------------------------------
+// Phase 3 feedback, second pass: templates that stick, totals that follow
+// the rows (PLAN F9–F10).
+// ---------------------------------------------------------------------------
+
+const PAGE_108: &str = "/invoices/2026-11-17%20Customer%20X%20Invoice%20108/";
+const MODERN: &str = "/invoices/tpl/modern.html";
+
+fn starter_text(file: &str) -> &'static str {
+    crate::starters::STARTERS
+        .iter()
+        .find(|s| s.file == file)
+        .expect("a starter")
+        .source
+}
+
+/// Patrick's "editing `template:` to the Modern starter failed": the
+/// starters are copied in only on first use (B1), so the file wasn't in the
+/// books, and MBR's page for the invoice was its 500 "Page template error:
+/// template `/invoices/tpl/modern.html` was not found" (and `show` warned
+/// `unknown-template`). A hand edit naming a starter now copies it in once
+/// the watcher sees it, so MBR's page renders through it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hand_edited_template_naming_a_starter_copies_it_in() {
+    let app = app();
+    let root = books_root(&app);
+    let file = root.join(INVOICE_108);
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(
+        &file,
+        text.replace("/invoices/tpl/myco-default.html", MODERN),
+    )
+    .unwrap();
+
+    // What Patrick saw, before the watcher acts.
+    let (status, _, page) = send(&app.router, authed(PAGE_108)).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(page.contains("Page template error"), "{page}");
+    assert!(page.contains("was not found"), "{page}");
+
+    app.books.apply_changes(std::slice::from_ref(&file));
+    let modern = root.join("invoices/tpl/modern.html");
+    assert_eq!(
+        std::fs::read_to_string(&modern).unwrap(),
+        starter_text("modern.html")
+    );
+    let (status, _, page) = send(&app.router, authed(PAGE_108)).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert!(page.contains("#108"), "Modern's number mark: {page}");
+    let (_, detail) = json_of(&app, authed("/api/invoices/108")).await;
+    assert!(!detail.to_string().contains("unknown-template"), "{detail}");
+
+    // The user's copy is theirs: never replaced, even when named again.
+    std::fs::write(&modern, "{{ frontmatter.invoice_num }} mine").unwrap();
+    app.books.apply_changes(&[file.clone(), modern.clone()]);
+    assert_eq!(
+        std::fs::read_to_string(&modern).unwrap(),
+        "{{ frontmatter.invoice_num }} mine"
+    );
+}
+
+/// Opening books whose invoice already names a starter not copied in (an
+/// edit made while the app was closed) copies it in too.
+#[tokio::test(flavor = "multi_thread")]
+async fn opening_the_books_copies_in_a_starter_an_invoice_names() {
+    let (dir, journal) = fixture();
+    let file = dir.path().join("books").join(INVOICE_108);
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(
+        &file,
+        text.replace(
+            "/invoices/tpl/myco-default.html",
+            "/invoices/tpl/classic.html",
+        ),
+    )
+    .unwrap();
+    let books = OpenBooks::open(&journal, false).expect("opens");
+    let copied = books.install_starters();
+    assert_eq!(
+        copied.iter().map(|p| p.as_str()).collect::<Vec<_>>(),
+        ["invoices/tpl/classic.html"]
+    );
+    assert!(books.install_starters().is_empty(), "once");
+}
+
+/// "Use this template": the picker writes the invoice's `template:` (the
+/// core's `set`) and copies a starter in on first use.
+#[tokio::test(flavor = "multi_thread")]
+async fn using_a_template_writes_it_and_copies_a_starter_in() {
+    let (app, _native) = mocked();
+    let root = books_root(&app);
+    let (status, body) = json_of(
+        &app,
+        post_json(
+            "/api/invoices/108/template",
+            &serde_json::json!({"template": MODERN}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["template"], MODERN);
+    assert_eq!(body["changed"], true);
+    assert_eq!(body["copied"], "invoices/tpl/modern.html");
+    assert_eq!(body["status"], "draft");
+    let text = std::fs::read_to_string(root.join(INVOICE_108)).unwrap();
+    assert!(
+        text.contains("template: /invoices/tpl/modern.html\n"),
+        "{text}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("invoices/tpl/modern.html")).unwrap(),
+        starter_text("modern.html")
+    );
+    // The page says which it uses now, and MBR renders it.
+    let (_, detail) = json_of(&app, authed("/api/invoices/108")).await;
+    assert_eq!(detail["template"], MODERN);
+    let (status, _, page) = send(&app.router, authed(PAGE_108)).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    let (_, list) = json_of(&app, authed("/api/templates")).await;
+    let modern = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["path"] == MODERN)
+        .expect("listed");
+    assert_eq!(modern["installed"], true);
+
+    // Again: nothing to write, nothing copied.
+    let (status, body) = json_of(
+        &app,
+        post_json(
+            "/api/invoices/108/template",
+            &serde_json::json!({"template": "invoices/tpl/modern.html"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["changed"], false);
+    assert_eq!(body["copied"], serde_json::Value::Null);
+
+    // Only a template the books have, or a starter.
+    for bad in ["/invoices/tpl/nope.html", "/books.journal", "/../x.html"] {
+        let (status, body) = json_of(
+            &app,
+            post_json(
+                "/api/invoices/108/template",
+                &serde_json::json!({"template": bad}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{bad}: {body}");
+    }
+    let (status, _) = json_of(
+        &app,
+        post_json(
+            "/api/invoices/999/template",
+            &serde_json::json!({"template": MODERN}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // A sent invoice may change its styling; its PDF then differs from what
+    // the customer has, and the Send panel says so (P4, P5).
+    let (status, body) = json_of(
+        &app,
+        post_json("/api/invoices/105/pdf", &serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let journal = std::fs::read_to_string(root.join("books.journal")).unwrap();
+    let (status, body) = json_of(
+        &app,
+        post_json(
+            "/api/invoices/105/template",
+            &serde_json::json!({"template": "/invoices/tpl/classic.html"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "sent");
+    assert_eq!(body["copied"], "invoices/tpl/classic.html");
+    let (_, delivery) = json_of(&app, authed("/api/invoices/105/pdf")).await;
+    assert_eq!(delivery["changed_since_sent"], true, "{delivery}");
+    assert_eq!(
+        std::fs::read_to_string(root.join("books.journal")).unwrap(),
+        journal,
+        "a template is styling: the books never see it"
+    );
+}
+
+/// The draft 108 with its architect hours changed from 2 to 3, leaving the
+/// amounts as they were (what an editor's save looks like).
+fn edit_hours_108(root: &Path) -> PathBuf {
+    let file = root.join(INVOICE_108);
+    let text = std::fs::read_to_string(&file).unwrap();
+    let edited = text.replace("| 2   | h    | $800", "| 3   | h    | $800");
+    assert_ne!(edited, text, "the fixture's row");
+    std::fs::write(&file, edited).unwrap();
+    file
+}
+
+/// Patrick's "totals aren't recalculated after an edit": an outside edit to
+/// a draft's rows now rewrites its amounts once it settles (`recalc-on-save
+/// = "drafts"`, the default), and the rewrite coming back is no loop.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_edited_draft_is_recalculated_once_the_edit_settles() {
+    let app = app();
+    let root = books_root(&app);
+    let file = edit_hours_108(&root);
+    app.books.apply_changes(std::slice::from_ref(&file));
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains("$2,400.00"), "{text}");
+    assert!(text.contains("**$14,400.00**"), "{text}");
+    let (_, detail) = json_of(&app, authed("/api/invoices/108")).await;
+    assert_eq!(detail["table"]["discrepancies"], serde_json::json!([]));
+    // Its own write, reported by the watcher, changes nothing more.
+    app.books.apply_changes(std::slice::from_ref(&file));
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+}
+
+/// The real watcher: the edit, the settle, the rewrite, then quiet.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_watcher_recalculates_an_edited_draft_and_stops() {
+    let app = app();
+    let _watcher = super::watch::spawn(Arc::clone(&app.books)).expect("watches");
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let file = edit_hours_108(&books_root(&app));
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let text = loop {
+        let text = std::fs::read_to_string(&file).unwrap();
+        if text.contains("**$14,400.00**") {
+            break text;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "not recalculated within 10 s"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+    // Well past another debounce: nothing rewrote it again.
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+}
+
+/// With `recalc-on-save = "never"`, the page shows the mismatch (stored vs
+/// computed, `show`'s `table.discrepancies`) and Recalculate fixes it.
+#[tokio::test(flavor = "multi_thread")]
+async fn recalculate_fixes_a_draft_when_saving_leaves_it_alone() {
+    let app = app();
+    let root = books_root(&app);
+    let settings = root.join("ledgeline.toml");
+    let text = std::fs::read_to_string(&settings).unwrap();
+    std::fs::write(
+        &settings,
+        text.replace("[invoicer]\n", "[invoicer]\nrecalc-on-save = \"never\"\n"),
+    )
+    .unwrap();
+    app.books.apply_changes(std::slice::from_ref(&settings));
+    let file = edit_hours_108(&root);
+    app.books.apply_changes(std::slice::from_ref(&file));
+    let (_, detail) = json_of(&app, authed("/api/invoices/108")).await;
+    let found = detail["table"]["discrepancies"].as_array().unwrap().clone();
+    assert_eq!(found.len(), 2, "{detail}");
+    assert_eq!(found[0]["written"], "$1,600.00");
+    assert_eq!(found[0]["expected"], "$2,400.00");
+
+    let (status, body) = json_of(
+        &app,
+        post_json("/api/invoices/108/recalc", &serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["recalculated"]["written"], true);
+    assert_eq!(body["rebooked"], serde_json::Value::Null);
+    assert!(
+        std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("**$14,400.00**")
+    );
+    let (_, detail) = json_of(&app, authed("/api/invoices/108")).await;
+    assert_eq!(detail["table"]["discrepancies"], serde_json::json!([]));
+}
+
+/// A sent invoice is never recalculated on save: its amount is booked. The
+/// page shows the mismatch; Recalculate asks first (`409` without
+/// `rebook`), then recalculates and re-books it, as `recalc` + `rebook` do.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sent_invoice_is_recalculated_only_when_asked_and_rebooked() {
+    let app = app();
+    let root = books_root(&app);
+    let file = root.join(INVOICE_105);
+    let text = std::fs::read_to_string(&file).unwrap();
+    let edited = text.replace("| 50  | $200 ", "| 40  | $200 ");
+    assert_ne!(edited, text);
+    std::fs::write(&file, &edited).unwrap();
+    app.books.apply_changes(std::slice::from_ref(&file));
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        edited,
+        "left alone"
+    );
+    let (_, detail) = json_of(&app, authed("/api/invoices/105")).await;
+    assert!(
+        !detail["table"]["discrepancies"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "{detail}"
+    );
+
+    let (status, body) = json_of(
+        &app,
+        post_json("/api/invoices/105/recalc", &serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("re-books"),
+        "{body}"
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), edited);
+
+    let journal = std::fs::read_to_string(root.join("books.journal")).unwrap();
+    let (status, body) = json_of(
+        &app,
+        post_json(
+            "/api/invoices/105/recalc",
+            &serde_json::json!({"rebook": true, "today": "2026-11-20"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["recalculated"]["written"], true);
+    assert_eq!(body["rebooked"]["changed"], true, "{body}");
+    assert_ne!(
+        std::fs::read_to_string(root.join("books.journal")).unwrap(),
+        journal
+    );
+    let (_, panel) = json_of(&app, authed("/api/invoices/105/books")).await;
+    assert_eq!(panel["in_step"], true, "{panel}");
+}
+
+/// Re-booking is refused on or before `closed-through` (I8), so
+/// Recalculate refuses a sent invoice there before writing anything.
+#[tokio::test(flavor = "multi_thread")]
+async fn recalculating_a_sent_invoice_in_a_closed_period_writes_nothing() {
+    let app = app();
+    let root = books_root(&app);
+    let file = root.join("invoices/2026-09-15 Fabrikam Invoice 102.md");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let edited = text.replace("| 6   | $200 ", "| 7   | $200 ");
+    assert_ne!(edited, text);
+    std::fs::write(&file, &edited).unwrap();
+    app.books.apply_changes(std::slice::from_ref(&file));
+    let journal = std::fs::read_to_string(root.join("books.journal")).unwrap();
+    let (status, body) = json_of(
+        &app,
+        post_json(
+            "/api/invoices/102/recalc",
+            &serde_json::json!({"rebook": true}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("closed-through"),
+        "{body}"
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), edited);
+    assert_eq!(
+        std::fs::read_to_string(root.join("books.journal")).unwrap(),
+        journal
+    );
+    // A void invoice is history.
+    let (status, _) = json_of(
+        &app,
+        post_json("/api/invoices/103/recalc", &serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}

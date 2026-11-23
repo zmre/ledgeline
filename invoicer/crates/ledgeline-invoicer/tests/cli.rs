@@ -419,6 +419,35 @@ fn new_copies_a_starter_template_on_first_use_and_never_overwrites() {
     );
 }
 
+/// `set template=` naming a starter copies it in on first use, as `new`
+/// does (PLAN F9): the CLI side of the app's "Use this template".
+#[test]
+fn set_template_copies_a_starter_in() {
+    let books = Books::of("accrual");
+    let set = books.json(&["set", "108", "template=/invoices/tpl/modern.html"], 0);
+    assert_eq!(set["changed"], serde_json::json!(["template"]), "{set}");
+    assert_eq!(set["template_copied"], "invoices/tpl/modern.html");
+    assert_eq!(
+        books.read("invoices/tpl/modern.html"),
+        starter("modern.html")
+    );
+    // Named again: the file is the user's now, never replaced.
+    fs::write(
+        books.file("invoices/tpl/modern.html"),
+        "{{ frontmatter.invoice_num }} mine",
+    )
+    .expect("edits");
+    let again = books.json(&["set", "105", "template=/invoices/tpl/modern.html"], 0);
+    assert!(again.get("template_copied").is_none(), "{again}");
+    assert_eq!(
+        books.read("invoices/tpl/modern.html"),
+        "{{ frontmatter.invoice_num }} mine"
+    );
+    // A template that is no starter is written as given; `check` warns.
+    let other = books.json(&["set", "108", "template=/invoices/tpl/nope.html"], 0);
+    assert!(other.get("template_copied").is_none(), "{other}");
+}
+
 #[test]
 fn new_writes_a_draft_and_never_the_journal() {
     let books = Books::of("accrual");

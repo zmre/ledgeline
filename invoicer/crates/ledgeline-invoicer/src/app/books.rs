@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use axum::Router;
+use invoicer_core::edit;
 use invoicer_core::reconcile::{self, ReconcileOptions, Reconciled};
 use invoicer_core::session::Session;
 use ledgeline_core::vault::{Vault, VaultPath};
@@ -21,6 +22,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 
 use super::APP;
+use crate::starters;
 
 /// The settings file beside the main journal: `[books]` and `[invoicer]`.
 const SETTINGS_FILE: &str = "ledgeline.toml";
@@ -170,6 +172,13 @@ impl OpenBooks {
         reconcile_in(&mut session, None)
     }
 
+    /// Copy in the starter templates invoices name by `template:` but the
+    /// books don't have yet (on open; [`crate::starters::install_referenced`]).
+    pub(crate) fn install_starters(&self) -> Vec<VaultPath> {
+        let mut session = self.session();
+        install_starters_in(&mut session, None)
+    }
+
     /// Listen for change events ([`Changed`]).
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<Changed> {
         self.changes.subscribe()
@@ -214,7 +223,10 @@ impl OpenBooks {
     /// they touched.
     ///
     /// - a markdown or `.html` file under the folder: the document index
-    ///   refreshes it (an `.html` file may be a template);
+    ///   refreshes it (an `.html` file may be a template); a draft whose
+    ///   amounts no longer match its rows is recalculated
+    ///   (`recalc-on-save`), and a starter template a document names is
+    ///   copied in;
     /// - a journal file: the journal and `[books]` are read again, and the
     ///   invoices whose payment state moved are reconciled;
     /// - `ledgeline.toml`: the session is opened afresh (`[invoicer]` may
@@ -240,6 +252,7 @@ impl OpenBooks {
                 }
             }
             let _ = session.book_states();
+            install_starters_in(&mut session, None);
             return reconcile_in(&mut session, None);
         }
 
@@ -261,6 +274,24 @@ impl OpenBooks {
                     .filter_map(|p| index.doc(p).and_then(|d| d.number()))
                     .map(str::to_string),
             );
+            // An outside edit to a draft's rows: its amounts follow
+            // (`[invoicer] recalc-on-save`, drafts only). Its own write comes
+            // back as a change whose amounts agree, so it ends there.
+            for path in &refreshed.updated {
+                match edit::recalc_on_save(index, vault, path) {
+                    Ok(Some(done)) => eprintln!(
+                        "{}: {path}: recalculated {} amount(s) after an edit",
+                        APP.log_prefix,
+                        done.changes.len()
+                    ),
+                    Ok(None) => {}
+                    Err(error) => {
+                        eprintln!("{}: {path}: not recalculated: {error}", APP.log_prefix)
+                    }
+                }
+            }
+            // A `template:` naming a starter not copied in yet (a hand edit).
+            install_starters_in(&mut session, Some(&refreshed.updated));
         }
 
         let journal_touched = changed.iter().any(|p| {
@@ -307,8 +338,27 @@ pub(crate) fn reload_after_write(session: &mut Session) {
     }
 }
 
+/// [`starters::install_referenced`] over `only` (or every document),
+/// logging what it copied. Returns the files copied.
+fn install_starters_in(session: &mut Session, only: Option<&[VaultPath]>) -> Vec<VaultPath> {
+    let (copied, failed) = starters::install_referenced(session, only);
+    for path in &copied {
+        eprintln!(
+            "{}: copied the starter template to {path} (an invoice names it)",
+            APP.log_prefix
+        );
+    }
+    for (file, error) in &failed {
+        eprintln!(
+            "{}: the starter template {file} wasn't copied: {error}",
+            APP.log_prefix
+        );
+    }
+    copied
+}
+
 /// Reconcile `only` (or every sent invoice), logging the outcome.
-fn reconcile_in(session: &mut Session, only: Option<Vec<String>>) -> Option<Reconciled> {
+pub(crate) fn reconcile_in(session: &mut Session, only: Option<Vec<String>>) -> Option<Reconciled> {
     let books = session.invoice_books();
     let loaded = match books.load() {
         Ok(loaded) => loaded,

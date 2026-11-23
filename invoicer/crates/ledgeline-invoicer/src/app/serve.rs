@@ -111,6 +111,7 @@ async fn serve(setup: Setup, native: Option<Arc<dyn Native>>) -> Result<(), Stri
         app_dirs,
     } = setup;
     let books = OpenBooks::open(&journal, false)?;
+    books.install_starters();
     books.reconcile_all();
     let books = Arc::new(books);
     // Never recorded in recents: `--server` runs over fixtures (e2e).
