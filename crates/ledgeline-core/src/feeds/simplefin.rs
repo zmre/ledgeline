@@ -731,9 +731,30 @@ fn parse_txn(entry: &Value, account_id: &str, account_name: &str) -> Result<Feed
         extra: field(object, &["extra"])
             .and_then(Value::as_object)
             .filter(|extra| !extra.is_empty())
-            .map(|extra| Value::Object(extra.clone()).to_string()),
+            .map(|extra| sorted_keys(&Value::Object(extra.clone())).to_string()),
         id,
     })
+}
+
+/// `value` with every object's keys sorted, so the `extra` column's text is
+/// the same whatever order the bank sent them in, and whether or not the
+/// build's serde_json keeps insertion order (`preserve_order`, which a
+/// crate elsewhere in the workspace can turn on).
+fn sorted_keys(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut entries: Vec<(&String, &Value)> = map.iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(k, v)| (k.clone(), sorted_keys(v)))
+                    .collect(),
+            )
+        }
+        Value::Array(items) => Value::Array(items.iter().map(sorted_keys).collect()),
+        other => other.clone(),
+    }
 }
 
 #[cfg(test)]
