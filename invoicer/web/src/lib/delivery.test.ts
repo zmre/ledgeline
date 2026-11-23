@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest";
-import {anchorOf, defaultVia, exportedText, exportPrompt, sendBlocker, sizeText} from "./delivery.js";
+import {anchorOf, currentPdf, defaultVia, exportedText, exportPrompt, sendBlocker, sizeText} from "./delivery.js";
 import {DELIVERY_105, DELIVERY_108} from "./components/fixtures.js";
 
 describe("UNIT delivery", () => {
@@ -28,6 +28,25 @@ describe("UNIT delivery", () => {
         expect(exportedText({destination: "kept", kept_at: "invoices/pdf/x.pdf", file: "x.pdf"})).toBe("Saved invoices/pdf/x.pdf");
         expect(exportedText({destination: "temp", file: "x.pdf"})).toContain("temporary");
         expect(exportedText({destination: "copy", file: "x.pdf"})).toBe("Saved a copy: x.pdf");
+    });
+
+    it("names one current PDF: this session's export, else the latest kept", () => {
+        expect(currentPdf(DELIVERY_105, null)).toEqual({
+            handle: {destination: "kept", file: "2026-11-10 Customer X Invoice 105.pdf"},
+            text: "Kept invoices/pdf/2026-11-10 Customer X Invoice 105.pdf",
+        });
+        expect(currentPdf(DELIVERY_108, null)).toBeNull();
+        const exported = {
+            number: "108",
+            document: DELIVERY_108.document,
+            destination: "temp" as const,
+            file: "x.pdf",
+            bytes: 1,
+            changed_since_sent: null,
+            warnings: [],
+        };
+        expect(currentPdf(DELIVERY_108, exported)?.handle).toEqual({destination: "temp", file: "x.pdf"});
+        expect(currentPdf(DELIVERY_108, exported)?.text).toContain("temporary");
     });
 
     it("sizes and anchors", () => {

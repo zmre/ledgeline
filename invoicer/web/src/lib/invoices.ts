@@ -73,6 +73,28 @@ export interface EntryView {
     postings: PostingView[];
 }
 
+/** A payment or credit against a receivable, and where it is in the journal. */
+export interface ReceivedView {
+    date: string;
+    amount: string;
+    kind: "payment" | "credit";
+    description: string;
+    /** The transaction's other accounts: where the money went (the bank), or the credit's account. */
+    from: string[];
+    file: string;
+    line: number;
+}
+
+/** Where an invoice stands with the books, for the panel's first line. */
+export interface Settlement {
+    state: "paid" | "partial" | "unpaid" | "void";
+    total: string;
+    paid: string;
+    outstanding: string;
+    paid_on: string | null;
+    due_date: string | null;
+}
+
 /** `GET /api/invoices/{number}/books`: the Books panel. */
 export interface InvoiceBooks {
     basis: "accrual" | "cash";
@@ -84,14 +106,34 @@ export interface InvoiceBooks {
         amount: string;
         outstanding: string;
         state: "open" | "partial" | "paid" | "void";
-        payments: {date: string; amount: string}[];
+        payments: ReceivedView[];
     } | null;
     voids: EntryView[];
     payments: (EntryView & {amount: string})[];
     books_paid_text: string | null;
     paid: Paid | null;
     in_step: boolean | null;
+    settlement: Settlement | null;
+    /** The file's `paid:` line disagrees with the books: that, in plain words. */
+    mirror_problem: string | null;
     problems: {severity: string; message: string}[];
+}
+
+/**
+ * Where an invoice stands, in one plain line: "Paid in full on 2026-10-20",
+ * "Partly paid: $1,000.00 of $3,000.00, $2,000.00 due 2026-11-14", "Unpaid: $8,350.00 due 2026-12-10".
+ */
+export function settlementText(s: Settlement): string {
+    switch (s.state) {
+        case "paid":
+            return s.paid_on === null ? "Paid in full" : `Paid in full on ${s.paid_on}`;
+        case "partial":
+            return `Partly paid: ${s.paid} of ${s.total}, ${s.outstanding} due${s.due_date === null ? "" : ` ${s.due_date}`}`;
+        case "unpaid":
+            return `Unpaid: ${s.outstanding} due${s.due_date === null ? "" : ` ${s.due_date}`}`;
+        case "void":
+            return "Void: nothing is owed";
+    }
 }
 
 /** `GET /api/templates`. */

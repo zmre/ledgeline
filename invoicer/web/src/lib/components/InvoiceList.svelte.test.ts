@@ -1,7 +1,7 @@
 // The invoice list, mounted: every row links to its invoice, overdue due
 // dates stand out, and an empty books folder says how to make one.
-import {render, screen, within} from "@testing-library/svelte";
-import {describe, expect, it} from "vitest";
+import {fireEvent, render, screen, within} from "@testing-library/svelte";
+import {describe, expect, it, vi} from "vitest";
 import InvoiceList from "./InvoiceList.svelte";
 import {entry} from "./fixtures.js";
 
@@ -46,9 +46,30 @@ describe("COMPONENT InvoiceList", () => {
         expect(screen.getByText("2 errors")).toBeDefined();
     });
 
+    it("opens an invoice from a click anywhere on its row, but not from a link in it", async () => {
+        const onOpen = vi.fn();
+        render(InvoiceList, {href, onOpen, invoices: [entry({}), entry({path: "b.md", number: "106"})]});
+        const rows = screen.getAllByTestId("invoice-row");
+        await fireEvent.click(within(rows[1]).getByText("$8,350.00"));
+        expect(onOpen).toHaveBeenCalledOnce();
+        expect(onOpen.mock.calls[0][0].number).toBe("106");
+        // The number's own link is the keyboard's way in (Tab, Enter): one link per row, nothing nested.
+        const link = within(rows[0]).getByRole("link", {name: "105"});
+        link.addEventListener("click", (e) => e.preventDefault());
+        await fireEvent.click(link);
+        expect(onOpen).toHaveBeenCalledOnce();
+        expect(within(rows[0]).getAllByRole("link")).toHaveLength(1);
+        expect(rows[0].getAttribute("role")).toBeNull();
+    });
+
     it("says how to make the first invoice when there are none", () => {
         render(InvoiceList, {href, invoices: []});
-        expect(screen.getByTestId("invoice-list-empty").textContent).toContain("ledgeline-invoicer new");
+        const empty = screen.getByTestId("invoice-list-empty").textContent ?? "";
+        expect(empty).toContain("No invoices yet");
+        expect(empty).toContain("ledgeline-invoicer new --customer");
+        expect(empty).toContain("--row");
+        expect(empty).toContain("[invoicer]");
+        expect(empty).toContain("tagged customer");
         expect(screen.queryByTestId("invoice-list")).toBeNull();
     });
 });

@@ -1,6 +1,6 @@
 // The Send panel, mounted: the prompts an export asks, the portal step, and
 // the buttons this process can back.
-import {fireEvent, render, screen} from "@testing-library/svelte";
+import {fireEvent, render, screen, within} from "@testing-library/svelte";
 import {describe, expect, it, vi} from "vitest";
 import SendPanel from "./SendPanel.svelte";
 import {DELIVERY_105, DELIVERY_108} from "./fixtures.js";
@@ -12,6 +12,7 @@ function mount(delivery: Delivery, extra: {exported?: Exported | null; busy?: bo
         onSendAndExport: vi.fn(),
         onShare: vi.fn(),
         onCopyFile: vi.fn(),
+        onOpenFile: vi.fn(),
         onOpenPortal: vi.fn(),
         onCopyText: vi.fn(),
     };
@@ -92,7 +93,46 @@ describe("COMPONENT SendPanel", () => {
         expect(calls.onShare).toHaveBeenCalledWith("kept", "2026-11-10 Customer X Invoice 105.pdf", expect.objectContaining({x: expect.any(Number)}));
         await fireEvent.click(screen.getByTestId("send-copy-file"));
         expect(calls.onCopyFile).toHaveBeenCalledWith("kept", "2026-11-10 Customer X Invoice 105.pdf");
-        expect(screen.getAllByTestId("send-kept-pdf")).toHaveLength(2);
+    });
+
+    it("says the kept PDF once, and opens it or an earlier one in the viewer", async () => {
+        const calls = mount(DELIVERY_105);
+        expect(screen.getByTestId("send-current").textContent?.trim()).toBe("Kept invoices/pdf/2026-11-10 Customer X Invoice 105.pdf");
+        await fireEvent.click(screen.getByTestId("send-open-pdf"));
+        expect(calls.onOpenFile).toHaveBeenCalledWith("kept", "2026-11-10 Customer X Invoice 105.pdf");
+        // The list holds only the earlier ones: never the current line again.
+        const kept = screen.getAllByTestId("send-kept-pdf");
+        expect(kept).toHaveLength(1);
+        expect(kept[0].textContent).toContain("2026-11-10 Customer X Invoice 105 2026-11-10.pdf");
+        await fireEvent.click(within(kept[0]).getByRole("button"));
+        expect(calls.onOpenFile).toHaveBeenLastCalledWith("kept", "2026-11-10 Customer X Invoice 105 2026-11-10.pdf");
+    });
+
+    it("merges this session's export into the one line, and opens it", async () => {
+        const calls = mount(DELIVERY_105, {
+            exported: {
+                number: "105",
+                document: DELIVERY_105.document,
+                destination: "kept",
+                file: "2026-11-10 Customer X Invoice 105.pdf",
+                kept_at: "invoices/pdf/2026-11-10 Customer X Invoice 105.pdf",
+                bytes: 1000,
+                changed_since_sent: false,
+                warnings: [],
+            },
+        });
+        expect(screen.getByTestId("send-exported").textContent?.trim()).toBe("Saved invoices/pdf/2026-11-10 Customer X Invoice 105.pdf");
+        expect(screen.queryByTestId("send-current")).toBeNull();
+        expect(screen.getAllByText(/Customer X Invoice 105\.pdf$/)).toHaveLength(1);
+        await fireEvent.click(screen.getByTestId("send-open-pdf"));
+        expect(calls.onOpenFile).toHaveBeenCalledWith("kept", "2026-11-10 Customer X Invoice 105.pdf");
+    });
+
+    it("shows the PDF's name as text when nothing can open it", () => {
+        mount({...DELIVERY_105, capabilities: {...DELIVERY_105.capabilities, open_file: false}});
+        expect(screen.getByTestId("send-current").textContent).toContain("2026-11-10 Customer X Invoice 105.pdf");
+        expect(screen.queryByTestId("send-open-pdf")).toBeNull();
+        expect(within(screen.getByTestId("send-kept")).queryByRole("button")).toBeNull();
     });
 
     it("offers no Share… before a PDF exists, and the draft export once there is one", async () => {
@@ -120,7 +160,7 @@ describe("COMPONENT SendPanel", () => {
     });
 
     it("hides what this process can't do", () => {
-        mount({...DELIVERY_105, capabilities: {pdf: false, share: false, copy_file: false, open_url: false}});
+        mount({...DELIVERY_105, capabilities: {pdf: false, share: false, copy_file: false, open_url: false, open_file: false}});
         expect(screen.queryByTestId("send-export")).toBeNull();
         expect(screen.getByTestId("send-no-pdf").textContent).toContain("desktop app");
         expect(screen.queryByTestId("send-share")).toBeNull();

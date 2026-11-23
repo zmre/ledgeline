@@ -20,7 +20,7 @@
 // run Playwright); the lead runs it.
 
 import {execFileSync} from "node:child_process";
-import {readFileSync, existsSync} from "node:fs";
+import {readFileSync, existsSync, writeFileSync} from "node:fs";
 import {resolve} from "node:path";
 import {expect, test, type Page} from "@playwright/test";
 import {API_TOKEN, COPY, SERVER_URL} from "../playwright.config";
@@ -28,6 +28,7 @@ import {API_TOKEN, COPY, SERVER_URL} from "../playwright.config";
 const FIXED_NOW = new Date(2026, 10, 17, 12, 0, 0); // local 2026-11-17, the fixture's clock
 const BOOKS = resolve(import.meta.dirname, "..", COPY);
 const INVOICE_105 = "invoices/2026-11-10 Customer X Invoice 105.md";
+const INVOICE_106 = "invoices/2026-08-01 Wingtip Invoice 106.md";
 
 const read = (file: string): string => readFileSync(resolve(BOOKS, file), "utf8");
 
@@ -77,11 +78,29 @@ test.describe("the invoicer over the accrual fixture (:5199)", () => {
         // The books column is in the page and hidden by the template's rule.
         await expect(invoice.getByText("liabilities:customer-deposits")).toBeHidden();
 
-        // The Books panel: the booking (applying the deposit) and the open receivable.
+        // The Books panel, full width under the invoice: one plain line, then
+        // where it was booked, account by account (applying the deposit).
         const books = page.getByTestId("books-panel");
-        await expect(books.getByTestId("books-outstanding")).toHaveText("$8,350.00");
-        await expect(books.getByTestId("books-entry").first()).toContainText("liabilities:customer-deposits");
-        await expect(books.getByTestId("books-mirror")).toContainText("No");
+        await expect(books.getByTestId("books-status")).toHaveText("Unpaid: $8,350.00 due 2026-12-10");
+        const booking = books.getByTestId("books-booking").first();
+        await expect(booking.getByTestId("books-posting").filter({hasText: "assets:accounts receivable"})).toContainText("$8,350.00");
+        await expect(booking.getByTestId("books-posting").filter({hasText: "liabilities:customer-deposits"})).toContainText("$8,350.00");
+        await expect(books.getByTestId("books-mirror-problem")).toHaveCount(0);
+        const frameBox = await page.getByTestId("invoice-frame").boundingBox();
+        const booksBox = await books.boundingBox();
+        expect(booksBox!.y).toBeGreaterThan(frameBox!.y + frameBox!.height - 1);
+        expect(booksBox!.width).toBeGreaterThan(frameBox!.width - 2);
+    });
+
+    test("a click anywhere on a row opens its invoice; the number's link takes Enter", async ({page}) => {
+        await open(page);
+        await page.locator('[data-testid="invoice-row"][data-number="106"]').getByText("Wingtip").click();
+        await expect(page).toHaveURL(/\/app\/invoices\/106$/);
+        await page.goBack();
+        const link = page.locator('[data-testid="invoice-row"][data-number="107"]').getByRole("link", {name: "107"});
+        await link.focus();
+        await page.keyboard.press("Enter");
+        await expect(page).toHaveURL(/\/app\/invoices\/107$/);
     });
 
     test("previews an invoice through a starter template and writes nothing", async ({page}) => {
@@ -159,11 +178,19 @@ test.describe("the invoicer over the accrual fixture (:5199)", () => {
     test("the Books panel says paid, void and never booked", async ({page}) => {
         await open(page);
         await page.goto("/app/invoices/101");
-        await expect(page.getByTestId("books-receivable")).toContainText("paid");
-        await expect(page.getByTestId("books-mirror")).toContainText("Paid 2026-10-05");
+        await expect(page.getByTestId("books-status")).toHaveText("Paid in full on 2026-10-05");
+        const payments = page.getByTestId("books-payment");
+        await expect(payments).toHaveCount(2);
+        await expect(payments.first()).toContainText("assets:bank:checking");
+        await expect(payments.first()).toContainText("CONTOSO ACH");
+        await expect(page.getByTestId("books-mirror-problem")).toHaveCount(0);
+
+        await page.goto("/app/invoices/107");
+        await expect(page.getByTestId("books-status")).toHaveText("Partly paid: $1,000.00 of $3,000.00, $2,000.00 due 2026-11-14");
 
         await page.goto("/app/invoices/103");
-        await expect(page.getByTestId("books-panel").getByText("Void", {exact: true})).toBeVisible();
+        await expect(page.getByTestId("books-panel").getByTestId("books-void")).toBeVisible();
+        await expect(page.getByTestId("books-status")).toContainText("Void");
 
         await page.goto("/app/invoices/108");
         await expect(page.getByTestId("books-empty")).toContainText("drafts never touch the books");
@@ -214,7 +241,10 @@ test.describe("the invoicer over the accrual fixture (:5199)", () => {
         await expect(panel.getByTestId("send-copy-reference")).toBeVisible();
         await panel.getByTestId("send-export").click();
         await expect(panel.getByTestId("send-exported")).toContainText("Saved invoices/pdf/2026-11-10 Customer X Invoice 105.pdf", {timeout: 60_000});
-        await expect(panel.getByTestId("send-kept-pdf").first()).toContainText("2026-11-10 Customer X Invoice 105.pdf");
+        // One line for the PDF just kept; the API's earlier export is listed under its date.
+        await expect(panel.getByTestId("send-kept-pdf").first()).toContainText(/2026-11-10 Customer X Invoice 105 \d{4}-\d{2}-\d{2}\.pdf/);
+        // `--server` has no window: the names are text, not buttons that open a viewer.
+        await expect(panel.getByTestId("send-open-pdf")).toHaveCount(0);
         // `--server` has no window: no Share… or Copy file.
         await expect(panel.getByTestId("send-share")).toHaveCount(0);
 
@@ -224,5 +254,52 @@ test.describe("the invoicer over the accrual fixture (:5199)", () => {
         await expect(page.getByRole("alertdialog")).toContainText("Mark invoice 108 as sent?");
         await page.getByTestId("send-draft-only").click();
         await expect(page.getByTestId("send-exported")).toContainText("temporary", {timeout: 60_000});
+    });
+    test("live reload: an edit to the invoice's file on disk shows in the page and the list", async ({page}) => {
+        // Patrick's "live reload doesn't work" (2026-11-23): the server now sends
+        // `GET /api/events` after the watcher re-reads a change; the page re-fetches
+        // and reloads the frame. Edited in place, as an editor saves, then put back.
+        const original = read(INVOICE_106);
+        try {
+            await open(page);
+            await page.goto("/app/invoices/106");
+            await expect(frame(page).getByText("August retainer.")).toBeVisible();
+            writeFileSync(
+                resolve(BOOKS, INVOICE_106),
+                original.replace("August retainer.", "August retainer, edited outside.").replace("invoicee_name: Wingtip\n", "invoicee_name: Wingtip Live\n")
+            );
+            await expect(frame(page).getByText("August retainer, edited outside.")).toBeVisible({timeout: 5_000});
+            await expect(frame(page).getByText("Bill to Wingtip Live")).toBeVisible();
+            await expect(page.getByTestId("invoice-customer")).toHaveText("Wingtip Live");
+
+            await page.goto("/app/invoices");
+            await expect(page.locator('[data-testid="invoice-row"][data-number="106"]')).toContainText("Wingtip Live");
+            writeFileSync(resolve(BOOKS, INVOICE_106), original);
+            await expect(page.locator('[data-testid="invoice-row"][data-number="106"]')).not.toContainText("Wingtip Live", {timeout: 5_000});
+        } finally {
+            writeFileSync(resolve(BOOKS, INVOICE_106), original);
+        }
+    });
+
+    // LAST in this file: it sends the draft 108, which the tests above expect
+    // to be a draft.
+    test("Mark as sent books the draft: the Books panel shows where, and no error", async ({page}) => {
+        test.setTimeout(90_000);
+        await open(page);
+        await page.goto("/app/invoices/108");
+        await expect(page.getByTestId("books-empty")).toContainText("drafts never touch the books");
+        await page.getByTestId("send-export").click();
+        await expect(page.getByRole("alertdialog")).toContainText("Mark invoice 108 as sent?");
+        await page.getByTestId("send-mark-and-export").click();
+        await expect(page.getByTestId("send-exported")).toContainText("invoices/pdf/2026-11-17 Customer X Invoice 108.pdf", {timeout: 60_000});
+
+        const books = page.getByTestId("books-panel");
+        await expect(books.getByTestId("books-booking").first()).toBeVisible();
+        await expect(books.getByTestId("books-posting").filter({hasText: "assets:accounts receivable"})).toBeVisible();
+        await expect(books.getByTestId("books-status")).toContainText("Unpaid");
+        await expect(books.getByTestId("books-problems")).toHaveCount(0);
+        await expect(page.getByRole("alert")).toHaveCount(0);
+        await expect(page.getByTestId("status-badge").first()).toHaveText("Open");
+        expect(read("books.journal")).toMatch(/invoice: 108\b/);
     });
 });

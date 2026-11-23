@@ -167,6 +167,11 @@ export async function sharePdf(destination: Destination, file: string, anchor?: 
     await call("POST", "/api/pdf/share", {destination, file, anchor});
 }
 
+/** `POST /api/pdf/open`: open an exported PDF in the default viewer (the window, macOS). */
+export async function openPdf(destination: Destination, file: string): Promise<void> {
+    await call("POST", "/api/pdf/open", {destination, file});
+}
+
 /** `POST /api/pdf/copy`: Copy file, to paste into Mail, Finder or a chat. */
 export async function copyPdf(destination: Destination, file: string): Promise<void> {
     await call("POST", "/api/pdf/copy", {destination, file});

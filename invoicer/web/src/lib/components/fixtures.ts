@@ -56,6 +56,8 @@ export const BOOKS_105: InvoiceBooks = {
     books_paid_text: "no",
     paid: {state: "no"},
     in_step: true,
+    settlement: {state: "unpaid", total: "$8,350.00", paid: "$0.00", outstanding: "$8,350.00", paid_on: null, due_date: "2026-12-10"},
+    mirror_problem: null,
     problems: [],
 };
 
@@ -96,7 +98,7 @@ export const DELIVERY_105: Delivery = {
         instructions: "Upload the PDF under Invoices → Create from PO, then attach the timesheet.",
     },
     copy: {number: "105", reference: "PO #PY75334, rev. 2", total: "$8,350.00"},
-    capabilities: {pdf: true, share: true, copy_file: true, open_url: true},
+    capabilities: {pdf: true, share: true, copy_file: true, open_url: true, open_file: true},
 };
 
 /** `GET /api/invoices/108/pdf`: a draft, never exported. */

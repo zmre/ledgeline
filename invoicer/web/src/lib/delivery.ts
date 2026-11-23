@@ -11,6 +11,8 @@ export interface Capabilities {
     share: boolean;
     copy_file: boolean;
     open_url: boolean;
+    /** Open an exported PDF in the default viewer (the window, macOS). */
+    open_file: boolean;
 }
 
 /** A PDF kept for the invoice, newest first. */
@@ -103,6 +105,24 @@ export function sendBlocker(delivery: Pick<Delivery, "portal" | "copy">): string
         return `${delivery.portal.name ?? "The customer's portal"} rejects invoices without a reference: add the PO as \`reference\` first.`;
     }
     return null;
+}
+
+/** A PDF this app exported, as Share…, Copy file and Open name it: never a path. */
+export interface PdfHandle {
+    destination: Destination;
+    file: string;
+}
+
+/**
+ * The PDF the panel calls current, and how to show it: this session's export,
+ * else the latest kept one. One line, so "Saved …" and "Kept in …" never say
+ * the same file twice.
+ */
+export function currentPdf(delivery: Pick<Delivery, "exports" | "pdf_dir">, exported: Exported | null): {handle: PdfHandle; text: string} | null {
+    if (exported !== null) return {handle: {destination: exported.destination, file: exported.file}, text: exportedText(exported)};
+    const latest = delivery.exports.find((e) => e.latest);
+    if (latest === undefined) return null;
+    return {handle: {destination: "kept", file: latest.file}, text: `Kept ${latest.kept_at ?? `${delivery.pdf_dir}/${latest.file}`}`};
 }
 
 /** A sentence for where an export went. */

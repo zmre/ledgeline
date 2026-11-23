@@ -1,5 +1,5 @@
-<!-- One invoice (invoicer PLAN 3b, 3c): the page its template renders, beside the
-     Send panel (its PDF, the Send flow) and the Books panel. The saved invoice is MBR's own page in a frame; another
+<!-- One invoice (invoicer PLAN 3b, 3c): the Send panel (its PDF, the Send flow)
+     above the page its template renders, and the Books panel under it. The saved invoice is MBR's own page in a frame; another
      template (a starter not copied in yet, say) is the preview page
      (`/.ledgeline-invoicer/preview`), which writes nothing. -->
 <script lang="ts">
@@ -16,6 +16,7 @@
         fetchInvoice,
         fetchInvoiceBooks,
         fetchTemplates,
+        openPdf,
         openPortal,
         sendInvoice,
         sharePdf,
@@ -147,6 +148,7 @@
 
     const onShare = (destination: Destination, file: string, anchor: Anchor): Promise<void> => act(() => sharePdf(destination, file, anchor));
     const onCopyFile = (destination: Destination, file: string): Promise<void> => act(() => copyPdf(destination, file));
+    const onOpenFile = (destination: Destination, file: string): Promise<void> => act(() => openPdf(destination, file));
     const onOpenPortal = (): Promise<void> => act(() => openPortal(number));
     const onCopyText = (label: string, text: string): Promise<void> =>
         act(async () => {
@@ -210,70 +212,70 @@
                 {/if}
             </header>
 
-            <div class="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
-                <section class="flex min-w-0 flex-col gap-2" aria-label="The invoice">
-                    <div class="flex flex-wrap items-center gap-2">
-                        <label class="text-sm text-base-content/70" for="template-choice">Template</label>
-                        <select id="template-choice" class="select-bordered select select-sm" bind:value={chosen} data-testid="template-choice">
-                            {#if own === null}
-                                <option value="">As MBR shows the note</option>
-                            {/if}
-                            {#each choices as template (template.path)}
-                                <option value={template.path === own ? "" : template.path}>
-                                    {template.name}{template.path === own ? " (this invoice's)" : template.installed ? "" : " (starter)"}
-                                </option>
-                            {/each}
-                        </select>
-                        {#if !showingOwn}
-                            <span class="text-xs text-base-content/60">Preview only: the invoice still names {own ?? "no template"}.</span>
-                        {/if}
-                    </div>
-                    {#if sessionError !== null}
-                        <div class="alert text-sm alert-error" role="alert" data-testid="preview-error">Couldn't show the invoice: {sessionError.message}</div>
-                    {:else if sessionReady}
-                        <!-- Re-made after a write or a change on disk (frameKey), so it shows the file again. -->
-                        {#key frameKey}
-                            {#if showingOwn}
-                                <InvoiceFrame src={pageUrl(doc.path)} title={doc.title} />
-                            {:else}
-                                <InvoiceFrame src={previewUrl(number, chosen)} title="{doc.title}, previewed" mode="preview" />
-                            {/if}
-                        {/key}
-                    {/if}
-                </section>
+            <!-- Top to bottom, each full width (Patrick, 2026-11-23): sending, the
+                 invoice as wide as the page allows, then the books with room for their tables. -->
+            {#if delivery !== null}
+                <SendPanel
+                    {delivery}
+                    {exported}
+                    busy={sending}
+                    error={sendError}
+                    {onExport}
+                    {onSendAndExport}
+                    {onShare}
+                    {onCopyFile}
+                    {onOpenFile}
+                    {onOpenPortal}
+                    {onCopyText}
+                />
+            {:else if sendError !== null}
+                <div class="alert text-sm alert-error" role="alert" data-testid="send-error">{sendError}</div>
+            {/if}
 
-                <aside class="flex min-w-0 flex-col gap-6">
-                    {#if delivery !== null}
-                        <SendPanel
-                            {delivery}
-                            {exported}
-                            busy={sending}
-                            error={sendError}
-                            {onExport}
-                            {onSendAndExport}
-                            {onShare}
-                            {onCopyFile}
-                            {onOpenPortal}
-                            {onCopyText}
-                        />
-                    {:else if sendError !== null}
-                        <div class="alert text-sm alert-error" role="alert" data-testid="send-error">{sendError}</div>
+            <section class="flex min-w-0 flex-col gap-2" aria-label="The invoice">
+                <div class="flex flex-wrap items-center gap-2">
+                    <label class="text-sm text-base-content/70" for="template-choice">Template</label>
+                    <select id="template-choice" class="select-bordered select select-sm" bind:value={chosen} data-testid="template-choice">
+                        {#if own === null}
+                            <option value="">As MBR shows the note</option>
+                        {/if}
+                        {#each choices as template (template.path)}
+                            <option value={template.path === own ? "" : template.path}>
+                                {template.name}{template.path === own ? " (this invoice's)" : template.installed ? "" : " (starter)"}
+                            </option>
+                        {/each}
+                    </select>
+                    {#if !showingOwn}
+                        <span class="text-xs text-base-content/60">Preview only: the invoice still names {own ?? "no template"}.</span>
                     {/if}
-                    <AsyncSection
-                        view={booksView}
-                        value={books}
-                        error={booksError}
-                        testid="books-error"
-                        label="the books"
-                        loadingLabel="Loading the books"
-                        onRetry={() => loadBooks(number)}
-                    >
-                        {#snippet children(panel)}
-                            <BooksPanel books={panel} />
-                        {/snippet}
-                    </AsyncSection>
-                </aside>
-            </div>
+                </div>
+                {#if sessionError !== null}
+                    <div class="alert text-sm alert-error" role="alert" data-testid="preview-error">Couldn't show the invoice: {sessionError.message}</div>
+                {:else if sessionReady}
+                    <!-- Re-made after a write or a change on disk (frameKey), so it shows the file again. -->
+                    {#key frameKey}
+                        {#if showingOwn}
+                            <InvoiceFrame src={pageUrl(doc.path)} title={doc.title} />
+                        {:else}
+                            <InvoiceFrame src={previewUrl(number, chosen)} title="{doc.title}, previewed" mode="preview" />
+                        {/if}
+                    {/key}
+                {/if}
+            </section>
+
+            <AsyncSection
+                view={booksView}
+                value={books}
+                error={booksError}
+                testid="books-error"
+                label="the books"
+                loadingLabel="Loading the books"
+                onRetry={() => loadBooks(number)}
+            >
+                {#snippet children(panel)}
+                    <BooksPanel books={panel} />
+                {/snippet}
+            </AsyncSection>
         {/snippet}
     </AsyncSection>
 </div>

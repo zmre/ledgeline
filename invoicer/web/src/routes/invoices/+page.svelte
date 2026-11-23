@@ -2,6 +2,7 @@
      again whenever a file changes on disk (live reload). -->
 <script lang="ts">
     import {onMount} from "svelte";
+    import {goto} from "$app/navigation";
     import {resolve} from "$app/paths";
     import AsyncSection from "#ui/components/AsyncSection.svelte";
     import type {DataView} from "#ui/ui/dataView.js";
@@ -22,6 +23,8 @@
     }
 
     onMount(load);
+
+    const invoiceHref = (doc: InvoiceEntry): string => resolve("/invoices/[number]", {number: doc.number ?? doc.path});
 
     // Live reload: the list again after a change on disk, keeping the old one
     // on screen meanwhile.
@@ -47,7 +50,7 @@
     <h1 class="text-2xl font-semibold tracking-tight">Invoices</h1>
     <AsyncSection {view} value={invoices} {error} testid="invoices-error" label="the invoices" loadingLabel="Loading invoices" onRetry={load}>
         {#snippet children(list)}
-            <InvoiceList invoices={list} href={(doc) => resolve("/invoices/[number]", {number: doc.number ?? doc.path})} />
+            <InvoiceList invoices={list} href={invoiceHref} onOpen={(doc) => void goto(resolve("/invoices/[number]", {number: doc.number ?? doc.path}))} />
         {/snippet}
     </AsyncSection>
 </div>

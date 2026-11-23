@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest";
-import {kindLabel, localToday, pageUrl, paidText, previewUrl, standing, templateChoices, type TemplateEntry} from "./invoices.js";
+import {kindLabel, localToday, pageUrl, paidText, previewUrl, settlementText, standing, templateChoices, type TemplateEntry} from "./invoices.js";
 
 describe("UNIT invoices", () => {
     it("names a note's MBR page: no extension, each segment encoded, a trailing slash", () => {
@@ -43,6 +43,18 @@ describe("UNIT invoices", () => {
                 ],
             })
         ).toBe("Partly: 2026-10-28 $1,500, 2026-11-19 $3,500");
+    });
+
+    it("says where an invoice stands in one plain line", () => {
+        const base = {total: "$3,000.00", paid: "$0.00", outstanding: "$3,000.00", paid_on: null, due_date: "2026-11-14"};
+        expect(settlementText({...base, state: "paid", paid: "$3,000.00", outstanding: "$0.00", paid_on: "2026-10-20"})).toBe("Paid in full on 2026-10-20");
+        expect(settlementText({...base, state: "paid", paid_on: null})).toBe("Paid in full");
+        expect(settlementText({...base, state: "partial", paid: "$1,000.00", outstanding: "$2,000.00"})).toBe(
+            "Partly paid: $1,000.00 of $3,000.00, $2,000.00 due 2026-11-14"
+        );
+        expect(settlementText({...base, state: "unpaid"})).toBe("Unpaid: $3,000.00 due 2026-11-14");
+        expect(settlementText({...base, state: "unpaid", due_date: null})).toBe("Unpaid: $3,000.00 due");
+        expect(settlementText({...base, state: "void"})).toBe("Void: nothing is owed");
     });
 
     it("labels only the kinds that aren't invoices", () => {
