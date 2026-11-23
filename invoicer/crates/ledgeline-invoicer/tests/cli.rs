@@ -315,6 +315,110 @@ fn check_strict_fails_on_warnings() {
     books.json(&["check", "--strict"], 1);
 }
 
+/// The shipped starter's text (`templates/` beside this crate).
+fn starter(file: &str) -> String {
+    fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("templates")
+            .join(file),
+    )
+    .expect("a starter")
+}
+
+#[test]
+fn new_copies_a_starter_template_on_first_use_and_never_overwrites() {
+    let books = Books::of("accrual");
+    // Books with no template at all, and a customer who names none.
+    fs::remove_file(books.file("invoices/tpl/myco-default.html")).expect("removes");
+    let wingtip = books.read("customers/Wingtip.md");
+    let without: String = wingtip
+        .lines()
+        .filter(|l| !l.starts_with("invoice_template:"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    fs::write(books.file("customers/Wingtip.md"), without).expect("writes");
+    let row = ["--row", "Work|1|$100"];
+
+    // A dry run copies nothing.
+    let mut dry = vec!["new", "--customer", "Wingtip", "--dry-run"];
+    dry.extend_from_slice(&row);
+    let preview = books.json(&dry, 0);
+    assert!(preview.get("template_copied").is_none(), "{preview}");
+    assert!(!books.file("invoices/tpl/classic.html").exists());
+
+    // The first invoice gets the default starter, copied in byte for byte.
+    let mut args = vec!["new", "--customer", "Wingtip"];
+    args.extend_from_slice(&row);
+    let made = books.json(&args, 0);
+    assert_eq!(made["template_copied"], "invoices/tpl/classic.html");
+    assert_eq!(
+        made["problems"],
+        serde_json::json!([]),
+        "the template is known at once"
+    );
+    assert_eq!(
+        books.read("invoices/tpl/classic.html"),
+        starter("classic.html")
+    );
+    let path = made["path"].as_str().expect("path");
+    assert!(
+        books
+            .read(path)
+            .contains("template: /invoices/tpl/classic.html")
+    );
+
+    // From then on it is the user's: the next invoice uses it as it is.
+    fs::write(
+        books.file("invoices/tpl/classic.html"),
+        "{# invoicer: name=\"Mine\" #}\n{{ frontmatter.invoice_num }}",
+    )
+    .expect("edits");
+    let next = books.json(&args, 0);
+    assert!(next.get("template_copied").is_none(), "{next}");
+    assert!(books.read("invoices/tpl/classic.html").contains("Mine"));
+
+    // Naming the other starter copies that one.
+    let mut modern = vec![
+        "new",
+        "--customer",
+        "Wingtip",
+        "--template",
+        "/invoices/tpl/modern.html",
+    ];
+    modern.extend_from_slice(&row);
+    let made = books.json(&modern, 0);
+    assert_eq!(made["template_copied"], "invoices/tpl/modern.html");
+    assert_eq!(
+        books.read("invoices/tpl/modern.html"),
+        starter("modern.html")
+    );
+
+    // A template that is no starter is never invented: the draft names it
+    // and `check` warns.
+    let mut contoso = vec!["new", "--customer", "Contoso"];
+    contoso.extend_from_slice(&row);
+    let made = books.json(&contoso, 0);
+    assert!(made.get("template_copied").is_none(), "{made}");
+    assert_eq!(made["problems"][0]["code"], "unknown-template", "{made}");
+    assert!(!books.file("invoices/tpl/myco-default.html").exists());
+
+    // The text output says what was copied.
+    fs::remove_file(books.file("invoices/tpl/modern.html")).expect("removes");
+    let mut text = vec![
+        "new",
+        "--customer",
+        "Wingtip",
+        "--template",
+        "/invoices/tpl/modern.html",
+    ];
+    text.extend_from_slice(&row);
+    let out = books.text(&text);
+    assert!(
+        out.contains("copied the starter template to invoices/tpl/modern.html"),
+        "{out}"
+    );
+}
+
 #[test]
 fn new_writes_a_draft_and_never_the_journal() {
     let books = Books::of("accrual");

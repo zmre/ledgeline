@@ -669,6 +669,210 @@ pub fn customer_detail<'a>(
     }
 }
 
+/// One posting of a transaction, as the books panel shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PostingView {
+    /// The account.
+    pub account: String,
+    /// Its amounts, each in the journal's style (`-$8,350.00`).
+    pub amounts: Vec<String>,
+}
+
+/// One transaction the books hold under an invoice's number.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EntryView {
+    /// Its date.
+    pub date: String,
+    /// Its description.
+    pub description: String,
+    /// The journal file it is in, relative to the books folder (or its file
+    /// name, when it is outside the folder): never a full local path.
+    pub file: String,
+    /// Its first line in that file.
+    pub line: u32,
+    /// Its postings, in file order.
+    pub postings: Vec<PostingView>,
+}
+
+/// One payment or credit against an invoice's receivable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReceivedView {
+    /// When.
+    pub date: String,
+    /// How much, in the journal's style.
+    pub amount: String,
+}
+
+/// An invoice's receivable posting (accrual books).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReceivableView {
+    /// The receivable account.
+    pub account: String,
+    /// What was booked.
+    pub amount: String,
+    /// What is left to settle.
+    pub outstanding: String,
+    /// `open`, `partial`, `paid` or `void`.
+    pub state: &'static str,
+    /// Its payments and credits, oldest first.
+    pub payments: Vec<ReceivedView>,
+}
+
+/// A cash-books payment applied to an invoice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PaymentView {
+    /// The payment transaction.
+    #[serde(flatten)]
+    pub entry: EntryView,
+    /// What it paid toward the invoice.
+    pub amount: String,
+}
+
+/// What the books say about one invoice: the Books panel (ARCHITECTURE
+/// §6.3), read-only. `GET /api/invoices/{num}/books`.
+#[derive(Debug, Clone, Serialize)]
+pub struct InvoiceBooksView {
+    /// The books' basis.
+    pub basis: crate::books::Basis,
+    /// `invoice_num`, when the document has one.
+    pub number: Option<String>,
+    /// `status`.
+    pub status: Option<Status>,
+    /// The transactions it is booked as (one, normally).
+    pub bookings: Vec<EntryView>,
+    /// Its receivable (accrual books, once booked).
+    pub receivable: Option<ReceivableView>,
+    /// The reversals that void it.
+    pub voids: Vec<EntryView>,
+    /// Cash books: the payments applied to it.
+    pub payments: Vec<PaymentView>,
+    /// What the books say `paid:` should be, when they can say.
+    pub books_paid: Option<reconcile::BooksPaid>,
+    /// The `paid:` mirror the books say (`no`, a date, `partial …`).
+    pub books_paid_text: Option<String>,
+    /// The `paid:` mirror as the file writes it.
+    pub paid: Option<Paid>,
+    /// Whether the file's mirror says what the books say (`None` when the
+    /// books can't say).
+    pub in_step: Option<bool>,
+    /// What `check` finds in the books for this invoice.
+    pub problems: Vec<Problem>,
+}
+
+fn payment_state(state: ledgeline_core::accrual::receivables::PaymentState) -> &'static str {
+    use ledgeline_core::accrual::receivables::PaymentState;
+    match state {
+        PaymentState::Open => "open",
+        PaymentState::Partial => "partial",
+        PaymentState::Paid => "paid",
+        PaymentState::Void => "void",
+    }
+}
+
+/// The transaction at `source`, as the panel shows it.
+fn entry_view(session: &Session, source: &reconcile::Source) -> EntryView {
+    let money = session.index().money();
+    let txn = session.journal().transactions.get(source.position);
+    let file = session.vault().vault_path(&source.file).map_or_else(
+        |_| {
+            source
+                .file
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        },
+        |p| p.to_string(),
+    );
+    EntryView {
+        date: source.date.clone(),
+        description: txn.map(|t| t.description.clone()).unwrap_or_default(),
+        file,
+        line: source.line,
+        postings: txn
+            .map(|t| {
+                t.postings
+                    .iter()
+                    .map(|p| PostingView {
+                        account: p.account.0.clone(),
+                        amounts: p
+                            .amounts
+                            .iter()
+                            .map(|a| money.style(Some(&a.commodity.0)).format(a.quantity))
+                            .collect(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    }
+}
+
+/// The Books panel for `doc`: what the journal holds under its number.
+#[must_use]
+pub fn invoice_books(session: &Session, doc: &IndexedDoc) -> InvoiceBooksView {
+    let states = session.book_states();
+    let money = session.index().money();
+    let commodity = doc.summary.as_ref().map(|s| s.commodity.as_str());
+    let style = money.style(commodity);
+    let number = doc.number().map(str::to_string);
+    let standing = number.as_deref().and_then(|n| states.standing(n));
+    let entries = |sources: &mut dyn Iterator<Item = &reconcile::Source>| -> Vec<EntryView> {
+        sources.map(|s| entry_view(session, s)).collect()
+    };
+    let bookings = standing.map_or_else(Vec::new, |s| {
+        entries(&mut s.bookings.iter().map(|b| &b.source))
+    });
+    let voids = standing.map_or_else(Vec::new, |s| entries(&mut s.voids.iter()));
+    let receivable = standing
+        .and_then(|s| s.bookings.iter().find_map(|b| b.receivable.as_ref()))
+        .map(|r| {
+            let style = money.style(Some(&r.commodity));
+            ReceivableView {
+                account: r.account.clone(),
+                amount: style.format(r.amount),
+                outstanding: style.format(r.outstanding),
+                state: payment_state(r.state),
+                payments: r
+                    .payments
+                    .iter()
+                    .map(|(date, amount)| ReceivedView {
+                        date: date.clone(),
+                        amount: style.format(*amount),
+                    })
+                    .collect(),
+            }
+        });
+    let payments = standing.map_or_else(Vec::new, |s| {
+        s.payments
+            .iter()
+            .map(|p| PaymentView {
+                entry: entry_view(session, &p.source),
+                amount: money.style(Some(&p.commodity)).format(p.amount),
+            })
+            .collect()
+    });
+    let books_paid = states.paid(doc);
+    let in_step = books_paid
+        .as_ref()
+        .map(|b| b.agrees_with(doc.header.paid.as_ref(), &style));
+    let problems = number.as_ref().map_or_else(Vec::new, |n| {
+        books_problems(session, Some(std::slice::from_ref(n)))
+    });
+    InvoiceBooksView {
+        basis: session.basis(),
+        number,
+        status: doc.header.status,
+        bookings,
+        receivable,
+        voids,
+        payments,
+        books_paid_text: books_paid.as_ref().map(|b| b.text(&style)),
+        books_paid,
+        paid: doc.header.paid.clone(),
+        in_step,
+        problems,
+    }
+}
+
 /// `[books]`, as `config` shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]

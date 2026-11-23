@@ -133,6 +133,12 @@ impl Session {
             .get_or_init(|| BookStates::build(self.editor.journal(), self.basis()))
     }
 
+    /// The journal as the session read it (or last reloaded it).
+    #[must_use]
+    pub fn journal(&self) -> &ledgeline_core::model::Journal {
+        self.editor.journal()
+    }
+
     /// The books as the session read them (no second parse), for read-only
     /// use: `check`'s books checks.
     ///

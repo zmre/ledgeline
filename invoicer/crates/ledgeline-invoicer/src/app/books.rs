@@ -15,7 +15,8 @@ use invoicer_core::reconcile::{self, ReconcileOptions, Reconciled};
 use invoicer_core::session::Session;
 use ledgeline_core::vault::{Vault, VaultPath};
 use mbr_core::Config as MbrConfig;
-use mbr_server::LiveServer;
+use mbr_core::standalone::Renderer;
+use mbr_server::{LiveServer, Server};
 
 use super::APP;
 
@@ -29,9 +30,15 @@ pub(crate) struct OpenBooks {
     vault: Arc<dyn Vault>,
     main: VaultPath,
     session: Mutex<Session>,
-    /// MBR over the books folder. Its router holds the server; the last
-    /// router dropped stops the server's background tasks.
+    /// MBR's router over the books folder.
     mbr: Router,
+    /// MBR over the books folder. The last holder dropped (this, or a
+    /// router still answering a request) stops its background tasks.
+    live: Arc<LiveServer>,
+    /// The preview's renderer (`POST /api/preview`), built on first use and
+    /// again whenever MBR's server is rebuilt (a `.mbr/config.toml` change),
+    /// paired with the server it was built for.
+    renderer: Mutex<Option<(Arc<Server>, Arc<Renderer>)>>,
 }
 
 impl std::fmt::Debug for OpenBooks {
@@ -56,14 +63,43 @@ impl OpenBooks {
         let session = Session::open_local(&journal).map_err(|e| e.to_string())?;
         let vault = session.shared_vault();
         let main = session.main().clone();
-        let mbr = mbr_router(vault.root(), gui)?;
+        let live = mbr_live(vault.root(), gui)?;
         Ok(Self {
             journal,
             vault,
             main,
             session: Mutex::new(session),
-            mbr,
+            mbr: live.router(),
+            live,
+            renderer: Mutex::new(None),
         })
+    }
+
+    /// MBR's standalone renderer over the books folder, for previews of
+    /// unsaved text (MBR-CHANGES M3). One renderer serves every preview: it
+    /// loads MBR's templates once and never rescans the folder; its body
+    /// wikilinks resolve against the live server's index, which MBR's
+    /// watcher keeps current.
+    ///
+    /// # Errors
+    /// When MBR's configuration or templates can't be read.
+    pub(crate) fn renderer(&self) -> Result<Arc<Renderer>, String> {
+        let server = self.live.current();
+        let mut slot = self.renderer.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((built_for, renderer)) = slot.as_ref()
+            && Arc::ptr_eq(built_for, &server)
+        {
+            return Ok(Arc::clone(renderer));
+        }
+        let config =
+            mbr_config(self.vault.root()).map_err(|e| format!("MBR configuration: {e}"))?;
+        let renderer = Arc::new(
+            Renderer::new(&config)
+                .map_err(|e| format!("MBR templates: {e}"))?
+                .with_wikilink_index(Arc::clone(&server.repo().wikilink_index)),
+        );
+        *slot = Some((server, Arc::clone(&renderer)));
+        Ok(renderer)
     }
 
     /// The main journal, canonical.
@@ -104,7 +140,8 @@ impl OpenBooks {
     /// React to the files `changed` on disk (a settled watcher burst):
     /// re-read what changed, then reconcile the invoices it touched.
     ///
-    /// - a markdown file under the folder: the document index refreshes it;
+    /// - a markdown or `.html` file under the folder: the document index
+    ///   refreshes it (an `.html` file may be a template);
     /// - a journal file: the journal and `[books]` are read again, and the
     ///   invoices whose payment state moved are reconciled;
     /// - `ledgeline.toml`: the session is opened afresh (`[invoicer]` may
@@ -134,9 +171,11 @@ impl OpenBooks {
         }
 
         let mut numbers: BTreeSet<String> = BTreeSet::new();
+        // Markdown notes, and `.html` files (templates: `/api/templates`
+        // lists what the index's scan found).
         let markdown: Vec<VaultPath> = changed
             .iter()
-            .filter(|p| is_markdown(p))
+            .filter(|p| is_markdown(p) || is_html(p))
             .filter_map(|p| self.vault.vault_path(p).ok())
             .collect();
         if !markdown.is_empty() {
@@ -225,6 +264,12 @@ fn is_markdown(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown"))
 }
 
+/// Whether `path` is an HTML file (a template, perhaps).
+fn is_html(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
+}
+
 /// Whether `a` and `b` name the same file, comparing canonical parents (the
 /// file itself may be mid-rename).
 fn same_file(a: &Path, b: &Path) -> bool {
@@ -248,13 +293,12 @@ fn mbr_config(root: &Path) -> Result<MbrConfig, mbr_core::errors::MbrError> {
     Ok(config)
 }
 
-/// MBR's router over `root`: a [`LiveServer`], so a change to the folder's
+/// MBR over `root`: a [`LiveServer`], so a change to the folder's
 /// `.mbr/config.toml` applies without a restart (read with the same
 /// overrides).
-fn mbr_router(root: &Path, gui: bool) -> Result<Router, String> {
+fn mbr_live(root: &Path, gui: bool) -> Result<Arc<LiveServer>, String> {
     let config = mbr_config(root).map_err(|e| format!("MBR configuration: {e}"))?;
     let root = root.to_path_buf();
-    let live = LiveServer::init(config, gui, Arc::new(move || mbr_config(&root)))
-        .map_err(|e| format!("starting MBR: {e}"))?;
-    Ok(live.router())
+    LiveServer::init(config, gui, Arc::new(move || mbr_config(&root)))
+        .map_err(|e| format!("starting MBR: {e}"))
 }

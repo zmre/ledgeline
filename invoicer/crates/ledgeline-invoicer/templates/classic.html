@@ -1,0 +1,251 @@
+{# invoicer: name="Classic" kinds="invoice,estimate,credit-note" #}
+{#-
+  Ledgeline Invoicer's "Classic" starter template: a serif letterhead,
+  ruled lines and a right-aligned bill table.
+
+  It was copied into your books folder the first time an invoice used it,
+  and it is yours now: the invoicer never overwrites it. Edit freely. It is
+  an MBR page template (Tera), so it sees exactly what MBR sees:
+
+  - `frontmatter`: the invoice's frontmatter (`frontmatter.invoice_num`,
+    `frontmatter.invoicee_address`, your own custom fields, …);
+  - `markdown`: the rendered body, the bill table included.
+
+  To print on A4, change `size: letter` below to `size: A4`.
+-#}
+{%- set fm = frontmatter -%}
+{%- set kind = "Invoice" -%}
+{%- if fm.type == "estimate" %}{% set kind = "Estimate" %}{% elif fm.type == "credit-note" %}{% set kind = "Credit note" %}{% endif -%}
+{%- set paid = fm.paid | default(value="") | as_str -%}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ fm.title | default(value=kind ~ " " ~ fm.invoice_num) }}</title>
+{#- Tells MBR's PDF export when the page is ready (fonts, images). -#}
+{% include "/.mbr/_export_ready.html" %}
+<style>
+  @page { size: letter; margin: 0.7in 0.75in; }
+
+  :root {
+    --ink: #1d1d1b;
+    --muted: #6b6860;
+    --rule: #cfcac0;
+    --accent: #7a2e1f;
+    --paper: #fffefb;
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body {
+    margin: 0;
+    color: var(--ink);
+    font-family: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    font-size: 10.5pt;
+    line-height: 1.45;
+    font-variant-numeric: lining-nums tabular-nums;
+  }
+
+  .sheet { background: var(--paper); }
+
+  /* The letterhead. */
+  .letterhead {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 2rem;
+    padding-bottom: 0.9rem;
+    border-bottom: 3px double var(--ink);
+  }
+  .company-name {
+    margin: 0;
+    font-size: 20pt;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    font-variant: small-caps;
+  }
+  .company-contact { margin-top: 0.25rem; color: var(--muted); font-size: 9.5pt; }
+  .doc-title { text-align: right; }
+  .doc-title h1 {
+    margin: 0;
+    font-size: 13pt;
+    font-weight: 400;
+    letter-spacing: 0.32em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  .doc-number { margin-top: 0.15rem; font-size: 16pt; }
+
+  /* Who it's for, and the dates. */
+  .parties {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 2rem;
+    margin: 1.4rem 0 1.6rem;
+  }
+  .label {
+    display: block;
+    margin-bottom: 0.2rem;
+    color: var(--muted);
+    font-size: 8pt;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+  .bill-to .name { font-size: 12pt; font-weight: 600; }
+  .bill-to .email { color: var(--muted); }
+  .details { border-collapse: collapse; }
+  .details th {
+    padding: 0.1rem 1.2rem 0.1rem 0;
+    color: var(--muted);
+    font-size: 8pt;
+    font-weight: 400;
+    letter-spacing: 0.16em;
+    text-align: left;
+    text-transform: uppercase;
+    vertical-align: baseline;
+  }
+  .details td { padding: 0.1rem 0; text-align: right; vertical-align: baseline; }
+
+  /* The body: prose, the bill table and any supporting tables. */
+  .body :is(section, main) > :first-child { margin-top: 0; }
+  .body p { margin: 0 0 0.8rem; }
+  .body h2 {
+    margin: 1.6rem 0 0.5rem;
+    padding-bottom: 0.2rem;
+    border-bottom: 1px solid var(--rule);
+    font-size: 8.5pt;
+    font-weight: 400;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .body h3 { margin: 1.2rem 0 0.4rem; font-size: 11pt; }
+  .body a { color: inherit; }
+  .body table { width: 100%; margin: 0.6rem 0 1.2rem; border-collapse: collapse; }
+  .body thead th {
+    padding: 0.35rem 0.5rem;
+    border-bottom: 1.5px solid var(--ink);
+    font-size: 8pt;
+    font-weight: 400;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+  .body td { padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  .body :is(th, td):first-child { padding-left: 0; }
+  .body :is(th, td):last-child { padding-right: 0; }
+  .body tr { break-inside: avoid; }
+  .body thead { display: table-header-group; }
+  /* Subtotal and total rows (their cells are bold): ruled under the label
+     and the amount only, as a ledger is; the last one is the amount due. */
+  .body tbody tr:has(td strong) td { border-bottom: none; }
+  .body tbody tr:has(td strong) td:has(strong) { border-top: 1px solid var(--ink); }
+  .body tbody tr:last-child:has(td strong) td { padding-top: 0.55rem; font-size: 12pt; }
+  .body tbody tr:last-child:has(td strong) td:has(strong) { border-top: 1.5px solid var(--ink); border-bottom: 3px double var(--ink); }
+
+  /* The books column: last column, italic header. Works in any engine with :has(). */
+  table:has(thead th:last-child > em:only-child) :is(th, td):last-child { display: none; }
+
+  .stamp {
+    display: inline-block;
+    margin-top: 0.5rem;
+    padding: 0.1rem 0.65rem;
+    border: 2px solid currentColor;
+    border-radius: 3px;
+    font-size: 14pt;
+    letter-spacing: 0.24em;
+    text-transform: uppercase;
+    transform: rotate(-4deg);
+    opacity: 0.75;
+  }
+  .stamp.draft { color: #8a8478; }
+  .stamp.void { color: #a3271a; }
+  .stamp.paid { color: #2d6a3e; }
+
+  .footer { margin-top: 2rem; padding-top: 0.5rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: 8.5pt; text-align: center; }
+
+  @media screen {
+    body { background: #e8e6e1; padding: 24px 12px; }
+    .sheet {
+      max-width: 8.5in;
+      min-height: 11in;
+      margin: 0 auto;
+      padding: 0.7in 0.75in;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 8px 24px rgba(0, 0, 0, 0.08);
+    }
+  }
+  @media screen and (max-width: 640px) {
+    .sheet { padding: 1.5rem 1.25rem; min-height: 0; }
+    .letterhead, .parties { display: block; }
+    .doc-title, .details td { text-align: left; }
+    .details { margin-top: 1rem; }
+  }
+  @media print {
+    body { background: none; }
+    .sheet { background: none; }
+  }
+</style>
+</head>
+<body>
+<article class="sheet">
+  <header class="letterhead">
+    <div>
+      <p class="company-name">{{ fm.invoicer_name | default(value="") }}</p>
+      <div class="company-contact">
+        {%- if fm.invoicer_address %}{{ fm.invoicer_address | trim | escape | linebreaksbr | safe }}{% endif %}
+        {%- if fm.invoicer_email %}<br>{{ fm.invoicer_email }}{% endif %}
+      </div>
+    </div>
+    <div class="doc-title">
+      <h1>{{ kind }}</h1>
+      <div class="doc-number">No. {{ fm.invoice_num }}</div>
+      {%- if fm.status == "void" %}
+      <div class="stamp void">Void</div>
+      {%- elif fm.status == "draft" %}
+      <div class="stamp draft">Draft</div>
+      {%- elif paid is matching("^\d{4}-\d{2}-\d{2}") %}
+      <div class="stamp paid">Paid</div>
+      {%- endif %}
+    </div>
+  </header>
+
+  <section class="parties">
+    <div class="bill-to">
+      <span class="label">Bill to</span>
+      <div class="name">{{ fm.invoicee_name | default(value="") }}</div>
+      {%- if fm.invoicee_address %}
+      <div>{{ fm.invoicee_address | trim | escape | linebreaksbr | safe }}</div>
+      {%- endif %}
+      {%- if fm.invoicee_email %}
+      <div class="email">{{ fm.invoicee_email }}</div>
+      {%- endif %}
+    </div>
+    <table class="details">
+      {%- if fm.date %}
+      <tr><th>Date</th><td>{{ fm.date | date(format="%B %-d, %Y") }}</td></tr>
+      {%- endif %}
+      {%- if fm.due_date and kind != "Credit note" %}
+      <tr><th>{% if kind == "Estimate" %}Valid until{% else %}Due{% endif %}</th><td>{{ fm.due_date | date(format="%B %-d, %Y") }}</td></tr>
+      {%- endif %}
+      {%- if fm.terms and kind == "Invoice" %}
+      <tr><th>Terms</th><td>Net {{ fm.terms }}</td></tr>
+      {%- endif %}
+      {%- if fm.reference %}
+      <tr><th>Reference</th><td>{{ fm.reference }}</td></tr>
+      {%- endif %}
+      {%- if fm.deposit_for %}
+      <tr><th>Deposit for</th><td>{{ fm.deposit_for }}</td></tr>
+      {%- endif %}
+    </table>
+  </section>
+
+  <main class="body">
+    {{ markdown | safe }}
+  </main>
+
+  {%- if fm.invoicer_email %}
+  <footer class="footer">Questions about this {{ kind | lower }}? Write to {{ fm.invoicer_email }}.</footer>
+  {%- endif %}
+</article>
+</body>
+</html>

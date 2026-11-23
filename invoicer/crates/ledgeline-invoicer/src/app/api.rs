@@ -11,12 +11,16 @@
 //! | `GET /api/books`            | The open books: journal, basis, counts.        |
 //! | `GET /api/invoices`         | `list --json` (`status`, `customer`, `type`, `open`, `overdue`, `today`). |
 //! | `GET /api/invoices/{num}`   | `show --json` (`today`).                       |
+//! | `GET /api/invoices/{num}/books` | The Books panel: what the journal holds (3b). |
+//! | `POST /api/preview`         | An invoice rendered from unsaved text (3b).    |
+//! | `GET /api/templates`        | The templates, and starters not copied in (3b). |
 //! | `GET /api/customers`        | `customers list --json`.                       |
 //! | `GET`/`PATCH /api/ui-prefs` | The shared theme and scale (Ledgeline's shape). |
 //! | `POST /api/session`         | The cookie MBR's pages need ([`super::mbr`]).  |
 //!
 //! Errors are `{"error": "…"}` with a status: `400` for a bad parameter,
-//! `404` for an unknown invoice, `409` when no books are open.
+//! `404` for an unknown invoice, `409` when no books are open, `422` for a
+//! page template that can't render (a fixable problem in the files).
 
 use std::sync::Arc;
 
@@ -37,6 +41,7 @@ use serde_json::{Value, json};
 
 use super::books::OpenBooks;
 use super::mbr::MbrGate;
+use super::preview::{self, PreviewError, PreviewRequest};
 use super::{AppState, prefs};
 
 /// The API routes (state still to be supplied).
@@ -46,6 +51,9 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/books", get(books))
         .route("/api/invoices", get(invoices))
         .route("/api/invoices/{number}", get(invoice))
+        .route("/api/invoices/{number}/books", get(invoice_books))
+        .route("/api/preview", post(preview))
+        .route("/api/templates", get(templates))
         .route("/api/customers", get(customers))
         .route("/api/ui-prefs", get(ui_prefs).patch(patch_ui_prefs))
         .route("/api/session", post(session))
@@ -87,13 +95,15 @@ async fn with_books<F>(state: &AppState, f: F) -> ApiResult
 where
     F: FnOnce(&OpenBooks) -> Result<Value, ApiError> + Send + 'static,
 {
-    let books = state.books().ok_or_else(|| {
-        ApiError(
-            StatusCode::CONFLICT,
-            "no books are open; choose File → Open".to_string(),
-        )
-    })?;
+    let books = state.books().ok_or_else(no_books)?;
     blocking(move || f(&books)).await
+}
+
+fn no_books() -> ApiError {
+    ApiError(
+        StatusCode::CONFLICT,
+        "no books are open; choose File → Open".to_string(),
+    )
 }
 
 /// Run `f` on the blocking pool, answering its JSON.
@@ -230,6 +240,61 @@ async fn invoice(
         to_value(detail)
     })
     .await
+}
+
+/// `GET /api/invoices/{number}/books`: the Books panel (what the journal
+/// holds under the invoice's number), by number or path.
+async fn invoice_books(State(state): State<AppState>, Path(number): Path<String>) -> ApiResult {
+    with_books(&state, move |books| {
+        let session = books.session();
+        let doc = session
+            .find(&number)
+            .map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+        to_value(views::invoice_books(&session, doc))
+    })
+    .await
+}
+
+impl From<PreviewError> for ApiError {
+    fn from(error: PreviewError) -> Self {
+        match error {
+            PreviewError::BadRequest(m) => Self(StatusCode::BAD_REQUEST, m),
+            PreviewError::NotFound(m) => Self(StatusCode::NOT_FOUND, m),
+            PreviewError::Template(m) => Self(StatusCode::UNPROCESSABLE_ENTITY, m),
+            PreviewError::Internal(m) => Self(StatusCode::INTERNAL_SERVER_ERROR, m),
+        }
+    }
+}
+
+/// `POST /api/preview`: render an invoice (unsaved text, or the saved file)
+/// through its template or another ([`preview`]). Writes nothing.
+async fn preview(
+    State(state): State<AppState>,
+    payload: Result<Json<PreviewRequest>, JsonRejection>,
+) -> ApiResult {
+    let Json(request) = payload.map_err(|e| ApiError::bad_request(e.body_text()))?;
+    let books = state.books().ok_or_else(no_books)?;
+    let rendered = tokio::task::spawn_blocking(move || preview::render(&books, request))
+        .await
+        .map_err(|e| {
+            ApiError(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("the request failed: {e}"),
+            )
+        })??;
+    let mut response = no_store_json(to_value(&rendered)?);
+    if let Ok(timing) =
+        axum::http::HeaderValue::from_str(&format!("render;dur={:.2}", rendered.render_ms))
+    {
+        response.headers_mut().insert("server-timing", timing);
+    }
+    Ok(response)
+}
+
+/// `GET /api/templates`: the books' templates, then the starters not
+/// copied in yet.
+async fn templates(State(state): State<AppState>) -> ApiResult {
+    with_books(&state, |books| to_value(preview::templates(books))).await
 }
 
 /// `GET /api/customers`: `customers list --json`.

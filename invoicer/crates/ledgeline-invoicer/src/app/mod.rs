@@ -21,6 +21,7 @@ pub(crate) mod books;
 mod gui;
 pub(crate) mod mbr;
 pub(crate) mod prefs;
+pub(crate) mod preview;
 mod serve;
 pub(crate) mod watch;
 

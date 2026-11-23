@@ -110,6 +110,9 @@
       # missing folder, so it has to survive the filter.
       # `invoicer/crates/ledgeline-invoicer/tests/snapshots/` holds the CLI
       # integration tests' committed JSON and text snapshots, read at runtime.
+      # `invoicer/crates/ledgeline-invoicer/templates/` holds the starter
+      # invoice templates: `include_str!`ed into the binary, and read at
+      # runtime by the CLI tests that check a copy is byte for byte.
       src = lib.cleanSourceWith {
         src = ./.;
         name = "ledgeline-source";
@@ -120,6 +123,7 @@
           || (lib.hasSuffix "/crates/ledgeline-core/src/feeds/mcc.tsv" path)
           || (builtins.match ".*/crates/ledgeline-shell/testdata(/.*)?" path != null)
           || (builtins.match ".*/crates/ledgeline-invoicer/tests/snapshots(/.*)?" path != null)
+          || (builtins.match ".*/crates/ledgeline-invoicer/templates(/.*)?" path != null)
           || (lib.hasSuffix "/assets" path && type == "directory")
           || (lib.hasSuffix "/assets/Info.plist.in" path);
       };

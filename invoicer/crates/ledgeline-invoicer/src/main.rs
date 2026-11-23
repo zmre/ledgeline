@@ -27,6 +27,7 @@
 #[cfg(feature = "server")]
 mod app;
 mod human;
+mod starters;
 
 use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser, Subcommand};
 use invoicer_core::books::{
@@ -41,6 +42,7 @@ use invoicer_core::index::ListFilter;
 use invoicer_core::reconcile::{self, MirrorChange, ReconcileOptions};
 use invoicer_core::session::Session;
 use invoicer_core::table::books::is_iso_date;
+use invoicer_core::templates;
 use invoicer_core::views::{self, ListQuery};
 use ledgeline_core::vault::VaultPath;
 use ledgeline_shell::AppDirs;
@@ -516,6 +518,39 @@ fn new_rows(
     Ok(rows.into_iter().map(|(_, row)| row).collect())
 }
 
+/// The starter template `new` uses (PLAN 3b): the template `--template` or
+/// the customer's `invoice_template` names, when that is a starter's path in
+/// `templates-dir`; else, when the books have no invoice template at all,
+/// the default starter. Returns the `template:` value to write when it is
+/// the default starter's (otherwise the draft picks it as before), and the
+/// starter to copy in once the invoice is written. Nothing for an unknown
+/// customer: the draft reports that.
+fn starter_for_new(
+    session: &Session,
+    args: &NewArgs,
+) -> (Option<String>, Option<&'static starters::Starter>) {
+    let dir = &session.settings().templates_dir;
+    let Ok(customer) = views::find_customer(session.index(), &args.customer) else {
+        return (None, None);
+    };
+    match args.template.clone().or(customer.invoice_template) {
+        Some(value) => (None, starters::named(dir, &value)),
+        None => {
+            let has_one = templates::discover(session.vault(), session.index().site())
+                .iter()
+                .any(|t| t.supports(DocType::Invoice));
+            if has_one {
+                (None, None)
+            } else {
+                (
+                    starters::template_value(dir, starters::DEFAULT),
+                    Some(starters::DEFAULT),
+                )
+            }
+        }
+    }
+}
+
 fn run_new(cli: &Cli, args: &NewArgs, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
     let mut session = open(cli)?;
     let rows = new_rows(&session, args, matches)?;
@@ -524,8 +559,9 @@ fn run_new(cli: &Cli, args: &NewArgs, matches: Option<&ArgMatches>) -> Result<Ex
         .iter()
         .map(|f| edit::assignment(f))
         .collect::<Result<Vec<_>, WriteError>>()?;
+    let (starter_template, starter) = starter_for_new(&session, args);
     let new = NewInvoice {
-        template: args.template.clone(),
+        template: args.template.clone().or(starter_template),
         number: args.number.clone(),
         terms: args.terms,
         reference: args.reference.clone(),
@@ -540,6 +576,21 @@ fn run_new(cli: &Cli, args: &NewArgs, matches: Option<&ArgMatches>) -> Result<Ex
     let booked: Vec<&str> = booked.iter().map(String::as_str).collect();
     let (index, vault) = session.parts_mut();
     let created = edit::create(index, vault, &new, &booked, args.dry_run)?;
+    // The starter it uses is copied in now that the invoice is written
+    // (first use; an existing file is never replaced), and indexed so
+    // `check` knows the template at once.
+    let copied = match starter.filter(|_| !args.dry_run) {
+        Some(starter) => {
+            let dir = session.settings().templates_dir.clone();
+            let installed = starters::install(session.vault(), &dir, starter).map_err(|e| {
+                Failure(format!("copying the {} template: {e}", starter.name), None)
+            })?;
+            let (index, vault) = session.parts_mut();
+            index.refresh(vault, std::slice::from_ref(&installed.path));
+            installed.written.then_some(installed.path)
+        }
+        None => None,
+    };
     let problems: Vec<_> = if args.dry_run {
         Vec::new()
     } else {
@@ -553,14 +604,24 @@ fn run_new(cli: &Cli, args: &NewArgs, matches: Option<&ArgMatches>) -> Result<Ex
         #[serde(flatten)]
         created: &'a edit::Created,
         problems: Vec<invoicer_core::problem::Problem>,
+        /// The starter template this invoice uses, copied in on first use.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        template_copied: Option<&'a VaultPath>,
     }
     emit(
         cli.json,
         &Out {
             created: &created,
             problems,
+            template_copied: copied.as_ref(),
         },
-        |out| human::created(out.created, &out.problems),
+        |out| {
+            let mut text = human::created(out.created, &out.problems);
+            if let Some(path) = out.template_copied {
+                text.push_str(&format!("  copied the starter template to {path}\n"));
+            }
+            text
+        },
     );
     Ok(ExitCode::SUCCESS)
 }
