@@ -267,6 +267,12 @@ build:
 build-invoicer:
     cd invoicer/web && bun run build
 
+# The invoicer's headless server (port 5199) over a journal, for the SPA's
+# `vite dev` on 4273 (invoicer PLAN 3a). Run it on a copy of a fixture: the
+# reconciler writes `paid:` mirrors.
+invoicer-server JOURNAL:
+    cargo run -p ledgeline-invoicer -- --server {{JOURNAL}}
+
 # The SPA is built inside Nix, so no prior `just build` is needed. The bundle
 # also carries its own `hledger` in Contents/MacOS/ (see docs/development/releasing.md).
 # Build the macOS app bundle (Ledgeline.app) with the real SPA embedded, via Nix

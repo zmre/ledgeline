@@ -9,8 +9,13 @@
 //!
 //! This file parses arguments, opens the books and prints; each operation is
 //! one `invoicer_core` function (`session`, `views`, `edit`, `books`,
-//! `reconcile`, `receivables`), shared with the API to come. The GUI
-//! arrives in Phase 3.
+//! `reconcile`, `receivables`), shared with the API ([`app`]).
+//!
+//! **CLI or app** (PLAN 3a): a subcommand is a job, run and exit, whatever
+//! the build. With no subcommand, a build with the `server` feature runs the
+//! app: `--server` is the headless server (e2e, port 5199), otherwise the
+//! window (`gui`, the default build). A CLI-only build
+//! (`--no-default-features`) asks for a command.
 //!
 //! Every write to the books is retried once when the journal or the file
 //! changed between reading and writing (Ledgeline saved meanwhile): nothing
@@ -19,6 +24,8 @@
 //! Exit codes: 0 done; 1 `check` or `reconcile` found errors; 2 the command
 //! couldn't run (a usage error, books that don't open, a refused write).
 
+#[cfg(feature = "server")]
+mod app;
 mod human;
 
 use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser, Subcommand};
@@ -68,6 +75,30 @@ struct Cli {
     /// what "overdue" is measured against. Default: the local date.
     #[arg(long, value_name = "DATE", global = true)]
     today: Option<String>,
+
+    /// Run the headless server (API, SPA and MBR pages; no window), for
+    /// e2e and scripts. Default port 5199.
+    #[cfg(feature = "server")]
+    #[arg(short = 's', long)]
+    server: bool,
+
+    /// The address the server binds (the app only).
+    #[cfg(feature = "server")]
+    #[arg(long, default_value = app::DEFAULT_HOST)]
+    host: String,
+
+    /// The port the server binds (the app only). Default: 5199 with
+    /// --server, an ephemeral port for the window.
+    #[cfg(feature = "server")]
+    #[arg(long)]
+    port: Option<u16>,
+
+    /// DEV ONLY: let a browser SPA on this exact origin call the API
+    /// cross-origin (e.g. `--allow-origin http://localhost:4273`).
+    /// Repeatable; never a wildcard.
+    #[cfg(feature = "server")]
+    #[arg(long = "allow-origin", value_name = "ORIGIN")]
+    allow_origin: Vec<String>,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -356,8 +387,9 @@ enum Source {
 }
 
 /// The journal to open: JOURNAL or `-f`, then `$LEDGELINE_FIXTURE`, then the
-/// most recent journal (shared with Ledgeline). Never `$LEDGER_FILE`.
-fn resolve_journal(cli: &Cli) -> Result<(PathBuf, Source), Failure> {
+/// most recent journal (shared with Ledgeline), or none. Never
+/// `$LEDGER_FILE`.
+fn find_journal(cli: &Cli) -> Result<Option<(PathBuf, Source)>, Failure> {
     if let (Some(a), Some(b)) = (&cli.journal, &cli.file)
         && a != b
     {
@@ -367,18 +399,25 @@ fn resolve_journal(cli: &Cli) -> Result<(PathBuf, Source), Failure> {
         ));
     }
     if let Some(path) = cli.journal.clone().or_else(|| cli.file.clone()) {
-        return Ok((path, Source::Given));
+        return Ok(Some((path, Source::Given)));
     }
     if let Some(path) = std::env::var_os(FIXTURE_ENV).filter(|v| !v.is_empty()) {
-        return Ok((PathBuf::from(path), Source::Env));
+        return Ok(Some((PathBuf::from(path), Source::Env)));
     }
-    ledgeline_shell::recents::most_recent(&AppDirs::from_env())
-        .map(|path| (path, Source::Recent))
-        .ok_or_else(|| {
-            Failure(format!(
+    Ok(ledgeline_shell::recents::most_recent(&AppDirs::from_env())
+        .map(|path| (path, Source::Recent)))
+}
+
+/// [`find_journal`], where a command needs one.
+fn resolve_journal(cli: &Cli) -> Result<(PathBuf, Source), Failure> {
+    find_journal(cli)?.ok_or_else(|| {
+        Failure(
+            format!(
                 "no journal: pass one (ledgeline-invoicer -f books.journal list) or set ${FIXTURE_ENV}"
-            ), None)
-        })
+            ),
+            None,
+        )
+    })
 }
 
 fn open(cli: &Cli) -> Result<Session, Failure> {
@@ -532,11 +571,7 @@ fn parse_status(text: &str) -> Result<Status, Failure> {
 
 fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
     let Some(command) = &cli.command else {
-        return Err(Failure(
-            "the invoicer's window arrives in a later release; run a command (see --help)"
-                .to_string(),
-            None,
-        ));
+        return run_app(cli);
     };
     match command {
         Command::New(args) => run_new(cli, args, matches),
@@ -715,6 +750,37 @@ fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+/// No subcommand: the app (the window, or `--server`). `--json` means a
+/// script is asking, and a script never wants a window: it needs a command.
+#[cfg(feature = "server")]
+fn run_app(cli: &Cli) -> Result<ExitCode, Failure> {
+    if cli.json {
+        return Err(Failure(
+            "--json needs a command (see --help)".to_string(),
+            None,
+        ));
+    }
+    let args = app::AppArgs {
+        journal: find_journal(cli)?.map(|(path, _)| path),
+        server: cli.server,
+        host: cli.host.clone(),
+        port: cli.port,
+        allow_origin: cli.allow_origin.clone(),
+    };
+    app::run(&args).map_err(|message| Failure(message, None))?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// No subcommand in a CLI-only build.
+#[cfg(not(feature = "server"))]
+fn run_app(_cli: &Cli) -> Result<ExitCode, Failure> {
+    Err(Failure(
+        "built without the app (the `server` and `gui` features); run a command (see --help)"
+            .to_string(),
+        None,
+    ))
 }
 
 fn run_send(cli: &Cli, args: &SendArgs) -> Result<ExitCode, Failure> {

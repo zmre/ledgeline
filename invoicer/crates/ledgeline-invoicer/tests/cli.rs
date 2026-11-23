@@ -122,12 +122,32 @@ impl Books {
         String::from_utf8(out.stdout).expect("utf-8")
     }
 
-    /// `value` as committed: pretty JSON with this copy's folder written
-    /// `<BOOKS>`.
+    /// `value` as committed: pretty JSON, keys sorted, with this copy's
+    /// folder written `<BOOKS>`. Sorted here because the build's
+    /// serde_json may keep insertion order (`preserve_order`, which MBR's
+    /// Tera turns on in the app build) or sort, and a JSON object's key
+    /// order is no part of the output's meaning.
     fn normalized(&self, value: &Value) -> String {
         let root = fs::canonicalize(self.root()).expect("canonical");
-        let text = serde_json::to_string_pretty(value).expect("json");
+        let text = serde_json::to_string_pretty(&sorted(value)).expect("json");
         format!("{}\n", text.replace(&root.display().to_string(), "<BOOKS>"))
+    }
+}
+
+/// `value` with every object's keys in sorted order, whatever the map type.
+fn sorted(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            Value::Object(
+                keys.into_iter()
+                    .map(|k| (k.clone(), sorted(&map[k])))
+                    .collect(),
+            )
+        }
+        Value::Array(items) => Value::Array(items.iter().map(sorted).collect()),
+        other => other.clone(),
     }
 }
 
@@ -561,7 +581,11 @@ fn bad_arguments_exit_2() {
     assert_eq!(bad_today.status.code(), Some(2));
     let missing = books.json(&["show", "999"], 2);
     assert!(missing["error"].as_str().expect("message").contains("999"));
+    // No command: `--json` never opens the window (a script is asking).
     let out = books.bare().arg("--json").output().expect("runs");
+    assert_eq!(out.status.code(), Some(2));
+    // `--server` with no journal to serve refuses before binding anything.
+    let out = books.bare().arg("--server").output().expect("runs");
     assert_eq!(out.status.code(), Some(2));
 }
 
