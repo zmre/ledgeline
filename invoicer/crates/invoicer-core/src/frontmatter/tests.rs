@@ -195,9 +195,12 @@ fn set_writes_nested_maps_and_lists_of_maps() {
     let value = json!([{"reference": "PO #1", "amount": "$40,000"}, {"reference": "PO #2"}]);
     let out = set("---\na: 1\n---\n", "open_pos", value.clone()).expect("edits");
     assert_eq!(fields(&out)["open_pos"], value);
-    // Nested maps are written in key order (a JSON object has no other).
+    // Nested maps are written in the JSON object's order: sorted by key,
+    // or as inserted when serde_json's `preserve_order` is on (MBR's Tera
+    // turns it on in a build that includes the app).
     assert!(
-        out.contains("open_pos:\n  - amount: $40,000\n    reference: \"PO #1\"\n"),
+        out.contains("open_pos:\n  - amount: $40,000\n    reference: \"PO #1\"\n")
+            || out.contains("open_pos:\n  - reference: \"PO #1\"\n    amount: $40,000\n"),
         "{out}"
     );
     let portal = json!({"name": "Coupa", "requires_reference": true, "instructions": "Upload\nthen attach\n"});

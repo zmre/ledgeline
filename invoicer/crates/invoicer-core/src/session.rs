@@ -244,6 +244,50 @@ impl Session {
             .find_map(|p| self.index.doc(&p))
             .ok_or_else(|| FindError::NotFound(wanted.to_string()))
     }
+
+    /// The vault, shared (for a long-lived holder: the app's server).
+    #[must_use]
+    pub fn shared_vault(&self) -> Arc<dyn Vault> {
+        Arc::clone(&self.vault)
+    }
+
+    /// Every file the journal was read from (the main journal and its
+    /// `include`s), as local paths: what a watcher watches.
+    #[must_use]
+    pub fn journal_files(&self) -> Vec<PathBuf> {
+        self.editor.journal().source_files.clone()
+    }
+
+    /// The journal's files whose bytes differ from what the session read.
+    /// Empty when the journal is as read (a touch, or a save of the same
+    /// bytes, is no change).
+    #[must_use]
+    pub fn changed_journal_files(&self) -> Vec<VaultPath> {
+        self.editor.changed_sources()
+    }
+
+    /// Read the journal and `[books]` again after a change on disk (the
+    /// app's watcher), keeping the document index. Answers the payment
+    /// state as it was before, when it had been read, so the caller can
+    /// reconcile only what changed ([`BookStates::changed_since`]).
+    ///
+    /// A change of the journal's money style is not picked up by the index's
+    /// bill-table summaries; the app reopens the session for that (a
+    /// settings change does the same).
+    ///
+    /// # Errors
+    /// [`OpenError`]; the session is then unchanged.
+    pub fn reload_books(&mut self) -> Result<Option<BookStates>, OpenError> {
+        let editor = self.editor.reopen().map_err(|e| OpenError::Journal {
+            path: self.main.to_string(),
+            source: Box::new(e),
+        })?;
+        let books = books_config::read(&*self.vault, &self.main)?;
+        self.booked = numbering::booked_numbers(editor.journal());
+        self.books = books;
+        self.editor = editor;
+        Ok(self.states.take())
+    }
 }
 
 #[cfg(test)]
@@ -290,6 +334,58 @@ mod tests {
             session.vault().vault_path(&local).ok(),
             Some(by_number.path.clone())
         );
+    }
+
+    #[test]
+    fn reloading_the_books_hands_back_the_state_before() {
+        let dir = tempfile_copy("accrual");
+        let journal = dir.join("books.journal");
+        let mut session = Session::open_local(&journal).expect("opens");
+        assert!(
+            session
+                .journal_files()
+                .iter()
+                .any(|f| f.ends_with("books.journal"))
+        );
+        // Never read: nothing to diff against.
+        assert!(session.reload_books().expect("reloads").is_none());
+        let before = session.book_states().numbers().len();
+        assert!(session.changed_journal_files().is_empty());
+        let text = std::fs::read_to_string(&journal).expect("reads");
+        std::fs::write(
+            &journal,
+            format!("{text}\n2026-12-01 Booked elsewhere  ; invoice:3001\n    assets:cash  $5\n    income:other\n"),
+        )
+        .expect("writes");
+        assert_eq!(session.changed_journal_files().len(), 1);
+        let old = session.reload_books().expect("reloads").expect("was read");
+        assert_eq!(old.numbers().len(), before);
+        assert!(session.booked_numbers().iter().any(|n| n == "3001"));
+        assert!(session.changed_journal_files().is_empty());
+    }
+
+    /// A private copy of a fixture in the temp dir.
+    fn tempfile_copy(name: &str) -> PathBuf {
+        let src = fixture(name);
+        let src = src.parent().expect("dir");
+        let dest =
+            std::env::temp_dir().join(format!("invoicer-session-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dest);
+        copy_tree(src, &dest);
+        dest
+    }
+
+    fn copy_tree(src: &Path, dest: &Path) {
+        std::fs::create_dir_all(dest).expect("mkdir");
+        for entry in std::fs::read_dir(src).expect("read_dir") {
+            let entry = entry.expect("entry");
+            let target = dest.join(entry.file_name());
+            if entry.file_type().expect("type").is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), &target).expect("copy");
+            }
+        }
     }
 
     #[test]
