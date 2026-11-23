@@ -23,6 +23,13 @@ export default defineConfig({
             version: {pollInterval: 0},
         }),
     ],
+    // The invoicer's ports differ from Ledgeline's (5173/4173 → 5099), so
+    // both e2e suites can run side by side (invoicer PLAN 3a): this SPA on
+    // 4273, the `ledgeline-invoicer --server` on 5199. The proxy keeps the
+    // SPA's requests same-origin, as the embedded app's are; open
+    // http://localhost:4273/app/#token=<the token --server prints>.
+    server: {port: 4273, strictPort: true, proxy: {"/api": {target: "http://127.0.0.1:5199", changeOrigin: true}}},
+    preview: {port: 4273, strictPort: true, proxy: {"/api": {target: "http://127.0.0.1:5199", changeOrigin: true}}},
     test: {
         expect: {requireAssertions: true},
         env: {TZ: "America/Denver"},

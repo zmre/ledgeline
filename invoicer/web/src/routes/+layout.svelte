@@ -1,14 +1,31 @@
 <script lang="ts">
     import "../app.css";
+    import {onMount} from "svelte";
     import {useAppearance} from "#ui/theme/appearance.svelte.js";
     import {APP_NAME, defaultAppearance} from "#lib/app.js";
+    import {appearanceFrom, fetchUiPrefs, startSession} from "#lib/api.js";
 
     let {children} = $props();
 
-    // The shared theme and UI scale, applied the way Ledgeline applies them.
-    // Defaults only until Phase 3 loads the saved prefs.
-    const appearance = $state(defaultAppearance());
+    // The shared theme and UI scale, applied the way Ledgeline applies them:
+    // defaults until the saved prefs (ui-prefs.toml and the books' pin) load.
+    const appearance = $state<{theme: string; uiScale: number; uiPrefsReady: boolean}>({...defaultAppearance()});
     useAppearance(appearance);
+
+    onMount(() => {
+        fetchUiPrefs()
+            .then((body) => {
+                const saved = appearanceFrom(body);
+                if (saved !== null) {
+                    appearance.theme = saved.theme;
+                    appearance.uiScale = saved.uiScale;
+                }
+                appearance.uiPrefsReady = true;
+            })
+            .catch((error: unknown) => console.warn("ui prefs:", error));
+        // The cookie MBR's pages need before any is shown in a frame.
+        startSession().catch((error: unknown) => console.warn("session:", error));
+    });
 </script>
 
 <svelte:head>
