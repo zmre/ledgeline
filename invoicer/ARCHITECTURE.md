@@ -322,7 +322,11 @@ amount due.
 save the editor recomputes all computed amounts. `ledgeline-invoicer recalc`
 does the same from the CLI. `ledgeline-invoicer check` reports a table whose
 written amounts disagree with its own arithmetic, for example after a hand
-edit, without changing anything.
+edit, without changing anything. The app recalculates a draft after an
+outside edit settles (`[invoicer] recalc-on-save = "drafts"`, the default,
+or `"never"`), only if the file is still what it read; a sent invoice it
+never rewrites on its own: the invoice page shows the mismatch, and its
+Recalculate re-books a sent invoice after a confirmation (PLAN F10).
 
 **The books column.** Its header is italic and it is the last column. The
 cell grammar is:
@@ -621,6 +625,7 @@ There are no new config files. This follows the rules in
 | `invoices-dir`, `customers-dir`, `templates-dir`, `catalog`, `company`                          | `ledgeline.toml [invoicer]`        | Hand, or the first-run setup action (an explicit action, like `[sync]`) |
 | `receivable-account`, `revenue-account`, `deposit-account`, `discount-account`                  | `ledgeline.toml [invoicer]`        | Hand / first-run setup                                                  |
 | `cash-deposits`, `payment-allocation` (accounting policy; PLAN "Configurable accounting flows") | `ledgeline.toml [invoicer]`        | Hand                                                                    |
+| `recalc-on-save` (`drafts` or `never`; PLAN F10)                                                | `ledgeline.toml [invoicer]`        | Hand                                                                    |
 | `filename`, `number-start`, `pdf-dir`                                                           | `ledgeline.toml [invoicer]`        | Hand                                                                    |
 | Recognized words (below)                                                                        | `ledgeline.toml [invoicer.words]`  | Hand                                                                    |
 | `basis`, `closed-through`, `recognition-file`                                                   | `ledgeline.toml [books]` (plan 45) | Shared with Ledgeline                                                   |
