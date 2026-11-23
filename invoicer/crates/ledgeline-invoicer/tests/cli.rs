@@ -1115,3 +1115,83 @@ fn reconcile_and_check_exit_1_on_books_errors() {
     assert_eq!(sent["journal_written"], true);
     assert_eq!(books.json(&["check"], 0)["errors"], 0);
 }
+
+// ---------------------------------------------------------------------------
+// `pdf` (PLAN 3c). Printing needs a real webview and the main thread, so the
+// export itself is `#[ignore]`d: the lead runs it on a desktop session with
+//   nix develop -c cargo test -p ledgeline-invoicer --test cli -- --ignored pdf_
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pdf_refuses_an_unknown_invoice_before_starting_anything() {
+    let books = Books::of("accrual");
+    let error = books.json(&["pdf", "999"], 2);
+    assert!(error["error"].as_str().unwrap().contains("999"), "{error}");
+}
+
+#[cfg(not(feature = "gui"))]
+#[test]
+fn pdf_needs_the_desktop_build() {
+    let books = Books::of("accrual");
+    let error = books.json(&["pdf", "105"], 2);
+    assert_eq!(error["code"], "needs-gui", "{error}");
+    assert!(
+        error["error"].as_str().unwrap().contains("`gui` feature"),
+        "{error}"
+    );
+}
+
+/// `pdftotext FILE -` when it is on PATH (the dev shell has it).
+#[cfg(feature = "gui")]
+fn pdf_text(file: &Path) -> Option<String> {
+    let out = Command::new("pdftotext").arg(file).arg("-").output().ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+#[cfg(feature = "gui")]
+#[test]
+#[ignore = "prints through the system webview: needs a desktop session (see above)"]
+fn pdf_keeps_a_sent_invoice_and_its_earlier_export() {
+    let books = Books::of("accrual");
+    let first = books.json(&["pdf", "105"], 0);
+    assert_eq!(first["destination"], "kept", "{first}");
+    assert_eq!(first["sent_hash"], "written", "{first}");
+    let kept = books.file("invoices/pdf/2026-11-10 Customer X Invoice 105.pdf");
+    let bytes = fs::read(&kept).expect("kept");
+    assert!(bytes.starts_with(b"%PDF-"));
+    if let Some(text) = pdf_text(&kept) {
+        assert!(text.contains("Customer X"), "{text}");
+        assert!(text.contains("8,350.00"), "{text}");
+        assert!(text.contains("Less deposit (Invoice 104)"), "{text}");
+        // The books column is hidden by the template.
+        assert!(!text.contains("liabilities:customer-deposits"), "{text}");
+    }
+    assert!(
+        books
+            .read("invoices/2026-11-10 Customer X Invoice 105.md")
+            .contains("sent_hash: ")
+    );
+
+    let second = books.json(&["pdf", "105"], 0);
+    let earlier = second["earlier"].as_str().expect("the first is kept");
+    assert!(books.file(earlier).is_file(), "{second}");
+
+    // A draft: a temporary file, the books untouched.
+    let draft = books.json(&["pdf", "108"], 0);
+    assert_eq!(draft["destination"], "temp", "{draft}");
+    let path = PathBuf::from(draft["path"].as_str().unwrap());
+    assert!(fs::read(&path).unwrap().starts_with(b"%PDF-"));
+    assert!(
+        !books
+            .read("invoices/2026-11-17 Customer X Invoice 108.md")
+            .contains("sent_hash")
+    );
+
+    // -o: a copy, nothing kept.
+    let copy = books.dir.path().join("copy.pdf");
+    let out = books.json(&["pdf", "105", "-o", copy.to_str().unwrap()], 0);
+    assert_eq!(out["destination"], "copy", "{out}");
+    assert!(fs::read(&copy).unwrap().starts_with(b"%PDF-"));
+}

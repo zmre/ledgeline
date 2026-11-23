@@ -102,6 +102,17 @@ impl OpenBooks {
         Ok(renderer)
     }
 
+    /// MBR's `[pdf]` settings for the books folder (paper, margins,
+    /// timeout), read afresh: a template's own `@page` still wins.
+    ///
+    /// # Errors
+    /// When MBR's configuration can't be read.
+    pub(crate) fn pdf_config(&self) -> Result<mbr_core::pdf_config::PdfConfig, String> {
+        mbr_config(self.vault.root())
+            .map(|config| config.pdf)
+            .map_err(|e| format!("MBR configuration: {e}"))
+    }
+
     /// The main journal, canonical.
     pub(crate) fn journal(&self) -> &Path {
         &self.journal

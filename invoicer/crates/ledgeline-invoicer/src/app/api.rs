@@ -14,6 +14,11 @@
 //! | `GET /api/invoices/{num}/books` | The Books panel: what the journal holds (3b). |
 //! | `POST /api/preview`         | An invoice rendered from unsaved text (3b).    |
 //! | `GET /api/templates`        | The templates, and starters not copied in (3b). |
+//! | `GET /api/invoices/{num}/pdf` | Sending it: where a PDF goes, kept PDFs, the portal, `sent_hash` (3c). |
+//! | `POST /api/invoices/{num}/pdf` | Export its PDF ([`super::pdf`], 3c).         |
+//! | `POST /api/invoices/{num}/send` | Mark it sent (book it), `sent_via` (3c).    |
+//! | `POST /api/invoices/{num}/portal` | Open its customer's billing portal (3c).  |
+//! | `POST /api/pdf/share`, `/api/pdf/copy` | Share… or Copy file an exported PDF (3c). |
 //! | `GET /api/customers`        | `customers list --json`.                       |
 //! | `GET`/`PATCH /api/ui-prefs` | The shared theme and scale (Ledgeline's shape). |
 //! | `POST /api/session`         | The cookie MBR's pages need ([`super::mbr`]).  |
@@ -41,6 +46,7 @@ use serde_json::{Value, json};
 
 use super::books::OpenBooks;
 use super::mbr::MbrGate;
+use super::pdf;
 use super::preview::{self, PreviewError, PreviewRequest};
 use super::{AppState, prefs};
 
@@ -54,6 +60,14 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/invoices/{number}/books", get(invoice_books))
         .route("/api/preview", post(preview))
         .route("/api/templates", get(templates))
+        .route(
+            "/api/invoices/{number}/pdf",
+            get(pdf::delivery).post(pdf::export),
+        )
+        .route("/api/invoices/{number}/send", post(pdf::send))
+        .route("/api/invoices/{number}/portal", post(pdf::open_portal))
+        .route("/api/pdf/share", post(pdf::share))
+        .route("/api/pdf/copy", post(pdf::copy_file))
         .route("/api/customers", get(customers))
         .route("/api/ui-prefs", get(ui_prefs).patch(patch_ui_prefs))
         .route("/api/session", post(session))
@@ -61,10 +75,10 @@ pub(crate) fn routes() -> Router<AppState> {
 
 /// An API failure: a status and a sentence.
 #[derive(Debug)]
-pub(crate) struct ApiError(StatusCode, String);
+pub(crate) struct ApiError(pub(crate) StatusCode, pub(crate) String);
 
 impl ApiError {
-    fn bad_request(message: impl Into<String>) -> Self {
+    pub(crate) fn bad_request(message: impl Into<String>) -> Self {
         Self(StatusCode::BAD_REQUEST, message.into())
     }
 }
@@ -87,11 +101,11 @@ impl From<UiPrefsError> for ApiError {
     }
 }
 
-type ApiResult = Result<Response, ApiError>;
+pub(crate) type ApiResult = Result<Response, ApiError>;
 
 /// Run `f` over the open books on the blocking pool (it locks the session
 /// and may read files), answering its JSON.
-async fn with_books<F>(state: &AppState, f: F) -> ApiResult
+pub(crate) async fn with_books<F>(state: &AppState, f: F) -> ApiResult
 where
     F: FnOnce(&OpenBooks) -> Result<Value, ApiError> + Send + 'static,
 {
@@ -99,7 +113,7 @@ where
     blocking(move || f(&books)).await
 }
 
-fn no_books() -> ApiError {
+pub(crate) fn no_books() -> ApiError {
     ApiError(
         StatusCode::CONFLICT,
         "no books are open; choose File → Open".to_string(),
@@ -107,7 +121,7 @@ fn no_books() -> ApiError {
 }
 
 /// Run `f` on the blocking pool, answering its JSON.
-async fn blocking<F>(f: F) -> ApiResult
+pub(crate) async fn blocking<F>(f: F) -> ApiResult
 where
     F: FnOnce() -> Result<Value, ApiError> + Send + 'static,
 {
@@ -120,13 +134,13 @@ where
     }
 }
 
-fn to_value(value: impl serde::Serialize) -> Result<Value, ApiError> {
+pub(crate) fn to_value(value: impl serde::Serialize) -> Result<Value, ApiError> {
     serde_json::to_value(value)
         .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
 /// `?today=` (YYYY-MM-DD), else the local date (as the CLI, PLAN C5).
-fn today(given: Option<&str>) -> Result<String, ApiError> {
+pub(crate) fn today(given: Option<&str>) -> Result<String, ApiError> {
     match given {
         Some(date) if is_iso_date(date) => Ok(date.to_string()),
         Some(date) => Err(ApiError::bad_request(format!(

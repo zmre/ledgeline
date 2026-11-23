@@ -759,6 +759,24 @@ impl InvoiceBooks {
             }
             _ => return Err(status_error(&document, "only a draft invoice can be sent")),
         };
+        // A vendor portal that rejects invoices without a PO rejects this
+        // one: refused before anything is booked (ARCHITECTURE §3.4).
+        if header
+            .reference
+            .as_deref()
+            .is_none_or(|r| r.trim().is_empty())
+            && let Ok(customer) = self.customer(index, &document)
+            && customer
+                .billing_portal
+                .as_ref()
+                .is_some_and(|p| p.requires_reference)
+        {
+            return Err(BooksError::Refused(format!(
+                "{}'s portal rejects invoices without a `reference`; add the customer's PO as \
+                 `reference` first",
+                customer.contact.title
+            )));
+        }
         let mut loaded = self.load()?;
         check_generation(&loaded, request.expected.as_ref())?;
         let booking = self.booking(index, &document, &loaded)?;

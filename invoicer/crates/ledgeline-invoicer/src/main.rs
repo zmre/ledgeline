@@ -5,6 +5,7 @@
 //! `check`, `next-number`, `config` and `customers list|show` write markdown
 //! only, never the journal (I2). The books (PLAN 2c): `send`, `void`,
 //! `rebook`, `apply-payment`, `reconcile`, `receivables` and `recognize`.
+//! The PDF (PLAN 3c): `pdf`, in a desktop build ([`pdf`], `app::pdf`).
 //! Every command takes `--json`.
 //!
 //! This file parses arguments, opens the books and prints; each operation is
@@ -27,6 +28,7 @@
 #[cfg(feature = "server")]
 mod app;
 mod human;
+mod pdf;
 mod starters;
 
 use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser, Subcommand};
@@ -147,6 +149,10 @@ enum Command {
     /// Mirror the books' payment state into each sent invoice's `paid:`, and
     /// report where the books and the files disagree. Exit 1 on errors.
     Reconcile(ReconcileArgs),
+    /// Export an invoice's PDF: a sent one is kept in `pdf-dir` (earlier
+    /// exports kept under their date), a draft goes to a temporary file.
+    /// Needs the desktop build.
+    Pdf(PdfArgs),
     /// Open invoices, aging, DSO and average days to pay.
     Receivables(ReceivablesArgs),
     /// Post the recognition entries due through a date (never after today).
@@ -163,6 +169,16 @@ struct SendArgs {
     /// Show what would be booked; write nothing.
     #[arg(long)]
     dry_run: bool,
+}
+
+#[derive(clap::Args, Debug)]
+struct PdfArgs {
+    /// A number (`105`) or a file in the books folder.
+    document: String,
+    /// Write the PDF here instead: a copy, so nothing is kept in `pdf-dir`
+    /// and `sent_hash` is left alone. Its folder must exist.
+    #[arg(short = 'o', long = "output", value_name = "PATH")]
+    output: Option<PathBuf>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -780,6 +796,7 @@ fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
         }
         Command::Send(args) => run_send(cli, args),
         Command::Void(args) => run_void(cli, args),
+        Command::Pdf(args) => run_pdf(cli, args),
         Command::Rebook(args) => run_rebook(cli, args),
         Command::ApplyPayment(args) => run_apply_payment(cli, args),
         Command::Reconcile(args) => run_reconcile(cli, args),
@@ -867,6 +884,53 @@ fn run_send(cli: &Cli, args: &SendArgs) -> Result<ExitCode, Failure> {
     let sent = retrying(|| books.send(index, &request))?;
     emit(cli.json, &sent, human::sent);
     Ok(ExitCode::SUCCESS)
+}
+
+fn run_pdf(cli: &Cli, args: &PdfArgs) -> Result<ExitCode, Failure> {
+    let (journal, _) = resolve_journal(cli)?;
+    // Resolve the invoice (and report a bad one) before any window system
+    // is touched.
+    let number = {
+        let session = open(cli)?;
+        number_of(&session, &args.document)?
+    };
+    let output = match &args.output {
+        Some(path) if path.is_absolute() => Some(path.clone()),
+        Some(path) => Some(std::env::current_dir()?.join(path)),
+        None => None,
+    };
+    let exported = export_pdf(&journal, number, output, today(cli)?)?;
+    emit(cli.json, &exported, human::exported);
+    Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(feature = "gui")]
+fn export_pdf(
+    journal: &Path,
+    number: String,
+    output: Option<PathBuf>,
+    today: String,
+) -> Result<pdf::Exported, Failure> {
+    app::pdf::run_cli(
+        journal,
+        app::pdf::ExportRequest {
+            target: number,
+            output,
+            temp: false,
+            today,
+        },
+    )
+    .map_err(|message| Failure(message, None))
+}
+
+#[cfg(not(feature = "gui"))]
+fn export_pdf(
+    _journal: &Path,
+    _number: String,
+    _output: Option<PathBuf>,
+    _today: String,
+) -> Result<pdf::Exported, Failure> {
+    Err(Failure(pdf::NEEDS_GUI.to_string(), Some("needs-gui")))
 }
 
 fn run_void(cli: &Cli, args: &VoidArgs) -> Result<ExitCode, Failure> {

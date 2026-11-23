@@ -1073,6 +1073,7 @@
             hledger-web # JSON API server for local dev + e2e + wire-parity oracle
             just # task runner (see justfile)
             playwright-driver.browsers # browsers for playwright e2e (version must match web/package.json @playwright/test — asserted in shellHook)
+            poppler-utils # pdftotext: the invoicer e2e reads the text of an exported PDF
             alejandra # Nix formatter — also what the pre-push hook runs, so it
             # is here for `alejandra .` by hand too
           ])

@@ -18,8 +18,12 @@
 pub(crate) mod api;
 pub(crate) mod books;
 #[cfg(feature = "gui")]
+pub(crate) mod desktop;
+#[cfg(feature = "gui")]
 mod gui;
 pub(crate) mod mbr;
+pub(crate) mod native;
+pub(crate) mod pdf;
 pub(crate) mod prefs;
 pub(crate) mod preview;
 mod serve;
@@ -40,6 +44,7 @@ use rust_embed::RustEmbed;
 
 use books::OpenBooks;
 use mbr::MbrGate;
+use native::Native;
 
 /// Who the invoicer is, to the shared shell.
 ///
@@ -116,19 +121,38 @@ struct Shared {
     books: ArcSwapOption<OpenBooks>,
     app_dirs: AppDirs,
     prefs: UiPrefsSession,
+    /// The desktop (PDF, Share…, Copy file, the browser), when this
+    /// process has an event loop to serve it ([`native`]).
+    native: Option<Arc<dyn Native>>,
 }
 
 impl AppState {
     /// State over `books` (or none yet). UI prefs go to the files unless
     /// [`prefs::IN_BROWSER_ENV`] says the browser keeps them (e2e).
+    #[cfg(test)]
     pub(crate) fn new(books: Option<Arc<OpenBooks>>, app_dirs: AppDirs) -> Self {
+        Self::with_native(books, app_dirs, None)
+    }
+
+    /// [`AppState::new`], with the desktop's [`Native`] side.
+    pub(crate) fn with_native(
+        books: Option<Arc<OpenBooks>>,
+        app_dirs: AppDirs,
+        native: Option<Arc<dyn Native>>,
+    ) -> Self {
         Self {
             inner: Arc::new(Shared {
                 books: ArcSwapOption::from(books),
                 app_dirs,
                 prefs: prefs::session_from_env(),
+                native,
             }),
         }
+    }
+
+    /// The desktop's native side, if this process has one.
+    pub(crate) fn native(&self) -> Option<Arc<dyn Native>> {
+        self.inner.native.clone()
     }
 
     /// The books open now, if any: a stable view for one request even if
@@ -164,6 +188,12 @@ pub(crate) fn router(state: AppState, security: Security, token: AccessToken, po
             Arc::new(MbrGate::closed())
         }
     };
+    router_with_gate(state, security, gate)
+}
+
+/// [`router`] around a gate the caller keeps too (the CLI's `pdf` mints
+/// its export link from it).
+pub(crate) fn router_with_gate(state: AppState, security: Security, gate: Arc<MbrGate>) -> Router {
     // The token guard covers exactly the API routes (`route_layer`), as
     // Ledgeline's does.
     let api = security::protect(api::routes(), &security, &[]);
@@ -172,6 +202,11 @@ pub(crate) fn router(state: AppState, security: Security, token: AccessToken, po
         .route(SPA_BASE, get(spa_page))
         .route(&format!("{SPA_BASE}/"), get(spa_page))
         .route(&format!("{SPA_BASE}/{{*rest}}"), get(spa_page))
+        // The PDF export's one-time links (no token: the ticket is the key).
+        .route(
+            &format!("{}{{ticket}}", mbr::EXPORT_LINK_PREFIX),
+            get(mbr::export_link),
+        )
         .fallback(mbr::fallback)
         .layer(Extension(gate));
     security::harden(router, security).with_state(state)

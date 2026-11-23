@@ -29,7 +29,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 /// Frontmatter keys `set` refuses, and why.
-const PROTECTED: [(&str, &str); 2] = [
+const PROTECTED: [(&str, &str); 3] = [
     (
         "status",
         "status changes are lifecycle steps: send and void (Phase 2) book them",
@@ -37,6 +37,10 @@ const PROTECTED: [(&str, &str); 2] = [
     (
         "paid",
         "paid is a mirror of the books, written only by the reconciler",
+    ),
+    (
+        "sent_hash",
+        "sent_hash is a mirror of the last kept PDF, written only by the PDF export",
     ),
 ];
 

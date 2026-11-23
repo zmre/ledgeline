@@ -649,6 +649,36 @@ pub fn sent(s: &Sent) -> String {
     out
 }
 
+/// `pdf`.
+pub fn exported(e: &crate::pdf::Exported) -> String {
+    use crate::pdf::Destination;
+    let path = e.path.as_deref().unwrap_or(e.file.as_str());
+    let mut out = format!(
+        "Wrote invoice {}'s PDF to {path} ({} bytes)\n",
+        e.number, e.bytes
+    );
+    match e.destination {
+        Destination::Kept => {
+            if let Some(earlier) = &e.earlier {
+                let _ = writeln!(out, "  The earlier export is kept as {earlier}");
+            }
+        }
+        Destination::Temp => {
+            let _ = writeln!(
+                out,
+                "  Not kept: it isn't sent. Send it (ledgeline-invoicer send {}), then export \
+                 again to keep its PDF.",
+                e.number
+            );
+        }
+        Destination::Copy => {}
+    }
+    for warning in &e.warnings {
+        let _ = writeln!(out, "  warning: {warning}");
+    }
+    out
+}
+
 /// `void`.
 pub fn voided(v: &Voided) -> String {
     let mut out = format!("Voided invoice {} ({})\n", v.number, v.path);

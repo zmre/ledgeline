@@ -48,10 +48,15 @@ struct App {
 
 /// Must run inside a tokio runtime (MBR spawns on it).
 fn app() -> App {
+    app_with(None)
+}
+
+/// [`app`] with a native side (the PDF tests' mock).
+fn app_with(native: Option<Arc<dyn super::native::Native>>) -> App {
     let (dir, journal) = fixture();
     let books = Arc::new(OpenBooks::open(&journal, false).expect("opens"));
     let app_dirs = AppDirs::under(dir.path().join("config"));
-    let state = AppState::new(Some(Arc::clone(&books)), app_dirs);
+    let state = AppState::with_native(Some(Arc::clone(&books)), app_dirs, native);
     let token = AccessToken::parse(TOKEN).expect("token");
     let security = Security::local(token.clone(), PORT);
     App {
@@ -688,4 +693,404 @@ async fn mbr_serves_an_invoice_page_through_its_template() {
         headers.get(header::CONTENT_SECURITY_POLICY).unwrap(),
         super::mbr::MBR_CSP
     );
+}
+
+// ---------------------------------------------------------------------------
+// PDF and the Send flow (PLAN 3c), with the mock native side: it "prints" a
+// stub `%PDF-` file. The real print is `pdf_export_prints_a_real_pdf` in
+// `desktop_tests` (ignored: it needs a webview).
+// ---------------------------------------------------------------------------
+
+use super::native::mock::MockNative;
+
+const INVOICE_105: &str = "invoices/2026-11-10 Customer X Invoice 105.md";
+const INVOICE_108: &str = "invoices/2026-11-17 Customer X Invoice 108.md";
+const PDF_105: &str = "2026-11-10 Customer X Invoice 105.pdf";
+
+fn mocked() -> (App, Arc<MockNative>) {
+    let native = Arc::new(MockNative::everything());
+    let app = app_with(Some(Arc::clone(&native) as Arc<dyn super::native::Native>));
+    (app, native)
+}
+
+fn books_root(app: &App) -> PathBuf {
+    app.books.vault().root().to_path_buf()
+}
+
+async fn json_of(app: &App, request: Request<Body>) -> (StatusCode, serde_json::Value) {
+    let (status, _, body) = send(&app.router, request).await;
+    let value = serde_json::from_str(&body).unwrap_or(serde_json::Value::String(body));
+    (status, value)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pdf_routes_say_when_this_process_cannot_print() {
+    let app = app();
+    let (status, body) = json_of(
+        &app,
+        post_json("/api/invoices/105/pdf", &serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("desktop"),
+        "{body}"
+    );
+    let (status, body) = json_of(&app, authed("/api/invoices/105/pdf")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["capabilities"],
+        serde_json::json!({"pdf": false, "share": false, "copy_file": false, "open_url": false})
+    );
+    // The token, as everywhere under /api.
+    let anonymous = Request::post("/api/invoices/105/pdf")
+        .header(header::HOST, HOST)
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, _) = send(&app.router, anonymous).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sent_invoice_is_kept_in_pdf_dir_with_its_earlier_exports() {
+    let (app, native) = mocked();
+    let root = books_root(&app);
+    let pdf_dir = root.join("invoices/pdf");
+
+    let (status, body) = json_of(&app, authed("/api/invoices/105/pdf")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["destination"], "kept");
+    assert_eq!(body["file"], PDF_105);
+    assert_eq!(body["pdf_dir"], "invoices/pdf");
+    assert_eq!(body["changed_since_sent"], serde_json::Value::Null);
+    assert_eq!(body["exports"], serde_json::json!([]));
+    assert_eq!(body["copy"]["reference"], "PO #PY75334, rev. 2");
+    assert_eq!(body["copy"]["total"], "$8,350.00");
+    assert_eq!(body["portal"]["name"], "Coupa");
+    assert_eq!(body["portal"]["url"], "https://customerx.coupahost.com/");
+    assert_eq!(body["portal"]["requires_reference"], true);
+
+    // The first export: kept, and the mirror written.
+    let (status, body) = json_of(
+        &app,
+        post_json("/api/invoices/105/pdf", &serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["destination"], "kept");
+    assert_eq!(body["file"], PDF_105);
+    assert_eq!(body["kept_at"], format!("invoices/pdf/{PDF_105}"));
+    assert_eq!(body["sent_hash"], "written");
+    assert!(
+        body.get("path").is_none(),
+        "the API never names full paths: {body}"
+    );
+    assert!(body.get("earlier").is_none(), "{body}");
+    let pdf = std::fs::read(pdf_dir.join(PDF_105)).expect("kept");
+    assert!(pdf.starts_with(b"%PDF-"));
+    {
+        let printed = native.printed.lock().unwrap();
+        let job = printed.last().expect("printed");
+        assert!(
+            job.url
+                .starts_with("http://127.0.0.1:5199/.ledgeline-invoicer/export/"),
+            "{}",
+            job.url
+        );
+        // The fixture's template has no export-ready partial: print on load.
+        assert!(job.ready_on_load);
+        assert!(job.output.starts_with(&pdf_dir));
+        assert!(
+            job.output
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with('.')
+        );
+    }
+    let text = std::fs::read_to_string(root.join(INVOICE_105)).unwrap();
+    let hash = invoicer_core::sent::hash(&text);
+    assert!(text.contains(&format!("sent_hash: {hash}\n")), "{text}");
+
+    // Again: the earlier one is kept under its date.
+    let (status, body) = json_of(
+        &app,
+        post_json("/api/invoices/105/pdf", &serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["sent_hash"], "unchanged");
+    assert_eq!(body["changed_since_sent"], false);
+    let earlier = body["earlier"].as_str().expect("earlier kept");
+    assert!(
+        earlier.starts_with("invoices/pdf/2026-11-10 Customer X Invoice 105 "),
+        "{earlier}"
+    );
+    assert!(root.join(earlier).is_file());
+    let (_, delivery) = json_of(&app, authed("/api/invoices/105/pdf")).await;
+    let exports = delivery["exports"].as_array().unwrap();
+    assert_eq!(exports.len(), 2, "{delivery}");
+    assert_eq!(exports[0]["file"], PDF_105);
+    assert_eq!(exports[0]["latest"], true);
+    assert_eq!(exports[1]["latest"], false);
+    assert_eq!(delivery["changed_since_sent"], false);
+
+    // A paid mirror moving is not a change; an edit is.
+    std::fs::write(
+        root.join(INVOICE_105),
+        text.replace("paid: no", "paid: 2026-11-20"),
+    )
+    .unwrap();
+    app.books.apply_changes(&[root.join(INVOICE_105)]);
+    let (_, delivery) = json_of(&app, authed("/api/invoices/105/pdf")).await;
+    assert_eq!(delivery["changed_since_sent"], false, "{delivery}");
+    std::fs::write(
+        root.join(INVOICE_105),
+        text.replace("Hi Fred,", "Hi Fred and team,"),
+    )
+    .unwrap();
+    let (_, delivery) = json_of(&app, authed("/api/invoices/105/pdf")).await;
+    assert_eq!(delivery["changed_since_sent"], true, "{delivery}");
+    let (status, body) = json_of(
+        &app,
+        post_json("/api/invoices/105/pdf", &serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["changed_since_sent"], true);
+    assert_eq!(body["sent_hash"], "written");
+    assert!(
+        body["warnings"]
+            .to_string()
+            .contains("differs from what was sent"),
+        "{body}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_export_link_opens_the_page_once() {
+    let (app, native) = mocked();
+    let (status, body) = json_of(
+        &app,
+        post_json("/api/invoices/105/pdf", &serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // The mock never loaded its link: it is still good, once.
+    let url = native.printed.lock().unwrap().last().unwrap().url.clone();
+    let path = url
+        .strip_prefix("http://127.0.0.1:5199")
+        .unwrap()
+        .to_string();
+    let (status, headers, _) = send(&app.router, get(&path).body(Body::empty()).unwrap()).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        headers.get(header::LOCATION).unwrap(),
+        "/invoices/2026-11-10%20Customer%20X%20Invoice%20105/"
+    );
+    let cookie = headers.get(header::SET_COOKIE).unwrap().to_str().unwrap();
+    let pair = cookie.split(';').next().unwrap().to_string();
+    let page = get("/invoices/2026-11-10%20Customer%20X%20Invoice%20105/")
+        .header(header::COOKIE, pair)
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, body) = send(&app.router, page).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("Bill to Customer X"), "{body}");
+    // Spent.
+    let (status, headers, _) = send(&app.router, get(&path).body(Body::empty()).unwrap()).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(headers.get(header::SET_COOKIE).is_none());
+    let (status, _, _) = send(
+        &app.router,
+        get("/.ledgeline-invoicer/export/made-up")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_draft_goes_to_a_temporary_file_and_writes_nothing() {
+    let (app, _native) = mocked();
+    let root = books_root(&app);
+    let before = snapshot(&root);
+    let (status, body) = json_of(
+        &app,
+        post_json("/api/invoices/108/pdf", &serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["destination"], "temp");
+    assert_eq!(body["file"], "2026-11-17 Customer X Invoice 108.pdf");
+    assert!(
+        body.get("kept_at").is_none() && body.get("sent_hash").is_none(),
+        "{body}"
+    );
+    assert_eq!(
+        snapshot(&root),
+        before,
+        "a draft's export touches nothing in the books"
+    );
+    let temp = crate::pdf::temp_dir()
+        .unwrap()
+        .join("2026-11-17 Customer X Invoice 108.pdf");
+    assert!(temp.is_file());
+
+    // Share… and Copy file name the PDF by destination and file name.
+    let share = serde_json::json!({
+        "destination": "temp",
+        "file": "2026-11-17 Customer X Invoice 108.pdf",
+        "anchor": {"x": 10.0, "y": 20.0, "width": 80.0, "height": 24.0}
+    });
+    let (status, body) = json_of(&app, post_json("/api/pdf/share", &share)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = json_of(
+        &app,
+        post_json(
+            "/api/pdf/copy",
+            &serde_json::json!({"destination": "temp", "file": "2026-11-17 Customer X Invoice 108.pdf"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    for (bad, want) in [
+        (
+            serde_json::json!({"destination": "temp", "file": "../../etc/passwd.pdf"}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            serde_json::json!({"destination": "temp", "file": "notes.md"}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            serde_json::json!({"destination": "temp", "file": ".hidden.pdf"}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            serde_json::json!({"destination": "copy", "file": "x.pdf"}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            serde_json::json!({"destination": "kept", "file": "never exported.pdf"}),
+            StatusCode::NOT_FOUND,
+        ),
+    ] {
+        let (status, body) = json_of(&app, post_json("/api/pdf/share", &bad)).await;
+        assert_eq!(status, want, "{bad}: {body}");
+    }
+    let _ = std::fs::remove_file(temp);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn send_marks_a_draft_sent_by_portal_and_the_portal_opens() {
+    let (app, native) = mocked();
+    let root = books_root(&app);
+
+    let (status, body) = json_of(
+        &app,
+        post_json("/api/invoices/108/portal", &serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body,
+        serde_json::json!({"url": "https://customerx.coupahost.com/", "opened": true})
+    );
+    assert_eq!(
+        *native.opened.lock().unwrap(),
+        ["https://customerx.coupahost.com/"]
+    );
+    let (status, _) = json_of(
+        &app,
+        post_json("/api/invoices/106/portal", &serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "Wingtip has no portal");
+
+    // The portal needs a reference: refused without one, nothing written.
+    let text = std::fs::read_to_string(root.join(INVOICE_108)).unwrap();
+    std::fs::write(
+        root.join(INVOICE_108),
+        text.replace("reference: \"PO #PY75334\"\n", ""),
+    )
+    .unwrap();
+    app.books.apply_changes(&[root.join(INVOICE_108)]);
+    let journal_before = std::fs::read(root.join("books.journal")).unwrap();
+    let (status, body) = json_of(
+        &app,
+        post_json(
+            "/api/invoices/108/send",
+            &serde_json::json!({"via": "portal", "today": "2026-11-17"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("reference"),
+        "{body}"
+    );
+    assert_eq!(
+        std::fs::read(root.join("books.journal")).unwrap(),
+        journal_before
+    );
+
+    std::fs::write(root.join(INVOICE_108), &text).unwrap();
+    app.books.apply_changes(&[root.join(INVOICE_108)]);
+    let (status, body) = json_of(
+        &app,
+        post_json(
+            "/api/invoices/108/send",
+            &serde_json::json!({"via": "portal", "today": "2026-11-17"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let after = std::fs::read_to_string(root.join(INVOICE_108)).unwrap();
+    assert!(after.contains("status: sent\n"), "{after}");
+    assert!(after.contains("sent_via: portal\n"), "{after}");
+    assert!(after.contains("sent_date: 2026-11-17\n"), "{after}");
+    let (_, delivery) = json_of(&app, authed("/api/invoices/108/pdf")).await;
+    assert_eq!(delivery["destination"], "kept");
+    assert_eq!(delivery["sent_via"], "portal");
+
+    let (status, _) = json_of(
+        &app,
+        post_json(
+            "/api/invoices/108/send",
+            &serde_json::json!({"via": "a\nb"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_print_keeps_nothing() {
+    let native = Arc::new(MockNative {
+        fail: Some("the print system said no".to_string()),
+        ..MockNative::everything()
+    });
+    let app = app_with(Some(Arc::clone(&native) as Arc<dyn super::native::Native>));
+    let root = books_root(&app);
+    let (status, body) = json_of(
+        &app,
+        post_json("/api/invoices/105/pdf", &serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("the print system said no"),
+        "{body}"
+    );
+    let left: Vec<_> = std::fs::read_dir(root.join("invoices/pdf"))
+        .unwrap()
+        .collect();
+    assert!(left.is_empty(), "no staging file left behind");
+    let text = std::fs::read_to_string(root.join(INVOICE_105)).unwrap();
+    assert!(!text.contains("sent_hash"));
 }

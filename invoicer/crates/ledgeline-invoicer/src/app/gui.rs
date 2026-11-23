@@ -8,7 +8,8 @@
 //! 3. On the main thread: menus, window, webview at `/app/`, with the token
 //!    and the shared theme and scale handed over by initialization script.
 //! 4. The event loop: File → Open / Open Recent swap the books (MBR server
-//!    and watcher included) without restarting the server.
+//!    and watcher included) without restarting the server; PDF exports,
+//!    Share… and Copy file run on it ([`super::desktop`], PLAN 3c).
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -33,6 +34,8 @@ use tao::{
 };
 
 use super::books::OpenBooks;
+use super::desktop::{self, DesktopHost, LoopNative, NativeEvent};
+use super::native::Native;
 use super::serve::plan_security;
 use super::{APP, AppArgs, AppState, SPA_BASE, prefs, router, watch};
 
@@ -47,6 +50,9 @@ const DOCS_PATH: &str = "/ledgeline/";
 enum UserEvent {
     Menu(MenuEvent),
     JournalPicked(PathBuf),
+    /// A PDF, Share… or Copy file request from the API, or an export's
+    /// progress ([`desktop`]).
+    Native(NativeEvent),
 }
 
 /// GUI entry point.
@@ -70,7 +76,12 @@ pub(crate) fn run(args: &AppArgs, app_dirs: AppDirs) -> Result<(), String> {
         None => None,
     };
     perf::stamp("journal_loaded");
-    let state = AppState::new(books.clone(), app_dirs);
+    let native: Arc<dyn Native> = Arc::new(LoopNative::new(
+        event_loop.create_proxy(),
+        UserEvent::Native,
+        desktop::capabilities(true),
+    ));
+    let state = AppState::with_native(books.clone(), app_dirs, Some(native));
 
     let host = args.host.clone();
     let port = args.port.unwrap_or(0);
@@ -241,6 +252,10 @@ fn run_event_loop(
     }
 
     let picker_proxy = event_loop.create_proxy();
+    let mut host = DesktopHost::new(desktop::export_sink(
+        event_loop.create_proxy(),
+        UserEvent::Native,
+    ));
     let Context {
         state,
         runtime,
@@ -252,7 +267,7 @@ fn run_event_loop(
     let current: RefCell<PathBuf> = RefCell::new(current);
     recent.rebuild(&APP, state.app_dirs(), Some(current.borrow().as_path()));
 
-    event_loop.run(move |event, _target, control_flow| {
+    event_loop.run(move |event, target, control_flow| {
         *control_flow = ControlFlow::Wait;
 
         // File → Open and Open Recent: open the new books, swap them in
@@ -317,6 +332,7 @@ fn run_event_loop(
                 }
             }
             Event::UserEvent(UserEvent::JournalPicked(path)) => open(&path),
+            Event::UserEvent(UserEvent::Native(event)) => host.handle(target, event, Some(&window)),
             // A document launch (Finder, `open -a`): macOS sends it as an
             // event, never in argv.
             Event::Opened { urls } => {

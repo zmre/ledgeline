@@ -14,16 +14,27 @@
 //!   `Path=/`, and named after the port, since a cookie is shared by every
 //!   port on a host.
 //!
+//! **The PDF export's webview** (PLAN 3c) can carry neither: it is a fresh
+//! hidden view loading one URL. It loads a one-time **export link**
+//! (`/.ledgeline-invoicer/export/<ticket>`), minted by the token-gated PDF
+//! route for one page: redeemed once, within [`TICKET_TTL`], it sets the
+//! session cookie and redirects to that page, so the page's own requests
+//! (styles, images, the export-ready partial) pass the gate as the SPA's
+//! frames do. The ticket names the page server-side, so the link redirects
+//! nowhere else.
+//!
 //! **CSP.** MBR's pages need inline scripts (its page config) and may show
 //! remote images, so they get their own policy ([`MBR_CSP`]) instead of the
 //! shell's script-hash one; `connect-src 'self'` still stops a script from
 //! sending anything elsewhere, and `frame-ancestors 'self'` lets the SPA show
 //! a page in a frame (browse and preview modes).
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use axum::Extension;
-use axum::extract::{Request, State};
+use axum::extract::{Path, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use ledgeline_shell::security::{self, AccessToken, SecurityError};
@@ -37,11 +48,22 @@ style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; media-src 'self' 
 font-src 'self' data:; connect-src 'self'; frame-src 'self' https:; object-src 'none'; \
 base-uri 'self'; form-action 'self'; frame-ancestors 'self'";
 
+/// Where export links live: a hidden folder, which MBR never serves.
+pub(crate) const EXPORT_LINK_PREFIX: &str = "/.ledgeline-invoicer/export/";
+
+/// How long an export link stays good: long enough for a webview to start.
+pub(crate) const TICKET_TTL: Duration = Duration::from_secs(60);
+
+/// At most this many unredeemed links are held; the oldest go first.
+const MAX_TICKETS: usize = 64;
+
 /// Who may see MBR's pages: the bearer token, or the session cookie.
 pub(crate) struct MbrGate {
     /// `None`: nobody (the session secret couldn't be made).
     keys: Option<(AccessToken, AccessToken)>,
     cookie_name: String,
+    /// Unredeemed export links: ticket → (page, minted).
+    tickets: Mutex<HashMap<String, (String, Instant)>>,
 }
 
 impl MbrGate {
@@ -53,6 +75,7 @@ impl MbrGate {
         Ok(Self {
             keys: Some((token, AccessToken::generate()?)),
             cookie_name: cookie_name(port),
+            tickets: Mutex::new(HashMap::new()),
         })
     }
 
@@ -61,6 +84,7 @@ impl MbrGate {
         Self {
             keys: None,
             cookie_name: cookie_name(0),
+            tickets: Mutex::new(HashMap::new()),
         }
     }
 
@@ -84,18 +108,54 @@ impl MbrGate {
                 .any(|(name, value)| name == self.cookie_name && secret.matches(value))
     }
 
-    /// `POST /api/session`'s answer: the cookie, or `503` with a closed gate.
-    pub(crate) fn session_response(&self) -> Response {
-        let Some((_, secret)) = &self.keys else {
-            return (StatusCode::SERVICE_UNAVAILABLE, "MBR pages are off\n").into_response();
-        };
-        let cookie = format!(
+    /// A one-time export link's path for `page` (a path on this server,
+    /// `/invoices/A%20B/`). `None` with a closed gate, or no entropy.
+    pub(crate) fn export_link(&self, page: &str) -> Option<String> {
+        self.keys.as_ref()?;
+        let ticket = AccessToken::generate().ok()?.as_str().to_string();
+        let mut tickets = self.tickets.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = Instant::now();
+        tickets.retain(|_, (_, minted)| now.duration_since(*minted) < TICKET_TTL);
+        while tickets.len() >= MAX_TICKETS {
+            let Some(oldest) = tickets
+                .iter()
+                .min_by_key(|(_, (_, minted))| *minted)
+                .map(|(t, _)| t.clone())
+            else {
+                break;
+            };
+            tickets.remove(&oldest);
+        }
+        tickets.insert(ticket.clone(), (page.to_string(), now));
+        Some(format!("{EXPORT_LINK_PREFIX}{ticket}"))
+    }
+
+    /// The page an export link was minted for, once: the ticket is spent
+    /// whether or not it was still good.
+    fn redeem(&self, ticket: &str) -> Option<String> {
+        let mut tickets = self.tickets.lock().unwrap_or_else(PoisonError::into_inner);
+        let (page, minted) = tickets.remove(ticket)?;
+        (minted.elapsed() < TICKET_TTL).then_some(page)
+    }
+
+    /// The session cookie's `Set-Cookie` value.
+    fn cookie(&self) -> Option<HeaderValue> {
+        let (_, secret) = self.keys.as_ref()?;
+        HeaderValue::from_str(&format!(
             "{}={}; Path=/; HttpOnly; SameSite=Strict",
             self.cookie_name,
             secret.as_str()
-        );
-        match HeaderValue::from_str(&cookie) {
-            Ok(value) => (
+        ))
+        .ok()
+    }
+
+    /// `POST /api/session`'s answer: the cookie, or `503` with a closed gate.
+    pub(crate) fn session_response(&self) -> Response {
+        if self.keys.is_none() {
+            return (StatusCode::SERVICE_UNAVAILABLE, "MBR pages are off\n").into_response();
+        }
+        match self.cookie() {
+            Some(value) => (
                 StatusCode::NO_CONTENT,
                 [
                     (header::SET_COOKIE, value),
@@ -103,9 +163,32 @@ impl MbrGate {
                 ],
             )
                 .into_response(),
-            Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         }
     }
+}
+
+/// `GET /.ledgeline-invoicer/export/{ticket}`: an export link. Good once:
+/// the session cookie and a redirect to its page; otherwise `401`.
+pub(crate) async fn export_link(
+    Extension(gate): Extension<Arc<MbrGate>>,
+    Path(ticket): Path<String>,
+) -> Response {
+    let (Some(page), Some(cookie)) = (gate.redeem(&ticket), gate.cookie()) else {
+        return refused();
+    };
+    let Ok(location) = HeaderValue::from_str(&page) else {
+        return refused();
+    };
+    (
+        StatusCode::SEE_OTHER,
+        [
+            (header::SET_COOKIE, cookie),
+            (header::LOCATION, location),
+            (header::CACHE_CONTROL, security::no_store()),
+        ],
+    )
+        .into_response()
 }
 
 /// The session cookie's name for the server on `port`.
