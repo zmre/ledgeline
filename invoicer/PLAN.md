@@ -692,8 +692,8 @@ APIs differ in path types, note stamps and line lookup, and it would put
 mbr-core into the CLI-only build; Phase 4, or once `Site` can be shared
 with the server's own via `Server::site()`), pushing the theme into MBR's
 chrome (M8 `theme_vars`, 3b), saving the View-menu zoom back to the prefs,
-the recognition file in the watcher, and an e2e harness on 5199/4273 (the
-lead).
+the recognition file in the watcher. (The e2e harness on 5199/4273 came
+in 3b.)
 
 **3b. Templates and preview:**
 - Two starter templates in `invoicer/crates/ledgeline-invoicer/templates/`,
@@ -706,6 +706,40 @@ lead).
   - the sidebar;
   - an invoice list (read-only, from Phase 1's API);
   - an invoice page showing the MBR-rendered invoice and a Books panel.
+
+*3b built (2026-11-23).* The starters are `ledgeline-invoicer/templates/`
+(`include_str!`, in flake.nix's source filter) and `src/starters.rs`. The
+API gains `POST /api/preview` (`app/preview.rs`: `{number|path, source?,
+template?}` → `{html, path, template}`, MBR's standalone `Renderer`, one
+per MBR server, with its live wikilink index; `Server-Timing: render;dur=`;
+400/404/422; writes nothing), `GET /api/templates` (the books' templates,
+then the starters not copied in) and `GET /api/invoices/{num}/books` (the
+Books panel: `invoicer_core::views::invoice_books`). The watcher refreshes
+`.html` files too. The SPA has the sidebar, the read-only list
+(`/app/invoices`) and the invoice page (`/app/invoices/[number]`: MBR's page
+in a frame, a template picker that previews through `/api/preview`, the
+Books panel), with vitest `unit` and `components` projects. The vite proxy
+now forwards everything outside `/app` to 5199, so MBR's pages and their
+cookie are same-origin under `vite dev`/`preview`. The Playwright suite is
+`invoicer/web/e2e/` (`just invoicer-e2e`: open, list, open an invoice,
+preview, plus a same-origin CSP spec); written, not yet run.
+
+**Pending:** the `--server` smoke test of `/api/preview` and its timing
+against the 50 ms keystroke-to-preview budget were not run (the agent's
+permission to start the server was denied). Router tests render every case
+in process; the budget still needs a release-build measurement
+(`Server-Timing`), with Patrick.
+
+Decided while building, open to veto:
+
+| #  | Decision                                                                                                                                                                                                                                                                                                                                                                                                       |
+|----|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| B1 | **Starters are copied one at a time, on first use**: when `new` writes an invoice whose `template:` is a starter's path in `templates-dir` (named by `--template` or the customer's `invoice_template`), or Classic when the books have no invoice template at all. The copy is create-new (an existing file is never replaced), made only once the invoice is written; a dry run or a preview copies nothing. |
+| B2 | **Invoice frames are sandboxed `allow-same-origin`, with no scripts.** MBR's pages are same-origin with the SPA, so a script in a template could otherwise read the app's token from the parent window. A template needs no script to show an invoice; the export-ready partial matters only in the PDF export's own webview.                                                                                  |
+| B3 | **A preview frame (`srcdoc`) inherits the SPA's CSP**, so a template's remote (`https:`) images show on MBR's page but not in a preview of another template or of unsaved text.                                                                                                                                                                                                                                |
+| B4 | **The SPA sends the browser's local date as `today`** on the list and the invoice, so overdue follows the user's calendar (and a pinned clock in e2e), not the server process's.                                                                                                                                                                                                                               |
+| B5 | **invoicer/web declares no test libraries of its own.** jsdom, `@testing-library/svelte` and `@playwright/test` resolve from the hoisted root `node_modules`, where `web/` and `packages/ui` declare them; declaring them again would change `bun.lock` and so the `spaNodeModules` pin. Their versions follow `web/`'s.                                                                                       |
+| B6 | **Template details:** `paid` is read with `\| as_str` (it may be a YAML date); dates print through Tera's `date` filter ("November 10, 2026"); Paid/Void/Draft marks come from `status` and a dated `paid:`. A preview through a starter not copied in uses the shipped text (M10).                                                                                                                            |
 
 **3c. PDF:**
 - `pdf NUM [-o PATH]` and `POST /api/invoices/{num}/pdf`, by calling MBR's

@@ -548,9 +548,9 @@ is the point, since a third party can render our invoices with plain `mbr`.
   `{# invoicer: name="MyCo default" kinds="invoice,estimate" #}`. Tera
   comments aren't HTML comments, and this is an HTML file anyway. With no
   such comment, the name is the file stem and the kind is `invoice`.
-- **Starter templates.** The invoicer ships two (clean, classic). They are
-  copied into `invoices/tpl/` the first time they're used, and from then on
-  they are the user's files. Each starter includes:
+- **Starter templates.** The invoicer ships two (Classic, Modern). Each is
+  copied into `invoices/tpl/` the first time an invoice uses it, and from
+  then on it is the user's file. Each starter includes:
   - print CSS (`@page` size and margins);
   - the books-column CSS;
   - MBR's export-ready script (MBR-CHANGES M5);
