@@ -1079,7 +1079,10 @@ async fn a_draft_goes_to_a_temporary_file_and_writes_nothing() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(*native.opened_files.lock().unwrap(), [temp.clone()]);
+    assert_eq!(
+        *native.opened_files.lock().unwrap(),
+        std::slice::from_ref(&temp)
+    );
     let (status, _) = json_of(
         &app,
         post_json(
@@ -1442,7 +1445,7 @@ async fn a_change_on_disk_is_an_event_after_the_books_are_reread() {
     let pdf = root.join("invoices/pdf/x.pdf");
     std::fs::create_dir_all(pdf.parent().unwrap()).unwrap();
     std::fs::write(&pdf, "%PDF-").unwrap();
-    app.books.apply_changes(&[pdf.clone()]);
+    app.books.apply_changes(std::slice::from_ref(&pdf));
     app.books.apply_changes(&[file.clone(), pdf]);
 
     let event = next_event(&mut body, std::time::Duration::from_secs(5))

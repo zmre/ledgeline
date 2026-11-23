@@ -1157,7 +1157,10 @@ support a base path. The invoicer shows MBR pages in two ways:
   chrome, which is what a customer sees.
 
 A live preview of unsaved edits renders from a string (MBR-CHANGES M3). The
-theme reaches MBR's chrome through MBR-CHANGES M8.
+theme reaches MBR's chrome through MBR-CHANGES M8. The SPA frames a preview
+by URL (`/.ledgeline-invoicer/preview`, behind MBR's gate and CSP), never
+as `srcdoc`: a srcdoc document inherits the SPA's CSP, whose
+`frame-ancestors 'none'` WebKit applies to it (PLAN, Phase 3 feedback).
 
 ### 6.2 HTTP API (sketch)
 
@@ -1173,6 +1176,7 @@ theme reaches MBR's chrome through MBR-CHANGES M8.
 | `GET /api/receivables`                        | Dashboard: outstanding bar, aging, overdue, DSO.                              |
 | `GET /api/fields/{key}/values`                | Autocomplete for custom frontmatter fields.                                   |
 | `GET /api/books`                              | Basis, accounts, gate, recognition file, closed-through.                       |
+| `GET /api/events`                             | Server-sent change events after the watcher re-reads a change (live reload).  |
 
 Every write returns the new content hash and the books generation, and
 accepts the expected ones (`409` on mismatch), as Ledgeline's API does.
