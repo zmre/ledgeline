@@ -1163,7 +1163,8 @@ fn pdf_keeps_a_sent_invoice_and_its_earlier_export() {
     assert!(bytes.starts_with(b"%PDF-"));
     if let Some(text) = pdf_text(&kept) {
         assert!(text.contains("Customer X"), "{text}");
-        assert!(text.contains("8,350.00"), "{text}");
+        // The fixture's template prints amounts as the bill table writes them.
+        assert!(text.contains("$8,350"), "{text}");
         assert!(text.contains("Less deposit (Invoice 104)"), "{text}");
         // The books column is hidden by the template.
         assert!(!text.contains("liabilities:customer-deposits"), "{text}");
