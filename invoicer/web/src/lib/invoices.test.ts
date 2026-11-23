@@ -1,11 +1,16 @@
 import {describe, expect, it} from "vitest";
-import {kindLabel, localToday, pageUrl, paidText, standing, templateChoices, type TemplateEntry} from "./invoices.js";
+import {kindLabel, localToday, pageUrl, paidText, previewUrl, standing, templateChoices, type TemplateEntry} from "./invoices.js";
 
 describe("UNIT invoices", () => {
     it("names a note's MBR page: no extension, each segment encoded, a trailing slash", () => {
         expect(pageUrl("invoices/2026-11-10 Customer X Invoice 105.md")).toBe("/invoices/2026-11-10%20Customer%20X%20Invoice%20105/");
         expect(pageUrl("/a/b#c?.markdown")).toBe("/a/b%23c%3F/");
         expect(pageUrl("x.MD")).toBe("/x/");
+    });
+
+    it("names the preview page for a saved invoice through another template", () => {
+        expect(previewUrl("105", "/invoices/tpl/classic.html")).toBe("/.ledgeline-invoicer/preview?number=105&template=%2Finvoices%2Ftpl%2Fclassic.html");
+        expect(previewUrl("A&B", "/t q.html")).toBe("/.ledgeline-invoicer/preview?number=A%26B&template=%2Ft+q.html");
     });
 
     it("reads today in the local zone, late in the evening too", () => {

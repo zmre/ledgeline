@@ -1159,3 +1159,105 @@ async fn send_books_the_invoice_and_the_session_sees_it_at_once() {
         );
     }
 }
+
+/// The session cookie's `name=value`, as the SPA's `POST /api/session` gets it.
+async fn session_cookie(app: &App) -> String {
+    let session = Request::post("/api/session")
+        .header(header::HOST, HOST)
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, _) = send(&app.router, session).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let cookie = headers.get(header::SET_COOKIE).unwrap().to_str().unwrap();
+    cookie.split(';').next().unwrap().to_string()
+}
+
+fn csp_of(headers: &axum::http::HeaderMap) -> String {
+    headers
+        .get(header::CONTENT_SECURITY_POLICY)
+        .expect("a CSP")
+        .to_str()
+        .unwrap()
+        .to_string()
+}
+
+/// Patrick's blank starter preview (2026-11-23): the SPA showed a preview
+/// as `srcdoc`, which inherits the SPA's CSP, whose `frame-ancestors 'none'`
+/// WebKit applies to it. A preview is now a page of its own, framed by URL
+/// like MBR's page for the invoice: behind the same gate, under MBR's CSP.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_preview_is_a_gated_page_under_mbrs_policy() {
+    let app = app();
+    // Why not srcdoc: the SPA's own policy refuses every frame ancestor.
+    let (_, headers, _) = send(
+        &app.router,
+        get("/app/invoices/108").body(Body::empty()).unwrap(),
+    )
+    .await;
+    assert!(csp_of(&headers).contains("frame-ancestors 'none'"));
+
+    let url = "/.ledgeline-invoicer/preview?number=108&template=%2Finvoices%2Ftpl%2Fclassic.html";
+    let (status, _, _) = send(&app.router, get(url).body(Body::empty()).unwrap()).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "no cookie, no page");
+
+    let cookie = session_cookie(&app).await;
+    let root = books_root(&app);
+    let before = snapshot(&root);
+    for (template, marker) in [
+        ("%2Finvoices%2Ftpl%2Fclassic.html", "No. 108"),
+        ("%2Finvoices%2Ftpl%2Fmodern.html", "#108"),
+    ] {
+        let request = get(&format!(
+            "/.ledgeline-invoicer/preview?number=108&template={template}"
+        ))
+        .header(header::COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+        let (status, headers, page) = send(&app.router, request).await;
+        assert_eq!(status, StatusCode::OK, "{template}: {page}");
+        assert_eq!(csp_of(&headers), super::mbr::MBR_CSP, "{template}");
+        assert!(super::mbr::MBR_CSP.contains("frame-ancestors 'self'"));
+        assert!(page.contains(marker), "{template}: {page}");
+        assert!(page.contains("Platform subscription, 1 year"), "{template}");
+        assert!(
+            page.contains("<base href=\"/invoices/2026-11-17%20Customer%20X%20Invoice%20108/\">"),
+            "{template}: relative links resolve from the note's page"
+        );
+        assert!(headers.get("server-timing").is_some());
+        assert_eq!(
+            headers.get(header::CACHE_CONTROL).unwrap(),
+            ledgeline_shell::security::no_store()
+        );
+    }
+    // The fixture's own template, by path, with the bearer token.
+    let mut request = authed(
+        "/.ledgeline-invoicer/preview?path=invoices%2F2026-11-10%20Customer%20X%20Invoice%20105.md",
+    );
+    request.headers_mut().remove(header::COOKIE);
+    let (status, _, page) = send(&app.router, request).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert!(page.contains("Bill to Customer X"), "{page}");
+
+    // A failure is a page saying why, under the same policy.
+    let request = get("/.ledgeline-invoicer/preview?number=108&template=%2Fnope.html")
+        .header(header::COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, page) = send(&app.router, request).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{page}");
+    assert_eq!(csp_of(&headers), super::mbr::MBR_CSP);
+    assert!(page.contains("Couldn't preview it"), "{page}");
+    let request = get("/.ledgeline-invoicer/preview?number=108&source=x")
+        .header(header::COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, _) = send(&app.router, request).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "unsaved text is POST /api/preview's"
+    );
+
+    assert_eq!(snapshot(&root), before, "a preview writes nothing");
+}

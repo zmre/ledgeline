@@ -5,11 +5,12 @@
 //!
 //! The one server's routes:
 //!
-//! | Path      | Served by                                                       |
-//! |-----------|-----------------------------------------------------------------|
-//! | `/api/*`  | The invoicer API ([`api`]): bearer token required.              |
-//! | `/app/*`  | The invoicer SPA (`invoicer/web`, SvelteKit base `/app`).       |
-//! | the rest  | MBR's router, unmodified ([`mbr`]): behind a session cookie.    |
+//! | Path                     | Served by                                                    |
+//! |--------------------------|--------------------------------------------------------------|
+//! | `/api/*`                 | The invoicer API ([`api`]): bearer token required.           |
+//! | `/app/*`                 | The invoicer SPA (`invoicer/web`, SvelteKit base `/app`).    |
+//! | `/.ledgeline-invoicer/*` | Export links ([`mbr`]) and the preview page ([`preview`]).   |
+//! | the rest                 | MBR's router, unmodified ([`mbr`]): behind a session cookie. |
 //!
 //! Every response passes the shell's Host guard and security headers. The
 //! open books ([`books::OpenBooks`]) are swapped whole on File → Open, MBR
@@ -207,6 +208,9 @@ pub(crate) fn router_with_gate(state: AppState, security: Security, gate: Arc<Mb
             &format!("{}{{ticket}}", mbr::EXPORT_LINK_PREFIX),
             get(mbr::export_link),
         )
+        // A preview through another template, as a page for the SPA's
+        // frame (behind MBR's gate, under MBR's CSP).
+        .route(preview::PREVIEW_PAGE, get(preview::page))
         .fallback(mbr::fallback)
         .layer(Extension(gate));
     security::harden(router, security).with_state(state)

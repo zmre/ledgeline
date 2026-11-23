@@ -1,7 +1,7 @@
 <!-- One invoice (invoicer PLAN 3b, 3c): the page its template renders, beside the
      Send panel (its PDF, the Send flow) and the Books panel. The saved invoice is MBR's own page in a frame; another
-     template (a starter not copied in yet, say) is a `POST /api/preview`,
-     which writes nothing. -->
+     template (a starter not copied in yet, say) is the preview page
+     (`/.ledgeline-invoicer/preview`), which writes nothing. -->
 <script lang="ts">
     import {onMount} from "svelte";
     import {resolve} from "$app/paths";
@@ -17,12 +17,11 @@
         fetchInvoiceBooks,
         fetchTemplates,
         openPortal,
-        renderPreview,
         sendInvoice,
         sharePdf,
     } from "#lib/api.js";
     import type {Anchor, Delivery, Destination, Exported} from "#lib/delivery.js";
-    import {kindLabel, pageUrl, templateChoices, type InvoiceBooks, type InvoiceDetail, type TemplateEntry} from "#lib/invoices.js";
+    import {kindLabel, pageUrl, previewUrl, templateChoices, type InvoiceBooks, type InvoiceDetail, type TemplateEntry} from "#lib/invoices.js";
     import BooksPanel from "#lib/components/BooksPanel.svelte";
     import InvoiceFrame from "#lib/components/InvoiceFrame.svelte";
     import SendPanel from "#lib/components/SendPanel.svelte";
@@ -42,8 +41,6 @@
 
     /** The template the frame shows: the invoice's own (MBR's page), or another (a preview). */
     let chosen = $state<string>("");
-    let preview = $state<string | null>(null);
-    let previewError = $state<Error | null>(null);
 
     const detailView = $derived<DataView>(detailError !== null ? "error" : detail !== null ? "data" : "loading");
     const booksView = $derived<DataView>(booksError !== null ? "error" : books !== null ? "data" : "loading");
@@ -146,8 +143,6 @@
     $effect(() => {
         const target = number;
         chosen = "";
-        preview = null;
-        previewError = null;
         loadDetail(target);
         loadBooks(target);
     });
@@ -159,23 +154,6 @@
         ensureSession()
             .then(() => (sessionReady = true))
             .catch((e: unknown) => (sessionError = asError(e)));
-    });
-
-    // Another template: render the saved invoice through it (no writes).
-    $effect(() => {
-        const target = number;
-        const template = chosen;
-        if (template === "" || template === own) {
-            preview = null;
-            return;
-        }
-        preview = null;
-        previewError = null;
-        renderPreview({number: target, template})
-            .then((rendered) => {
-                if (target === number && template === chosen) preview = rendered.html;
-            })
-            .catch((e: unknown) => (previewError = asError(e)));
     });
 </script>
 
@@ -225,21 +203,16 @@
                             <span class="text-xs text-base-content/60">Preview only: the invoice still names {own ?? "no template"}.</span>
                         {/if}
                     </div>
-                    {#if !showingOwn && previewError !== null}
-                        <div class="alert text-sm alert-error" role="alert" data-testid="preview-error">Couldn't preview it: {previewError.message}</div>
-                    {:else if showingOwn && sessionError !== null}
+                    {#if sessionError !== null}
                         <div class="alert text-sm alert-error" role="alert" data-testid="preview-error">Couldn't show the invoice: {sessionError.message}</div>
-                    {:else if !showingOwn}
-                        {#if preview !== null}
-                            <InvoiceFrame html={preview} title="{doc.title}, previewed" />
-                        {:else}
-                            <div class="flex justify-center py-24" aria-label="Rendering the preview">
-                                <span class="loading loading-lg loading-spinner"></span>
-                            </div>
-                        {/if}
                     {:else if sessionReady}
+                        <!-- Re-made after a write or a change on disk (frameKey), so it shows the file again. -->
                         {#key frameKey}
-                            <InvoiceFrame src={pageUrl(doc.path)} title={doc.title} />
+                            {#if showingOwn}
+                                <InvoiceFrame src={pageUrl(doc.path)} title={doc.title} />
+                            {:else}
+                                <InvoiceFrame src={previewUrl(number, chosen)} title="{doc.title}, previewed" mode="preview" />
+                            {/if}
                         {/key}
                     {/if}
                 </section>

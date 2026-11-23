@@ -11,17 +11,38 @@
 //! `/`-rooted `.html` path) instead of the one the note names: a file in
 //! the books, or a starter that isn't copied in yet, whose shipped text is
 //! used.
+//!
+//! **The preview page** (`GET /.ledgeline-invoicer/preview?number=&template=`,
+//! [`page`]) is the same render as a page of its own, for the SPA's frame.
+//! A preview can't be shown through `srcdoc`: an `about:srcdoc` document
+//! inherits its parent's CSP, and the SPA's (the shell's) has
+//! `frame-ancestors 'none'`, which WebKit applies to the inherited policy, so
+//! the window showed a blank frame (2026-11-23). As a page of its own it
+//! gets MBR's policy ([`super::mbr::MBR_CSP`]: `frame-ancestors 'self'`,
+//! remote images), passes the same gate as MBR's pages (the session cookie),
+//! and its relative links resolve from the note's own page (`<base>`).
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
+
+use axum::Extension;
+use axum::extract::{Query, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::response::{Html, IntoResponse, Response};
 
 use ledgeline_core::vault::{Vault, VaultPath};
 use mbr_core::errors::MbrError;
 use mbr_core::page_template::{MAX_TEMPLATE_BYTES, PageTemplateError};
 use serde::{Deserialize, Serialize};
 
+use super::AppState;
 use super::books::OpenBooks;
+use super::mbr::{self, MbrGate};
 use crate::starters;
+
+/// Where the preview page is served: a hidden folder, which MBR never serves.
+pub(crate) const PREVIEW_PAGE: &str = "/.ledgeline-invoicer/preview";
 
 /// The largest unsaved source accepted.
 pub(crate) const MAX_SOURCE_BYTES: usize = 1024 * 1024;
@@ -154,6 +175,130 @@ pub(crate) fn render(books: &OpenBooks, request: PreviewRequest) -> Result<Previ
     })
 }
 
+/// The preview page's query: the saved invoice, through `template`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PageParams {
+    /// An invoice number (or a path, as `show` takes it).
+    pub number: Option<String>,
+    /// The note's path in the books folder.
+    pub path: Option<String>,
+    /// Render through this template instead of the note's own.
+    pub template: Option<String>,
+}
+
+/// `GET /.ledgeline-invoicer/preview`: the saved invoice rendered through
+/// another template, as a page for the SPA's frame (see the module docs).
+/// Behind MBR's gate; writes nothing. A failure is a short page saying why,
+/// since a frame shows it as it is.
+pub(crate) async fn page(
+    State(state): State<AppState>,
+    Extension(gate): Extension<Arc<MbrGate>>,
+    headers: HeaderMap,
+    params: Result<Query<PageParams>, axum::extract::rejection::QueryRejection>,
+) -> Response {
+    if !gate.allows(&headers) {
+        return mbr::refused();
+    }
+    let Some(books) = state.books() else {
+        return mbr::no_books();
+    };
+    let Query(params) = match params {
+        Ok(params) => params,
+        Err(error) => return problem_page(StatusCode::BAD_REQUEST, &error.body_text()),
+    };
+    let request = PreviewRequest {
+        number: params.number,
+        path: params.path,
+        source: None,
+        template: params.template,
+    };
+    let rendered = tokio::task::spawn_blocking(move || render(&books, request)).await;
+    let preview = match rendered {
+        Ok(Ok(preview)) => preview,
+        Ok(Err(error)) => {
+            let (status, message) = match error {
+                PreviewError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
+                PreviewError::NotFound(m) => (StatusCode::NOT_FOUND, m),
+                PreviewError::Template(m) => (StatusCode::UNPROCESSABLE_ENTITY, m),
+                PreviewError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
+            };
+            return problem_page(status, &message);
+        }
+        Err(error) => return problem_page(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
+    };
+    let base = VaultPath::new(&preview.path)
+        .map(|note| crate::pdf::page_url(&note))
+        .ok();
+    let html = match base {
+        Some(base) => with_base(&preview.html, &base),
+        None => preview.html,
+    };
+    let mut response = (
+        [
+            (header::CACHE_CONTROL, ledgeline_shell::security::no_store()),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                HeaderValue::from_static(mbr::MBR_CSP),
+            ),
+        ],
+        Html(html),
+    )
+        .into_response();
+    if let Ok(timing) = HeaderValue::from_str(&format!("render;dur={:.2}", preview.render_ms)) {
+        response.headers_mut().insert("server-timing", timing);
+    }
+    response
+}
+
+/// `html` with `<base href="{base}">` first in its `<head>`, so its
+/// relative links resolve as on the note's own page. Unchanged when it has
+/// no `<head>` or already sets a base.
+fn with_base(html: &str, base: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    if lower.contains("<base") {
+        return html.to_string();
+    }
+    let Some(open) = lower.find("<head") else {
+        return html.to_string();
+    };
+    // `<head>` or `<head …>`, not `<header>`.
+    let after = &lower[open + 5..];
+    if !after.starts_with(['>', ' ', '\t', '\n', '\r']) {
+        return html.to_string();
+    }
+    let Some(close) = after.find('>') else {
+        return html.to_string();
+    };
+    let at = open + 5 + close + 1;
+    let href = base.replace('&', "&amp;").replace('"', "&quot;");
+    format!("{}<base href=\"{href}\">{}", &html[..at], &html[at..])
+}
+
+/// A small page saying why there is no preview.
+fn problem_page(status: StatusCode, message: &str) -> Response {
+    let escaped = message
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    (
+        status,
+        [
+            (header::CACHE_CONTROL, ledgeline_shell::security::no_store()),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                HeaderValue::from_static(mbr::MBR_CSP),
+            ),
+        ],
+        Html(format!(
+            "<!doctype html><html><head><meta charset=\"utf-8\"><title>No preview</title></head>\
+             <body style=\"font-family: system-ui, sans-serif; padding: 1.5rem\">\
+             <p><strong>Couldn't preview it.</strong></p><p>{escaped}</p></body></html>"
+        )),
+    )
+        .into_response()
+}
+
 /// A note's path from the request: inside the books folder, not hidden,
 /// markdown.
 fn note_path(path: &str) -> Result<VaultPath, PreviewError> {
@@ -263,6 +408,28 @@ pub(crate) fn templates(books: &OpenBooks) -> Vec<TemplateEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_base_goes_first_in_the_head() {
+        assert_eq!(
+            with_base(
+                "<!doctype html><html><head><meta charset=\"utf-8\"></head>",
+                "/a%20b/"
+            ),
+            "<!doctype html><html><head><base href=\"/a%20b/\"><meta charset=\"utf-8\"></head>"
+        );
+        assert_eq!(
+            with_base("<HEAD lang=x><title>t</title>", "/x/"),
+            "<HEAD lang=x><base href=\"/x/\"><title>t</title>"
+        );
+        for kept in [
+            "<html><header>no head</header></html>",
+            "<head><base href=\"/y/\"></head>",
+            "no html at all",
+        ] {
+            assert_eq!(with_base(kept, "/x/"), kept);
+        }
+    }
 
     #[test]
     fn a_note_path_stays_inside_the_books_and_is_markdown() {

@@ -126,6 +126,16 @@ export function pageUrl(path: string): string {
     return `/${bare.split("/").map(encodeURIComponent).join("/")}/`;
 }
 
+/**
+ * The preview page for the saved invoice `number` through `template`
+ * (`GET /.ledgeline-invoicer/preview`): a page of its own under MBR's CSP,
+ * behind the session cookie, for the invoice frame.
+ */
+export function previewUrl(number: string, template: string): string {
+    const query = new URLSearchParams({number, template});
+    return `/.ledgeline-invoicer/preview?${query.toString()}`;
+}
+
 /** daisyUI badge tones. */
 export type Tone = "neutral" | "info" | "success" | "warning" | "error";
 

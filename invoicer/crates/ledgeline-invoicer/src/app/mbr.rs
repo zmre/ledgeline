@@ -223,7 +223,7 @@ pub(crate) async fn fallback(
 }
 
 /// A page asked for without the token or the session cookie.
-fn refused() -> Response {
+pub(crate) fn refused() -> Response {
     (
         StatusCode::UNAUTHORIZED,
         [
@@ -240,7 +240,7 @@ fn refused() -> Response {
 }
 
 /// A page asked for while no books are open.
-fn no_books() -> Response {
+pub(crate) fn no_books() -> Response {
     (
         StatusCode::NOT_FOUND,
         [(header::CACHE_CONTROL, security::no_store())],

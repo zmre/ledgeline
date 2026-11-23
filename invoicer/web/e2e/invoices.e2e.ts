@@ -98,8 +98,12 @@ test.describe("the invoicer over the accrual fixture (:5199)", () => {
         await expect(preview.getByText("Less deposit (Invoice 104)")).toBeVisible();
         await expect(preview.getByText("liabilities:customer-deposits")).toBeHidden();
 
+        await expect(preview.getByText("$8,350").first()).toBeVisible();
+
         await page.getByTestId("template-choice").selectOption("/invoices/tpl/classic.html");
         await expect(frame(page).getByText("No. 105")).toBeVisible();
+        await expect(frame(page).getByText("Bill to")).toBeVisible();
+        await expect(frame(page).getByText("Total due")).toBeVisible();
 
         // Back to the invoice's own: MBR's page again.
         await page.getByTestId("template-choice").selectOption("");
@@ -109,6 +113,28 @@ test.describe("the invoicer over the accrual fixture (:5199)", () => {
         expect(existsSync(resolve(BOOKS, "invoices/tpl/modern.html"))).toBe(false);
         expect(existsSync(resolve(BOOKS, "invoices/tpl/classic.html"))).toBe(false);
         expect(read(INVOICE_105)).toBe(before);
+    });
+
+    test("a starter previews the draft 108 with its content showing, not a blank frame", async ({page}) => {
+        // Patrick's blank starter preview (2026-11-23): the preview was a srcdoc
+        // frame, which inherits the SPA's CSP (frame-ancestors 'none'). It is now
+        // a page of its own; the frame must show the rendered invoice.
+        await open(page);
+        await page.goto("/app/invoices/108");
+        await expect(page.getByTestId("invoice-frame")).toHaveAttribute("data-mode", "page");
+        for (const [template, marker] of [
+            ["/invoices/tpl/classic.html", "No. 108"],
+            ["/invoices/tpl/modern.html", "#108"],
+        ] as const) {
+            await page.getByTestId("template-choice").selectOption(template);
+            const shown = page.getByTestId("invoice-frame");
+            await expect(shown).toHaveAttribute("data-mode", "preview");
+            await expect(shown).toHaveAttribute("src", /^\/\.ledgeline-invoicer\/preview\?/);
+            await expect(frame(page).getByText(marker)).toBeVisible();
+            await expect(frame(page).getByText("Platform subscription, 1 year")).toBeVisible();
+            // Sized to its content, not the empty default.
+            expect((await shown.boundingBox())?.height ?? 0).toBeGreaterThan(300);
+        }
     });
 
     test("POST /api/preview renders unsaved text", async ({request}) => {

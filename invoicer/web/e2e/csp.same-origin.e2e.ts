@@ -48,9 +48,11 @@ test("the embedded SPA and an invoice's frame load with no CSP violations", asyn
     await expect(invoice.getByText("Bill to Customer X")).toBeVisible();
     await expect(invoice.getByText("liabilities:customer-deposits")).toBeHidden();
 
-    // A preview frame (srcdoc) under the shell's policy.
+    // A preview frame: a page of its own under MBR's policy (never srcdoc,
+    // which would inherit the shell's frame-ancestors 'none').
     await page.getByTestId("template-choice").selectOption("/invoices/tpl/modern.html");
     await expect(invoice.getByText("Billed to")).toBeVisible();
+    await expect(invoice.getByText("Less deposit (Invoice 104)")).toBeVisible();
 
     expect(violations).toEqual([]);
 });

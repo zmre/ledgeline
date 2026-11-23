@@ -1,6 +1,13 @@
-<!-- An invoice as its template renders it, in a frame: MBR's own page for
-     the saved file (`src`, which needs the session cookie: invoicer PLAN A2),
-     or a preview's HTML (`html`, from `POST /api/preview`).
+<!-- An invoice as its template renders it, in a frame, always by URL (both
+     need the session cookie: invoicer PLAN A2):
+
+     - `page` mode: MBR's own page for the saved file;
+     - `preview` mode: the saved file through another template
+       (`/.ledgeline-invoicer/preview`, under MBR's CSP).
+
+     Never `srcdoc`: an about:srcdoc document inherits this window's CSP,
+     whose `frame-ancestors 'none'` WebKit applies to it, so the window showed
+     a blank frame (2026-11-23).
 
      Sandboxed with `allow-same-origin` and nothing else: no script in the
      page runs, so a template can never reach this window (or its token),
@@ -9,7 +16,7 @@
      export-ready partial only matters inside a PDF export, which has its own
      webview. The frame grows to its page's height once it loads. -->
 <script lang="ts">
-    let {src, html, title}: {src?: string; html?: string; title: string} = $props();
+    let {src, title, mode = "page"}: {src?: string; title: string; mode?: "page" | "preview"} = $props();
 
     let frame = $state<HTMLIFrameElement | null>(null);
     let height = $state(1100);
@@ -21,19 +28,7 @@
     }
 </script>
 
-{#if html !== undefined}
-    <iframe
-        bind:this={frame}
-        {title}
-        srcdoc={html}
-        sandbox="allow-same-origin"
-        class="w-full rounded-box border border-base-300 bg-white"
-        style="height: {height}px"
-        onload={fit}
-        data-testid="invoice-frame"
-        data-mode="preview"
-    ></iframe>
-{:else if src !== undefined}
+{#if src !== undefined}
     <iframe
         bind:this={frame}
         {title}
@@ -43,6 +38,6 @@
         style="height: {height}px"
         onload={fit}
         data-testid="invoice-frame"
-        data-mode="page"
+        data-mode={mode}
     ></iframe>
 {/if}
