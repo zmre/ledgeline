@@ -12,9 +12,14 @@
 //   - every invoice names /invoices/tpl/myco-default.html, the fixture's own
 //     template ("Bill to …"); the starters Classic and Modern are not copied in.
 //
-// Written in 3b and NOT run by the agent that wrote it (agents never run
-// Playwright); the lead runs it.
+// 3c adds the PDF: exported through the API (the `--server` of a desktop
+// build prints on its own windowless event loop) and read back with
+// `pdftotext` (poppler-utils, in the dev shell), then from the Send panel.
+//
+// Written in 3b and 3c and NOT run by the agents that wrote it (agents never
+// run Playwright); the lead runs it.
 
+import {execFileSync} from "node:child_process";
 import {readFileSync, existsSync} from "node:fs";
 import {resolve} from "node:path";
 import {expect, test, type Page} from "@playwright/test";
@@ -137,5 +142,60 @@ test.describe("the invoicer over the accrual fixture (:5199)", () => {
         await page.goto("/app/invoices/108");
         await expect(page.getByTestId("books-empty")).toContainText("drafts never touch the books");
         await expect(frame(page).getByText("Platform subscription, 1 year")).toBeVisible();
+    });
+
+    test("POST /api/invoices/105/pdf keeps a real PDF with the invoice's text", async ({request}) => {
+        test.setTimeout(90_000);
+        const response = await request.post(`${SERVER_URL}/api/invoices/105/pdf`, {
+            headers: {Authorization: `Bearer ${API_TOKEN}`},
+            data: {today: "2026-11-17"},
+        });
+        expect(response.status(), await response.text()).toBe(200);
+        const body = (await response.json()) as {destination: string; kept_at: string; sent_hash: string; path?: string};
+        expect(body.destination).toBe("kept");
+        expect(body.kept_at).toBe("invoices/pdf/2026-11-10 Customer X Invoice 105.pdf");
+        expect(body.sent_hash).toBe("written");
+        expect(body.path).toBeUndefined();
+
+        const file = resolve(BOOKS, body.kept_at);
+        expect(readFileSync(file).subarray(0, 5).toString("latin1")).toBe("%PDF-");
+        const text = execFileSync("pdftotext", ["-layout", file, "-"], {encoding: "utf8"});
+        expect(text).toContain("Bill to Customer X");
+        expect(text).toContain("Less deposit (Invoice 104)");
+        expect(text).toContain("8,350.00");
+        // The books column is in the page but hidden by the template.
+        expect(text).not.toContain("liabilities:customer-deposits");
+        expect(read(INVOICE_105)).toMatch(/^sent_hash: [0-9a-f]{16}$/m);
+
+        // A draft goes to a temporary file and leaves the books alone.
+        const before = read("invoices/2026-11-17 Customer X Invoice 108.md");
+        const draft = await request.post(`${SERVER_URL}/api/invoices/108/pdf`, {
+            headers: {Authorization: `Bearer ${API_TOKEN}`},
+            data: {},
+        });
+        expect(draft.status(), await draft.text()).toBe(200);
+        expect(((await draft.json()) as {destination: string}).destination).toBe("temp");
+        expect(read("invoices/2026-11-17 Customer X Invoice 108.md")).toBe(before);
+    });
+
+    test("the Send panel exports a sent invoice and keeps the earlier PDF", async ({page}) => {
+        test.setTimeout(90_000);
+        await open(page);
+        await page.goto("/app/invoices/105");
+        const panel = page.getByTestId("send-panel");
+        await expect(panel.getByTestId("send-instructions")).toContainText("Create from PO");
+        await expect(panel.getByTestId("send-copy-reference")).toBeVisible();
+        await panel.getByTestId("send-export").click();
+        await expect(panel.getByTestId("send-exported")).toContainText("Saved invoices/pdf/2026-11-10 Customer X Invoice 105.pdf", {timeout: 60_000});
+        await expect(panel.getByTestId("send-kept-pdf").first()).toContainText("2026-11-10 Customer X Invoice 105.pdf");
+        // `--server` has no window: no Share… or Copy file.
+        await expect(panel.getByTestId("send-share")).toHaveCount(0);
+
+        // A draft asks first.
+        await page.goto("/app/invoices/108");
+        await page.getByTestId("send-export").click();
+        await expect(page.getByRole("alertdialog")).toContainText("Mark invoice 108 as sent?");
+        await page.getByTestId("send-draft-only").click();
+        await expect(page.getByTestId("send-exported")).toContainText("temporary", {timeout: 60_000});
     });
 });

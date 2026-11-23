@@ -1,6 +1,7 @@
 // Responses as the server sends them for the accrual fixture
 // (invoicer/fixtures/accrual), trimmed to what the components read. The Rust
 // router tests pin the real shapes (src/app/tests.rs).
+import type {Delivery} from "#lib/delivery.js";
 import type {InvoiceBooks, InvoiceEntry} from "#lib/invoices.js";
 
 const customerX = {
@@ -56,4 +57,60 @@ export const BOOKS_105: InvoiceBooks = {
     paid: {state: "no"},
     in_step: true,
     problems: [],
+};
+
+/** `GET /api/invoices/105/pdf`: sent, kept twice, Customer X's portal. */
+export const DELIVERY_105: Delivery = {
+    number: "105",
+    document: "invoices/2026-11-10 Customer X Invoice 105.md",
+    status: "sent",
+    sent_date: "2026-11-10",
+    sent_via: "portal",
+    destination: "kept",
+    file: "2026-11-10 Customer X Invoice 105.pdf",
+    pdf_dir: "invoices/pdf",
+    sent_hash: "0123456789abcdef",
+    changed_since_sent: false,
+    exports: [
+        {
+            file: "2026-11-10 Customer X Invoice 105.pdf",
+            kept_at: "invoices/pdf/2026-11-10 Customer X Invoice 105.pdf",
+            date: "2026-11-20",
+            bytes: 48_000,
+            latest: true,
+        },
+        {
+            file: "2026-11-10 Customer X Invoice 105 2026-11-10.pdf",
+            kept_at: "invoices/pdf/2026-11-10 Customer X Invoice 105 2026-11-10.pdf",
+            date: "2026-11-10",
+            bytes: 47_000,
+            latest: false,
+        },
+    ],
+    portal: {
+        name: "Coupa",
+        url: "https://customerx.coupahost.com/",
+        login: "finance@mycompany.com",
+        supplier_id: "SUP-44821",
+        requires_reference: true,
+        instructions: "Upload the PDF under Invoices → Create from PO, then attach the timesheet.",
+    },
+    copy: {number: "105", reference: "PO #PY75334, rev. 2", total: "$8,350.00"},
+    capabilities: {pdf: true, share: true, copy_file: true, open_url: true},
+};
+
+/** `GET /api/invoices/108/pdf`: a draft, never exported. */
+export const DELIVERY_108: Delivery = {
+    ...DELIVERY_105,
+    number: "108",
+    document: "invoices/2026-11-17 Customer X Invoice 108.md",
+    status: "draft",
+    sent_date: null,
+    sent_via: null,
+    destination: "temp",
+    file: "2026-11-17 Customer X Invoice 108.pdf",
+    sent_hash: null,
+    changed_since_sent: null,
+    exports: [],
+    copy: {number: "108", reference: "PO #PY75334", total: "$13,600.00"},
 };

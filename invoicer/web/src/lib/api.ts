@@ -5,6 +5,7 @@
 // from the shared client in packages/ui: injected by the window, or adopted
 // from the `#token=` launch fragment.
 import {ApiShapeError, ApiUnreachableError, authHeaders} from "#ui/api/client.js";
+import type {Anchor, Delivery, Destination, Exported} from "./delivery.js";
 import {localToday, type BooksInfo, type InvoiceBooks, type InvoiceDetail, type InvoiceEntry, type Preview, type TemplateEntry} from "./invoices.js";
 
 /** `GET /api/ui-prefs`'s body: the shared theme and scale, among others. */
@@ -124,4 +125,49 @@ export interface PreviewRequest {
 /** `POST /api/preview`: a whole page, rendered; nothing is written. */
 export function renderPreview(request: PreviewRequest): Promise<Preview> {
     return json<Preview>("POST", "/api/preview", (body) => isObject(body) && typeof body.html === "string", request);
+}
+
+/** `GET /api/invoices/{number}/pdf`: what the Send panel needs (PLAN 3c). */
+export function fetchDelivery(number: string): Promise<Delivery> {
+    return json<Delivery>("GET", `/api/invoices/${encodeURIComponent(number)}/pdf`, (body) => isObject(body) && "destination" in body);
+}
+
+/**
+ * `POST /api/invoices/{number}/pdf`: export its PDF. A sent invoice's is kept
+ * in `pdf-dir`; a draft's (or `temp: true`) goes to a temporary file.
+ */
+export function exportPdf(number: string, options: {temp?: boolean} = {}): Promise<Exported> {
+    return json<Exported>("POST", `/api/invoices/${encodeURIComponent(number)}/pdf`, (body) => isObject(body) && typeof body.file === "string", {
+        temp: options.temp ?? false,
+        today: localToday(),
+    });
+}
+
+/** `POST /api/invoices/{number}/send`: mark it sent (books it), with how it went out. */
+export async function sendInvoice(number: string, via: string): Promise<void> {
+    await call("POST", `/api/invoices/${encodeURIComponent(number)}/send`, {via, today: localToday()});
+}
+
+/**
+ * `POST /api/invoices/{number}/portal`: the window opens the customer's portal
+ * in the browser; elsewhere (`--server` in a browser) the URL comes back and
+ * this opens it in a new tab.
+ */
+export async function openPortal(number: string): Promise<void> {
+    const body = await json<{url: string; opened: boolean}>(
+        "POST",
+        `/api/invoices/${encodeURIComponent(number)}/portal`,
+        (b) => isObject(b) && typeof b.url === "string"
+    );
+    if (!body.opened) window.open(body.url, "_blank", "noopener,noreferrer");
+}
+
+/** `POST /api/pdf/share`: Share… an exported PDF (macOS, the window). */
+export async function sharePdf(destination: Destination, file: string, anchor?: Anchor): Promise<void> {
+    await call("POST", "/api/pdf/share", {destination, file, anchor});
+}
+
+/** `POST /api/pdf/copy`: Copy file, to paste into Mail, Finder or a chat. */
+export async function copyPdf(destination: Destination, file: string): Promise<void> {
+    await call("POST", "/api/pdf/copy", {destination, file});
 }

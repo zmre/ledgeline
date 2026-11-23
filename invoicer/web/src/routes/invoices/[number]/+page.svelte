@@ -1,5 +1,5 @@
-<!-- One invoice (invoicer PLAN 3b): the page its template renders, beside the
-     Books panel. The saved invoice is MBR's own page in a frame; another
+<!-- One invoice (invoicer PLAN 3b, 3c): the page its template renders, beside the
+     Send panel (its PDF, the Send flow) and the Books panel. The saved invoice is MBR's own page in a frame; another
      template (a starter not copied in yet, say) is a `POST /api/preview`,
      which writes nothing. -->
 <script lang="ts">
@@ -8,10 +8,24 @@
     import {page} from "$app/state";
     import AsyncSection from "#ui/components/AsyncSection.svelte";
     import type {DataView} from "#ui/ui/dataView.js";
-    import {ensureSession, fetchInvoice, fetchInvoiceBooks, fetchTemplates, renderPreview} from "#lib/api.js";
+    import {
+        copyPdf,
+        ensureSession,
+        exportPdf,
+        fetchDelivery,
+        fetchInvoice,
+        fetchInvoiceBooks,
+        fetchTemplates,
+        openPortal,
+        renderPreview,
+        sendInvoice,
+        sharePdf,
+    } from "#lib/api.js";
+    import type {Anchor, Delivery, Destination, Exported} from "#lib/delivery.js";
     import {kindLabel, pageUrl, templateChoices, type InvoiceBooks, type InvoiceDetail, type TemplateEntry} from "#lib/invoices.js";
     import BooksPanel from "#lib/components/BooksPanel.svelte";
     import InvoiceFrame from "#lib/components/InvoiceFrame.svelte";
+    import SendPanel from "#lib/components/SendPanel.svelte";
     import StatusBadge from "#lib/components/StatusBadge.svelte";
 
     const number = $derived(page.params.number ?? "");
@@ -56,6 +70,78 @@
             })
             .catch((e: unknown) => (booksError = asError(e)));
     }
+
+    // The Send panel (PLAN 3c).
+    let delivery = $state<Delivery | null>(null);
+    let exported = $state<Exported | null>(null);
+    let sending = $state(false);
+    let sendError = $state<string | null>(null);
+    /** Bumped after a write, so MBR's page in the frame shows the file again. */
+    let frameKey = $state(0);
+
+    function loadDelivery(target: string): void {
+        fetchDelivery(target)
+            .then((d) => {
+                if (target === number) delivery = d;
+            })
+            .catch((e: unknown) => (sendError = asError(e).message));
+    }
+
+    /** Run one Send-panel action: busy while it runs, its error shown. */
+    async function act(action: () => Promise<void>): Promise<void> {
+        sending = true;
+        sendError = null;
+        try {
+            await action();
+        } catch (e: unknown) {
+            sendError = asError(e).message;
+        } finally {
+            sending = false;
+        }
+    }
+
+    function refreshAll(target: string): void {
+        loadDetail(target);
+        loadBooks(target);
+        loadDelivery(target);
+        frameKey += 1;
+    }
+
+    const onExport = (options: {temp: boolean}): Promise<void> =>
+        act(async () => {
+            const target = number;
+            exported = await exportPdf(target, options);
+            loadDelivery(target);
+        });
+
+    const onSendAndExport = (via: string): Promise<void> =>
+        act(async () => {
+            const target = number;
+            await sendInvoice(target, via);
+            refreshAll(target);
+            exported = await exportPdf(target);
+            loadDelivery(target);
+        });
+
+    const onShare = (destination: Destination, file: string, anchor: Anchor): Promise<void> => act(() => sharePdf(destination, file, anchor));
+    const onCopyFile = (destination: Destination, file: string): Promise<void> => act(() => copyPdf(destination, file));
+    const onOpenPortal = (): Promise<void> => act(() => openPortal(number));
+    const onCopyText = (label: string, text: string): Promise<void> =>
+        act(async () => {
+            try {
+                await navigator.clipboard.writeText(text);
+            } catch {
+                throw new Error(`Couldn't copy the ${label.toLowerCase()}; select it and copy by hand.`);
+            }
+        });
+
+    $effect(() => {
+        const target = number;
+        delivery = null;
+        exported = null;
+        sendError = null;
+        loadDelivery(target);
+    });
 
     $effect(() => {
         const target = number;
@@ -152,11 +238,29 @@
                             </div>
                         {/if}
                     {:else if sessionReady}
-                        <InvoiceFrame src={pageUrl(doc.path)} title={doc.title} />
+                        {#key frameKey}
+                            <InvoiceFrame src={pageUrl(doc.path)} title={doc.title} />
+                        {/key}
                     {/if}
                 </section>
 
-                <aside class="min-w-0">
+                <aside class="flex min-w-0 flex-col gap-6">
+                    {#if delivery !== null}
+                        <SendPanel
+                            {delivery}
+                            {exported}
+                            busy={sending}
+                            error={sendError}
+                            {onExport}
+                            {onSendAndExport}
+                            {onShare}
+                            {onCopyFile}
+                            {onOpenPortal}
+                            {onCopyText}
+                        />
+                    {:else if sendError !== null}
+                        <div class="alert text-sm alert-error" role="alert" data-testid="send-error">{sendError}</div>
+                    {/if}
                     <AsyncSection
                         view={booksView}
                         value={books}
