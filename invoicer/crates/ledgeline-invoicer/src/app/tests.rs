@@ -33,8 +33,15 @@ fn copy_tree(src: &Path, dest: &Path) {
 
 /// A copy of `invoicer/fixtures/accrual`, and its main journal.
 fn fixture() -> (tempfile::TempDir, PathBuf) {
+    fixture_named("accrual")
+}
+
+/// A copy of `invoicer/fixtures/{name}`, and its main journal.
+fn fixture_named(name: &str) -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/accrual");
+    let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures")
+        .join(name);
     copy_tree(&src, &dir.path().join("books"));
     let journal = dir.path().join("books/books.journal");
     (dir, journal)
@@ -53,7 +60,12 @@ fn app() -> App {
 
 /// [`app`] with a native side (the PDF tests' mock).
 fn app_with(native: Option<Arc<dyn super::native::Native>>) -> App {
-    let (dir, journal) = fixture();
+    app_on("accrual", native)
+}
+
+/// [`app_with`] over the fixture `name` (`accrual`, `cash`).
+fn app_on(name: &str, native: Option<Arc<dyn super::native::Native>>) -> App {
+    let (dir, journal) = fixture_named(name);
     let books = Arc::new(OpenBooks::open(&journal, false).expect("opens"));
     let app_dirs = AppDirs::under(dir.path().join("config"));
     let state = AppState::with_native(Some(Arc::clone(&books)), app_dirs, native);
@@ -1093,4 +1105,57 @@ async fn a_failed_print_keeps_nothing() {
     assert!(left.is_empty(), "no staging file left behind");
     let text = std::fs::read_to_string(root.join(INVOICE_105)).unwrap();
     assert!(!text.contains("sent_hash"));
+}
+
+/// Marking a draft sent books it, and the app's own session sees the booking
+/// at once: the Books panel and the invoice's checks read the journal as it
+/// is now, not as the session last read it (Patrick's "Mark as sent" error,
+/// 2026-11-23).
+#[tokio::test(flavor = "multi_thread")]
+async fn send_books_the_invoice_and_the_session_sees_it_at_once() {
+    for (fixture, number, booked) in [("accrual", "108", true), ("cash", "204", false)] {
+        let app = app_on(fixture, None);
+        let root = books_root(&app);
+        // The panel is read first, as the page does before the click.
+        let (status, before) =
+            json_of(&app, authed(&format!("/api/invoices/{number}/books"))).await;
+        assert_eq!(status, StatusCode::OK, "{fixture}: {before}");
+        assert_eq!(before["status"], "draft", "{fixture}");
+
+        let (status, body) = json_of(
+            &app,
+            post_json(
+                &format!("/api/invoices/{number}/send"),
+                &serde_json::json!({"via": "email", "today": "2026-11-17"}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{fixture}: {body}");
+        let journal = std::fs::read_to_string(root.join("books.journal")).unwrap();
+        assert_eq!(
+            journal.contains(&format!("invoice: {number}")),
+            booked,
+            "{fixture}: accrual books book at send, cash books at payment"
+        );
+
+        let (status, panel) = json_of(&app, authed(&format!("/api/invoices/{number}/books"))).await;
+        assert_eq!(status, StatusCode::OK, "{fixture}: {panel}");
+        assert_eq!(panel["status"], "sent", "{fixture}: {panel}");
+        assert_eq!(
+            !panel["bookings"].as_array().unwrap().is_empty(),
+            booked,
+            "{fixture}: {panel}"
+        );
+        assert_eq!(
+            panel["problems"],
+            serde_json::json!([]),
+            "{fixture}: no problem with a freshly sent invoice"
+        );
+        let (status, detail) = json_of(&app, authed(&format!("/api/invoices/{number}"))).await;
+        assert_eq!(status, StatusCode::OK, "{fixture}: {detail}");
+        assert!(
+            !detail.to_string().contains("no transaction"),
+            "{fixture}: {detail}"
+        );
+    }
 }

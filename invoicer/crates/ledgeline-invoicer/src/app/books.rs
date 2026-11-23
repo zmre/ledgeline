@@ -229,6 +229,22 @@ impl OpenBooks {
     }
 }
 
+/// Read the journal again after this app wrote it (Send, Void, …), so the
+/// next request (the Books panel, the invoice's checks) sees the booking.
+///
+/// The books bridge writes through its own copy of the session's journal
+/// editor, so the session still holds the journal as it was; the watcher
+/// would catch up after its debounce, but the SPA asks again at once. A
+/// no-op when the journal is as the session read it.
+pub(crate) fn reload_after_write(session: &mut Session) {
+    if session.changed_journal_files().is_empty() {
+        return;
+    }
+    if let Err(error) = session.reload_books() {
+        eprintln!("{}: reload after a write skipped: {error}", APP.log_prefix);
+    }
+}
+
 /// Reconcile `only` (or every sent invoice), logging the outcome.
 fn reconcile_in(session: &mut Session, only: Option<Vec<String>>) -> Option<Reconciled> {
     let books = session.invoice_books();

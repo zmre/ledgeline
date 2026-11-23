@@ -444,6 +444,8 @@ pub(crate) async fn send(
         };
         let (index, _) = session.parts_mut();
         let (result, _) = books::retry_once(|| invoice_books.send(index, &request));
+        // Booked (or not): read the journal as it now is, before answering.
+        super::books::reload_after_write(&mut session);
         to_value(result.map_err(|e| books_error(&e))?)
     })
     .await
