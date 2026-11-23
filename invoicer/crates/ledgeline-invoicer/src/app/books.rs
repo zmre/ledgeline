@@ -17,11 +17,27 @@ use ledgeline_core::vault::{Vault, VaultPath};
 use mbr_core::Config as MbrConfig;
 use mbr_core::standalone::Renderer;
 use mbr_server::{LiveServer, Server};
+use serde::Serialize;
+use tokio::sync::broadcast;
 
 use super::APP;
 
 /// The settings file beside the main journal: `[books]` and `[invoicer]`.
 const SETTINGS_FILE: &str = "ledgeline.toml";
+
+/// How many change events a slow listener may fall behind by before it is
+/// told only that something changed.
+const CHANGE_BACKLOG: usize = 64;
+
+/// One settled change on disk, after the books were re-read and reconciled:
+/// what `GET /api/events` sends the SPA, so it reloads what it shows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct Changed {
+    /// The files that changed, relative to the books folder (a journal
+    /// outside it by its file name): never a full local path. Empty when a
+    /// listener fell behind and missed some.
+    pub paths: Vec<String>,
+}
 
 /// An open books folder.
 pub(crate) struct OpenBooks {
@@ -39,6 +55,11 @@ pub(crate) struct OpenBooks {
     /// again whenever MBR's server is rebuilt (a `.mbr/config.toml` change),
     /// paired with the server it was built for.
     renderer: Mutex<Option<(Arc<Server>, Arc<Renderer>)>>,
+    /// Change events, sent once each settled change has been applied
+    /// ([`OpenBooks::apply_changes`]). Dropped with the books, which ends
+    /// every listener's stream (File → Open: the SPA reconnects to the new
+    /// books).
+    changes: broadcast::Sender<Changed>,
 }
 
 impl std::fmt::Debug for OpenBooks {
@@ -72,6 +93,7 @@ impl OpenBooks {
             mbr: live.router(),
             live,
             renderer: Mutex::new(None),
+            changes: broadcast::channel(CHANGE_BACKLOG).0,
         })
     }
 
@@ -148,8 +170,48 @@ impl OpenBooks {
         reconcile_in(&mut session, None)
     }
 
+    /// Listen for change events ([`Changed`]).
+    pub(crate) fn subscribe(&self) -> broadcast::Receiver<Changed> {
+        self.changes.subscribe()
+    }
+
     /// React to the files `changed` on disk (a settled watcher burst):
-    /// re-read what changed, then reconcile the invoices it touched.
+    /// [`Self::reload_changed`], then tell every listener (the SPA's
+    /// `GET /api/events`) which of the files it shows changed. PDFs and
+    /// other files the app doesn't read are no event.
+    pub(crate) fn apply_changes(&self, changed: &[PathBuf]) -> Option<Reconciled> {
+        let report = self.reload_changed(changed);
+        let journal_names: BTreeSet<_> = self
+            .session()
+            .journal_files()
+            .iter()
+            .filter_map(|f| f.file_name().map(ToOwned::to_owned))
+            .collect();
+        let settings = self.vault.root().join(SETTINGS_FILE);
+        let mut paths: Vec<String> = changed
+            .iter()
+            .filter(|p| {
+                is_markdown(p)
+                    || is_html(p)
+                    || same_file(p, &settings)
+                    || p.file_name().is_some_and(|n| journal_names.contains(n))
+            })
+            .filter_map(|p| match self.vault.vault_path(p) {
+                Ok(path) => Some(path.to_string()),
+                Err(_) => p.file_name().map(|n| n.to_string_lossy().into_owned()),
+            })
+            .collect();
+        paths.sort();
+        paths.dedup();
+        if !paths.is_empty() {
+            // No listener is no error.
+            let _ = self.changes.send(Changed { paths });
+        }
+        report
+    }
+
+    /// Re-read the files `changed` on disk, then reconcile the invoices
+    /// they touched.
     ///
     /// - a markdown or `.html` file under the folder: the document index
     ///   refreshes it (an `.html` file may be a template);
@@ -159,7 +221,7 @@ impl OpenBooks {
     ///   have changed), and every invoice is reconciled.
     ///
     /// Returns the reconciler's report when it ran.
-    pub(crate) fn apply_changes(&self, changed: &[PathBuf]) -> Option<Reconciled> {
+    fn reload_changed(&self, changed: &[PathBuf]) -> Option<Reconciled> {
         let root = self.vault.root().to_path_buf();
         let mut session = self.session();
         let journal_names: BTreeSet<_> = session

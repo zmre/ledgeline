@@ -96,7 +96,33 @@ pub struct ReceivableState {
     /// Its payments and credits (not its void), oldest first: `(date,
     /// amount)`.
     pub payments: Vec<(String, Dec)>,
+    /// The same payments and credits, with the transaction each is in.
+    pub settled_by: Vec<SettledBy>,
 }
+
+/// One payment or credit applied to a receivable: where it is, for the
+/// Books panel.
+#[derive(Debug, Clone)]
+pub struct SettledBy {
+    /// The settling transaction's position in `journal.transactions`.
+    pub position: usize,
+    /// Its date (the posting's own, when it has one).
+    pub date: String,
+    /// The part applied to this invoice.
+    pub amount: Dec,
+    /// A credit (a credit note, a write-off), not money.
+    pub credit: bool,
+}
+
+/// Where a payment is in the journal is not its state: an insertion above
+/// it moves it without changing what it paid ([`BookStates::changed_since`]).
+impl PartialEq for SettledBy {
+    fn eq(&self, other: &Self) -> bool {
+        self.date == other.date && self.amount == other.amount && self.credit == other.credit
+    }
+}
+
+impl Eq for SettledBy {}
 
 /// One transaction an invoice is booked as.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -338,6 +364,17 @@ impl BookStates {
                                 .iter()
                                 .filter(|s| s.kind != SettlementKind::Void)
                                 .map(|s| (s.date.clone(), s.amount))
+                                .collect(),
+                            settled_by: d
+                                .settlements
+                                .iter()
+                                .filter(|s| s.kind != SettlementKind::Void)
+                                .map(|s| SettledBy {
+                                    position: s.at.position,
+                                    date: s.date.clone(),
+                                    amount: s.amount,
+                                    credit: s.kind == SettlementKind::Credit,
+                                })
                                 .collect(),
                         });
                     numbers

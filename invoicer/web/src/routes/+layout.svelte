@@ -6,6 +6,8 @@
     import {useAppearance} from "#ui/theme/appearance.svelte.js";
     import {APP_NAME, defaultAppearance} from "#lib/app.js";
     import {appearanceFrom, ensureSession, fetchBooks, fetchUiPrefs} from "#lib/api.js";
+    import {changes, noteChange} from "#lib/changes.svelte.js";
+    import {listenForChanges} from "#lib/events.js";
     import type {BooksInfo} from "#lib/invoices.js";
     import Sidebar, {type SidebarLink} from "#lib/components/Sidebar.svelte";
 
@@ -34,11 +36,18 @@
                 appearance.uiPrefsReady = true;
             })
             .catch((error: unknown) => console.warn("ui prefs:", error));
+        // The cookie MBR's pages need before any is shown in a frame.
+        ensureSession().catch((error: unknown) => console.warn("session:", error));
+        // Live reload: the pages re-fetch when a file changes on disk.
+        return listenForChanges({onChange: noteChange});
+    });
+
+    // The books at the foot of the sidebar, again after every change.
+    $effect(() => {
+        void changes.seq;
         fetchBooks()
             .then((info) => (books = info))
             .catch((error: unknown) => console.warn("books:", error));
-        // The cookie MBR's pages need before any is shown in a frame.
-        ensureSession().catch((error: unknown) => console.warn("session:", error));
     });
 </script>
 

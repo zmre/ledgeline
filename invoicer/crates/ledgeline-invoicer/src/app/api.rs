@@ -19,6 +19,7 @@
 //! | `POST /api/invoices/{num}/send` | Mark it sent (book it), `sent_via` (3c).    |
 //! | `POST /api/invoices/{num}/portal` | Open its customer's billing portal (3c).  |
 //! | `POST /api/pdf/share`, `/api/pdf/copy` | Share… or Copy file an exported PDF (3c). |
+//! | `GET /api/events`           | Change events (server-sent events), see [`events`]. |
 //! | `GET /api/customers`        | `customers list --json`.                       |
 //! | `GET`/`PATCH /api/ui-prefs` | The shared theme and scale (Ledgeline's shape). |
 //! | `POST /api/session`         | The cookie MBR's pages need ([`super::mbr`]).  |
@@ -68,6 +69,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/invoices/{number}/portal", post(pdf::open_portal))
         .route("/api/pdf/share", post(pdf::share))
         .route("/api/pdf/copy", post(pdf::copy_file))
+        .route("/api/events", get(events))
         .route("/api/customers", get(customers))
         .route("/api/ui-prefs", get(ui_prefs).patch(patch_ui_prefs))
         .route("/api/session", post(session))
@@ -309,6 +311,50 @@ async fn preview(
 /// copied in yet.
 async fn templates(State(state): State<AppState>) -> ApiResult {
     with_books(&state, |books| to_value(preview::templates(books))).await
+}
+
+/// `GET /api/events`: a stream of server-sent events, so the SPA shows a
+/// change made outside it (an editor, a bank import) within about a second.
+///
+/// - `ready` (`{}`), first: the stream is live; a reconnecting SPA reloads
+///   what it shows, since it may have missed changes meanwhile;
+/// - `changed` (`{"paths": [...]}`): files changed on disk and the books were
+///   re-read and reconciled ([`super::books::Changed`]); `paths` is empty
+///   when this listener fell behind and missed some;
+/// - a comment every 15 s keeps it open.
+///
+/// Token-gated like the rest of `/api`, so the SPA reads it with `fetch`
+/// (an `EventSource` can't send the header). It ends when the books are
+/// swapped (File → Open), and the SPA reconnects. `409` with no books.
+async fn events(State(state): State<AppState>) -> Result<Response, ApiError> {
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    use futures_util::stream::{self, StreamExt as _};
+    use tokio::sync::broadcast::error::RecvError;
+
+    let books = state.books().ok_or_else(no_books)?;
+    let receiver = books.subscribe();
+    // The stream must not keep the books alive past File → Open.
+    drop(books);
+    let ready = stream::once(async {
+        Ok::<_, std::convert::Infallible>(Event::default().event("ready").data("{}"))
+    });
+    let changes = stream::unfold(receiver, |mut receiver| async move {
+        let changed = match receiver.recv().await {
+            Ok(changed) => changed,
+            Err(RecvError::Lagged(_)) => super::books::Changed { paths: Vec::new() },
+            Err(RecvError::Closed) => return None,
+        };
+        let data = serde_json::to_string(&changed).unwrap_or_else(|_| "{\"paths\":[]}".to_string());
+        Some((Ok(Event::default().event("changed").data(data)), receiver))
+    });
+    let mut response = Sse::new(ready.chain(changes))
+        .keep_alive(KeepAlive::default())
+        .into_response();
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        ledgeline_shell::security::no_store(),
+    );
+    Ok(response)
 }
 
 /// `GET /api/customers`: `customers list --json`.

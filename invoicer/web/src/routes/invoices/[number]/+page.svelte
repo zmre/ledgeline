@@ -3,7 +3,7 @@
      template (a starter not copied in yet, say) is the preview page
      (`/.ledgeline-invoicer/preview`), which writes nothing. -->
 <script lang="ts">
-    import {onMount} from "svelte";
+    import {onMount, untrack} from "svelte";
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
     import AsyncSection from "#ui/components/AsyncSection.svelte";
@@ -25,6 +25,7 @@
     import BooksPanel from "#lib/components/BooksPanel.svelte";
     import InvoiceFrame from "#lib/components/InvoiceFrame.svelte";
     import SendPanel from "#lib/components/SendPanel.svelte";
+    import {changes} from "#lib/changes.svelte.js";
     import StatusBadge from "#lib/components/StatusBadge.svelte";
 
     const number = $derived(page.params.number ?? "");
@@ -48,24 +49,37 @@
     const choices = $derived(templateChoices(templates, own));
     const showingOwn = $derived(chosen === "" || chosen === own);
 
-    function loadDetail(target: string): void {
-        detail = null;
-        detailError = null;
+    /** Load the invoice; `quiet` keeps what is shown until the new one arrives (a refresh). */
+    function loadDetail(target: string, quiet = false): void {
+        if (!quiet) {
+            detail = null;
+            detailError = null;
+        }
         fetchInvoice(target)
             .then((d) => {
-                if (target === number) detail = d;
+                if (target !== number) return;
+                detail = d;
+                detailError = null;
             })
-            .catch((e: unknown) => (detailError = asError(e)));
+            .catch((e: unknown) => {
+                if (target === number) detailError = asError(e);
+            });
     }
 
-    function loadBooks(target: string): void {
-        books = null;
-        booksError = null;
+    function loadBooks(target: string, quiet = false): void {
+        if (!quiet) {
+            books = null;
+            booksError = null;
+        }
         fetchInvoiceBooks(target)
             .then((b) => {
-                if (target === number) books = b;
+                if (target !== number) return;
+                books = b;
+                booksError = null;
             })
-            .catch((e: unknown) => (booksError = asError(e)));
+            .catch((e: unknown) => {
+                if (target === number) booksError = asError(e);
+            });
     }
 
     // The Send panel (PLAN 3c).
@@ -97,12 +111,23 @@
         }
     }
 
+    /** Everything again, keeping what is shown until it arrives; the frame reloads its page. */
     function refreshAll(target: string): void {
-        loadDetail(target);
-        loadBooks(target);
+        loadDetail(target, true);
+        loadBooks(target, true);
         loadDelivery(target);
         frameKey += 1;
     }
+
+    // Live reload: a file changed on disk (this invoice, its template, a
+    // wikilinked note, the journal), so show it all again.
+    let seenSeq = changes.seq;
+    $effect(() => {
+        const seq = changes.seq;
+        if (seq === seenSeq) return;
+        seenSeq = seq;
+        untrack(() => refreshAll(number));
+    });
 
     const onExport = (options: {temp: boolean}): Promise<void> =>
         act(async () => {
@@ -117,7 +142,7 @@
             await sendInvoice(target, via);
             refreshAll(target);
             exported = await exportPdf(target);
-            loadDelivery(target);
+            refreshAll(target);
         });
 
     const onShare = (destination: Destination, file: string, anchor: Anchor): Promise<void> => act(() => sharePdf(destination, file, anchor));
@@ -179,7 +204,7 @@
                     {doc.number ?? ""}
                 </h1>
                 <StatusBadge {doc} />
-                <span class="text-base-content/70">{doc.invoicee.name ?? ""}</span>
+                <span class="text-base-content/70" data-testid="invoice-customer">{doc.invoicee.name ?? ""}</span>
                 {#if doc.table?.total}
                     <span class="ml-auto text-lg font-semibold tabular-nums" data-testid="invoice-total">{doc.table.total}</span>
                 {/if}

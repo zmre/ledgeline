@@ -1,10 +1,12 @@
-<!-- The invoice list (invoicer PLAN 3b): read-only, from `GET /api/invoices`. -->
+<!-- The invoice list (invoicer PLAN 3b): read-only, from `GET /api/invoices`,
+     again whenever a file changes on disk (live reload). -->
 <script lang="ts">
     import {onMount} from "svelte";
     import {resolve} from "$app/paths";
     import AsyncSection from "#ui/components/AsyncSection.svelte";
     import type {DataView} from "#ui/ui/dataView.js";
     import {fetchInvoices} from "#lib/api.js";
+    import {changes} from "#lib/changes.svelte.js";
     import type {InvoiceEntry} from "#lib/invoices.js";
     import InvoiceList from "#lib/components/InvoiceList.svelte";
 
@@ -20,6 +22,21 @@
     }
 
     onMount(load);
+
+    // Live reload: the list again after a change on disk, keeping the old one
+    // on screen meanwhile.
+    let seenSeq = changes.seq;
+    $effect(() => {
+        const seq = changes.seq;
+        if (seq === seenSeq) return;
+        seenSeq = seq;
+        fetchInvoices()
+            .then((list) => {
+                invoices = list;
+                error = null;
+            })
+            .catch((e: unknown) => console.warn("invoices:", e));
+    });
 </script>
 
 <svelte:head>

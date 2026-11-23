@@ -688,6 +688,81 @@ async fn the_books_panel_says_what_the_journal_holds() {
 
     let (status, _, _) = send(&app.router, authed("/api/invoices/999/books")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Where each payment came from, and the one line on top.
+    let payment = &paid["receivable"]["payments"][0];
+    assert_eq!(payment["date"], "2026-09-20");
+    assert_eq!(payment["amount"], "$1,500.00");
+    assert_eq!(payment["kind"], "payment");
+    assert_eq!(payment["description"], "CONTOSO ACH");
+    assert_eq!(payment["from"], serde_json::json!(["assets:bank:checking"]));
+    assert_eq!(payment["file"], "books.journal");
+    assert_eq!(
+        paid["settlement"],
+        serde_json::json!({"state": "paid", "total": "$4,000.00", "paid": "$4,000.00",
+            "outstanding": "$0.00", "paid_on": "2026-10-05", "due_date": "2026-10-01"})
+    );
+    assert_eq!(open["settlement"]["state"], "unpaid");
+    assert_eq!(open["settlement"]["outstanding"], "$8,350.00");
+    assert_eq!(open["settlement"]["due_date"], "2026-12-10");
+    let partial = books("107").await;
+    assert_eq!(partial["settlement"]["state"], "partial");
+    assert_eq!(partial["settlement"]["paid"], "$1,000.00");
+    assert_eq!(partial["settlement"]["outstanding"], "$2,000.00");
+    assert_eq!(void["settlement"]["state"], "void");
+    assert!(draft["settlement"].is_null());
+    for view in [&open, &paid, &partial] {
+        assert!(view["mirror_problem"].is_null(), "{view}");
+    }
+
+    // A mirror the books disagree with is said in plain words (the file is
+    // edited behind the reconciler's back).
+    let root = books_root(&app);
+    let file = root.join("invoices/2026-09-01 Contoso Invoice 101.md");
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(&file, text.replace("paid: 2026-10-05", "paid: no")).unwrap();
+    {
+        let mut session = app.books.session();
+        let (index, vault) = session.parts_mut();
+        let note = vault.vault_path(&file).unwrap();
+        index.refresh(vault, &[note]);
+    }
+    let stale = books("101").await;
+    assert_eq!(stale["in_step"], false);
+    let problem = stale["mirror_problem"].as_str().expect("a mirror problem");
+    assert!(
+        problem.contains("says it is unpaid")
+            && problem.contains("paid in full on 2026-10-05")
+            && problem.contains("ledgeline-invoicer reconcile"),
+        "{problem}"
+    );
+}
+
+/// Cash books: the payments applied, and the one line from them.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_books_panel_on_cash_books() {
+    let app = app_on("cash", None);
+    let view = |n: &'static str| {
+        let app = &app;
+        async move {
+            json_of(app, authed(&format!("/api/invoices/{n}/books")))
+                .await
+                .1
+        }
+    };
+    let paid = view("201").await;
+    assert_eq!(paid["payments"][0]["description"], "STRIPE PAYOUT CONTOSO");
+    assert_eq!(paid["settlement"]["state"], "paid");
+    assert_eq!(paid["settlement"]["paid_on"], "2026-11-03");
+    let partial = view("202").await;
+    assert_eq!(
+        partial["settlement"],
+        serde_json::json!({"state": "partial", "total": "$2,000.00", "paid": "$500.00",
+            "outstanding": "$1,500.00", "paid_on": null, "due_date": "2026-12-01"})
+    );
+    assert_eq!(view("203").await["settlement"]["state"], "unpaid");
+    assert_eq!(view("205").await["settlement"]["state"], "void");
+    assert!(view("204").await["settlement"].is_null(), "a draft");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1260,4 +1335,135 @@ async fn a_preview_is_a_gated_page_under_mbrs_policy() {
     );
 
     assert_eq!(snapshot(&root), before, "a preview writes nothing");
+}
+
+/// The next server-sent event's text from `body`, or `None` when nothing
+/// came within `wait`.
+async fn next_event(body: &mut Body, wait: std::time::Duration) -> Option<String> {
+    let mut text = String::new();
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        let frame = tokio::time::timeout_at(deadline, body.frame())
+            .await
+            .ok()??;
+        let frame = frame.expect("a frame");
+        if let Some(data) = frame.data_ref() {
+            text.push_str(&String::from_utf8_lossy(data));
+        }
+        if text.contains("\n\n") {
+            return Some(text);
+        }
+    }
+}
+
+/// Open `GET /api/events` and read its `ready` event.
+async fn events(app: &App) -> Body {
+    let response = app
+        .router
+        .clone()
+        .oneshot(authed("/api/events"))
+        .await
+        .expect("infallible");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(header::CONTENT_TYPE).unwrap(),
+        "text/event-stream"
+    );
+    let mut body = response.into_body();
+    let ready = next_event(&mut body, std::time::Duration::from_secs(5))
+        .await
+        .expect("ready");
+    assert!(ready.contains("event: ready"), "{ready}");
+    body
+}
+
+/// Patrick's "live reload doesn't work" (2026-11-23): nothing told the SPA
+/// that a file changed. Every settled change, once applied, is an event on
+/// `GET /api/events` naming the files (by the books folder, never a full
+/// path); a PDF is no event; the API's answers already show the change.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_change_on_disk_is_an_event_after_the_books_are_reread() {
+    let app = app();
+    let anonymous = get("/api/events").body(Body::empty()).unwrap();
+    let (status, _, _) = send(&app.router, anonymous).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let mut body = events(&app).await;
+    let root = books_root(&app);
+    let file = root.join(INVOICE_105);
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(
+        &file,
+        text.replace("Senior architect hours", "Principal architect hours"),
+    )
+    .unwrap();
+    // A PDF beside it is no event.
+    let pdf = root.join("invoices/pdf/x.pdf");
+    std::fs::create_dir_all(pdf.parent().unwrap()).unwrap();
+    std::fs::write(&pdf, "%PDF-").unwrap();
+    app.books.apply_changes(&[pdf.clone()]);
+    app.books.apply_changes(&[file.clone(), pdf]);
+
+    let event = next_event(&mut body, std::time::Duration::from_secs(5))
+        .await
+        .expect("an event");
+    assert!(event.contains("event: changed"), "{event}");
+    let data = event
+        .lines()
+        .find_map(|l| l.strip_prefix("data: "))
+        .expect("data");
+    let changed: serde_json::Value = serde_json::from_str(data).unwrap();
+    assert_eq!(changed, serde_json::json!({"paths": [INVOICE_105]}));
+    assert!(!event.contains(root.to_str().unwrap()), "no full path");
+
+    // What the SPA asks next already shows the edit.
+    let (_, detail) = json_of(&app, authed("/api/invoices/105")).await;
+    assert!(
+        detail.to_string().contains("Principal architect hours"),
+        "{detail}"
+    );
+
+    // A journal change too.
+    let journal = root.join("books.journal");
+    let text = std::fs::read_to_string(&journal).unwrap();
+    std::fs::write(
+        &journal,
+        format!("{text}\n2026-11-20 Coffee\n    expenses:office  $4\n    assets:checking\n"),
+    )
+    .unwrap();
+    app.books.apply_changes(std::slice::from_ref(&journal));
+    let event = next_event(&mut body, std::time::Duration::from_secs(5))
+        .await
+        .expect("an event");
+    assert!(event.contains(r#"{"paths":["books.journal"]}"#), "{event}");
+}
+
+/// The watcher end to end: an edit on disk reaches `GET /api/events` within
+/// a couple of seconds, with no call from the test (real file-system events).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_watcher_sends_an_event_for_an_edit() {
+    let app = app();
+    let _watcher = super::watch::spawn(Arc::clone(&app.books)).expect("watches");
+    let mut body = events(&app).await;
+    // Let the watcher settle (macOS reports the copy's own writes late).
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let file = books_root(&app).join(INVOICE_108);
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(
+        &file,
+        text.replace("Platform subscription", "Platform licence"),
+    )
+    .unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let event = next_event(&mut body, left)
+            .await
+            .expect("an event for the edit within 10 s");
+        if event.contains(INVOICE_108) {
+            break;
+        }
+    }
+    let (_, detail) = json_of(&app, authed("/api/invoices/108")).await;
+    assert!(detail.to_string().contains("Platform licence"), "{detail}");
 }

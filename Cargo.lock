@@ -3046,6 +3046,7 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
+ "futures-util",
  "http-body-util",
  "invoicer-core",
  "ledgeline-core",

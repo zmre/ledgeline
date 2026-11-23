@@ -31,6 +31,7 @@ server = [
     "dep:tower",
     "dep:tower-http",
     "dep:notify",
+    "dep:futures-util",
     "dep:arc-swap",
     "dep:rust-embed",
     "dep:mbr-core",
@@ -78,6 +79,9 @@ tower-http = { version = "0.7", features = ["set-header"], optional = true }
 # The watcher over the journal's files and the markdown under the books
 # folder, feeding the reconciler (ARCHITECTURE §5.4).
 notify = { version = "8", optional = true }
+# The change events' stream (`GET /api/events`, server-sent events). Already
+# in Cargo.lock (axum's own).
+futures-util = { version = "0.3", default-features = false, features = ["alloc"], optional = true }
 # The open books, swapped whole on File → Open.
 arc-swap = { version = "1", optional = true }
 # The invoicer SPA (`invoicer/web`), mirrored into `spa/` by build.rs.
