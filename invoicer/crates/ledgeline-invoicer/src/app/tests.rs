@@ -405,6 +405,18 @@ async fn preview_renders_saved_and_unsaved_text_and_writes_nothing() {
     assert!(page.contains("Invoice 105"), "{page}");
     assert!(page.contains("Bill to Customer X"), "{page}");
     assert_bill_table_105(&page);
+    // Both parties' addresses and contacts.
+    for party in [
+        "From My Company",
+        "1234 Background Blvd.",
+        "finance@mycompany.com",
+        "1234 Main St. #555",
+        "accounts_receivable@customerx.com",
+    ] {
+        assert!(page.contains(party), "missing {party:?}");
+    }
+    // A preview is the sheet alone: no MBR chrome outside MBR's server.
+    assert!(!page.contains("<mbr-search>"), "{page}");
     let timing = timing.expect("Server-Timing");
     assert!(timing.starts_with("render;dur="), "{timing}");
 
@@ -776,6 +788,16 @@ async fn mbr_serves_an_invoice_page_through_its_template() {
     assert_eq!(status, StatusCode::OK, "{page}");
     assert!(page.contains("Bill to Customer X"), "{page}");
     assert_bill_table_105(&page);
+    // MBR's own page keeps its chrome (search, breadcrumbs, previous/next)
+    // around the sheet; a frame without scripts hides it (<noscript>).
+    for chrome in [
+        "<mbr-search>",
+        r#"class="container breadcrumbs""#,
+        "<mbr-nav>",
+        "body.invoice-page > :not(main) { display: none !important; }",
+    ] {
+        assert!(page.contains(chrome), "missing {chrome:?}");
+    }
     assert_eq!(
         headers.get(header::CONTENT_SECURITY_POLICY).unwrap(),
         super::mbr::MBR_CSP
