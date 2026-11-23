@@ -1,6 +1,6 @@
 //! What the API asks of the desktop (invoicer PLAN 3c): print a page to
 //! PDF, show Share…, put a file on the pasteboard, open a URL in the
-//! browser. All but the last need the app's main thread and its tao event
+//! browser or an exported PDF in its viewer. All but the last two need the app's main thread and its tao event
 //! loop, which the API (on tokio's pool) doesn't have; a [`Native`] carries
 //! each request there and its answer back.
 //!
@@ -94,6 +94,8 @@ pub(crate) struct Capabilities {
     /// Open a URL in the user's browser. Without it the SPA opens it itself
     /// (a browser tab under `--server`).
     pub open_url: bool,
+    /// Open an exported PDF in the default viewer (`open`, macOS).
+    pub open_file: bool,
 }
 
 /// The desktop, as the API sees it.
@@ -109,6 +111,12 @@ pub(crate) trait Native: Send + Sync {
     /// # Errors
     /// When this process can't.
     fn open_url(&self, url: &str) -> Result<(), String>;
+
+    /// Open `file` (already vetted: an exported PDF) in the default viewer.
+    ///
+    /// # Errors
+    /// When this process can't.
+    fn open_file(&self, file: &std::path::Path) -> Result<(), String>;
 }
 
 /// Wait for a reply; a dropped sender is the app closing.
@@ -134,6 +142,7 @@ pub(crate) mod mock {
         pub shared: Mutex<Vec<PathBuf>>,
         pub copied: Mutex<Vec<PathBuf>>,
         pub opened: Mutex<Vec<String>>,
+        pub opened_files: Mutex<Vec<PathBuf>>,
         /// Fail every print with this.
         pub fail: Option<String>,
     }
@@ -146,6 +155,7 @@ pub(crate) mod mock {
                     share: true,
                     copy_file: true,
                     open_url: true,
+                    open_file: true,
                 },
                 ..Self::default()
             }
@@ -188,6 +198,11 @@ pub(crate) mod mock {
 
         fn open_url(&self, url: &str) -> Result<(), String> {
             self.opened.lock().unwrap().push(url.to_string());
+            Ok(())
+        }
+
+        fn open_file(&self, file: &std::path::Path) -> Result<(), String> {
+            self.opened_files.lock().unwrap().push(file.to_path_buf());
             Ok(())
         }
     }

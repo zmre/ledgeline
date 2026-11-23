@@ -19,6 +19,7 @@
 //! | `POST /api/invoices/{num}/send` | Mark it sent (book it), `sent_via` (3c).    |
 //! | `POST /api/invoices/{num}/portal` | Open its customer's billing portal (3c).  |
 //! | `POST /api/pdf/share`, `/api/pdf/copy` | Share… or Copy file an exported PDF (3c). |
+//! | `POST /api/pdf/open`        | Open an exported PDF in the default viewer.    |
 //! | `GET /api/events`           | Change events (server-sent events), see [`events`]. |
 //! | `GET /api/customers`        | `customers list --json`.                       |
 //! | `GET`/`PATCH /api/ui-prefs` | The shared theme and scale (Ledgeline's shape). |
@@ -69,6 +70,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/invoices/{number}/portal", post(pdf::open_portal))
         .route("/api/pdf/share", post(pdf::share))
         .route("/api/pdf/copy", post(pdf::copy_file))
+        .route("/api/pdf/open", post(pdf::open_pdf))
         .route("/api/events", get(events))
         .route("/api/customers", get(customers))
         .route("/api/ui-prefs", get(ui_prefs).patch(patch_ui_prefs))

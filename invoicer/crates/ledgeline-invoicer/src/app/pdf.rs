@@ -8,6 +8,7 @@
 //! | `POST /api/invoices/{num}/send`       | Send (book it, `status: sent`), `{"via": "portal"}`          |
 //! | `POST /api/invoices/{num}/portal`     | Open the customer's portal in the browser (window only); answers its URL |
 //! | `POST /api/pdf/share`, `/api/pdf/copy`| Share… or Copy file `{destination, file}`: a PDF this app exported |
+//! | `POST /api/pdf/open`                  | Open `{destination, file}` in the default PDF viewer (window, macOS) |
 //!
 //! **How a PDF is made** ([`export_invoice`], shared by the API and the
 //! CLI): plan on the blocking pool ([`crate::pdf::plan`]); mint a one-time
@@ -585,6 +586,28 @@ pub(crate) async fn copy_file(
         |file, _, reply| NativeRequest::CopyFile { file, reply },
     )
     .await
+}
+
+/// `POST /api/pdf/open`: open an exported PDF in the default viewer (the
+/// window, macOS). Only the `{destination, file}` handles Share… and Copy
+/// file take: a plain `.pdf` name in `pdf-dir` or the temporary folder,
+/// never a path.
+pub(crate) async fn open_pdf(
+    State(state): State<AppState>,
+    body: Result<Json<FileBody>, JsonRejection>,
+) -> ApiResult {
+    let Json(body) = body.map_err(|e| ApiError::bad_request(e.body_text()))?;
+    let native = native_for(&state, |c| c.open_file, "Opening a PDF")?;
+    let books = state.books().ok_or_else(no_books)?;
+    let file = tokio::task::spawn_blocking(move || exported_file(&books, &body))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    native
+        .open_file(&file)
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(ledgeline_shell::security::no_store_json(
+        serde_json::json!({ "done": true }),
+    ))
 }
 
 /// The CLI's `pdf` in a desktop build: the books and MBR on a private

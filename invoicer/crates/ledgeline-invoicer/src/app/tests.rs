@@ -827,7 +827,7 @@ async fn pdf_routes_say_when_this_process_cannot_print() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
         body["capabilities"],
-        serde_json::json!({"pdf": false, "share": false, "copy_file": false, "open_url": false})
+        serde_json::json!({"pdf": false, "share": false, "copy_file": false, "open_url": false, "open_file": false})
     );
     // The token, as everywhere under /api.
     let anonymous = Request::post("/api/invoices/105/pdf")
@@ -1000,7 +1000,7 @@ async fn the_export_link_opens_the_page_once() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_draft_goes_to_a_temporary_file_and_writes_nothing() {
-    let (app, _native) = mocked();
+    let (app, native) = mocked();
     let root = books_root(&app);
     let before = snapshot(&root);
     let (status, body) = json_of(
@@ -1064,10 +1064,51 @@ async fn a_draft_goes_to_a_temporary_file_and_writes_nothing() {
             StatusCode::NOT_FOUND,
         ),
     ] {
-        let (status, body) = json_of(&app, post_json("/api/pdf/share", &bad)).await;
-        assert_eq!(status, want, "{bad}: {body}");
+        for route in ["/api/pdf/share", "/api/pdf/open"] {
+            let (status, body) = json_of(&app, post_json(route, &bad)).await;
+            assert_eq!(status, want, "{route} {bad}: {body}");
+        }
     }
+    // Open: the same handles, never a path; the vetted file goes to the viewer.
+    let (status, body) = json_of(
+        &app,
+        post_json(
+            "/api/pdf/open",
+            &serde_json::json!({"destination": "temp", "file": "2026-11-17 Customer X Invoice 108.pdf"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(*native.opened_files.lock().unwrap(), [temp.clone()]);
+    let (status, _) = json_of(
+        &app,
+        post_json(
+            "/api/pdf/open",
+            &serde_json::json!({"destination": "temp", "file": "x.pdf", "path": "/etc/hosts"}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "unknown fields are refused"
+    );
     let _ = std::fs::remove_file(temp);
+}
+
+/// Without a window, Open answers 503 (the SPA shows the name as text).
+#[tokio::test(flavor = "multi_thread")]
+async fn opening_a_pdf_needs_the_window() {
+    let app = app();
+    let (status, body) = json_of(
+        &app,
+        post_json(
+            "/api/pdf/open",
+            &serde_json::json!({"destination": "temp", "file": "x.pdf"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -46,6 +46,7 @@ pub(crate) fn capabilities(window: bool) -> Capabilities {
         share: window && cfg!(target_os = "macos"),
         copy_file: window && cfg!(target_os = "macos"),
         open_url: window,
+        open_file: window && cfg!(target_os = "macos"),
     }
 }
 
@@ -88,6 +89,19 @@ impl<E: Send + 'static> Native for LoopNative<E> {
         }
         shell::open_in_browser(&APP, url);
         Ok(())
+    }
+
+    fn open_file(&self, file: &std::path::Path) -> Result<(), String> {
+        if !self.caps.open_file {
+            return Err("this process has no window to open a PDF from".to_string());
+        }
+        // An absolute path (never an option), vetted by the caller: an
+        // exported PDF in `pdf-dir` or the temporary folder.
+        std::process::Command::new("/usr/bin/open")
+            .arg(file)
+            .spawn()
+            .map(drop)
+            .map_err(|e| format!("couldn't open {}: {e}", file.display()))
     }
 }
 
@@ -392,9 +406,15 @@ mod tests {
     fn capabilities_follow_the_window() {
         let windowless = capabilities(false);
         assert!(windowless.pdf);
-        assert!(!windowless.share && !windowless.copy_file && !windowless.open_url);
+        assert!(
+            !windowless.share
+                && !windowless.copy_file
+                && !windowless.open_url
+                && !windowless.open_file
+        );
         let window = capabilities(true);
         assert!(window.pdf && window.open_url);
         assert_eq!(window.share, cfg!(target_os = "macos"));
+        assert_eq!(window.open_file, cfg!(target_os = "macos"));
     }
 }
