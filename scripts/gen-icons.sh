@@ -12,7 +12,8 @@
 #                                                  Ledgeline Invoicer's flat logo: the same
 #                                                  artwork on green (#007B36: the indigo's
 #                                                  OKLCH L and C at hue 150°, clamped to
-#                                                  sRGB) plus a bold "i" drawn as a path
+#                                                  sRGB) plus a script "i" drawn as a path
+#                                                  (graphics-sources/invoicer-script-i.py)
 #   assets/LedgelineInvoicer.icon/                 its Icon Composer document: Ledgeline's
 #                                                  layers plus Assets/i.svg, fill swapped
 #
@@ -34,8 +35,11 @@
 #   invoicer/web/static/ledgeline-invoicer-icon{,-small}.svg   as above, for the invoicer SPA
 #   assets/invoicer/Assets.car                 the invoicer's compiled icon (CFBundleIconName
 #                                              LedgelineInvoicer)
-#   assets/invoicer/ledgeline-invoicer{,-small}.png   its flattened renders, for the icns
+#   assets/invoicer/ledgeline-invoicer{,-small}.png   its flattened render, for the icns
 #                                              and hicolor icons (Phase 6 wires them in)
+#   The invoicer's "-small" files are copies of the full ones, not a zoomed
+#   crop: its "i" sits low on the right, and any crop that keeps both it and
+#   the arrowhead puts them under the squircle mask's corners.
 #
 # WHY COMMITTED rather than built by flake.nix: `actool` and `ictool` ship only
 # inside Xcode, which the Nix sandbox cannot reach. So this runs by hand on a
@@ -120,13 +124,10 @@ echo "regenerated: web/static/ledgeline-icon{,-small}.svg docs/images/ledgeline-
 # No docs copy or favicon: the invoicer has no docs site of its own yet.
 INV_SRC=graphics-sources/ledgeline-invoicer-logo-no-word.svg
 INV_ICON="$PWD/assets/LedgelineInvoicer.icon"
-# Its "i" sits low in the bottom-right quadrant, below Ledgeline's small crop,
-# so the small variant is a looser crop: the arrowhead down to the "i".
-INV_SMALL_VIEWBOX="385 272 655 655"
 mkdir -p invoicer/web/static assets/invoicer
 
 sed -E 's/viewBox="[^"]*"/viewBox="91.07 93.6 951.65 951.65"/' "$INV_SRC" > invoicer/web/static/ledgeline-invoicer-icon.svg
-sed -E "s/viewBox=\"[^\"]*\"/viewBox=\"$INV_SMALL_VIEWBOX\"/" "$INV_SRC" > invoicer/web/static/ledgeline-invoicer-icon-small.svg
+cp invoicer/web/static/ledgeline-invoicer-icon.svg invoicer/web/static/ledgeline-invoicer-icon-small.svg
 
 mkdir "$tmp/invoicer"
 xcrun actool "$INV_ICON" --compile "$tmp/invoicer" --app-icon LedgelineInvoicer \
@@ -137,8 +138,6 @@ xcrun actool "$INV_ICON" --compile "$tmp/invoicer" --app-icon LedgelineInvoicer 
 cp "$tmp/invoicer/Assets.car" assets/invoicer/Assets.car
 
 render_flat "$INV_ICON" assets/invoicer/ledgeline-invoicer.png
-cp -R "$INV_ICON" "$tmp/LedgelineInvoicerSmall.icon"
-perl -pi -e "s/viewBox=\"[^\"]*\"/viewBox=\"$INV_SMALL_VIEWBOX\"/" "$tmp"/LedgelineInvoicerSmall.icon/Assets/*.svg
-render_flat "$tmp/LedgelineInvoicerSmall.icon" assets/invoicer/ledgeline-invoicer-small.png
+cp assets/invoicer/ledgeline-invoicer.png assets/invoicer/ledgeline-invoicer-small.png
 
 echo "regenerated: invoicer/web/static/ledgeline-invoicer-icon{,-small}.svg assets/invoicer/Assets.car assets/invoicer/ledgeline-invoicer{,-small}.png"
