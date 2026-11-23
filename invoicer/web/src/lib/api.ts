@@ -176,3 +176,32 @@ export async function openPdf(destination: Destination, file: string): Promise<v
 export async function copyPdf(destination: Destination, file: string): Promise<void> {
     await call("POST", "/api/pdf/copy", {destination, file});
 }
+
+/** What `POST /api/invoices/{number}/template` did. */
+export interface TemplateUsed {
+    template: string;
+    /** Whether the file was rewritten (false: it already named it). */
+    changed: boolean;
+    /** The starter's file, when it was copied into the books now. */
+    copied: string | null;
+    status: string | null;
+}
+
+/**
+ * `POST /api/invoices/{number}/template`: write the invoice's `template:` (as
+ * `set` does), copying a starter into the books on first use.
+ */
+export function chooseTemplate(number: string, template: string): Promise<TemplateUsed> {
+    return json<TemplateUsed>("POST", `/api/invoices/${encodeURIComponent(number)}/template`, (body) => isObject(body) && typeof body.template === "string", {
+        template,
+    });
+}
+
+/**
+ * `POST /api/invoices/{number}/recalc`: rewrite its amounts from its rows. A
+ * sent invoice is re-booked too, and only with `rebook: true` (the user
+ * confirmed); the server refuses one dated in a closed period.
+ */
+export async function recalculate(number: string, options: {rebook?: boolean} = {}): Promise<void> {
+    await call("POST", `/api/invoices/${encodeURIComponent(number)}/recalc`, {rebook: options.rebook ?? false, today: localToday()});
+}

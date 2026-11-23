@@ -16,11 +16,14 @@
 // build prints on its own windowless event loop) and read back with
 // `pdftotext` (poppler-utils, in the dev shell), then from the Send panel.
 //
+// The second feedback pass (PLAN F9–F11) adds "Use this template", the
+// recalculation of an edited draft, the totals notice and phone numbers.
+//
 // Written in 3b and 3c and NOT run by the agents that wrote it (agents never
 // run Playwright); the lead runs it.
 
 import {execFileSync} from "node:child_process";
-import {readFileSync, existsSync, writeFileSync} from "node:fs";
+import {readFileSync, existsSync, rmSync, writeFileSync} from "node:fs";
 import {resolve} from "node:path";
 import {expect, test, type Page} from "@playwright/test";
 import {API_TOKEN, COPY, SERVER_URL} from "../playwright.config";
@@ -29,6 +32,7 @@ const FIXED_NOW = new Date(2026, 10, 17, 12, 0, 0); // local 2026-11-17, the fix
 const BOOKS = resolve(import.meta.dirname, "..", COPY);
 const INVOICE_105 = "invoices/2026-11-10 Customer X Invoice 105.md";
 const INVOICE_106 = "invoices/2026-08-01 Wingtip Invoice 106.md";
+const INVOICE_108 = "invoices/2026-11-17 Customer X Invoice 108.md";
 
 const read = (file: string): string => readFileSync(resolve(BOOKS, file), "utf8");
 
@@ -73,6 +77,9 @@ test.describe("the invoicer over the accrual fixture (:5199)", () => {
         const invoice = frame(page);
         await expect(page.getByTestId("invoice-frame")).toHaveAttribute("data-mode", "page");
         await expect(invoice.getByText("Bill to Customer X")).toBeVisible();
+        // The phone numbers: the customer's and the company's (the snapshot).
+        await expect(invoice.getByText("+1 (303) 555-0142")).toBeVisible();
+        await expect(invoice.getByText("+1 (555) 010-2000")).toBeVisible();
         await expect(invoice.getByText("Less deposit (Invoice 104)")).toBeVisible();
         await expect(invoice.getByText("Total due")).toBeVisible();
         // The books column is in the page and hidden by the template's rule.
@@ -279,6 +286,71 @@ test.describe("the invoicer over the accrual fixture (:5199)", () => {
         } finally {
             writeFileSync(resolve(BOOKS, INVOICE_106), original);
         }
+    });
+
+    test("Use this template makes a starter the invoice's own, copied into the books", async ({page}) => {
+        // Patrick's "the picker only previews" (2026-11-23). Put back after:
+        // the 108 file, and the starter (no invoice names it then).
+        const original = read(INVOICE_108);
+        const modern = resolve(BOOKS, "invoices/tpl/modern.html");
+        try {
+            await open(page);
+            await page.goto("/app/invoices/108");
+            await expect(page.getByTestId("template-current")).toContainText("This invoice uses MyCo default");
+            await page.getByTestId("template-choice").selectOption("/invoices/tpl/modern.html");
+            await expect(page.getByTestId("template-current")).toContainText("Previewing Modern");
+            await page.getByTestId("template-use").click();
+            await expect(page.getByTestId("template-current")).toContainText("This invoice uses Modern (/invoices/tpl/modern.html)");
+            // MBR's own page now, through the copied starter.
+            await expect(page.getByTestId("invoice-frame")).toHaveAttribute("data-mode", "page");
+            await expect(frame(page).getByText("#108")).toBeVisible();
+            expect(read(INVOICE_108)).toContain("template: /invoices/tpl/modern.html\n");
+            expect(existsSync(modern)).toBe(true);
+        } finally {
+            writeFileSync(resolve(BOOKS, INVOICE_108), original);
+            rmSync(modern, {force: true});
+        }
+    });
+
+    test("an outside edit to a draft's rows recalculates its totals", async ({page}) => {
+        // Patrick's "totals stay stale" (2026-11-23): `recalc-on-save = "drafts"`.
+        const original = read(INVOICE_108);
+        try {
+            await open(page);
+            await page.goto("/app/invoices/108");
+            await expect(page.getByTestId("invoice-total")).toHaveText("$13,600.00");
+            writeFileSync(resolve(BOOKS, INVOICE_108), original.replace("| 2   | h    | $800", "| 3   | h    | $800"));
+            await expect(page.getByTestId("invoice-total")).toHaveText("$14,400.00", {timeout: 5_000});
+            await expect.poll(() => read(INVOICE_108), {timeout: 5_000}).toContain("**$14,400.00**");
+            await expect(frame(page).getByText("$14,400.00")).toBeVisible();
+            await expect(page.getByTestId("totals-notice")).toHaveCount(0);
+        } finally {
+            writeFileSync(resolve(BOOKS, INVOICE_108), original);
+        }
+    });
+
+    test("a sent invoice's edited rows show the totals notice, and Recalculate asks first", async ({page}) => {
+        // Never recalculated on save: its amount is booked. Cancelled here (the
+        // router tests re-book), so the books stay as the later tests expect.
+        const original = read(INVOICE_105);
+        try {
+            await open(page);
+            await page.goto("/app/invoices/105");
+            writeFileSync(resolve(BOOKS, INVOICE_105), original.replace("| 50  | $200 ", "| 40  | $200 "));
+            const notice = page.getByTestId("totals-notice");
+            await expect(notice).toContainText("Totals don't match the rows", {timeout: 5_000});
+            await expect(notice.getByTestId("totals-row").filter({hasText: "Junior engineer"})).toContainText("$10,000");
+            await expect(notice.getByTestId("totals-row").filter({hasText: "Junior engineer"})).toContainText("$8,000.00");
+            await page.getByTestId("totals-recalc").click();
+            await expect(page.getByRole("alertdialog")).toContainText("Recalculate and re-book invoice 105?");
+            await page.getByRole("alertdialog").getByRole("button", {name: "Cancel"}).click();
+            await expect(page.getByRole("alertdialog")).toHaveCount(0);
+            expect(read(INVOICE_105)).toContain("| 40  | $200 ");
+            expect(read(INVOICE_105)).toContain("$10,000");
+        } finally {
+            writeFileSync(resolve(BOOKS, INVOICE_105), original);
+        }
+        await expect(page.getByTestId("totals-notice")).toHaveCount(0, {timeout: 5_000});
     });
 
     // LAST in this file: it sends the draft 108, which the tests above expect

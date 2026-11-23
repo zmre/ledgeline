@@ -47,7 +47,44 @@ export interface InvoiceDetail {
     paid: Paid | null;
     open: boolean;
     overdue: boolean;
-    table: {total: string | null} | null;
+    table: TableDetail | null;
+}
+
+/** A written amount the arithmetic disagrees with (`show`'s `table.discrepancies`). */
+export interface Discrepancy {
+    /** 1-based row. */
+    row: number;
+    line: number;
+    /** As written (empty when blank). */
+    written: string;
+    /** What the arithmetic gives. */
+    expected: string;
+}
+
+/** The bill table, computed: the parts the invoice page reads. */
+export interface TableDetail {
+    total: string | null;
+    rows: {row: number; kind: string; description: string; rate: string | null}[];
+    discrepancies: Discrepancy[];
+}
+
+/** One amount the totals notice lists: which row, as written, as computed. */
+export interface Mismatch {
+    row: number;
+    /** The row's description, else its rate cell ("Subtotal", "Total due"), else "Row N". */
+    label: string;
+    written: string;
+    computed: string;
+}
+
+/** The amounts that don't match their rows, labelled for the totals notice; empty when they all agree. */
+export function mismatches(table: TableDetail | null): Mismatch[] {
+    if (table === null) return [];
+    return (table.discrepancies ?? []).map((d) => {
+        const row = (table.rows ?? []).find((r) => r.row === d.row);
+        const label = row?.description || row?.rate || `Row ${d.row}`;
+        return {row: d.row, label, written: d.written === "" ? "(blank)" : d.written, computed: d.expected};
+    });
 }
 
 /** `GET /api/books`. */
@@ -228,6 +265,17 @@ export function kindLabel(docType: string | null): string | null {
         default:
             return docType;
     }
+}
+
+/**
+ * The template an invoice names, in words: its name when the books (or the
+ * starters) have it, else the path as written; null when it names none.
+ */
+export function templateName(templates: TemplateEntry[], own: string | null): {name: string; known: boolean} | null {
+    if (own === null) return null;
+    const wanted = `/${own.replace(/^\/+/, "")}`;
+    const found = templates.find((t) => t.path === wanted);
+    return found === undefined ? {name: own, known: false} : {name: found.name, known: true};
 }
 
 /** The templates an invoice can be previewed with: its own first, then the rest by name. */

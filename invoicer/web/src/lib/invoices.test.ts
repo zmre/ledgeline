@@ -1,5 +1,17 @@
 import {describe, expect, it} from "vitest";
-import {kindLabel, localToday, pageUrl, paidText, previewUrl, settlementText, standing, templateChoices, type TemplateEntry} from "./invoices.js";
+import {
+    kindLabel,
+    localToday,
+    mismatches,
+    pageUrl,
+    paidText,
+    previewUrl,
+    settlementText,
+    standing,
+    templateChoices,
+    templateName,
+    type TemplateEntry,
+} from "./invoices.js";
 
 describe("UNIT invoices", () => {
     it("names a note's MBR page: no extension, each segment encoded, a trailing slash", () => {
@@ -70,5 +82,39 @@ describe("UNIT invoices", () => {
         expect(templateChoices(all, "/tpl/z.html").map((x) => x.name)).toEqual(["Zeta", "Classic", "Modern"]);
         expect(templateChoices(all, null).map((x) => x.name)).toEqual(["Classic", "Modern", "Zeta"]);
         expect(templateChoices(all, "/tpl/missing.html")).toHaveLength(3);
+    });
+
+    it("labels the amounts that don't match their rows, totals by their word", () => {
+        const table = {
+            total: "$14,400.00",
+            rows: [
+                {row: 1, kind: "item", description: "Platform subscription, 1 year", rate: "$12,000"},
+                {row: 2, kind: "item", description: "Senior architect hours", rate: "$800"},
+                {row: 3, kind: "total", description: "", rate: "Total due"},
+            ],
+            discrepancies: [
+                {row: 2, line: 33, written: "$1,600.00", expected: "$2,400.00"},
+                {row: 3, line: 34, written: "**$13,600.00**", expected: "$14,400.00"},
+                {row: 9, line: 40, written: "", expected: "$1.00"},
+            ],
+        };
+        expect(mismatches(table)).toEqual([
+            {row: 2, label: "Senior architect hours", written: "$1,600.00", computed: "$2,400.00"},
+            {row: 3, label: "Total due", written: "**$13,600.00**", computed: "$14,400.00"},
+            {row: 9, label: "Row 9", written: "(blank)", computed: "$1.00"},
+        ]);
+        expect(mismatches({...table, discrepancies: []})).toEqual([]);
+        expect(mismatches(null)).toEqual([]);
+    });
+
+    it("names the template an invoice uses, or says it isn't in the books", () => {
+        const all: TemplateEntry[] = [
+            {path: "/invoices/tpl/myco-default.html", name: "MyCo default", kinds: ["invoice"], starter: false, installed: true},
+            {path: "/invoices/tpl/modern.html", name: "Modern", kinds: ["invoice"], starter: true, installed: false},
+        ];
+        expect(templateName(all, "/invoices/tpl/myco-default.html")).toEqual({name: "MyCo default", known: true});
+        expect(templateName(all, "invoices/tpl/modern.html")).toEqual({name: "Modern", known: true});
+        expect(templateName(all, "/invoices/tpl/gone.html")).toEqual({name: "/invoices/tpl/gone.html", known: false});
+        expect(templateName(all, null)).toBeNull();
     });
 });

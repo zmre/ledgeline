@@ -1,7 +1,10 @@
 <!-- One invoice (invoicer PLAN 3b, 3c): the Send panel (its PDF, the Send flow)
      above the page its template renders, and the Books panel under it. The saved invoice is MBR's own page in a frame; another
      template (a starter not copied in yet, say) is the preview page
-     (`/.ledgeline-invoicer/preview`), which writes nothing. -->
+     (`/.ledgeline-invoicer/preview`), which writes nothing, until "Use this
+     template" makes it the invoice's own. When the bill table's written
+     amounts disagree with its rows, a notice says so, with Recalculate
+     (Phase 3 feedback F9, F10). -->
 <script lang="ts">
     import {onMount, untrack} from "svelte";
     import {resolve} from "$app/paths";
@@ -16,16 +19,20 @@
         fetchInvoice,
         fetchInvoiceBooks,
         fetchTemplates,
+        chooseTemplate,
         openPdf,
         openPortal,
+        recalculate,
         sendInvoice,
         sharePdf,
     } from "#lib/api.js";
     import type {Anchor, Delivery, Destination, Exported} from "#lib/delivery.js";
-    import {kindLabel, pageUrl, previewUrl, templateChoices, type InvoiceBooks, type InvoiceDetail, type TemplateEntry} from "#lib/invoices.js";
+    import {kindLabel, mismatches, pageUrl, previewUrl, type InvoiceBooks, type InvoiceDetail, type TemplateEntry} from "#lib/invoices.js";
     import BooksPanel from "#lib/components/BooksPanel.svelte";
     import InvoiceFrame from "#lib/components/InvoiceFrame.svelte";
     import SendPanel from "#lib/components/SendPanel.svelte";
+    import TemplatePicker from "#lib/components/TemplatePicker.svelte";
+    import TotalsNotice from "#lib/components/TotalsNotice.svelte";
     import {changes} from "#lib/changes.svelte.js";
     import StatusBadge from "#lib/components/StatusBadge.svelte";
 
@@ -47,7 +54,6 @@
     const detailView = $derived<DataView>(detailError !== null ? "error" : detail !== null ? "data" : "loading");
     const booksView = $derived<DataView>(booksError !== null ? "error" : books !== null ? "data" : "loading");
     const own = $derived(detail?.template ?? null);
-    const choices = $derived(templateChoices(templates, own));
     const showingOwn = $derived(chosen === "" || chosen === own);
 
     /** Load the invoice; `quiet` keeps what is shown until the new one arrives (a refresh). */
@@ -127,7 +133,10 @@
         const seq = changes.seq;
         if (seq === seenSeq) return;
         seenSeq = seq;
-        untrack(() => refreshAll(number));
+        untrack(() => {
+            refreshAll(number);
+            loadTemplates();
+        });
     });
 
     const onExport = (options: {temp: boolean}): Promise<void> =>
@@ -145,6 +154,48 @@
             exported = await exportPdf(target);
             refreshAll(target);
         });
+
+    // The invoice's own writes: its template, its amounts (F9, F10).
+    let editing = $state<"template" | "recalc" | null>(null);
+    let templateError = $state<string | null>(null);
+    let recalcError = $state<string | null>(null);
+    const mismatched = $derived(mismatches(detail?.table ?? null));
+
+    function loadTemplates(): void {
+        fetchTemplates()
+            .then((list) => (templates = list))
+            .catch((e: unknown) => console.warn("templates:", e));
+    }
+
+    async function onUseTemplate(template: string): Promise<void> {
+        const target = number;
+        editing = "template";
+        templateError = null;
+        try {
+            await chooseTemplate(target, template);
+            chosen = "";
+            loadTemplates();
+            refreshAll(target);
+        } catch (e: unknown) {
+            templateError = asError(e).message;
+        } finally {
+            editing = null;
+        }
+    }
+
+    async function onRecalculate(rebook: boolean): Promise<void> {
+        const target = number;
+        editing = "recalc";
+        recalcError = null;
+        try {
+            await recalculate(target, {rebook});
+            refreshAll(target);
+        } catch (e: unknown) {
+            recalcError = asError(e).message;
+        } finally {
+            editing = null;
+        }
+    }
 
     const onShare = (destination: Destination, file: string, anchor: Anchor): Promise<void> => act(() => sharePdf(destination, file, anchor));
     const onCopyFile = (destination: Destination, file: string): Promise<void> => act(() => copyPdf(destination, file));
@@ -170,14 +221,14 @@
     $effect(() => {
         const target = number;
         chosen = "";
+        templateError = null;
+        recalcError = null;
         loadDetail(target);
         loadBooks(target);
     });
 
     onMount(() => {
-        fetchTemplates()
-            .then((list) => (templates = list))
-            .catch((e: unknown) => console.warn("templates:", e));
+        loadTemplates();
         ensureSession()
             .then(() => (sessionReady = true))
             .catch((e: unknown) => (sessionError = asError(e)));
@@ -233,22 +284,15 @@
             {/if}
 
             <section class="flex min-w-0 flex-col gap-2" aria-label="The invoice">
-                <div class="flex flex-wrap items-center gap-2">
-                    <label class="text-sm text-base-content/70" for="template-choice">Template</label>
-                    <select id="template-choice" class="select-bordered select select-sm" bind:value={chosen} data-testid="template-choice">
-                        {#if own === null}
-                            <option value="">As MBR shows the note</option>
-                        {/if}
-                        {#each choices as template (template.path)}
-                            <option value={template.path === own ? "" : template.path}>
-                                {template.name}{template.path === own ? " (this invoice's)" : template.installed ? "" : " (starter)"}
-                            </option>
-                        {/each}
-                    </select>
-                    {#if !showingOwn}
-                        <span class="text-xs text-base-content/60">Preview only: the invoice still names {own ?? "no template"}.</span>
-                    {/if}
-                </div>
+                <TotalsNotice
+                    number={doc.number ?? number}
+                    status={doc.status}
+                    items={mismatched}
+                    busy={editing === "recalc"}
+                    error={recalcError}
+                    {onRecalculate}
+                />
+                <TemplatePicker {templates} {own} bind:chosen busy={editing === "template"} error={templateError} onUse={onUseTemplate} />
                 {#if sessionError !== null}
                     <div class="alert text-sm alert-error" role="alert" data-testid="preview-error">Couldn't show the invoice: {sessionError.message}</div>
                 {:else if sessionReady}
