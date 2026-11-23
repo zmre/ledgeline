@@ -17,6 +17,7 @@
     "number-start": null,
     "payment-allocation": "match-rows",
     "pdf-dir": "invoices/pdf",
+    "recalc-on-save": "drafts",
     "receivable-account": "assets:accounts receivable",
     "revenue-account": "revenue:consulting",
     "templates-dir": "invoices/tpl",

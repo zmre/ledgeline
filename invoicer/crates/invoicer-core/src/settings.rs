@@ -57,6 +57,9 @@ pub struct Settings {
     pub cash_deposits: CashDeposits,
     /// Cash books: how a payment is split over an invoice's rows.
     pub payment_allocation: PaymentAllocation,
+    /// What the app does when an invoice's file is saved outside it and its
+    /// written amounts no longer match its rows.
+    pub recalc_on_save: RecalcOnSave,
     /// `[invoicer.words]`.
     pub words: Words,
 }
@@ -91,6 +94,23 @@ pub enum PaymentAllocation {
     ProRata,
 }
 
+/// `recalc-on-save`: whether the app rewrites a file's subtotal and total
+/// cells after an outside edit (an editor) leaves them disagreeing with the
+/// rows. A sent invoice is never recalculated on its own: its amount is
+/// booked, so the app shows the mismatch and recalculating it re-books it,
+/// after a confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RecalcOnSave {
+    /// Drafts are recalculated once the edit settles (the default): a draft
+    /// touches no books, so its amounts are only arithmetic.
+    #[default]
+    Drafts,
+    /// Nothing is rewritten; the invoice page shows the mismatch and a
+    /// Recalculate button.
+    Never,
+}
+
 fn number_text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
     Ok(match NumberText::deserialize(d)? {
         NumberText::Int(n) => Some(n.to_string()),
@@ -115,6 +135,7 @@ impl Default for Settings {
             pdf_dir: "invoices/pdf".to_string(),
             cash_deposits: CashDeposits::default(),
             payment_allocation: PaymentAllocation::default(),
+            recalc_on_save: RecalcOnSave::default(),
             words: Words::default(),
         }
     }
@@ -230,6 +251,13 @@ mod tests {
         .expect("reads");
         assert_eq!(policy.cash_deposits, CashDeposits::LiabilityUntilFinal);
         assert_eq!(policy.payment_allocation, PaymentAllocation::ProRata);
+        assert_eq!(settings.recalc_on_save, RecalcOnSave::Drafts);
+        let never = Settings::from_ledgeline_toml("[invoicer]\nrecalc-on-save = \"never\"\n")
+            .expect("reads");
+        assert_eq!(never.recalc_on_save, RecalcOnSave::Never);
+        assert!(
+            Settings::from_ledgeline_toml("[invoicer]\nrecalc-on-save = \"always\"\n").is_err()
+        );
         assert!(
             Settings::from_ledgeline_toml("[invoicer]\npayment-allocation = \"fifo\"\n").is_err()
         );
