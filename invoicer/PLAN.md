@@ -789,6 +789,23 @@ Decided while building, open to veto:
 | P8 | **The API never shows full paths.** Kept PDFs are named by books-folder path; Share… and Copy file take `{destination: kept|temp, file}` and only reach a plain `.pdf` name in `pdf-dir` or the temp folder. Open portal opens only the customer note's plain `https:` URL; without a window the SPA opens it in a tab.                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | P9 | **Drag-out (spike): not shipped.** WKWebView has no drag-out of a file: an HTML drag gives a URL or an image, never a file, and the `DownloadURL` drag type is Chromium's. A native drag needs `beginDraggingSessionWithItems:event:source:` with the live mouse-down event, but the click reaches Rust only after a round trip through WebKit's web-content process (IPC or HTTP), when AppKit's current event is no longer that drag. It would mean intercepting `mouseDown` on the WKWebView itself (subclassing or swizzling tao/wry's view) and asking the page what is under the pointer: possible, but not verifiable without a GUI session, so it was not attempted. Share… and Copy file cover Mail, Messages and a browser upload (paste the file). |
 
+*Templates revisited (2026-11-23).* Patrick's review: the fixture's MyCo
+default had no addresses or contact and an unruled table; an invoice opened
+in MBR lost MBR's sidebar, search and navigation. Now:
+
+| #  | Decision |
+|----|----------|
+| T1 | **The fixture's template** (both books) shows "From" the company and "Bill to" the customer, each with address and email, a dates line (date, due, terms, reference, deposit for), and a bill table with a rule on every cell and padding. It stays plain test data, without MBR's export-ready partial (P7's print-on-load path keeps its test). |
+| T2 | **MBR's chrome where it works, the sheet alone elsewhere**, using only what 0.7.4 has: when MBR serves the page (`server_mode`) a template includes MBR's partials (head, nav, breadcrumbs, previous/next footer, scripts) around `<main>`; a `<noscript>` rule hides everything but `<main>` (the app's frame runs no scripts, B2); MBR's print rule does the same on paper and in PDF export; a standalone render (`/api/preview`, QuickLook) has `server_mode` false and no chrome. The app needs no change. No MBR change is proposed. |
+| T3 | **The sheet is guarded against MBR's stylesheet**: Pico's variables are pinned on the sheet, and the templates avoid elements Pico or MBR's theme restyle inside `<main>` (`article`/`header`/`footer` cards, `dl` lists), so the sheet looks the same in MBR, the frame, the preview and on paper. Pico's print root size (62.5%) is reset to 100%. |
+
+**Pending (the lead):** the `<noscript>` rule was checked in a sandboxed
+(no-scripts) frame in Firefox; check it in the app's WKWebView frame
+(`just invoicer-e2e`, and a look at 105), and print one PDF from a template
+with chrome (`cargo test ... --ignored pdf_`) to see MBR's print rules keep
+only the sheet. If a frame ever runs scripts, the chrome would show there:
+see MBR-CHANGES "Not needed", `?embed=1`.
+
 **3d. Branding:**
 - The icon is derived from `graphics-sources/ledgeline-logo-no-word.svg`.
   - The indigo `#524ED2` becomes a green of the same OKLCH lightness and

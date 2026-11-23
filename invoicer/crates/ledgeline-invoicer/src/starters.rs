@@ -149,6 +149,17 @@ mod tests {
                 "{}",
                 starter.file
             );
+            // MBR's chrome when MBR serves the page, and the sheet alone where
+            // scripts are off (the app's frame) or on paper.
+            for part in [
+                "{%- set chrome = server_mode | default(value=false) -%}",
+                r#"{% include "/.mbr/_nav.html" %}"#,
+                r#"{% include "/.mbr/_scripts.html" %}"#,
+                "body.invoice-page > :not(main) { display: none !important; }",
+                r#"<main class="invoice-main">"#,
+            ] {
+                assert!(starter.source.contains(part), "{}: {part}", starter.file);
+            }
             // No remote fonts or scripts: an invoice renders offline.
             assert!(!starter.source.contains("http"), "{}", starter.file);
         }

@@ -554,7 +554,16 @@ is the point, since a third party can render our invoices with plain `mbr`.
   - print CSS (`@page` size and margins);
   - the books-column CSS;
   - MBR's export-ready script (MBR-CHANGES M5);
-  - no navigation chrome.
+  - MBR's chrome only where it works: see "MBR's chrome" below.
+- **MBR's chrome.** Served by MBR (`server_mode`), a template includes MBR's
+  partials (`/.mbr/_head_markdown.html`, `_nav.html`, `_breadcrumbs.html`,
+  the previous/next footer, `_footer.html`, `_scripts.html`), so an invoice
+  opened in MBR keeps its sidebar, search and navigation, and the sheet sits
+  in `<main>`. The sheet alone shows: in a standalone render (`/api/preview`,
+  QuickLook: `server_mode` is false); where scripts are off (the app's
+  frame, B2), by a `<noscript>` rule hiding every child of `<body>` but
+  `<main>`; and on paper, by MBR's own print rule doing the same. The
+  sheet pins Pico's variables so MBR's stylesheet doesn't restyle it.
 - **Template editor.** The GUI has a code editor with live preview against a
   sample invoice. This is the "customize templates" path.
 - **App theme vs. invoice look.** The app's theme (purple, catppuccin, …)
@@ -1151,10 +1160,12 @@ then recents. File → Open swaps state. The bundle is
 Putting MBR at the root and the SPA under `/app` avoids any need for MBR to
 support a base path. The invoicer shows MBR pages in two ways:
 
-- **Browse mode:** an iframe or second webview with MBR's chrome, so the user
-  can jump between invoices, customers and backlinks.
-- **Preview mode:** the invoice template page alone. A template has no
-  chrome, which is what a customer sees.
+- **Browse mode:** MBR itself (a browser tab or MBR's own app) with MBR's
+  chrome, so the user can jump between invoices, customers and backlinks.
+  The templates include that chrome when MBR serves the page.
+- **Preview mode:** the invoice template page alone, which is what a
+  customer sees: the app's frame runs no scripts, so the template's
+  `<noscript>` rule hides the chrome; a standalone render has none.
 
 A live preview of unsaved edits renders from a string (MBR-CHANGES M3). The
 theme reaches MBR's chrome through MBR-CHANGES M8.
