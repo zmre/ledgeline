@@ -4,7 +4,7 @@
 //!
 //! | Route                   | Does                                                          |
 //! |-------------------------|---------------------------------------------------------------|
-//! | `GET /api/files`        | `{pick, open, files}`: the notes and documents a contract may name (`ContractCandidate`), and whether this process can show the open dialog (`pick`) and open a file (`open`). |
+//! | `GET /api/files[?list=false]` | `{pick, open, files}`: the notes and documents a contract may name (`ContractCandidate`), and whether this process can show the open dialog (`pick`) and open a file (`open`). |
 //! | `POST /api/files/pick`  | The system's open dialog at the books folder (the window, macOS): `{cancelled: true}`, or `{cancelled: false, file: ContractCandidate}`; `422` for a file outside the books folder. |
 //! | `POST /api/files/open`  | `{path}`: open a file in the books folder in its default viewer (the window, macOS). |
 //!
@@ -16,8 +16,8 @@ use std::path::{Path as FsPath, PathBuf};
 
 use axum::Json;
 use axum::Router;
-use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use invoicer_core::customer_edit::{self, ContractCandidate};
@@ -38,12 +38,28 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/files/open", post(open))
 }
 
-/// `GET /api/files`.
-async fn list(State(state): State<AppState>) -> ApiResult {
+/// `GET /api/files`'s query.
+#[derive(Debug, Deserialize)]
+struct ListParams {
+    /// `false`: only what this process can do (`pick`, `open`), no walk.
+    #[serde(default = "yes")]
+    list: bool,
+}
+
+const fn yes() -> bool {
+    true
+}
+
+/// `GET /api/files` (`?list=false`: the capabilities alone).
+async fn list(State(state): State<AppState>, Query(params): Query<ListParams>) -> ApiResult {
     let caps = state.native().map(|n| n.capabilities()).unwrap_or_default();
     with_books(&state, move |books| {
         let session = books.session();
-        let files = customer_edit::contract_candidates(session.index(), session.vault());
+        let files = if params.list {
+            customer_edit::contract_candidates(session.index(), session.vault())
+        } else {
+            Vec::new()
+        };
         Ok(json!({
             "pick": caps.pick_file,
             "open": caps.open_file,

@@ -78,8 +78,10 @@ async fn files_lists_notes_and_documents_a_contract_may_name() {
 async fn the_open_dialog_answers_a_file_in_the_books_and_refuses_one_outside() {
     let (app, native) = mocked();
     let root = books_root(&app);
-    let (_, body) = json_of(&app, authed("/api/files")).await;
+    let (_, body) = json_of(&app, authed("/api/files?list=false")).await;
     assert_eq!(body["pick"], true);
+    assert_eq!(body["open"], true);
+    assert_eq!(body["files"], json!([]));
 
     // Cancelled.
     let (status, body) = json_of(&app, post_json("/api/files/pick", &json!({}))).await;

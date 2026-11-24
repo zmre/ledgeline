@@ -50,11 +50,13 @@
     {
       "found": "customers/contracts/Customer X MSA 2026.md",
       "kind": "note",
-      "link": "[[Customer X MSA 2026]]"
+      "link": "[[Customer X MSA 2026]]",
+      "name": "Customer X MSA 2026"
     },
     {
       "found": "customers/contracts/Customer X SOW 3 renewal (signed).pdf",
       "kind": "file",
+      "name": "Customer X SOW 3 renewal (signed).pdf",
       "path": "/customers/contracts/Customer X SOW 3 renewal (signed).pdf"
     }
   ],

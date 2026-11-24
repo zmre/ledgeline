@@ -856,7 +856,7 @@ async fn pdf_routes_say_when_this_process_cannot_print() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
         body["capabilities"],
-        serde_json::json!({"pdf": false, "share": false, "copy_file": false, "open_url": false, "open_file": false})
+        serde_json::json!({"pdf": false, "share": false, "copy_file": false, "open_url": false, "open_file": false, "pick_file": false})
     );
     // The token, as everywhere under /api.
     let anonymous = Request::post("/api/invoices/105/pdf")
