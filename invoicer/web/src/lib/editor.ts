@@ -7,6 +7,7 @@
 // nothing a hand edit wrote is lost; the server rebuilds the file from them,
 // recomputing every computed amount (ARCHITECTURE §3.3).
 import {DEFAULT_TOTAL_WORDS, isBlank, isBold, plain, type Role, type RowKind} from "./arithmetic.js";
+import type {NumberSource} from "./invoices.js";
 
 export type {Role, RowKind} from "./arithmetic.js";
 
@@ -139,6 +140,10 @@ export interface EditorOptions {
     fields: string[];
     words: Words;
     next_number: string;
+    /** The number `next_number` follows, null at the start (Phase 4 feedback H19). */
+    next_number_after?: string | null;
+    /** Where that is: `document`, `books` (only the journal books it) or `start`. */
+    next_number_source?: NumberSource | null;
     customers_dir: string;
     /** Every word a final total row may be labelled with (`[invoicer.words] total`), the default first. */
     total_words?: string[];

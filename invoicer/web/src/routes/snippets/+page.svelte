@@ -9,11 +9,16 @@
      made meanwhile is refused (409): reload theirs, or keep mine. Delete asks
      first, and says which customers name it as a default.
 
+     New snippet is top right once there is one (H21), else the empty
+     state's button; `?new=1` (the sidebar's New menu, H20) opens the form
+     on arrival and drops the parameter.
+
      Keyboard: Cmd/Ctrl+S saves. -->
 <script lang="ts">
     import {onMount, untrack} from "svelte";
-    import {beforeNavigate} from "$app/navigation";
+    import {beforeNavigate, goto} from "$app/navigation";
     import {resolve} from "$app/paths";
+    import {page} from "$app/state";
     import {changes} from "#lib/changes.svelte.js";
     import {routeParam} from "#lib/customers.js";
     import {EditorApiError} from "#lib/editorApi.js";
@@ -34,6 +39,7 @@
     } from "#lib/library.js";
     import ConfirmDialog from "#lib/components/ConfirmDialog.svelte";
     import ConflictNotice from "#lib/components/ConflictNotice.svelte";
+    import EmptyState from "#lib/components/EmptyState.svelte";
     import SnippetEditor from "#lib/components/SnippetEditor.svelte";
 
     const asMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -150,6 +156,18 @@
         createError = null;
     }
 
+    // `?new=1` from the New menu: drop the parameter, then open the form.
+    let handlingNew = false;
+    $effect(() => {
+        if (!page.url.searchParams.has("new") || handlingNew) return;
+        handlingNew = true;
+        untrack(() => {
+            void goto(resolve("/snippets"), {replace: true, reset: false})
+                .then(() => startCreate())
+                .finally(() => (handlingNew = false));
+        });
+    });
+
     async function remove(force: boolean): Promise<void> {
         if (entry === null) return;
         saving = true;
@@ -174,6 +192,8 @@
     }
 
     beforeNavigate(({cancel, to}) => {
+        // The same page with another query (the New menu's `?new=1`) isn't leaving.
+        if (to?.url.pathname === page.url.pathname) return;
         if (dirty && to !== null && !confirm("This snippet has unsaved changes. Leave without saving?")) cancel();
     });
 
@@ -207,11 +227,15 @@
 <div class="mx-auto flex max-w-7xl flex-col gap-4" data-testid="snippets-page">
     <header class="flex flex-wrap items-center gap-x-3 gap-y-2">
         <h1 class="text-2xl font-semibold tracking-tight">Snippets</h1>
-        <button type="button" class="btn ml-auto btn-outline btn-sm" onclick={startCreate} data-testid="new-snippet">New snippet</button>
+        {#if (list?.length ?? 0) > 0}
+            <button type="button" class="btn ml-auto btn-primary btn-sm" onclick={startCreate} data-testid="new-snippet">New snippet</button>
+        {/if}
     </header>
-    <p class="text-sm text-base-content/70">
-        Payment instructions, terms and notes an invoice can copy. A customer's default snippets start each of its new invoices.
-    </p>
+    {#if (list?.length ?? 0) > 0}
+        <p class="text-sm text-base-content/70">
+            Payment instructions, terms and notes an invoice can copy. A customer's default snippets start each of its new invoices.
+        </p>
+    {/if}
 
     {#if creating}
         <form class="flex flex-wrap items-end gap-2 rounded-box border border-base-300 p-3" onsubmit={create} data-testid="new-snippet-form">
@@ -240,7 +264,16 @@
     {:else if list === null}
         <span class="loading loading-md loading-spinner" aria-label="Loading the snippets"></span>
     {:else if list.length === 0}
-        <p class="rounded-box border border-dashed border-base-300 p-6 text-sm" data-testid="snippets-empty">No snippets yet. New snippet writes the first.</p>
+        {#if !creating}
+            <EmptyState
+                title="No snippets yet"
+                text="Payment instructions, terms or a thank-you, written once for invoices to copy."
+                action="New snippet"
+                onAction={startCreate}
+                testid="snippets-empty"
+                actionTestid="snippets-empty-new"
+            />
+        {/if}
     {:else}
         <div class="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,3fr)]">
             <nav aria-label="Snippets">

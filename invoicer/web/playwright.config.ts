@@ -25,6 +25,15 @@ export const SERVER_URL = "http://127.0.0.1:5199";
  */
 export const COPY = "../../target/e2e-invoicer-accrual";
 
+/**
+ * The second server (Phase 4 feedback H22): `--server` on 5198 over a scratch
+ * copy of invoicer/fixtures/empty (no invoices, customers, catalog or
+ * snippets), for empty.e2e.ts. `vite preview` proxies only to 5199, so that
+ * spec loads the SPA this server embeds, as csp.same-origin.e2e.ts does.
+ */
+export const EMPTY_SERVER_URL = "http://127.0.0.1:5198";
+export const EMPTY_COPY = "../../target/e2e-invoicer-empty";
+
 const BIN = process.env.LEDGELINE_INVOICER_BIN ?? "../../target/debug/ledgeline-invoicer";
 
 /**
@@ -53,6 +62,13 @@ export default defineConfig({
             url: `${SERVER_URL}/app/`,
             reuseExistingServer: false,
         },
+        {
+            // The empty books (H22), staged fresh like the accrual copy.
+            command: `rm -rf ${EMPTY_COPY} && mkdir -p ../../target && cp -R ../fixtures/empty ${EMPTY_COPY} && exec ${BIN} --server ${EMPTY_COPY}/books.journal --port 5198`,
+            env: SERVER_ENV,
+            url: `${EMPTY_SERVER_URL}/app/`,
+            reuseExistingServer: false,
+        },
         {command: "bun run build && bun run preview", port: 4273},
     ],
     // timezoneId matches vitest's pin (vite.config.ts); dark, like Ledgeline's suite.
@@ -69,9 +85,15 @@ export default defineConfig({
     //      catalog's ARCH as the fixture has it);
     //   4. library.e2e.ts edits the catalog and the snippets, and puts them
     //      back after.
+    // empty.e2e.ts has its own server and books (5198), so it runs alongside.
     projects: [
         {name: "customers", testMatch: "**/customers.e2e.ts"},
-        {name: "pages", testIgnore: ["**/customers.e2e.ts", "**/editor.e2e.ts", "**/library.e2e.ts"], dependencies: ["customers"]},
+        {name: "empty", testMatch: "**/empty.e2e.ts"},
+        {
+            name: "pages",
+            testIgnore: ["**/customers.e2e.ts", "**/editor.e2e.ts", "**/library.e2e.ts", "**/empty.e2e.ts"],
+            dependencies: ["customers"],
+        },
         {name: "editor", testMatch: "**/editor.e2e.ts", dependencies: ["pages"]},
         {name: "library", testMatch: "**/library.e2e.ts", dependencies: ["editor"]},
     ],

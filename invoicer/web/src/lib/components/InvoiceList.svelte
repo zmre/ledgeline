@@ -9,6 +9,7 @@
      reads one link per row. The row click is the pointer's shortcut to it. -->
 <script lang="ts">
     import {kindLabel, type InvoiceEntry} from "#lib/invoices.js";
+    import EmptyState from "./EmptyState.svelte";
     import StatusBadge from "./StatusBadge.svelte";
 
     let {
@@ -33,14 +34,14 @@
 </script>
 
 {#if invoices.length === 0}
-    <div class="rounded-box border border-dashed border-base-300 p-8 text-base-content/80" data-testid="invoice-list-empty">
-        <p class="text-center font-medium">No invoices yet.</p>
-        <div class="mx-auto mt-3 flex max-w-prose flex-col items-center gap-2 text-sm">
-            <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- the page passes `newHref` built with resolve() -->
-            <a class="btn btn-primary btn-sm" href={newHref} data-testid="invoice-list-new">New invoice</a>
-            <p class="text-base-content/60">or from a terminal: <code>ledgeline-invoicer new --customer "Customer X"</code></p>
-        </div>
-    </div>
+    <EmptyState
+        title="No invoices yet"
+        text="Invoices you write here are drafts until you send them; sending books them in your journal."
+        action="New invoice"
+        href={newHref}
+        testid="invoice-list-empty"
+        actionTestid="invoice-list-new"
+    />
 {:else}
     <div class="overflow-x-auto rounded-box border border-base-300">
         <table class="table table-sm" data-testid="invoice-list">

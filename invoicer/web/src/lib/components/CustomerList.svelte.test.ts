@@ -59,6 +59,9 @@ describe("COMPONENT CustomerList", () => {
     it("says how to add the first one", () => {
         render(CustomerList, {href, newHref: "/app/customers/new", customers: []});
         const empty = screen.getByTestId("customer-list-empty");
-        expect(within(empty).getByRole("link", {name: "Add one"}).getAttribute("href")).toBe("/app/customers/new");
+        expect(within(empty).getByRole("heading", {name: "No customers yet"})).toBeDefined();
+        const button = within(empty).getByRole("link", {name: "New customer"});
+        expect(button.getAttribute("href")).toBe("/app/customers/new");
+        expect(button.className).toContain("btn-primary");
     });
 });

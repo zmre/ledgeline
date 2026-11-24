@@ -49,8 +49,8 @@ test.describe("the invoice editor over the accrual fixture (:5199)", () => {
         test.setTimeout(120_000);
         await open(page);
 
-        // New invoice, from the sidebar.
-        await page.getByTestId("sidebar").getByRole("link", {name: "New invoice"}).click();
+        // New invoice, from the sidebar's New button (H20).
+        await page.getByTestId("sidebar").getByRole("link", {name: "New invoice", exact: true}).click();
         await expect(page).toHaveURL(/\/app\/new$/);
         // The customer list opens without typing (a click shows them all); the field shows the name, the file gets the link.
         const customer = page.getByTestId("new-customer");
@@ -60,6 +60,8 @@ test.describe("the invoice editor over the accrual fixture (:5199)", () => {
         await page.getByRole("option", {name: /^Customer X/}).click();
         await expect(customer).toHaveValue("Customer X");
         await expect(page.getByTestId("new-invoice")).toContainText("number 2005");
+        // Why 2005 when the highest file is 108 (H19).
+        await expect(page.getByTestId("new-number-reason")).toContainText("next after 2004, booked in the journal");
         await page.getByTestId("new-create").click();
         await expect(page).toHaveURL(/\/app\/invoices\/2005\/edit$/);
         await expect(page.getByTestId("editor-heading")).toHaveText("Invoice 2005");

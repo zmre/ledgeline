@@ -1,6 +1,9 @@
 import {describe, expect, it} from "vitest";
 import {
+    invoiceCounts,
+    invoiceCountsTitle,
     kindLabel,
+    nextNumberReason,
     localToday,
     mismatches,
     pageUrl,
@@ -14,6 +17,22 @@ import {
 } from "./invoices.js";
 
 describe("UNIT invoices", () => {
+    it("says where the next number comes from (H19)", () => {
+        expect(nextNumberReason("2004", "books")).toBe("next after 2004, booked in the journal");
+        expect(nextNumberReason("108", "document")).toBe("next after 108");
+        expect(nextNumberReason(null, "start")).toBe("the first number");
+        expect(nextNumberReason(undefined, undefined)).toBeNull();
+        expect(nextNumberReason("108", "elsewhere")).toBeNull();
+    });
+
+    it("splits the sidebar's invoice counts: overdue, and open but not yet due (H17)", () => {
+        const counts = invoiceCounts({all: 9, drafts: 1, open: 3, overdue: 2});
+        expect(counts).toEqual({overdue: 2, notDue: 1, drafts: 1});
+        expect(invoiceCountsTitle({overdue: 2, notDue: 1, drafts: 1})).toBe("2 overdue · 1 open, not yet due · 1 draft, not counted");
+        expect(invoiceCountsTitle({overdue: 0, notDue: 4, drafts: 0})).toBe("0 overdue · 4 open, not yet due");
+        expect(invoiceCounts(undefined)).toBeNull();
+    });
+
     it("names a note's MBR page: no extension, each segment encoded, a trailing slash", () => {
         expect(pageUrl("invoices/2026-11-10 Customer X Invoice 105.md")).toBe("/invoices/2026-11-10%20Customer%20X%20Invoice%20105/");
         expect(pageUrl("/a/b#c?.markdown")).toBe("/a/b%23c%3F/");

@@ -1,6 +1,6 @@
 // Customers end to end (invoicer PLAN 4b, Phase 4 feedback J1–J12): the
 // list with what each owes and the sidebar's counts, a customer's read-only
-// page (its open and all invoices, contracts by name, the notes linking it,
+// page (its open and other invoices, contracts by name, the notes linking it,
 // each opening inside the app), creating a customer, editing it (only what
 // changed is written; unknown keys and the body stay), adding a contract from
 // the books folder, the Save / Discard / Cancel prompt on leaving, a narrow
@@ -64,8 +64,12 @@ test.describe("customers over the accrual fixture (:5199)", () => {
         await expect(row(page, "customers/Fabrikam.md").getByTestId("overdue-badge")).toHaveCount(0);
         await expect(row(page, "customers/Fred Smith.md")).toContainText("bills Customer X");
         // The sidebar counts (J11): six customers; Contoso's 107 overdue.
-        await expect(page.getByTestId("sidebar-customers-count")).toHaveText("6");
+        await expect(page.getByTestId("sidebar-customers-count")).toHaveText("6 customers");
         await expect(page.getByTestId("sidebar-invoices-overdue")).toBeVisible();
+        // Exclusive invoice counts (H17): 106 and 107 overdue; 105 open, not yet due.
+        await expect(page.getByTestId("sidebar-invoices-overdue")).toHaveText("2 overdue");
+        await expect(page.getByTestId("sidebar-invoices-count")).toHaveText("1 open, not yet due");
+        await expect(page.getByTestId("sidebar-invoices")).toHaveAttribute("title", /1 draft, not counted/);
         await expect(page.getByTestId("sidebar-books")).not.toContainText("documents");
     });
 
@@ -77,12 +81,15 @@ test.describe("customers over the accrual fixture (:5199)", () => {
         await expect(page.getByTestId("customer-heading")).toHaveText("Customer X");
         await expect(page.getByTestId("customer-page")).toHaveAttribute("data-mode", "view");
         await expect(page.getByTestId("account-balance")).toHaveText("$8,350.00");
-        const invoices = page.getByTestId("customer-invoice-row");
-        await expect(invoices).toHaveCount(3);
-        await expect(invoices.nth(0)).toHaveAttribute("data-number", "108");
-        await expect(page.locator('[data-testid="customer-invoice-row"][data-number="105"]').getByTestId("status-badge")).toHaveText("Open");
-        await expect(page.locator('[data-testid="customer-invoice-row"][data-number="104"]').getByTestId("status-badge")).toHaveText("Paid");
-        await expect(page.getByTestId("customer-open-invoice-row")).toHaveCount(1);
+        // Open and Other, never overlapping (H18): 105 open; 108 (draft) and 104 (paid) other.
+        const open = page.getByTestId("customer-open-invoice-row");
+        await expect(open).toHaveCount(1);
+        await expect(open.nth(0)).toHaveAttribute("data-number", "105");
+        await expect(open.nth(0).getByTestId("status-badge")).toHaveText("Open");
+        const other = page.getByTestId("customer-other-invoice-row");
+        await expect(other).toHaveCount(2);
+        await expect(other.nth(0)).toHaveAttribute("data-number", "108");
+        await expect(page.locator('[data-testid="customer-other-invoice-row"][data-number="104"]').getByTestId("status-badge")).toHaveText("Paid");
         // The view: the note's fields, no form and no MBR frame.
         await expect(page.getByTestId("view-emails")).toContainText("accounts_receivable@customerx.com");
         await expect(page.getByTestId("view-phones")).toContainText("+1 (303) 555-0142");
@@ -99,7 +106,7 @@ test.describe("customers over the accrual fixture (:5199)", () => {
         await expect(fred.getByTestId("backlink-kind")).toHaveText("Person");
         await expect(page.getByTestId("customer-backlinks")).not.toContainText("company");
         // An invoice row opens the invoice.
-        await page.locator('[data-testid="customer-invoice-row"][data-number="105"]').getByRole("link", {name: "105"}).click();
+        await page.locator('[data-testid="customer-open-invoice-row"][data-number="105"]').getByRole("link", {name: "105", exact: true}).click();
         await expect(page).toHaveURL(/\/app\/invoices\/105$/);
     });
 

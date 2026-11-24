@@ -81,6 +81,11 @@
         void focusRow(at, 0);
     }
 
+    /** Add an item at the bottom and focus its first cell: the page's New item (H21) and the New menu's (H20). */
+    export function addItem(): void {
+        if (!readonly) add();
+    }
+
     function onDragOver(event: DragEvent, row: number): void {
         if (dragFrom === null) return;
         event.preventDefault();

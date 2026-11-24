@@ -67,7 +67,8 @@ describe("COMPONENT InvoiceList", () => {
         const empty = screen.getByTestId("invoice-list-empty").textContent ?? "";
         expect(empty).toContain("No invoices yet");
         expect(screen.getByTestId("invoice-list-new").getAttribute("href")).toBe("/app/new");
-        expect(empty).toContain("ledgeline-invoicer new --customer");
+        expect(empty).not.toContain("ledgeline-invoicer");
+        expect(screen.getByTestId("invoice-list-new").className).toContain("btn-primary");
         expect(screen.queryByTestId("invoice-list")).toBeNull();
     });
 });

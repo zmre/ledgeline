@@ -13,7 +13,7 @@
     import {fetchTemplates} from "#lib/api.js";
     import type {EditorOptions} from "#lib/editor.js";
     import {createInvoice, fetchEditorOptions} from "#lib/editorApi.js";
-    import {localToday, type TemplateEntry} from "#lib/invoices.js";
+    import {localToday, nextNumberReason, type TemplateEntry} from "#lib/invoices.js";
     import {linkName, toLink} from "#lib/links.js";
     import AddCustomerDialog from "#lib/components/AddCustomerDialog.svelte";
 
@@ -97,7 +97,13 @@
         </label>
         <label class="flex flex-col gap-1 text-sm">Date <DateInput bind:value={date} aria-label="Date" required /></label>
         {#if options !== null}
-            <p class="text-xs text-base-content/60">It will be number {options.next_number}, a draft: nothing is booked until it is sent.</p>
+            {@const reason = nextNumberReason(options.next_number_after, options.next_number_source)}
+            <!-- Where the number comes from (H19): one booked in the journal with no file is never reused. -->
+            <p class="text-xs text-base-content/60" data-testid="new-number">
+                It will be number <span class="font-medium text-base-content">{options.next_number}</span>{#if reason !== null}<span
+                        data-testid="new-number-reason">{` (${reason})`}</span
+                    >{/if}, a draft: nothing is booked until it is sent.
+            </p>
         {/if}
         {#if error !== null}<div class="alert text-sm alert-error" role="alert" data-testid="new-error">{error}</div>{/if}
         <div class="flex justify-end gap-2">

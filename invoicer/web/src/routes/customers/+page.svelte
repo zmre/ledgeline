@@ -44,9 +44,11 @@
 </svelte:head>
 
 <div class="mx-auto flex max-w-6xl flex-col gap-4">
-    <div class="flex items-center justify-between gap-2">
+    <div class="flex flex-wrap items-center justify-between gap-2">
         <h1 class="text-2xl font-semibold tracking-tight">Customers</h1>
-        <a class="btn btn-primary btn-sm" href={resolve("/customers/new")} data-testid="new-customer">New customer</a>
+        {#if (customers?.length ?? 0) > 0}
+            <a class="btn btn-primary btn-sm" href={resolve("/customers/new")} data-testid="new-customer">New customer</a>
+        {/if}
     </div>
     <AsyncSection {view} value={customers} {error} testid="customers-error" label="the customers" loadingLabel="Loading customers" onRetry={load}>
         {#snippet children(list)}

@@ -1,5 +1,5 @@
 // A customer's account, mounted: owed, overdue, last payment, its open
-// invoices and all of them (backlinked from `customer:`), and the other
+// invoices and the other ones (backlinked from `customer:`), and the other
 // notes linking it, each saying what it is and opening inside the app.
 import {fireEvent, render, screen, within} from "@testing-library/svelte";
 import {describe, expect, it, vi} from "vitest";
@@ -18,18 +18,20 @@ describe("COMPONENT CustomerAccount", () => {
         expect(screen.getByTestId("account-balance").textContent).toBe("$8,350.00");
         expect(screen.queryByTestId("account-overdue")).toBeNull();
         expect(screen.getByTestId("account-last-payment").textContent).toBe("$8,350.00 on 2026-10-08");
-        // Open first: 105 only.
+        // Open first: 105 only; Other is everything else, never 105 again (H18).
         const open = screen.getAllByTestId("customer-open-invoice-row");
         expect(open.map((r) => r.dataset.number)).toEqual(["105"]);
-        const rows = screen.getAllByTestId("customer-invoice-row");
-        expect(rows.map((r) => r.dataset.number)).toEqual(["108", "105", "104"]);
+        expect(within(open[0]).getByTestId("status-badge").textContent).toBe("Open");
+        expect(within(open[0]).getByText("$8,350.00")).toBeDefined();
+        expect(within(open[0]).getByText("2026-12-10")).toBeDefined();
+        expect(within(open[0]).getByRole("link", {name: "105"}).getAttribute("href")).toBe("/app/invoices/105");
+        const rows = screen.getAllByTestId("customer-other-invoice-row");
+        expect(rows.map((r) => r.dataset.number)).toEqual(["108", "104"]);
         expect(within(rows[0]).getByTestId("status-badge").textContent).toBe("Draft");
-        expect(within(rows[1]).getByTestId("status-badge").textContent).toBe("Open");
-        expect(within(rows[1]).getByText("$8,350.00")).toBeDefined();
-        expect(within(rows[1]).getByText("2026-12-10")).toBeDefined();
-        expect(within(rows[2]).getByTestId("status-badge").textContent).toBe("Paid");
-        expect(within(rows[1]).getByRole("link", {name: "105"}).getAttribute("href")).toBe("/app/invoices/105");
-        expect(screen.getByText("All invoices")).toBeDefined();
+        expect(within(rows[1]).getByTestId("status-badge").textContent).toBe("Paid");
+        expect(screen.getByRole("heading", {name: "Open"})).toBeDefined();
+        expect(screen.getByRole("heading", {name: "Other"})).toBeDefined();
+        expect(screen.queryByText("All invoices")).toBeNull();
     });
 
     it("says what each other linking note is, and links it inside the app", () => {
@@ -58,7 +60,7 @@ describe("COMPONENT CustomerAccount", () => {
         expect(screen.getByTestId("account-balance").textContent).toBe("Nothing owed");
         expect(screen.getByTestId("account-overdue").textContent?.trim()).toBe("2 overdue, since 2026-08-31");
         expect(screen.queryByTestId("customer-backlinks")).toBeNull();
-        await fireEvent.click(within(screen.getAllByTestId("customer-invoice-row")[2]).getByText("2026-10-31"));
+        await fireEvent.click(within(screen.getAllByTestId("customer-other-invoice-row")[1]).getByText("2026-10-31"));
         expect(onOpen.mock.calls[0][0].number).toBe("104");
     });
 
@@ -66,5 +68,13 @@ describe("COMPONENT CustomerAccount", () => {
         render(CustomerAccount, {customer: customerX({documents: []}), ...hrefs});
         expect(screen.getByTestId("customer-no-invoices")).toBeDefined();
         expect(screen.queryByTestId("customer-open-invoices")).toBeNull();
+        expect(screen.queryByTestId("customer-other-invoices")).toBeNull();
+    });
+
+    it("says nothing is open when every invoice is settled", () => {
+        const settled = customerX().documents.filter((d) => !d.open);
+        render(CustomerAccount, {customer: customerX({documents: settled}), ...hrefs});
+        expect(screen.getByTestId("customer-nothing-open").textContent).toBe("Nothing open.");
+        expect(screen.getAllByTestId("customer-other-invoice-row")).toHaveLength(2);
     });
 });

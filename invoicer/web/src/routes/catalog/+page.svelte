@@ -8,10 +8,17 @@
      unsaved; otherwise the page says so and keeps the edits. The invoice
      editor's catalog picker re-reads the catalog after every change.
 
+     New item (top right, H21) adds a row at the bottom and focuses it; with
+     no catalog yet, the empty state's New item writes the catalog note
+     first. `?new=1` (the sidebar's New menu, H20) does the same on arrival,
+     then drops the parameter so a reload doesn't add another.
+
      Keyboard: Cmd/Ctrl+S saves. -->
 <script lang="ts">
-    import {onMount, untrack} from "svelte";
-    import {beforeNavigate} from "$app/navigation";
+    import {onMount, tick, untrack} from "svelte";
+    import {beforeNavigate, goto} from "$app/navigation";
+    import {resolve} from "$app/paths";
+    import {page} from "$app/state";
     import {changes} from "#lib/changes.svelte.js";
     import type {GridForm} from "#lib/editor.js";
     import {EditorApiError, fetchEditorOptions} from "#lib/editorApi.js";
@@ -29,6 +36,7 @@
     } from "#lib/library.js";
     import CatalogGrid from "#lib/components/CatalogGrid.svelte";
     import ConflictNotice from "#lib/components/ConflictNotice.svelte";
+    import EmptyState from "#lib/components/EmptyState.svelte";
     import {friendlyMessage} from "#lib/labels.js";
 
     const asMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -122,19 +130,44 @@
         }
     }
 
-    async function create(): Promise<void> {
+    async function create(): Promise<boolean> {
         saving = true;
         saveError = null;
         try {
             const made = await createCatalog();
             chosen = made.path;
             adopt(await fetchCatalog());
+            return true;
         } catch (e) {
             saveError = asMessage(e);
+            return false;
         } finally {
             saving = false;
         }
     }
+
+    let grid = $state<{addItem: () => void} | null>(null);
+
+    /** New item: a row at the bottom, focused; the catalog note first when there is none. */
+    async function newItem(): Promise<void> {
+        if (note === null && !(await create())) return;
+        await tick();
+        grid?.addItem();
+    }
+
+    // `?new=1` from the New menu: once the catalog has loaded, drop the
+    // parameter (before the row makes the page dirty, so leaving isn't
+    // asked about), then add the item.
+    let handlingNew = false;
+    $effect(() => {
+        if (!page.url.searchParams.has("new") || list === null || handlingNew) return;
+        handlingNew = true;
+        untrack(() => {
+            void goto(resolve("/catalog"), {replace: true, reset: false})
+                .then(() => newItem())
+                .finally(() => (handlingNew = false));
+        });
+    });
 
     function edit(next: GridForm): void {
         table = next;
@@ -162,6 +195,8 @@
     }
 
     beforeNavigate(({cancel, to}) => {
+        // The same page with another query (the New menu's `?new=1`) isn't leaving.
+        if (to?.url.pathname === page.url.pathname) return;
         if (dirty && to !== null && !confirm("The catalog has unsaved changes. Leave without saving?")) cancel();
     });
 
@@ -207,7 +242,7 @@
             </label>
         {/if}
         {#if table !== null}
-            <div class="ml-auto flex items-center gap-2">
+            <div class="ml-auto flex flex-wrap items-center gap-2">
                 {#if dirty}<span class="text-sm text-base-content/70" data-testid="unsaved">Unsaved changes</span>{/if}
                 <button type="button" class="btn btn-ghost btn-sm" disabled={!dirty || saving} onclick={discard}>Discard</button>
                 <button
@@ -218,14 +253,19 @@
                     onclick={() => void save()}
                     data-testid="save-catalog">{saving ? "Saving…" : "Save"}</button
                 >
+                <button type="button" class="btn btn-primary btn-sm" disabled={saving} onclick={() => void newItem()} data-testid="catalog-new-item"
+                    >New item</button
+                >
             </div>
         {/if}
     </header>
 
-    <p class="text-sm text-base-content/70">
-        Choosing an item in an invoice copies its code, description, unit, rate and account into the row; changing an item here never changes an invoice already
-        written.
-    </p>
+    {#if note !== null}
+        <p class="text-sm text-base-content/70">
+            Choosing an item in an invoice copies its code, description, unit, rate and account into the row; changing an item here never changes an invoice
+            already written.
+        </p>
+    {/if}
 
     {#if loadError !== null}
         <div role="alert" class="alert alert-soft alert-error" data-testid="catalog-load-error">
@@ -235,12 +275,18 @@
     {:else if list === null}
         <span class="loading loading-md loading-spinner" aria-label="Loading the catalog"></span>
     {:else if note === null}
-        <div class="rounded-box border border-dashed border-base-300 p-6 text-sm" data-testid="catalog-empty">
-            <p>There is no catalog yet: a list of your products and services, with their rates, for invoices to pick from.</p>
-            <button type="button" class="btn mt-3 btn-primary btn-sm" disabled={saving} onclick={() => void create()} data-testid="create-catalog"
-                >Create the catalog</button
-            >
-        </div>
+        <EmptyState
+            title="No catalog yet"
+            text="Your products and services, with their rates, for invoices to pick from."
+            action="New item"
+            onAction={() => void newItem()}
+            busy={saving}
+            testid="catalog-empty"
+            actionTestid="catalog-empty-new"
+        />
+        {#if saveError !== null}
+            <div role="alert" class="alert alert-soft alert-error" data-testid="catalog-save-error">{saveError}</div>
+        {/if}
     {:else}
         {#if conflict !== null}
             <ConflictNotice
@@ -271,7 +317,7 @@
         {#if table === null}
             <p class="text-sm">This catalog has no table with Code and Description columns yet. Add one in a text editor, then come back.</p>
         {:else}
-            <CatalogGrid {table} {accounts} {problems} onChange={edit} />
+            <CatalogGrid bind:this={grid} {table} {accounts} {problems} onChange={edit} />
         {/if}
     {/if}
 </div>

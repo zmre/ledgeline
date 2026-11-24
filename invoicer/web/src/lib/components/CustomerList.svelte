@@ -6,6 +6,7 @@
      row's one link, for the keyboard and screen readers. -->
 <script lang="ts">
     import {balanceText, lastPaymentText, type CustomerRow} from "#lib/customers.js";
+    import EmptyState from "./EmptyState.svelte";
 
     let {
         customers,
@@ -33,14 +34,14 @@
 </script>
 
 {#if customers.length === 0}
-    <div class="rounded-box border border-dashed border-base-300 p-8 text-center text-base-content/80" data-testid="customer-list-empty">
-        <p class="font-medium">No customers yet.</p>
-        <p class="mt-2 text-sm">
-            A customer is a person or organization note tagged <code>customer</code>.
-            <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- the page passes `newHref` built with resolve() -->
-            <a class="link" href={newHref}>Add one</a>, or tag a contact note you already have.
-        </p>
-    </div>
+    <EmptyState
+        title="No customers yet"
+        text="A customer is a person or organization you bill. Add one here, or tag a contact note you already have as a customer."
+        action="New customer"
+        href={newHref}
+        testid="customer-list-empty"
+        actionTestid="customer-list-new"
+    />
 {:else}
     <div class="overflow-x-auto rounded-box border border-base-300">
         <table class="table table-sm" data-testid="customer-list">

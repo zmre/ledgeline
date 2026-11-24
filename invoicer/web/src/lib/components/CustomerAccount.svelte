@@ -1,8 +1,9 @@
-<!-- A customer's account (invoicer PLAN 4b, Phase 4 feedback J1, J9): what
-     it owes, overdue, its last payment; its open invoices, then every
-     invoice (each linking it from `customer:`), newest first, with status,
-     total and due date; and the other notes that link it, each saying what
-     it is (person, organization, contract, …).
+<!-- A customer's account (invoicer PLAN 4b, Phase 4 feedback J1, J9, H18):
+     what it owes, overdue, its last payment; its invoices (each linking it
+     from `customer:`), newest first, with status, total and due date, in two
+     lists that never overlap: Open, then Other (paid, drafts, void, …); and
+     the other notes that link it, each saying what it is (person,
+     organization, contract, …).
 
      Every link stays in the app: an invoice opens the invoice page, a
      customer its customer page, any other note the in-app note view
@@ -33,6 +34,7 @@
     const invoicePaths = $derived(new Set(customer.documents.map((d) => d.path)));
     const others = $derived(customer.backlinks.filter((b) => b.path === null || !invoicePaths.has(b.path)));
     const open = $derived(customer.documents.filter((d) => d.open));
+    const other = $derived(customer.documents.filter((d) => !d.open));
 
     /** A backlink's note path: as the index has it, else from MBR's URL (`/notes/kickoff/` → `notes/kickoff`). */
     function notePath(link: Backlink): string {
@@ -98,16 +100,19 @@
         <p class="text-sm text-base-content/80">Invoices to {customer.title} are billed to {customer.billing.name}.</p>
     {/if}
 
-    {#if open.length > 0}
-        <h2 class="text-sm font-semibold tracking-wide text-base-content/70 uppercase">Open invoices</h2>
-        {@render invoiceTable(open, "customer-open-invoices", "customer-open-invoice-row")}
-    {/if}
-
-    <h2 class="text-sm font-semibold tracking-wide text-base-content/70 uppercase">{open.length > 0 ? "All invoices" : "Invoices"}</h2>
     {#if customer.documents.length === 0}
         <p class="text-sm text-base-content/70" data-testid="customer-no-invoices">No invoices for this customer yet.</p>
     {:else}
-        {@render invoiceTable(customer.documents, "customer-invoices", "customer-invoice-row")}
+        <h2 class="text-sm font-semibold tracking-wide text-base-content/70 uppercase">Open</h2>
+        {#if open.length > 0}
+            {@render invoiceTable(open, "customer-open-invoices", "customer-open-invoice-row")}
+        {:else}
+            <p class="text-sm text-base-content/70" data-testid="customer-nothing-open">Nothing open.</p>
+        {/if}
+        {#if other.length > 0}
+            <h2 class="text-sm font-semibold tracking-wide text-base-content/70 uppercase">Other</h2>
+            {@render invoiceTable(other, "customer-other-invoices", "customer-other-invoice-row")}
+        {/if}
     {/if}
 
     {#if others.length > 0}
