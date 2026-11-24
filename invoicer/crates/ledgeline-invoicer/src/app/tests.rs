@@ -14,9 +14,9 @@ use tower::ServiceExt as _;
 use super::books::OpenBooks;
 use super::{AppState, router};
 
-const TOKEN: &str = "router-test-token-0123456789";
+pub(super) const TOKEN: &str = "router-test-token-0123456789";
 const PORT: u16 = 5199;
-const HOST: &str = "127.0.0.1:5199";
+pub(super) const HOST: &str = "127.0.0.1:5199";
 
 fn copy_tree(src: &Path, dest: &Path) {
     std::fs::create_dir_all(dest).expect("mkdir");
@@ -47,14 +47,14 @@ fn fixture_named(name: &str) -> (tempfile::TempDir, PathBuf) {
     (dir, journal)
 }
 
-struct App {
+pub(super) struct App {
     _dir: tempfile::TempDir,
-    books: Arc<OpenBooks>,
-    router: Router,
+    pub(super) books: Arc<OpenBooks>,
+    pub(super) router: Router,
 }
 
 /// Must run inside a tokio runtime (MBR spawns on it).
-fn app() -> App {
+pub(super) fn app() -> App {
     app_with(None)
 }
 
@@ -64,7 +64,7 @@ fn app_with(native: Option<Arc<dyn super::native::Native>>) -> App {
 }
 
 /// [`app_with`] over the fixture `name` (`accrual`, `cash`).
-fn app_on(name: &str, native: Option<Arc<dyn super::native::Native>>) -> App {
+pub(super) fn app_on(name: &str, native: Option<Arc<dyn super::native::Native>>) -> App {
     let (dir, journal) = fixture_named(name);
     let books = Arc::new(OpenBooks::open(&journal, false).expect("opens"));
     let app_dirs = AppDirs::under(dir.path().join("config"));
@@ -78,7 +78,7 @@ fn app_on(name: &str, native: Option<Arc<dyn super::native::Native>>) -> App {
     }
 }
 
-async fn send(
+pub(super) async fn send(
     router: &Router,
     request: Request<Body>,
 ) -> (StatusCode, axum::http::HeaderMap, String) {
@@ -98,7 +98,7 @@ fn get(path: &str) -> axum::http::request::Builder {
     Request::get(path).header(header::HOST, HOST)
 }
 
-fn authed(path: &str) -> Request<Body> {
+pub(super) fn authed(path: &str) -> Request<Body> {
     get(path)
         .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
         .body(Body::empty())
@@ -322,7 +322,7 @@ async fn the_first_paint_reads_the_shared_prefs() {
     );
 }
 
-fn post_json(path: &str, body: &serde_json::Value) -> Request<Body> {
+pub(super) fn post_json(path: &str, body: &serde_json::Value) -> Request<Body> {
     Request::post(path)
         .header(header::HOST, HOST)
         .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
@@ -829,11 +829,11 @@ fn mocked() -> (App, Arc<MockNative>) {
     (app, native)
 }
 
-fn books_root(app: &App) -> PathBuf {
+pub(super) fn books_root(app: &App) -> PathBuf {
     app.books.vault().root().to_path_buf()
 }
 
-async fn json_of(app: &App, request: Request<Body>) -> (StatusCode, serde_json::Value) {
+pub(super) async fn json_of(app: &App, request: Request<Body>) -> (StatusCode, serde_json::Value) {
     let (status, _, body) = send(&app.router, request).await;
     let value = serde_json::from_str(&body).unwrap_or(serde_json::Value::String(body));
     (status, value)

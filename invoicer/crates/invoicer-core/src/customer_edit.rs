@@ -375,14 +375,7 @@ fn portal_value(
             Some(v) => one_line(&format!("the portal's {key}"), v)?,
             None => None,
         };
-        match value {
-            Some(v) => {
-                map.insert(key.to_string(), Value::String(v));
-            }
-            None => {
-                map.remove(key);
-            }
-        }
+        set_text(&mut map, key, value);
     }
     if let Some(url) = map.get("url").and_then(Value::as_str)
         && !(url.starts_with("https://") || url.starts_with("http://"))
@@ -397,20 +390,40 @@ fn portal_value(
             Value::Bool(portal.requires_reference),
         );
     }
+    // Free markdown: several lines are written as a `|` block.
     let instructions = portal
         .instructions
         .as_deref()
-        .map(|s| s.trim_end().to_string())
-        .filter(|s| !s.trim().is_empty());
-    match instructions {
-        Some(text) => {
-            map.insert("instructions".to_string(), Value::String(text));
+        .map(str::trim_end)
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| {
+            if s.contains('\n') {
+                format!("{s}\n")
+            } else {
+                s.to_string()
+            }
+        });
+    set_text(&mut map, "instructions", instructions);
+    Ok((!map.is_empty()).then_some(Value::Object(map)))
+}
+
+/// Set `key` to `value` (remove it for `None`), leaving a value that only
+/// differs in trailing white space as written (a `|` block stays one).
+fn set_text(map: &mut Map<String, Value>, key: &str, value: Option<String>) {
+    match value {
+        Some(v) => {
+            let same = map
+                .get(key)
+                .and_then(Value::as_str)
+                .is_some_and(|old| old.trim_end() == v.trim_end());
+            if !same {
+                map.insert(key.to_string(), Value::String(v));
+            }
         }
         None => {
-            map.remove("instructions");
+            map.remove(key);
         }
     }
-    Ok((!map.is_empty()).then_some(Value::Object(map)))
 }
 
 /// What one form maps to: each named key's new value (`None`: remove it), in

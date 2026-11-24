@@ -23,7 +23,7 @@
 //! | `POST /api/pdf/share`, `/api/pdf/copy` | Share… or Copy file an exported PDF (3c). |
 //! | `POST /api/pdf/open`        | Open an exported PDF in the default viewer.    |
 //! | `GET /api/events`           | Change events (server-sent events), see [`events`]. |
-//! | `GET /api/customers`        | `customers list --json`.                       |
+//! | `GET`/`POST /api/customers`, `GET`/`PUT /api/customers/{*key}` | Customers: list, create, show, edit ([`super::customers`], 4b). |
 //! | `GET`/`PATCH /api/ui-prefs` | The shared theme and scale (Ledgeline's shape). |
 //! | `POST /api/session`         | The cookie MBR's pages need ([`super::mbr`]).  |
 //!
@@ -77,7 +77,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/pdf/copy", post(pdf::copy_file))
         .route("/api/pdf/open", post(pdf::open_pdf))
         .route("/api/events", get(events))
-        .route("/api/customers", get(customers))
+        .merge(super::customers::routes())
         .route("/api/ui-prefs", get(ui_prefs).patch(patch_ui_prefs))
         .route("/api/session", post(session))
 }
@@ -362,18 +362,6 @@ async fn events(State(state): State<AppState>) -> Result<Response, ApiError> {
         ledgeline_shell::security::no_store(),
     );
     Ok(response)
-}
-
-/// `GET /api/customers`: `customers list --json`.
-async fn customers(State(state): State<AppState>) -> ApiResult {
-    with_books(&state, |books| {
-        let session = books.session();
-        to_value(views::customers(
-            session.index(),
-            Some(session.book_states()),
-        ))
-    })
-    .await
 }
 
 /// `GET /api/ui-prefs`: the effective theme and scale. Reads only.

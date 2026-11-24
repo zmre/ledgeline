@@ -157,6 +157,12 @@ impl OpenBooks {
         &self.mbr
     }
 
+    /// MBR's note index for this folder, as its library façade: the same
+    /// scan and backlink index its pages use (MBR-CHANGES M1, M2).
+    pub(crate) fn mbr_site(&self) -> mbr_core::site::Site {
+        self.live.current().site()
+    }
+
     /// The session, locked. A panic while it was held leaves it usable: the
     /// session reads its files afresh before every write.
     pub(crate) fn session(&self) -> MutexGuard<'_, Session> {

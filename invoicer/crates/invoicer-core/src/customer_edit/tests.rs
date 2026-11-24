@@ -384,9 +384,7 @@ fn the_portal_keeps_its_unknown_keys_and_empty_values_remove() {
     assert!(text.contains("  vendor_notes: ask for Lee\n"), "{text}");
     assert!(text.contains("  login: ar@myco.example\n"), "{text}");
     assert!(
-        text.contains(
-            "  instructions: |-\n    Upload under Invoices.\n    Attach the timesheet.\n"
-        ),
+        text.contains("  instructions: |\n    Upload under Invoices.\n    Attach the timesheet.\n"),
         "{text}"
     );
     assert!(text.ends_with("---\n\nFabrikam pays by ACH.\n\n- Contact: Lee\n"));
@@ -479,4 +477,46 @@ fn a_company_name_becomes_a_wikilink() {
     let words = Words::default();
     let lee = find_customer(index.site(), &VaultPath::root(), &made.link, &words).expect("found");
     assert_eq!(lee.billing_contact(index.site(), &words).name, "Fabrikam");
+}
+
+#[test]
+fn the_fixture_customer_saves_unchanged() {
+    // Every invoicing key the core reads, a trailing comment, quoted phones,
+    // a `|` address and portal instructions, `open_pos` and `snippets`.
+    const CUSTOMER_X: &str = include_str!("../../../../fixtures/accrual/customers/Customer X.md");
+    let (vault, mut index) = open(&[("customers/Customer X.md", CUSTOMER_X)]);
+    let p = path("customers/Customer X.md");
+    let note = index.site().note(&p).expect("note").clone();
+    let customer = Customer::from_note(&note).expect("customer");
+    let form = fields_of(&customer, &note);
+    let done = update(&mut index, &vault, &p, &hash_of(&vault, &p), &form).expect("saves");
+    assert!(!done.written, "{:?}", done.changed);
+    assert_eq!(vault.read_to_string(&p).expect("reads"), CUSTOMER_X);
+    // One portal key changed: the rest of the portal, and the file, stay.
+    let mut portal = form.billing_portal.clone().flatten().expect("portal");
+    portal.supplier_id = Some("SUP-1".into());
+    let done = update(
+        &mut index,
+        &vault,
+        &p,
+        &done.hash,
+        &CustomerFields {
+            billing_portal: Some(Some(portal)),
+            ..CustomerFields::default()
+        },
+    )
+    .expect("saves");
+    assert_eq!(done.changed, ["billing_portal"]);
+    let text = vault.read_to_string(&p).expect("reads");
+    assert!(text.contains("  supplier_id: SUP-1\n"), "{text}");
+    assert!(
+        text.contains("  instructions: |\n    Upload the PDF under Invoices"),
+        "{text}"
+    );
+    let outside = |t: &str| {
+        let start = t.find("billing_portal:").expect("portal");
+        let end = t.find("snippets:").expect("snippets");
+        format!("{}{}", &t[..start], &t[end..])
+    };
+    assert_eq!(outside(&text), outside(CUSTOMER_X));
 }
