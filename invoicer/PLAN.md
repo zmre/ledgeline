@@ -905,6 +905,69 @@ try it once in the window with an editor that keeps the file open.
 - Creating a customer writes a new person or organization note in
   `customers-dir`.
 
+*4b built (2026-11-24).* Core: `invoicer_core::customer_edit` (`create`,
+`update`, `fields_of`, `CustomerFields`, `CustomerSaved`) and
+`views::account` (`customer_accounts`, `customer_account`). App:
+`app/customers.rs` (routes, merged into `api::routes`) and
+`app/customers_tests.rs`; `OpenBooks::mbr_site` exposes MBR's index for
+backlinks. SPA: Customers in the sidebar, `/app/customers` (list),
+`/app/customers/new`, `/app/customers/[...path]` (form, account, invoices,
+contact card); `lib/customers.ts`; components `CustomerList`,
+`CustomerForm`, `LabelledList`, `CustomerAccount`, `NoteFrame`, with unit
+and component tests. e2e `invoicer/web/e2e/customers.e2e.ts`: written, not
+run. The CLI has no `customers new`/`set` yet; both would call the same
+core functions.
+
+**For 4a's inline Add new:** `POST /api/customers` with
+`{"title": "Northwind Traders", "kind": "organization", ...}` answers `201`
+`{path, title, link, ledger_customer, kind, hash, written, changed}`; write
+`link` (`[[Northwind Traders]]`) into the invoice's `customer:`. Any other
+`CustomerFields` key may be sent too (`emails: [{label, value}]`, `terms`,
+…); absent keys are left out of the note. The SPA's client is
+`createCustomer` in `invoicer/web/src/lib/customers.ts` (a `409` throws
+`ApiStatusError` with `status`).
+
+| Route                              | Body                                          | Answers                                                                                                                                    |
+|------------------------------------|-----------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------|
+| `POST /api/customers`              | `CustomerFields`: `title` and `kind` required | `201` `CustomerSaved`; `409` name taken or file exists; `422` a field that doesn't read; `400` an unknown field                            |
+| `GET /api/customers/{*key}?today=` | —                                             | `customers show --json` plus `account`, `hash`, `form` (`CustomerFields`), `backlinks`                                                     |
+| `PUT /api/customers/{*key}`        | `{hash, fields: CustomerFields}`              | `CustomerSaved`; `409` the note isn't the bytes `hash` names; `422` a field, or a layout the editor refuses                                |
+| `GET /api/customers?today=`        | —                                             | `customers list --json` rows, each plus `account: {balance: [{commodity, amount}], overdue, oldest_overdue, last_payment: {date, amount}}` |
+
+`CustomerFields` (every key optional; absent leaves the key, `""`, `[]`
+or `null` removes it): `title`, `kind` (`person`|`organization`),
+`emails`/`phones`/`addresses` (`[{label: string|null, value}]`, an address
+as lines), `company`, `terms` (net days, `null` removes), `revenue_account`,
+`invoice_template`, `ledger_customer`, `contracts` (strings),
+`billing_portal` (`{name, url, login, supplier_id, requires_reference,
+instructions}` or `null`). Unknown keys are a `400`.
+
+Decided while building, open to veto:
+
+| #   | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+|-----|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| K1  | **Edits are by key, and only what changed.** The SPA sends only the fields changed since the note was read; the core (`customer_edit::update`) also skips a named key whose value already reads the same. So an untouched address stays MBR's map (`street`, `city`, …), a `|` block stays one, and comments, unknown keys and the body stay byte for byte (`frontmatter::edit`'s verification). An edited address is written as text (a `|` block). A layout the editor refuses (§5.5) is a `422`: edit that note by hand.                                                     |
+| K2  | **Conflicts are by content hash** (`Fingerprint::token`, the note's bytes), not the books generation: a customer note isn't the journal. A save names the hash it was shown; a different file is `409`, and the write is conditional on the revision read. The page then offers Reload (discard mine) or **Apply my changes to the new version**: the same changed keys over the new text, which by K1 touches no other key. Live reload refreshes a clean page; with unsaved changes it says the note changed and keeps the form.                                              |
+| K3  | **Create** writes `customers-dir/<Title>.md` (`: * ? " < >` become `-` in the file name; the title keeps them), frontmatter only, in a fixed order: `title`, `type`, `tags: [<customer-tag>]`, `emails`, `phones`, `addresses`, `company`, `terms`, `revenue_account`, `invoice_template`, `ledger_customer`, `contracts`, `billing_portal`. It never replaces a file, and refuses a title any note already answers to (customer or not), so `[[Title]]` links only the new note. An existing contact becomes a customer by adding the tag by hand (an action for it is later). |
+| K4  | **A title is link-safe**: no `[ ] \| # ^ / \`, not ending in `.md`, one line, at most 120 characters.                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| K5  | **Renaming keeps history**: a new title on a note without `ledger_customer` writes the old name as `ledger_customer` (the books' `customer:` tag), unless the form sets it. The file keeps its name, so invoices' `[[Old name]]` still resolve by file name (§3.1's rules).                                                                                                                                                                                                                                                                                                     |
+| K6  | **The form edits what the core reads, nothing new**: `title`, `type`, `emails`, `phones`, `addresses`, a person's `company` (a name is written as `[[Name]]`), `terms`, `revenue_account`, `invoice_template`, `ledger_customer`, `contracts` and `billing_portal`. `open_pos` and `snippets` are shown, edited by hand; `tags` is never touched. No accounting key was added.                                                                                                                                                                                                  |
+| K7  | **The portal** is written over the note's own map: keys the form doesn't know stay (in their order); a text differing only in trailing white space stays as written; `requires_reference: false` is written only where the key already was. A request naming any other portal key (a `password`) is refused before anything is read (`400`).                                                                                                                                                                                                                                    |
+| K8  | **The account** is the dashboard's: the balance sums `receivables`' open items that are one of the customer's invoices or carry its `customer:` tag (opening balances, plan 45's own), per commodity; overdue counts those past due. The last payment is the latest payment (not a credit) the books link to one of its invoices, same-day payments added up.                                                                                                                                                                                                                   |
+| K9  | **The contact card is MBR's page for the saved note**, framed like the invoice (by URL, sandboxed `allow-same-origin`, B2), shown again after a save. It doesn't preview unsaved edits: that needs a page per draft (a `srcdoc` frame is blank in WebKit, F1); later, if wanted.                                                                                                                                                                                                                                                                                                |
+| K10 | **Backlinks**: the invoice table is the core's `customer:` resolution (the same rules as MBR's); MBR's own backlink index (`Server::site().backlinks`, M1: body and frontmatter links) is in `backlinks`, and the page lists the notes that aren't its invoices as "Also linked from".                                                                                                                                                                                                                                                                                          |
+| K11 | **URLs**: the SPA's page is `/app/customers/<the note's path without .md>`; the API's `{*key}` is the note's path (`.md` optional) or a name `customers show` takes.                                                                                                                                                                                                                                                                                                                                                                                                            |
+
+**Also fixed:** main's `invoicer/web/src/routes/+layout.svelte` had an
+unclosed `<div>`/`<main>` from the icon branch's merge (svelte-check and the
+build failed); the old header was dropped, the sidebar layout kept, the icon
+stays the favicon.
+
+**Pending (the lead):** `just invoicer-e2e` (the new spec creates
+Northwind Traders and deletes it after); in the window, the contact-card
+frame (MBR's person/organization page with no scripts) and Apply my
+changes after an outside edit in an editor that keeps the file open.
+
 **4c. Catalog and snippets** — grid and markdown editors over their notes.
 
 **4d. Templates** — a list, a code editor (CodeMirror, HTML/Tera), and live

@@ -20,6 +20,7 @@
 //! (edit it by hand).
 
 use std::path::Path as FsPath;
+use std::time::Duration;
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
@@ -151,10 +152,18 @@ struct Backlink {
     key: Option<String>,
 }
 
-/// The notes MBR's index says link to `path`. Empty when MBR's index can't
-/// say (it is still scanning).
+/// How long a customer's page waits for MBR's first scan of the folder
+/// before answering without backlinks.
+const SCAN_WAIT: Duration = Duration::from_secs(5);
+
+/// The notes MBR's index says link to `path`. Empty until MBR's first scan
+/// of the folder is complete: a backlink index built over a partial scan
+/// would miss notes (the caller waits for it, [`SCAN_WAIT`]).
 fn backlinks(books: &OpenBooks, path: &VaultPath) -> Vec<Backlink> {
     let site = books.mbr_site();
+    if !site.repo().is_scan_complete() {
+        return Vec::new();
+    }
     let inbound = site.backlinks(FsPath::new(path.as_str()));
     if inbound.is_empty() {
         return Vec::new();
@@ -183,13 +192,19 @@ fn backlinks(books: &OpenBooks, path: &VaultPath) -> Vec<Backlink> {
 /// - `hash`: the note's content hash, which a `PUT` names;
 /// - `form`: the editable fields as the note writes them
 ///   ([`CustomerFields`]);
-/// - `backlinks`: every note MBR's index says links here.
+/// - `backlinks`: every note MBR's index says links here (empty if MBR's
+///   first scan of the folder hasn't finished within [`SCAN_WAIT`]).
 async fn detail(
     State(state): State<AppState>,
     Path(key): Path<String>,
     Query(params): Query<TodayParam>,
 ) -> ApiResult {
     let today = today(params.today.as_deref())?;
+    if let Some(books) = state.books() {
+        // MBR scans the folder in the background once the books open.
+        let site = books.mbr_site();
+        let _ = tokio::time::timeout(SCAN_WAIT, site.repo().wait_for_scan()).await;
+    }
     with_books(&state, move |books| {
         let path = {
             let mut session = books.session();
