@@ -16,7 +16,7 @@
     import {parseAmountInput} from "#lib/api/editMapping.js";
     import {BUDGET_PERIODS, type AccountReference, type BudgetPeriod, type GoalDraft, type GoalSubmission} from "#lib/budget/types.js";
     import type {AmountStyle} from "#lib/domain/types.js";
-    import AccountInput from "#lib/journal/edit/AccountInput.svelte";
+    import AccountInput from "#ui/components/AccountInput.svelte";
     import type {DataView} from "#lib/stores/loadState.js";
     import ReferenceStrip from "./ReferenceStrip.svelte";
 

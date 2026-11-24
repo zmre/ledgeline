@@ -27,7 +27,7 @@
     import type {AccountClasses} from "#lib/domain/accountClass.js";
     import type {AmountStyle} from "#lib/domain/types.js";
     import {EM_DASH} from "#lib/format/amounts.js";
-    import AccountInput from "#lib/journal/edit/AccountInput.svelte";
+    import AccountInput from "#ui/components/AccountInput.svelte";
     import {amountText} from "../../../entryText";
     import type {StepInfo} from "../../../entries";
     import {journalBalanceFor} from "../../../projectionView";

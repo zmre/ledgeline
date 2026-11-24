@@ -30,7 +30,7 @@
     import type {AccountClasses} from "#lib/domain/accountClass.js";
     import type {Transaction} from "#lib/domain/types.js";
     import AmountCell from "#lib/journal/AmountCell.svelte";
-    import AccountInput from "#lib/journal/edit/AccountInput.svelte";
+    import AccountInput from "#ui/components/AccountInput.svelte";
     import {generatedPostings} from "#lib/journal/rowModel.js";
     import {formatKeys} from "#lib/keys/chord.js";
     import {balancingHint, isUncategorized, percent, recurringLabel, shortAccount, type Chips} from "../card";

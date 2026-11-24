@@ -10,7 +10,7 @@
     import {goto} from "$app/navigation";
     import DateInput from "#ui/components/DateInput.svelte";
     import {importStore} from "#lib/imports/importStore.svelte.js";
-    import AccountInput from "#lib/journal/edit/AccountInput.svelte";
+    import AccountInput from "#ui/components/AccountInput.svelte";
     import {dismissible} from "#lib/keys/dismissible.js";
     import {journal} from "#lib/stores/journal.svelte.js";
     import {when} from "../format";

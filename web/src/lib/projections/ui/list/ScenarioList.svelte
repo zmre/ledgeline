@@ -34,7 +34,7 @@
     import {flip} from "svelte/animate";
     import type {AccountClasses} from "#lib/domain/accountClass.js";
     import type {AmountStyle, ISODate} from "#lib/domain/types.js";
-    import AccountInput from "#lib/journal/edit/AccountInput.svelte";
+    import AccountInput from "#ui/components/AccountInput.svelte";
     import DateInput from "#ui/components/DateInput.svelte";
     import type {RenderProjectionBody} from "#lib/api/native.js";
     import {registerKeys} from "#lib/keys/keymap.svelte.js";

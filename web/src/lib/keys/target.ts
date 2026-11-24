@@ -7,6 +7,8 @@
 // does a plain object literal, which is why every case here is a node test
 // rather than a jsdom one.
 
+import {TYPING_ATTRIBUTE} from "#ui/ui/typing.js";
+
 export interface TargetLike {
     tagName: string;
     type?: string;
@@ -28,9 +30,10 @@ const TYPING_TYPES = new Set(["text", "search", "url", "tel", "email", "password
 /**
  * Marks a subtree that owns the keyboard without being a field — the account
  * combobox puts this on its wrapper so its popup counts as "typing" too,
- * without this file needing to know the combobox exists.
+ * without this file needing to know the combobox exists. Defined in
+ * packages/ui, where the shared combobox lives; re-exported for this app.
  */
-export const TYPING_ATTRIBUTE = "data-keys-typing";
+export {TYPING_ATTRIBUTE};
 
 export function isTypingTarget(target: TargetLike | null | undefined): boolean {
     if (target === null || target === undefined) return false;

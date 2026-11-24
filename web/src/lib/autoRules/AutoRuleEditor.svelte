@@ -23,7 +23,7 @@
 <script lang="ts">
     import {decToInput, parseAmountInput} from "#lib/api/editMapping.js";
     import type {AmountStyle} from "#lib/domain/types.js";
-    import AccountInput from "#lib/journal/edit/AccountInput.svelte";
+    import AccountInput from "#ui/components/AccountInput.svelte";
     import {blankPosting, ruleFormNeedsCounter, rulePreview, type AutoRuleForm, type AutoRuleFormPosting, type RuleAmount} from "./ruleForm";
 
     let {
