@@ -1,5 +1,5 @@
 // Empty books end to end (Phase 4 feedback H20–H22): with no invoices,
-// customers, catalog or snippets, the four lists show the one shared empty
+// customers, catalog, snippets or templates, the lists show the one shared empty
 // state (a titled card, one sentence, a primary button; no terminal
 // instructions), each button starts the right thing, and the sidebar's New
 // button reaches every create flow from the keyboard, in a narrow window too.
@@ -70,6 +70,8 @@ test.describe("empty books (:5198)", () => {
         await expect(page.getByTestId("sidebar-customers-count")).toHaveText("0 customers");
         await expect(page.getByTestId("sidebar-catalog-count")).toHaveText("0 items");
         await expect(page.getByTestId("sidebar-snippets-count")).toHaveText("0 snippets");
+        // Templates counts the starters the page lists (4d).
+        await expect(page.getByTestId("sidebar-templates-count")).toHaveText("2 templates");
 
         await section(page, "Customers");
         await expect(page).toHaveURL(/\/app\/customers$/);
@@ -85,6 +87,13 @@ test.describe("empty books (:5198)", () => {
         await expect(page).toHaveURL(/\/app\/snippets$/);
         await expectEmpty(page, "snippets-empty", "No snippets yet", "New snippet");
         await expect(page.getByTestId("new-snippet")).toHaveCount(0);
+
+        // Templates (4d): the empty state, and the starters still listed under it.
+        await section(page, "Templates");
+        await expect(page).toHaveURL(/\/app\/templates$/);
+        await expectEmpty(page, "templates-empty", "No templates of your own yet", "New template");
+        await expect(page.getByTestId("new-template")).toHaveCount(0);
+        await expect(page.getByTestId("template-row")).toHaveCount(2);
     });
 
     test("each empty state's button starts the right thing", async ({page}) => {
@@ -123,7 +132,7 @@ test.describe("empty books (:5198)", () => {
         await toggle.focus();
         await page.keyboard.press("ArrowDown");
         await expect(menu).toBeVisible();
-        await expect(menu.getByRole("menuitem")).toHaveText(["New invoice", "New customer", "New catalog item", "New snippet"]);
+        await expect(menu.getByRole("menuitem")).toHaveText(["New invoice", "New customer", "New catalog item", "New snippet", "New template"]);
         await expect(menu.getByRole("menuitem", {name: "New invoice", exact: true})).toBeFocused();
         await page.keyboard.press("Escape");
         await expect(menu).toHaveCount(0);
@@ -139,6 +148,8 @@ test.describe("empty books (:5198)", () => {
         // New snippet: the form opens and the parameter is dropped.
         await toggle.focus();
         await page.keyboard.press("ArrowUp");
+        await expect(menu.getByRole("menuitem", {name: "New template", exact: true})).toBeFocused();
+        await page.keyboard.press("ArrowUp");
         await expect(menu.getByRole("menuitem", {name: "New snippet", exact: true})).toBeFocused();
         await page.keyboard.press("Enter");
         await expect(page).toHaveURL(/\/app\/snippets$/);
@@ -148,6 +159,7 @@ test.describe("empty books (:5198)", () => {
         await toggle.focus();
         await page.keyboard.press("Enter");
         await page.keyboard.press("End");
+        await page.keyboard.press("ArrowUp");
         await page.keyboard.press("ArrowUp");
         await expect(menu.getByRole("menuitem", {name: "New catalog item", exact: true})).toBeFocused();
         await page.keyboard.press("Enter");
