@@ -1262,9 +1262,8 @@ scale, container-query breakpoints) and the same native-mode contract.
   opening in the app: PLAN J9). **Edit** swaps in the form.
 - **Templates** (PLAN 4d). A list (name, kinds, the base and its version,
   the blocks changed, who uses it; starters marked), and an editor: Name
-  and Kinds, the blocks overridden with "Override block", the code (a
-  textarea with line numbers until a code-editor dependency is approved,
-  D2), and a live preview against a chosen invoice, the latest by default.
+  and Kinds, the blocks overridden with "Override block", the code
+  (CodeMirror 6, HTML with a Tera overlay, loaded lazily: D2), and a live preview against a chosen invoice, the latest by default.
   Save and Discard top right, the Save / Discard / Cancel prompt on
   leaving, Cmd/Ctrl+S.
 

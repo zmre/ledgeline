@@ -36,7 +36,11 @@ const BODY = `{% extends "_invoice_base.v1.html" %}
 
 const read = (file: string): string => readFileSync(resolve(BOOKS, file), "utf8");
 const frame = (page: Page) => page.frameLocator('[data-testid="invoice-frame"]');
+// The code field is CodeMirror (PLAN 4d, D2): a contenteditable `.cm-content`
+// with role textbox, which `fill` types into. It has no `value`, so its text
+// is read back line by line (`codeText`).
 const code = (page: Page) => page.getByRole("textbox", {name: "Template code", exact: true});
+const codeText = async (page: Page): Promise<string> => (await code(page).locator(".cm-line").allTextContents()).join("\n");
 
 async function open(page: Page): Promise<void> {
     await page.clock.setFixedTime(FIXED_NOW);
@@ -84,7 +88,7 @@ test.describe("the template editor over the accrual fixture (:5199)", () => {
         await expect(page.getByTestId("template-heading")).toHaveText(NAME);
         expect(read(FILE)).toBe(`{# invoicer: name="${NAME}" kinds="invoice" #}\n{% extends "_invoice_base.v1.html" %}\n`);
         // The name line is the form's: the code starts with extends.
-        await expect(code(page)).toHaveValue('{% extends "_invoice_base.v1.html" %}\n');
+        await expect.poll(() => codeText(page)).toBe('{% extends "_invoice_base.v1.html" %}\n');
         await expect(page.getByTestId("block-panel-none")).toBeVisible();
 
         // The preview shows an invoice through it before anything changes.
@@ -96,7 +100,7 @@ test.describe("the template editor over the accrual fixture (:5199)", () => {
         await page.getByTestId("block-choice").selectOption("theme");
         await expect(page.getByTestId("block-about")).toContainText("the CSS for the sheet");
         await page.getByTestId("block-override").click();
-        await expect(code(page)).toHaveValue(/\{% block theme %\}\n\{\{ super\(\) \}\}\n\{% endblock theme %\}/);
+        await expect.poll(() => codeText(page)).toMatch(/\{% block theme %\}\n\{\{ super\(\) \}\}\n\{% endblock theme %\}/);
         await expect(page.getByTestId("block-overridden")).toHaveText(["theme"]);
 
         // Type the rule; the preview follows the unsaved text.
@@ -179,7 +183,7 @@ test.describe("the template editor over the accrual fixture (:5199)", () => {
         await page.goto("/app/templates/invoices/tpl/classic");
         await expect(page.getByTestId("template-heading")).toHaveText("Classic");
         await expect(page.getByTestId("template-read-only")).toBeVisible();
-        await expect(code(page)).toHaveAttribute("readonly", "");
+        await expect(code(page)).toHaveAttribute("aria-readonly", "true");
         await expect(page.getByTestId("customize-template")).toBeVisible();
         await expect(page.getByTestId("save-template")).toHaveCount(0);
         await expect(page.getByTestId("block-choice")).toHaveCount(0);
