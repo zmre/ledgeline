@@ -1775,10 +1775,17 @@ async fn the_watcher_recalculates_an_edited_draft_and_stops() {
         if text.contains("**$14,400.00**") {
             break text;
         }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "not recalculated within 10 s"
-        );
+        if tokio::time::Instant::now() >= deadline {
+            // Which of recalc_on_save's checks said no (CI diagnosis).
+            let session = app.books.session();
+            let index = session.index();
+            let doc = index.docs().find(|d| d.number() == Some("108"));
+            panic!(
+                "not recalculated within 10 s\nrecalc-on-save: {:?}\nindexed: {:#?}\nfile:\n{text}",
+                index.settings().recalc_on_save,
+                doc.map(|d| (&d.stamp, &d.header.status, &d.summary)),
+            );
+        }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     };
     // Well past another debounce: nothing rewrote it again.
