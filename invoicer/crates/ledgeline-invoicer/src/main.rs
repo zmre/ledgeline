@@ -30,6 +30,7 @@ mod app;
 mod human;
 mod pdf;
 mod starters;
+mod tera_scan;
 
 use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser, Subcommand};
 use invoicer_core::books::{
@@ -605,7 +606,7 @@ fn run_new(cli: &Cli, args: &NewArgs, matches: Option<&ArgMatches>) -> Result<Ex
                 Failure(format!("copying the {} template: {e}", starter.name), None)
             })?;
             let (index, vault) = session.parts_mut();
-            index.refresh(vault, std::slice::from_ref(&installed.path));
+            index.refresh(vault, &installed.written_files());
             installed.written.then_some(installed.path)
         }
         None => None,
@@ -728,7 +729,7 @@ fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
                         .map_err(|e| Failure(format!("copying the starter template: {e}"), None))?;
                     if let Some(done) = installed.filter(|d| d.written) {
                         let (index, vault) = session.parts_mut();
-                        index.refresh(vault, std::slice::from_ref(&done.path));
+                        index.refresh(vault, &done.written_files());
                         copied = Some(done.path);
                     }
                 }

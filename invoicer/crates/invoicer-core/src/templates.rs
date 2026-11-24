@@ -1,6 +1,9 @@
 //! Templates (ARCHITECTURE §3.5): any non-ignored `.html` file whose Tera
-//! source mentions `invoice_num`. A Tera comment on the first line may name
-//! it and the document types it is for:
+//! source mentions `invoice_num` or extends an invoice base
+//! (`{% extends "_invoice_base.v1.html" %}`, PLAN Q1), and whose name
+//! doesn't start with `_`: a `_` file is a base or a partial for templates
+//! to extend or include, never a template of its own. A Tera comment on the
+//! first line may name it and the document types it is for:
 //!
 //! ```text
 //! {# invoicer: name="MyCo default" kinds="invoice,estimate" #}
@@ -54,10 +57,35 @@ pub fn header(source: &str) -> Option<TemplateHeader> {
     Some(found)
 }
 
-/// Whether an HTML file is an invoice template.
+/// The prefix of the invoicer's shipped base templates' file names
+/// (`_invoice_base.v1.html`).
+pub const BASE_PREFIX: &str = "_invoice_base";
+
+/// Whether an HTML file is an invoice template, by its source: it mentions
+/// `invoice_num`, or it extends an invoice base (a child that only
+/// restyles needn't mention the number).
 #[must_use]
 pub fn is_template(source: &str) -> bool {
-    source.contains("invoice_num")
+    source.contains("invoice_num") || extends_invoice_base(source)
+}
+
+/// Whether `source` has `{% extends "_invoice_base…" %}`.
+fn extends_invoice_base(source: &str) -> bool {
+    source.match_indices("extends").any(|(at, _)| {
+        let before = source[..at].trim_end().trim_end_matches('-');
+        let after = source[at + "extends".len()..].trim_start();
+        before.ends_with("{%")
+            && after
+                .strip_prefix(['"', '\''])
+                .is_some_and(|name| name.starts_with(BASE_PREFIX))
+    })
+}
+
+/// Whether the file at `path` is kept for templates to extend or include
+/// (its name starts with `_`), so never a template itself.
+#[must_use]
+pub fn is_partial(path: &VaultPath) -> bool {
+    path.file_name().is_some_and(|name| name.starts_with('_'))
 }
 
 /// A template.
@@ -72,10 +100,11 @@ pub struct Template {
 }
 
 impl Template {
-    /// A template from its file, or `None` when it isn't one.
+    /// A template from its file, or `None` when it isn't one (a `_` file,
+    /// or a source that isn't a template's).
     #[must_use]
     pub fn from_source(path: VaultPath, source: &str) -> Option<Self> {
-        if !is_template(source) {
+        if is_partial(&path) || !is_template(source) {
             return None;
         }
         let head = header(source).unwrap_or_default();
@@ -104,7 +133,7 @@ impl Template {
 }
 
 /// Every template among the site's HTML files, sorted by path. Files that
-/// can't be read are skipped.
+/// can't be read are skipped, and so are `_` files ([`is_partial`]), unread.
 #[must_use]
 pub fn discover(vault: &dyn Vault, site: &Site) -> Vec<Template> {
     site.others()
@@ -114,6 +143,7 @@ pub fn discover(vault: &dyn Vault, site: &Site) -> Vec<Template> {
                 .path
                 .extension()
                 .is_some_and(|e| e.eq_ignore_ascii_case("html"))
+                && !is_partial(&other.path)
         })
         .filter_map(|other| {
             let (bytes, _) = vault
@@ -176,5 +206,44 @@ mod tests {
             Some("plain")
         );
         assert!(find(&all, "/invoices/tpl/missing.html").is_none());
+    }
+
+    /// PLAN Q1: a base (`_…`) is never a template, even though it mentions
+    /// `invoice_num`; a child that only restyles is one, though it doesn't.
+    #[test]
+    fn discovery_skips_bases_and_finds_their_children() {
+        let vault = MemVault::new()
+            .with_file(
+                "invoices/tpl/_invoice_base.v1.html",
+                "<h1>{{ frontmatter.invoice_num }}</h1>{% block theme %}{% endblock theme %}",
+            )
+            .with_file("invoices/tpl/_lines.html", "{{ frontmatter.invoice_num }}")
+            .with_file(
+                "invoices/tpl/mine.html",
+                "{# invoicer: name=\"Mine\" #}\n{%- extends \"_invoice_base.v1.html\" -%}\n\
+                 {% block theme %}.sheet { color: red; }{% endblock theme %}",
+            )
+            .with_file(
+                "invoices/tpl/other.html",
+                "{% extends \"somewhere_else.html\" %}{% block x %}{% endblock x %}",
+            )
+            .with_file(
+                "invoices/tpl/whole.html",
+                "<p>{{ frontmatter.invoice_num }}</p>",
+            );
+        let site = Site::open(&vault, SiteConfig::default());
+        let paths: Vec<String> = discover(&vault, &site)
+            .iter()
+            .map(Template::template_path)
+            .collect();
+        assert_eq!(
+            paths,
+            ["/invoices/tpl/mine.html", "/invoices/tpl/whole.html"]
+        );
+        let base = VaultPath::new("invoices/tpl/_invoice_base.v1.html").unwrap();
+        assert!(is_partial(&base));
+        assert!(Template::from_source(base, "{{ frontmatter.invoice_num }}").is_none());
+        assert!(is_template("{% extends '_invoice_base.v2.html' %}"));
+        assert!(!is_template("extends \"_invoice_base.v1.html\""));
     }
 }

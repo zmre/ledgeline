@@ -414,8 +414,21 @@ impl DocumentIndex {
             if let Some(template) = &doc.header.template
                 && templates::find(&templates, template).is_none()
             {
+                let is_base = VaultPath::new(template.trim().trim_start_matches('/'))
+                    .is_ok_and(|p| templates::is_partial(&p));
+                let message = if is_base {
+                    format!(
+                        "`template: {template}` is a base for templates to extend (its name \
+                         starts with `_`), not a template: name one that extends it"
+                    )
+                } else {
+                    format!(
+                        "`template: {template}` isn't a template (an .html file mentioning \
+                         invoice_num, or extending an invoice base)"
+                    )
+                };
                 out.push(at(
-                    Problem::warning(ProblemCode::UnknownTemplate, format!("`template: {template}` isn't a template (an .html file mentioning invoice_num)")),
+                    Problem::warning(ProblemCode::UnknownTemplate, message),
                     "template",
                 ));
             }

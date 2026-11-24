@@ -34,7 +34,9 @@ use invoicer_core::doc::{Invoice, Status};
 use invoicer_core::sent::{self, Recorded};
 use invoicer_core::session::Session;
 use invoicer_core::settings::Settings;
-use ledgeline_core::vault::VaultPath;
+
+use crate::tera_scan;
+use ledgeline_core::vault::{Vault, VaultPath};
 use serde::{Deserialize, Serialize};
 
 /// The folder under the system's temporary folder that draft PDFs (and
@@ -44,6 +46,9 @@ const TEMP_FOLDER: &str = "ledgeline-invoicer";
 /// What a template includes when it signals its own readiness for paper
 /// (MBR-CHANGES M5). A template without it is printed on `load` plus fonts.
 const EXPORT_READY_PARTIAL: &str = "_export_ready";
+
+/// The shipped base's block holding the export-ready partial.
+const READY_BLOCK: &str = "ready";
 
 /// The message for a build that can't print (no `gui` feature).
 pub(crate) const NEEDS_GUI: &str = "PDF export needs the desktop build: it prints through the \
@@ -174,13 +179,40 @@ fn local_dir(session: &Session, dir: &str) -> Result<PathBuf, PdfError> {
 }
 
 /// Whether the template at `template` (`/invoices/tpl/x.html`) includes
-/// MBR's export-ready partial. Unreadable counts as no: printing on load
-/// beats waiting out the timeout.
+/// MBR's export-ready partial, through what it extends: a child of the
+/// shipped base (PLAN Q1) signals when the base's `ready` block does and
+/// the child doesn't replace it with one that doesn't (the fixture's
+/// template empties it). Unreadable counts as no: printing on load beats
+/// waiting out the timeout.
 fn signals_ready(session: &Session, template: &str) -> bool {
-    VaultPath::new(template.trim_start_matches('/'))
-        .ok()
-        .and_then(|path| session.vault().read(&path).ok())
-        .is_some_and(|bytes| String::from_utf8_lossy(&bytes).contains(EXPORT_READY_PARTIAL))
+    let Ok(path) = VaultPath::new(template.trim_start_matches('/')) else {
+        return false;
+    };
+    signals_ready_at(session.vault(), &path, 0)
+}
+
+/// [`signals_ready`] for the template file `path`, `depth` parents up.
+fn signals_ready_at(vault: &dyn Vault, path: &VaultPath, depth: usize) -> bool {
+    // Tera's chains are short; a loop of `extends` is Tera's error to report.
+    const MAX_DEPTH: usize = 8;
+    let Ok(bytes) = vault.read(path) else {
+        return false;
+    };
+    let source = String::from_utf8_lossy(&bytes);
+    if let Some(ready) = tera_scan::block_body(&source, READY_BLOCK) {
+        return ready.contains(EXPORT_READY_PARTIAL);
+    }
+    match tera_scan::extends(&source) {
+        // MBR registers a template's siblings by file name: the parent is
+        // beside it.
+        Some(parent) if depth < MAX_DEPTH => path
+            .parent()
+            .unwrap_or_default()
+            .child(parent)
+            .is_ok_and(|parent| signals_ready_at(vault, &parent, depth + 1)),
+        Some(_) => false,
+        None => source.contains(EXPORT_READY_PARTIAL),
+    }
 }
 
 /// The PDF's file name: the markdown's, with `.pdf` (ARCHITECTURE §5.3:
@@ -454,6 +486,49 @@ mod tests {
 
     fn vp(path: &str) -> VaultPath {
         VaultPath::new(path).expect("vault path")
+    }
+
+    /// P7 with the base (PLAN Q1): a child signals readiness through the
+    /// base it extends, unless it empties the `ready` block, as the
+    /// fixture's template does.
+    #[test]
+    fn the_export_ready_signal_is_read_through_the_base() {
+        use crate::starters::{BASE, STARTERS};
+        let vault = ledgeline_core::vault::MemVault::new()
+            .with_file("tpl/_invoice_base.v1.html", BASE.source)
+            .with_file("tpl/classic.html", STARTERS[0].source)
+            .with_file("tpl/modern.html", STARTERS[1].source)
+            .with_file(
+                "tpl/myco.html",
+                "{% extends \"_invoice_base.v1.html\" %}{% block ready %}{% endblock ready %}",
+            )
+            .with_file("tpl/orphan.html", "{% extends \"_gone.html\" %}")
+            .with_file("tpl/loop.html", "{% extends \"loop.html\" %}")
+            .with_file(
+                "tpl/whole.html",
+                "<head>{% include \"/.mbr/_export_ready.html\" %}</head>",
+            )
+            .with_file("tpl/plain.html", "<p>{{ frontmatter.invoice_num }}</p>")
+            .with_file("root.html", "{% extends \"tpl/x.html\" %}");
+        let signals = |p: &str| signals_ready_at(&vault, &vp(p), 0);
+        for yes in [
+            "tpl/classic.html",
+            "tpl/modern.html",
+            "tpl/whole.html",
+            "tpl/_invoice_base.v1.html",
+        ] {
+            assert!(signals(yes), "{yes}");
+        }
+        for no in [
+            "tpl/myco.html",
+            "tpl/orphan.html",
+            "tpl/loop.html",
+            "tpl/plain.html",
+            "root.html",
+            "tpl/none.html",
+        ] {
+            assert!(!signals(no), "{no}");
+        }
     }
 
     #[test]

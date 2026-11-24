@@ -10,7 +10,8 @@
 //! saved file is rendered. `template` renders through another template (a
 //! `/`-rooted `.html` path) instead of the one the note names: a file in
 //! the books, or a starter that isn't copied in yet, whose shipped text is
-//! used.
+//! used (folded into the shipped base when the books don't have the base
+//! either: [`starters::preview_source`]).
 //!
 //! **The preview page** (`GET /.ledgeline-invoicer/preview?number=&template=`,
 //! [`page`]) is the same render as a page of its own, for the SPA's frame.
@@ -152,7 +153,7 @@ pub(crate) fn render(books: &OpenBooks, request: PreviewRequest) -> Result<Previ
                         note_rel,
                         &source,
                         Path::new(path.as_str()),
-                        starter.source,
+                        &starters::preview_source(&**vault, &templates_dir, starter),
                     ),
                     None => Err(MbrError::PageTemplate(PageTemplateError::NotFound {
                         template,
@@ -416,7 +417,7 @@ fn template_text(
             .map(|text| (path, text))
             .map_err(|_| bad("not UTF-8")),
         Err(e) if e.is_not_found() => starters::named(templates_dir, template)
-            .map(|s| (path, s.source.to_string()))
+            .map(|s| (path, starters::preview_source(vault, templates_dir, s)))
             .ok_or_else(|| PreviewError::NotFound(format!("template {template}: no such file"))),
         Err(e) => Err(PreviewError::Internal(e.to_string())),
     }

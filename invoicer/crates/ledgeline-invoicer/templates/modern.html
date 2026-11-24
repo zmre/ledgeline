@@ -1,4 +1,5 @@
 {# invoicer: name="Modern" kinds="invoice,estimate,credit-note" #}
+{% extends "_invoice_base.v1.html" %}
 {#-
   Ledgeline Invoicer's "Modern" starter template: a sans-serif layout with
   one accent colour and the amount due in a band at the foot of the bill.
@@ -11,42 +12,17 @@
     `frontmatter.invoicee_address`, your own custom fields, …);
   - `markdown`: the rendered body, the bill table included.
 
-  Opened in MBR itself (`server_mode`), the sheet sits inside MBR's usual
-  page: sidebar, search, breadcrumbs, previous and next. Where scripts are
-  off (the invoicer's own frame, a mail client's viewer) that chrome can't
-  work, so the <noscript> rule shows the sheet alone; on paper (Print, PDF
-  export) MBR's print rules keep only <main>. Rendered on its own (the
-  invoicer's preview, QuickLook) there is no chrome. For the sheet alone
-  everywhere, set `chrome` below to `false`.
+  It extends `_invoice_base.v1.html` beside it, which holds the page around
+  the sheet (MBR's chrome where it works, the print reset, the hidden books
+  column) and says what each block is for. This file changes the look
+  (`theme`), the top of the sheet (`header`), and puts the dates in a band
+  with the bill-to (`parties`; `details` is empty). For the sheet alone even
+  in MBR, add `{% block settings %}{% set chrome = false %}{% endblock settings %}`.
 
   Change `--accent` below to your brand colour. To print on A4, change
   `size: letter` to `size: A4`.
 -#}
-{%- set fm = frontmatter -%}
-{%- set kind = "Invoice" -%}
-{%- if fm.type == "estimate" %}{% set kind = "Estimate" %}{% elif fm.type == "credit-note" %}{% set kind = "Credit note" %}{% endif -%}
-{%- set paid = fm.paid | default(value="") | as_str -%}
-{%- set chrome = server_mode | default(value=false) -%}
-<!doctype html>
-<html lang="en">
-<head>
-{%- if chrome %}
-{#- MBR's own head: its stylesheets, scripts and the page title. #}
-{% include "/.mbr/_head_markdown.html" %}
-{% include "/.mbr/_head_custom.html" %}
-<noscript><style>
-  body.invoice-page > :not(main) { display: none !important; }
-  :root { --pico-font-size: 100%; background: #eef0f3; }
-  body.invoice-page { background: #eef0f3; }
-</style></noscript>
-{%- else %}
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{ fm.title | default(value=kind ~ " " ~ fm.invoice_num) }}</title>
-{%- endif %}
-{#- Tells MBR's PDF export when the page is ready (fonts, images). -#}
-{% include "/.mbr/_export_ready.html" %}
-<style>
+{% block theme %}
   @page { size: letter; margin: 0.6in 0.65in; }
 
   :root {
@@ -55,28 +31,18 @@
     --ink: #16191d;
     --muted: #68707a;
     --rule: #e3e6ea;
+    --paper: #fff;
+    --desk: #eef0f3;
   }
 
-  * { box-sizing: border-box; }
-  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  body.invoice-page:not(.with-chrome) { margin: 0; }
   .sheet {
-    /* MBR's stylesheet (Pico) is on the page when MBR serves it: pin its
-       variables on the sheet so the invoice looks the same everywhere. */
-    --pico-color: var(--ink);
-    --pico-background-color: transparent;
-    --pico-font-family: inherit;
-    --pico-table-border-color: var(--rule);
-    color: var(--ink);
     font-family: "Inter", "SF Pro Text", system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
     font-size: 10pt;
     line-height: 1.5;
     font-variant-numeric: tabular-nums;
-    text-align: left;
+    position: relative;
+    background: var(--paper);
   }
-  .sheet :is(h1, h2, h3, h4, p, th, td) { color: inherit; font-family: inherit; }
-
-  .sheet { position: relative; background: #fff; }
   .sheet::before {
     content: "";
     position: absolute;
@@ -153,14 +119,9 @@
   .body tbody tr:last-child:has(td strong) td { border-bottom: none; background: var(--accent-soft); font-size: 12pt; }
   .body tbody tr:last-child:has(td strong) strong { color: var(--accent); }
 
-  /* The books column: last column, italic header. Works in any engine with :has(). */
-  table:has(thead th:last-child > em:only-child) :is(th, td):last-child { display: none; }
-
   .footer { margin-top: 2.5rem; color: var(--muted); font-size: 8.5pt; }
 
   @media screen {
-    body.invoice-page:not(.with-chrome) { background: #eef0f3; }
-    .invoice-main { padding: 24px 12px; }
     .sheet {
       max-width: 8.5in;
       min-height: 11in;
@@ -177,22 +138,9 @@
     .doc-title { margin-top: 1rem; text-align: left; }
     .meta { grid-template-columns: 1fr; }
   }
-  @media print {
-    /* MBR's print rules shrink its root font size; the sheet keeps its own. */
-    :root { --pico-font-size: 100%; background: none; }
-    body.invoice-page { background: none; }
-    .invoice-main { padding: 0; }
-  }
-</style>
-</head>
-<body class="invoice-page{% if chrome %} with-chrome{% endif %}">
-{%- if chrome %}
-{% if sidebar_style == "single" %}<mbr-browse-single{% if sidebar_max_items %} max-items="{{ sidebar_max_items }}"{% endif %}>{% include "/.mbr/_browse_footer.html" %}</mbr-browse-single>{% endif %}
-{% include "/.mbr/_nav.html" %}
-{% include "/.mbr/_breadcrumbs.html" %}
-{%- endif %}
-<main class="invoice-main">
-<div class="sheet">
+{% endblock theme %}
+
+{% block header %}
   <div class="top">
     <div>
       <p class="company-name">{{ fm.invoicer_name | default(value="") }}</p>
@@ -214,7 +162,9 @@
       {%- endif %}
     </div>
   </div>
+{% endblock header %}
 
+{% block parties %}
   <section class="meta">
     <div>
       <span class="label">Billed to</span>
@@ -246,26 +196,12 @@
       {%- endif %}
     </div>
   </section>
+{% endblock parties %}
 
-  <div class="body">
-    {{ markdown | safe }}
-  </div>
+{% block details %}{% endblock details %}
 
+{% block footer %}
   {%- if fm.invoicer_email %}
   <div class="footer">{{ fm.invoicer_name | default(value="") }} · {{ fm.invoicer_email }}</div>
   {%- endif %}
-</div>
-</main>
-{%- if chrome %}
-<footer class="container" data-pagefind-ignore>
-  <mbr-nav></mbr-nav>
-  <nav class="mbr-footer-links" aria-label="Footer links"><ul>{% include "/.mbr/_page_footer_links.html" %}</ul></nav>
-</footer>
-{% include "/.mbr/_footer.html" %}
-{% include "/.mbr/_footer_custom.html" %}
-{%- endif %}
-</body>
-{%- if chrome %}
-{% include "/.mbr/_scripts.html" %}
-{%- endif %}
-</html>
+{% endblock footer %}

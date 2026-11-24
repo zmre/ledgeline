@@ -204,3 +204,26 @@ fn ignored_paths_are_never_indexed() {
     let done = index.refresh(&vault, &[vp("invoices/pdf/x.md")]);
     assert_eq!(done, Refreshed::default());
 }
+
+/// PLAN Q1: the base beside the templates is never a template, so it is
+/// never reported as an unknown or broken one; an invoice naming it is told
+/// to name a template that extends it.
+#[test]
+fn a_base_is_not_a_template_and_naming_one_says_so() {
+    let vault = vault().with_file(
+        "invoices/tpl/_invoice_base.v1.html",
+        "{{ frontmatter.invoice_num }}{% block theme %}{% endblock theme %}",
+    );
+    assert!(index(&vault).check(&vault).is_empty());
+    vault.insert_file(
+        "invoices/2026-11-17 Customer X Invoice 105.md",
+        INVOICE_105.replace("myco-default.html", "_invoice_base.v1.html"),
+    );
+    let problems = index(&vault).check(&vault);
+    let unknown: Vec<&Problem> = problems
+        .iter()
+        .filter(|p| p.code == ProblemCode::UnknownTemplate)
+        .collect();
+    assert_eq!(unknown.len(), 1, "{problems:#?}");
+    assert!(unknown[0].message.contains("is a base"), "{unknown:#?}");
+}

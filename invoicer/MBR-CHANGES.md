@@ -246,15 +246,92 @@ template editor (live preview while editing the `.html`). For example
 or an overlay map of `path → unsaved contents` consulted before disk.
 Partials included by the template keep coming from disk.
 
+**Status.** 0.7.4 has `render_source_with_template`; the template's
+siblings come only from disk. So a preview through a starter that isn't
+copied in, in books without the base it extends, can't find the base: the
+invoicer folds the starter into the shipped base's text (PLAN Q1, Q1f). An
+overlay of unsaved siblings (`path → contents`) would let it drop the fold.
+
+## M11 (P2). A page layout with blocks, and a bare one
+
+**Today.** MBR's `index.html` has no `{% block %}`s, so a note's own
+template can't extend it and change only the content: it is a whole page,
+and it copies the chrome switch (`server_mode`, MBR's partials, a
+`<noscript>` rule) to keep MBR's chrome. The invoicer ships that switch in
+its base, `_invoice_base.v1.html` (PLAN Q1, option B).
+
+**Want.**
+
+- **Blocks.** `index.html` split into `head_extra`, `chrome_top`, `content`
+  and `chrome_bottom`, rendering exactly what it renders today.
+- **A bare layout.** `/.mbr/_layout_bare.html`: the same blocks, no chrome.
+- **`page_layout`.** A template variable naming the layout to extend:
+  `index.html` by default; the bare one for a standalone render
+  (`server_mode` false), for a request with `?mbr-bare`, and for PDF
+  export, which would send that flag.
+- **Templates.** A note's template becomes `{% extends page_layout %}` plus
+  `{% block content %}`.
+
+**Defaults.** Today's behaviour: a page without `?mbr-bare` has the chrome
+it has now, and a template that doesn't extend `page_layout` (every
+template today) renders as before.
+
+**For the invoicer.** `_invoice_base.v1.html` shrinks to
+`{% extends page_layout %}` and its blocks; a later base (`v2`) can rely on
+it, and `v1` keeps working.
+
+## M12 (P2). A default page template by note `type`
+
+**Today.** A note gets a page template only from its own `template:`, so
+an invoice without one shows only its markdown body in MBR, and the
+addresses in its frontmatter never appear.
+
+**Want.** `.mbr/config.toml`:
+
+```toml
+[page_templates]
+invoice = "/invoices/tpl/classic.html"
+```
+
+keyed by the note's `type`, with the path resolved as a `template:` value
+is. It applies only to a note with no `template:` of its own.
+
+**Defaults.** No `[page_templates]`: nothing changes. A note's own
+`template:` always wins.
+
+## M13 (P2). Page template siblings: one broken sibling, and serving them
+
+**Today** (0.7.4, `page_template.rs` siblings,
+`Templates::render_page_template_with_tera`):
+
+- every `.html` file beside a template is registered with it in one
+  `add_raw_templates`. A sibling that `{% extends %}` a file not there
+  fails Tera's inheritance check for the whole set, so every page template
+  in that folder fails to render, the whole-page ones too (found building
+  PLAN Q1: a child of `_invoice_base.v1.html` with the base deleted);
+- MBR doesn't serve a file some note names as its template, but it does
+  serve its siblings: `/invoices/tpl/_invoice_base.v1.html` is sent as a
+  file.
+
+**Want.**
+
+- Register siblings so that one whose parent is missing is skipped (as a
+  sibling that doesn't parse already is), and named only if the render
+  then needs it.
+- Optionally, don't serve the `.html` siblings of a page template (or
+  `_`-prefixed ones), as the template itself isn't served.
+
+**Defaults.** Pages that render today render the same.
+
 ## Not needed (decided against)
 
 - **A base-path mount for `Server.router`.** The invoicer mounts MBR at the
   root and moves its own SPA to `/app`.
 - **Bare-name template lookup** (`template: myco-default`). The invoicer
   writes full `/`-rooted paths.
-- **A separate `?embed=1` mode.** MBR 0.7.4 already lets a template choose:
-  it includes MBR's chrome partials when `server_mode` is set, and hides
-  them itself where scripts are off (the app's frame, a `<noscript>` rule)
-  and on paper (MBR's print rule keeps only `<main>`). Revisit only if a
-  frame ever needs scripts: then a request flag MBR turns into a template
-  variable (`?mbr-bare` → `bare = true`) would be the clean switch.
+- **A separate `?embed=1` mode.** Replaced by M11's bare layout
+  (`?mbr-bare`), proposed with M12 after PLAN Q1. Until then the
+  invoicer's base, `_invoice_base.v1.html`, chooses with what 0.7.4 has:
+  MBR's chrome partials when `server_mode` is set, hidden where scripts are
+  off (the app's frame, a `<noscript>` rule) and on paper (MBR's print rule
+  keeps only `<main>`).
