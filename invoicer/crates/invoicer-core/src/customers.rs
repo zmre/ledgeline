@@ -15,11 +15,11 @@ use crate::problem::{Problem, ProblemCode};
 use crate::settings::Settings;
 use crate::table::words::{WordList, Words};
 use ledgeline_core::vault::{Vault, VaultPath};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// A contact note's kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ContactKind {
     /// `type: person`.
@@ -28,11 +28,23 @@ pub enum ContactKind {
     Organization,
 }
 
+impl ContactKind {
+    /// The `type:` value it is written as.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Person => "person",
+            Self::Organization => "organization",
+        }
+    }
+}
+
 /// One labelled value (`- billing: ar@x.com`); unlabelled when written as a
 /// plain string.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Labelled {
     /// The label, when there is one.
+    #[serde(default)]
     pub label: Option<String>,
     /// The value.
     pub value: String,
@@ -214,7 +226,8 @@ pub enum ContractTarget {
 
 /// `billing_portal:`: how invoices reach a customer that only takes them
 /// through a vendor portal.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
 pub struct BillingPortal {
     /// Coupa, Ariba, …
     pub name: Option<String>,

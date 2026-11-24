@@ -27,6 +27,8 @@ use ledgeline_core::vault::{VaultError, VaultPath};
 use serde::Serialize;
 use std::collections::HashMap;
 
+pub mod account;
+
 /// Whether a document is open by its `paid:` mirror alone: sent, and
 /// `paid:` isn't a date.
 #[must_use]

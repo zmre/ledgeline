@@ -12,6 +12,7 @@
 //! - [`settings`]: `ledgeline.toml [invoicer]` (§3.8);
 //! - [`notes`]: discovery, behind an API shaped like MBR's `Site` (§3.1);
 //! - [`customers`] (§3.4) and [`snippets`] (§3.7);
+//! - [`customer_edit`]: creating and editing customer notes (PLAN 4b);
 //! - [`doc`]: the invoice document and its validation (§3.2);
 //! - [`catalog`] (§3.6) and [`templates`] (§3.5);
 //! - [`numbering`] (§5.1);
@@ -32,6 +33,7 @@
 pub mod booking;
 pub mod books;
 pub mod catalog;
+pub mod customer_edit;
 pub mod customers;
 pub mod doc;
 pub mod draft;
