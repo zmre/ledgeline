@@ -1,5 +1,6 @@
 <script lang="ts">
     import "../app.css";
+    import {asset} from "$app/paths";
     import {onMount} from "svelte";
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
@@ -53,6 +54,7 @@
 
 <svelte:head>
     <title>{APP_NAME}</title>
+    <link rel="icon" type="image/svg+xml" href={asset("ledgeline-invoicer-icon-small.svg")} />
 </svelte:head>
 
 <div class="flex h-screen bg-base-100 text-base-content">

@@ -1,0 +1,76 @@
+{
+  "fill" : {
+    "solid" : "srgb:0.00000,0.48235,0.21176,1.00000"
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "fill-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "srgb:0.91765,0.91765,0.91765,1.00000"
+              }
+            }
+          ],
+          "image-name" : "i.svg",
+          "name" : "i"
+        },
+        {
+          "fill-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "srgb:0.91765,0.91765,0.91765,1.00000"
+              }
+            }
+          ],
+          "image-name" : "arrow.svg",
+          "name" : "arrow"
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.3
+      }
+    },
+    {
+      "layers" : [
+        {
+          "image-name" : "grid.svg",
+          "name" : "grid"
+        },
+        {
+          "fill-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "srgb:0.00000,0.48235,0.21176,0.70000"
+              }
+            }
+          ],
+          "image-name" : "mountain.svg",
+          "name" : "mountain"
+        }
+      ],
+      "shadow" : {
+        "kind" : "none",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : false,
+        "value" : 0.5
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : [
+      "macOS"
+    ]
+  }
+}
