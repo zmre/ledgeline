@@ -61,6 +61,13 @@ test.describe("the invoice editor over the accrual fixture (:5199)", () => {
         await expect(page.getByTestId("editor-heading")).toHaveText("Invoice 2005");
         await expect(page.getByTestId("editor-status")).toHaveText("draft");
 
+        // Customer X's portal requires a reference (Send refuses without
+        // one): pick the customer's open PO from the suggestions.
+        const reference = page.getByTestId("header-reference");
+        await reference.fill("PO");
+        await page.getByRole("option", {name: /^PO #PY75334/}).click();
+        await expect(reference).toHaveValue("PO #PY75334");
+
         // An item from the catalog: ARCH, 10 hours.
         await page.getByTestId("add-item").click();
         const description = page.getByLabel("Row 1 description");
@@ -91,9 +98,9 @@ test.describe("the invoice editor over the accrual fixture (:5199)", () => {
         expect(saved).toMatch(/^status: draft$/m);
         expect(saved).toMatch(/^customer: "\[\[Customer X\]\]"$/m);
         expect(saved).toMatch(/\| ARCH\s+\| Senior architect hours\s+\| 10\s+\| h\s+\| \$800\s+\| \$8,000\.00\s+\| revenue:consulting\s+\|/);
-        expect(saved).toMatch(/\| Discount\s+\|\s+\|\s+\|\s+\| -10%\s+\| -\$800\.00\s+\|/);
+        expect(saved).toMatch(/\| Discount\s+\|\s+\|\s+\| -10%\s+\| -\$800\.00\s+\|/);
         expect(saved).toMatch(/\*\*Subtotal\*\*\s+\| \*\*\$7,200\.00\*\*/);
-        expect(saved).toMatch(/\| Sales tax\s+\|\s+\|\s+\|\s+\| 8\.25%\s+\| \$594\.00\s+\| liabilities:sales-tax\s+\|/);
+        expect(saved).toMatch(/\| Sales tax\s+\|\s+\|\s+\| 8\.25%\s+\| \$594\.00\s+\| liabilities:sales-tax\s+\|/);
         expect(saved).toMatch(/\*\*Total due\*\*\s+\| \*\*\$7,794\.00\*\*/);
         expect(read("books.journal")).not.toMatch(/invoice: 2005\b/); // drafts never touch the books
 
