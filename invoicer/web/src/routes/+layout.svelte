@@ -23,7 +23,10 @@
 
     const links = $derived.by((): SidebarLink[] => {
         const path = page.url.pathname;
-        return [{id: "invoices", href: resolve("/invoices"), label: "Invoices", active: path.startsWith(resolve("/invoices"))}];
+        return [
+            {id: "invoices", href: resolve("/invoices"), label: "Invoices", active: path.startsWith(resolve("/invoices"))},
+            {id: "customers", href: resolve("/customers"), label: "Customers", active: path.startsWith(resolve("/customers"))},
+        ];
     });
 
     onMount(() => {
