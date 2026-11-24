@@ -4,7 +4,7 @@
 
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {connectFakeEngine} from "#lib/testing/fakeEngine.js";
-import {deferred, queueItemWire, queuePageWire, reviewTxnWire, serveReview, txnFixture} from "#lib/testing/reviewFixture.js";
+import {deferred, queueItemWire, queuePageWire, reviewTxnWire, serveReview, similarWire, txnFixture} from "#lib/testing/reviewFixture.js";
 import type {ReviewForm} from "#lib/review/types.js";
 import {resetReview, review} from "./review.svelte";
 
@@ -208,5 +208,38 @@ describe("UNIT review saves", () => {
         await vi.waitFor(() => expect(seen.filter((r) => r.url.pathname.endsWith("/api/review/queue"))).toHaveLength(2));
         expect(review.cards.map((card) => card.item.txn.index)).toEqual([1, 2, 3]);
         expect(review.cards[0]?.status).toBe("saved");
+    });
+
+    it("keeps each similar set through a save's new generation until its refetch lands, less what the save edited", async () => {
+        let generation = "g1";
+        const late = deferred<void>();
+        const sibling = (index: number) => reviewTxnWire(txn(index), {fingerprint: `fp-${index}-0`});
+        serveReview({
+            queue: () => page("unknowns", [1, 2, 3], generation),
+            // Card 2's first request (at g1) answers only after the save's refetch has.
+            similar: async (index) => {
+                const at = generation;
+                if (index === 2 && at === "g1") await late.promise;
+                return similarWire(index, [sibling(11), sibling(12)], {generation: at});
+            },
+            batch: () => {
+                generation = "g2";
+                return landed([{index: 1}, {index: 11}], "g2", {reviewed: true});
+            },
+        });
+        await review.open("unknowns");
+        await vi.waitFor(() => expect(review.similar(1)).not.toBeNull());
+        await vi.waitFor(() => expect(review.similar(3)).toBeNull());
+        const result = review.save([COFFEE, TAG], [{txn: review.similar(1)!.candidates[0]!, ops: [COFFEE]}]);
+        expect(await result).toEqual({ok: true});
+        // Card 1's set is held at g1 still, less #11 (the save moved it): never null in between.
+        expect(review.similar(1)?.generation).toBe("g1");
+        expect(review.similar(1)?.candidates.map((candidate) => candidate.txn.index)).toEqual([12]);
+        expect(review.similar(1)?.total).toBe(1);
+        // Card 2's refetch at g2 lands; then its g1 request, late, must not replace it.
+        await vi.waitFor(() => expect(review.similar(2)?.generation).toBe("g2"));
+        late.resolve();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(review.similar(2)?.generation).toBe("g2");
     });
 });
