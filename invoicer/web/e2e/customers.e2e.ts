@@ -230,7 +230,8 @@ test.describe("customers over the accrual fixture (:5199)", () => {
         await picker.getByTestId("contract-search").fill("msa 2026");
         await picker.getByTestId("contract-candidate").filter({hasText: "Customer X MSA 2026"}).click();
         await expect(picker).toHaveCount(0);
-        await expect(page.getByTestId("contract-row")).toHaveText(["Customer X MSA 2026"]);
+        // The row also holds its ✕ remove button.
+        await expect(page.getByTestId("contract-row")).toHaveText([/^\s*Customer X MSA 2026\s*✕?\s*$/]);
         await page.getByTestId("save-customer").click();
         await expect(page.getByTestId("customer-saved")).toHaveText("Saved: Contracts.");
         expect(read(NEW_NOTE)).toMatch(/contracts:\n {2}- "?\[\[Customer X MSA 2026\]\]"?\n/);
