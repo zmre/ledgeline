@@ -96,4 +96,37 @@ describe("COMPONENT Combobox", () => {
         await tick();
         expect(screen.queryByRole("listbox")).toBeNull();
     });
+
+    it("opens with every option, the current one highlighted, on a click, ArrowDown or the chevron", async () => {
+        const {field} = mount({value: "[[Contoso]]"});
+        await fireEvent.click(field);
+        await tick();
+        await tick();
+        expect(shown()).toHaveLength(3);
+        expect(field.getAttribute("aria-activedescendant")).toMatch(/-1$/);
+        key(field, "Escape");
+        await tick();
+        expect(screen.queryByRole("listbox")).toBeNull();
+
+        key(field, "ArrowDown");
+        await tick();
+        expect(shown()).toHaveLength(3);
+        // Typing filters again.
+        await type(field, "fred");
+        expect(shown()).toEqual(["Fred Smith person"]);
+        key(field, "Escape");
+        await tick();
+
+        await fireEvent.click(screen.getByRole("button", {name: "Show all"}));
+        await tick();
+        expect(shown()).toHaveLength(3);
+        await fireEvent.click(screen.getByRole("button", {name: "Show all"}));
+        await tick();
+        expect(screen.queryByRole("listbox")).toBeNull();
+    });
+
+    it("offers no chevron when asked not to, or with nothing to show", () => {
+        mount({chevron: false});
+        expect(screen.queryByRole("button", {name: "Show all"})).toBeNull();
+    });
 });

@@ -4,10 +4,13 @@
     // customers, templates, catalog items and field values. Matching is a
     // plain substring, since these lists are names, not colon paths.
     //
-    // Keyboard: typing or ArrowDown opens the list; ArrowUp/Down (Ctrl+P/N)
-    // move; Enter chooses; Escape closes the list first and only then reaches
-    // the page; Tab always leaves. The optional "Add new" entry is the last
-    // option whenever the text is non-empty and names no option exactly.
+    // Keyboard: typing filters the list; ArrowDown (or Alt+ArrowDown), a
+    // click in the field, or the chevron button opens it with every option
+    // (the current one highlighted) until something is typed; ArrowUp/Down
+    // (Ctrl+P/N) move; Enter chooses; Escape closes the list first and only
+    // then reaches the page; Tab always leaves (the chevron isn't a tab stop).
+    // The optional "Add new" entry is the last option whenever the text is
+    // non-empty and names no option exactly.
     import {tick} from "svelte";
     import {matchOptions, type ComboOption} from "#ui/ui/comboMatch.js";
     import {TYPING_ATTRIBUTE} from "#ui/ui/typing.js";
@@ -25,6 +28,7 @@
         onCommit,
         disabled = false,
         size = "sm",
+        chevron = true,
         testid,
         id,
     }: {
@@ -41,6 +45,8 @@
         onCommit?: () => void;
         disabled?: boolean;
         size?: "sm" | "xs";
+        /** A button that opens the full list (off for dense grids, where a click in the field does it). */
+        chevron?: boolean;
         testid?: string;
         id?: string;
     } = $props();
@@ -49,6 +55,8 @@
     const ROW_HEIGHT_REM = 1.75;
 
     let open = $state(false);
+    /** Every option, not just those matching the text: opened by a gesture, nothing typed since. */
+    let browsing = $state(false);
     let highlighted = $state(0);
     let field = $state<HTMLInputElement | null>(null);
     let popup = $state<HTMLUListElement | null>(null);
@@ -59,10 +67,10 @@
 
     const entries = $derived.by((): Entry[] => {
         if (!open) return [];
-        const found: Entry[] = matchOptions(value, options).map((option) => ({kind: "option", option}));
+        const found: Entry[] = matchOptions(browsing ? "" : value, options).map((option) => ({kind: "option", option}));
         const text = value.trim();
         const exact = options.some((o) => o.value.toLowerCase() === text.toLowerCase() || o.label.toLowerCase() === text.toLowerCase());
-        if (onAddNew !== undefined && addNewLabel !== undefined && text !== "" && !exact) found.push({kind: "add", text});
+        if (!browsing && onAddNew !== undefined && addNewLabel !== undefined && text !== "" && !exact) found.push({kind: "add", text});
         return found;
     });
 
@@ -74,17 +82,34 @@
         placement = popupPosition(field.getBoundingClientRect(), liveViewport(), VISIBLE_ROWS * remToPx(ROW_HEIGHT_REM));
     }
 
-    async function show(): Promise<void> {
+    /** Open the list: filtered by the text (typing), or every option with the current one highlighted (`all`). */
+    async function show(all = false): Promise<void> {
         if (disabled) return;
+        browsing = all;
         open = true;
         highlighted = 0;
         await tick();
+        if (all) {
+            const current = entries.findIndex((e) => e.kind === "option" && e.option.value === value);
+            if (current > 0) {
+                highlighted = current;
+                await tick();
+                popup?.querySelector(`[data-at="${current}"]`)?.scrollIntoView?.({block: "nearest"});
+            }
+        }
         reposition();
     }
 
     function hide(): void {
         open = false;
+        browsing = false;
         highlighted = 0;
+    }
+
+    function toggle(): void {
+        if (open) hide();
+        else void show(true);
+        field?.focus();
     }
 
     function choose(entry: Entry): void {
@@ -116,8 +141,8 @@
         }
         if (event.key === "ArrowDown" || (event.ctrlKey && event.key === "n")) {
             event.preventDefault();
-            if (open) move(1);
-            else void show();
+            if (open && !event.altKey) move(1);
+            else if (!open) void show(true);
             return;
         }
         if (event.key === "ArrowUp" || (event.ctrlKey && event.key === "p")) {
@@ -152,7 +177,7 @@
         bind:this={field}
         {id}
         type="text"
-        class="input {size === 'xs' ? 'input-xs' : 'input-sm'} w-full"
+        class="input {size === 'xs' ? 'input-xs' : 'input-sm'} w-full {chevron ? 'pr-7' : ''}"
         bind:value
         {placeholder}
         {disabled}
@@ -166,9 +191,36 @@
         spellcheck="false"
         data-testid={testid}
         oninput={() => void show()}
+        onclick={() => {
+            if (!open) void show(true);
+        }}
         onkeydown={onKeydown}
         onblur={onBlur}
     />
+    {#if chevron && !disabled && options.length > 0}
+        <button
+            type="button"
+            class="absolute inset-y-0 right-0 flex w-7 items-center justify-center text-base-content/50 hover:text-base-content"
+            tabindex="-1"
+            aria-label="Show all"
+            aria-controls={listId}
+            aria-expanded={open}
+            onpointerdown={(event) => {
+                // Keep the field's focus: its blur would close the list this reopens.
+                event.preventDefault();
+                choosing = true;
+            }}
+            onclick={() => {
+                choosing = false;
+                toggle();
+            }}
+            data-testid={testid === undefined ? undefined : `${testid}-chevron`}
+        >
+            <svg viewBox="0 0 20 20" class="size-3.5" aria-hidden="true" fill="currentColor"
+                ><path d="M5.3 7.3a1 1 0 0 1 1.4 0L10 10.6l3.3-3.3a1 1 0 1 1 1.4 1.4l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 0 1 0-1.4Z" /></svg
+            >
+        </button>
+    {/if}
 </div>
 
 {#if open && entries.length > 0}
