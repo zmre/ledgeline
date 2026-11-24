@@ -11,7 +11,12 @@
     import {kindLabel, type InvoiceEntry} from "#lib/invoices.js";
     import StatusBadge from "./StatusBadge.svelte";
 
-    let {invoices, href, onOpen}: {invoices: InvoiceEntry[]; href: (doc: InvoiceEntry) => string; onOpen?: (doc: InvoiceEntry) => void} = $props();
+    let {
+        invoices,
+        href,
+        onOpen,
+        newHref = "new",
+    }: {invoices: InvoiceEntry[]; href: (doc: InvoiceEntry) => string; onOpen?: (doc: InvoiceEntry) => void; newHref?: string} = $props();
 
     /** Open `doc` from a click on its row, unless the click was on a control, or selected text. */
     function rowClick(event: MouseEvent, doc: InvoiceEntry): void {
@@ -30,24 +35,10 @@
 {#if invoices.length === 0}
     <div class="rounded-box border border-dashed border-base-300 p-8 text-base-content/80" data-testid="invoice-list-empty">
         <p class="text-center font-medium">No invoices yet.</p>
-        <div class="mx-auto mt-3 flex max-w-prose flex-col gap-2 text-sm">
-            <p>Until the invoice editor arrives, make one from a terminal, in the books folder:</p>
-            <pre class="overflow-x-auto rounded-box bg-base-200 p-3 text-xs"><code
-                    >ledgeline-invoicer new --customer "Customer X" --row 'Consulting|10|$150|revenue:consulting'</code
-                ></pre>
-            <p>It needs three things first:</p>
-            <ul class="list-disc pl-5">
-                <li>your company's note (an organization note with its billing email and address);</li>
-                <li>the customer's note, tagged <code>customer</code>, with a billing email and address;</li>
-                <li>
-                    an <code>[invoicer]</code> section in the <code>ledgeline.toml</code> beside the journal: <code>company = "[[Your Company]]"</code>, and the
-                    receivable and revenue accounts.
-                </li>
-            </ul>
-            <p>
-                <code>ledgeline-invoicer new --help</code> lists every option, and <code>ledgeline-invoicer check</code> says what is missing. The draft shows here
-                as soon as it is saved.
-            </p>
+        <div class="mx-auto mt-3 flex max-w-prose flex-col items-center gap-2 text-sm">
+            <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- the page passes `newHref` built with resolve() -->
+            <a class="btn btn-primary btn-sm" href={newHref} data-testid="invoice-list-new">New invoice</a>
+            <p class="text-base-content/60">or from a terminal: <code>ledgeline-invoicer new --customer "Customer X"</code></p>
         </div>
     </div>
 {:else}

@@ -59,4 +59,11 @@ export default defineConfig({
     use: {baseURL: "http://localhost:4273", timezoneId: "America/Denver", colorScheme: "dark"},
     testDir: "e2e",
     testMatch: "**/*.e2e.{ts,js}",
+    // Every spec shares one server and one scratch copy of the books. The
+    // editor's spec adds invoice 2005 (and invoices.e2e.ts counts eight), so it
+    // runs after the rest, as its own project.
+    projects: [
+        {name: "pages", testIgnore: "**/editor.e2e.ts"},
+        {name: "editor", testMatch: "**/editor.e2e.ts", dependencies: ["pages"]},
+    ],
 });
