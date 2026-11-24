@@ -171,7 +171,9 @@ test.describe("the invoice editor over the accrual fixture (:5199)", () => {
                 data.setData("text/html", "<table><tr><td>Milestone</td><td>Due</td></tr><tr><td>Design</td><td>2026-12-01</td></tr></table>");
                 node.dispatchEvent(new ClipboardEvent("paste", {clipboardData: data, bubbles: true, cancelable: true}));
             });
-            await expect(page.getByTestId("prose-before").locator("table")).toContainText("Design");
+            // Milkdown's table block wraps the content table (`table.children`,
+            // the one with the table role) in an empty control table.
+            await expect(page.getByTestId("prose-before").getByRole("table")).toContainText("Design");
             await page.getByLabel("Row 2 description", {exact: true}).click(); // MBR's field reports on leaving it
             await expect(page.getByTestId("editor-saved")).toHaveText("Unsaved changes");
 
