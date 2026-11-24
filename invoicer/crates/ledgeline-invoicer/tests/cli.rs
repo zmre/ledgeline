@@ -328,8 +328,10 @@ fn starter(file: &str) -> String {
 #[test]
 fn new_copies_a_starter_template_on_first_use_and_never_overwrites() {
     let books = Books::of("accrual");
-    // Books with no template at all, and a customer who names none.
+    // Books with no template at all (nor the base the starters extend), and
+    // a customer who names none.
     fs::remove_file(books.file("invoices/tpl/myco-default.html")).expect("removes");
+    fs::remove_file(books.file("invoices/tpl/_invoice_base.v1.html")).expect("removes");
     let wingtip = books.read("customers/Wingtip.md");
     let without: String = wingtip
         .lines()
@@ -359,6 +361,11 @@ fn new_copies_a_starter_template_on_first_use_and_never_overwrites() {
     assert_eq!(
         books.read("invoices/tpl/classic.html"),
         starter("classic.html")
+    );
+    // With the base it extends (PLAN Q1).
+    assert_eq!(
+        books.read("invoices/tpl/_invoice_base.v1.html"),
+        starter("_invoice_base.v1.html")
     );
     let path = made["path"].as_str().expect("path");
     assert!(
@@ -424,6 +431,13 @@ fn new_copies_a_starter_template_on_first_use_and_never_overwrites() {
 #[test]
 fn set_template_copies_a_starter_in() {
     let books = Books::of("accrual");
+    // The base the fixture's template extends is the user's: kept.
+    let base = "invoices/tpl/_invoice_base.v1.html";
+    fs::write(
+        books.file(base),
+        books.read(base).replace("version 1", "version 1, mine"),
+    )
+    .expect("edits");
     let set = books.json(&["set", "108", "template=/invoices/tpl/modern.html"], 0);
     assert_eq!(set["changed"], serde_json::json!(["template"]), "{set}");
     assert_eq!(set["template_copied"], "invoices/tpl/modern.html");
@@ -431,6 +445,7 @@ fn set_template_copies_a_starter_in() {
         books.read("invoices/tpl/modern.html"),
         starter("modern.html")
     );
+    assert!(books.read(base).contains("version 1, mine"));
     // Named again: the file is the user's now, never replaced.
     fs::write(
         books.file("invoices/tpl/modern.html"),
