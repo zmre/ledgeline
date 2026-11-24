@@ -34,10 +34,11 @@ async function open(page: Page): Promise<void> {
     await expect(page).toHaveURL(/\/app\/invoices$/);
 }
 
-/** The computed amounts the grid shows, once they are the server's (not the display-only estimate). */
+/** The computed row amounts the grid shows, once they are the server's (not the display-only estimate); the total is the footer's. */
 async function serverAmounts(page: Page): Promise<string[]> {
     const amounts = page.getByTestId("grid-amount");
     await expect(amounts.and(page.locator('[data-optimistic="true"]'))).toHaveCount(0);
+    await expect(page.getByTestId("grid-total")).toHaveAttribute("data-optimistic", "false");
     return (await amounts.allTextContents()).map((t) => t.trim());
 }
 
@@ -51,15 +52,22 @@ test.describe("the invoice editor over the accrual fixture (:5199)", () => {
         // New invoice, from the sidebar.
         await page.getByTestId("sidebar").getByRole("link", {name: "New invoice"}).click();
         await expect(page).toHaveURL(/\/app\/new$/);
+        // The customer list opens without typing (a click shows them all); the field shows the name, the file gets the link.
         const customer = page.getByTestId("new-customer");
+        await customer.click();
+        await expect(page.getByRole("listbox", {name: "Customer suggestions"}).getByRole("option")).not.toHaveCount(0);
         await customer.fill("Customer");
         await page.getByRole("option", {name: /^Customer X/}).click();
-        await expect(customer).toHaveValue("[[Customer X]]");
+        await expect(customer).toHaveValue("Customer X");
         await expect(page.getByTestId("new-invoice")).toContainText("number 2005");
         await page.getByTestId("new-create").click();
         await expect(page).toHaveURL(/\/app\/invoices\/2005\/edit$/);
         await expect(page.getByTestId("editor-heading")).toHaveText("Invoice 2005");
         await expect(page.getByTestId("editor-status")).toHaveText("draft");
+        await expect(page.getByTestId("header-customer")).toHaveValue("Customer X");
+        // A new draft's table is only its total: the footer, not a row.
+        await expect(page.getByTestId("grid-row")).toHaveCount(0);
+        await expect(page.getByTestId("grid-total-label")).toHaveValue("Total due");
 
         // Customer X's portal requires a reference (Send refuses without
         // one): pick the customer's open PO from the suggestions.
@@ -70,19 +78,25 @@ test.describe("the invoice editor over the accrual fixture (:5199)", () => {
 
         // An item from the catalog: ARCH, 10 hours.
         await page.getByTestId("add-item").click();
-        const description = page.getByLabel("Row 1 description");
+        const description = page.getByLabel("Row 1 description", {exact: true});
         await description.fill("Senior");
         await page.getByRole("option", {name: /^Senior architect hours/}).click();
         await page.getByLabel("Row 1 quantity").fill("10");
-        // Each new row goes after the focused one: a discount on the item, a
-        // subtotal, a tax on the subtotal.
+        // Each new row goes at the bottom, above the total: a discount on the
+        // item, a subtotal, a tax on the subtotal. Focus is in row 1 when they
+        // are added, and that doesn't matter.
+        await page.getByLabel("Row 1 quantity").focus();
         await page.getByTestId("add-discount-percent").click();
         await page.getByTestId("add-subtotal").click();
         await page.getByTestId("add-tax").click();
         await page.getByLabel("Row 4 rate").fill("8.25%");
         await page.getByLabel("Row 4 account").fill("liabilities:sales-tax");
+        // The subtotal is its label and amount, with no fields of its own.
+        await expect(page.getByLabel("Row 3 subtotal label")).toHaveValue("Subtotal");
+        await expect(page.getByLabel("Row 3 rate")).toHaveCount(0);
 
-        expect(await serverAmounts(page)).toEqual(["$8,000.00", "-$800.00", "$7,200.00", "$594.00", "$7,794.00"]);
+        expect(await serverAmounts(page)).toEqual(["$8,000.00", "-$800.00", "$7,200.00", "$594.00"]);
+        await expect(page.getByTestId("grid-total")).toHaveText("$7,794.00");
         const bases = page.getByTestId("grid-base");
         await expect(bases.nth(0)).toContainText("-10% of Senior architect hours, $8,000.00");
         await expect(bases.nth(1)).toContainText("8.25% of Subtotal, $7,200.00");
@@ -90,6 +104,9 @@ test.describe("the invoice editor over the accrual fixture (:5199)", () => {
         // The draft's Books panel shows what sending would book.
         await expect(page.getByTestId("would-book-text")).toContainText("assets:accounts receivable");
 
+        // Send and the PDF wait for a save.
+        await expect(page.getByTestId("editor-send")).toHaveCount(0);
+        await expect(page.getByTestId("send-panel")).toHaveCount(0);
         // Save (⌘S works too); the file holds the table, aligned, amounts written.
         await expect(page.getByTestId("editor-saved")).toHaveText("Unsaved changes");
         await page.getByTestId("editor-save").click();
@@ -134,13 +151,62 @@ test.describe("the invoice editor over the accrual fixture (:5199)", () => {
         expect(text).not.toContain("liabilities:sales-tax"); // the books column is hidden
     });
 
+    test("leaving with unsaved edits asks Save / Discard / Cancel; a spreadsheet paste becomes a table", async ({page}) => {
+        const original = read(INVOICE_108);
+        try {
+            await open(page);
+            await page.goto("/app/invoices/108/edit");
+            await expect(page.getByTestId("editor-heading")).toHaveText("Invoice 108");
+            // Its total is the footer: two rows, not three.
+            await expect(page.getByTestId("grid-row")).toHaveCount(2);
+            await expect(page.getByTestId("grid-total")).toHaveText("$13,600.00");
+
+            // Cells pasted from a spreadsheet land as a markdown table (MBR's field reads it as one).
+            const prose = page.getByTestId("prose-before").locator('.ProseMirror[contenteditable="true"]');
+            await prose.click();
+            await page.keyboard.press("End");
+            await prose.evaluate((node) => {
+                const data = new DataTransfer();
+                data.setData("text/plain", "Milestone\tDue\nDesign\t2026-12-01");
+                data.setData("text/html", "<table><tr><td>Milestone</td><td>Due</td></tr><tr><td>Design</td><td>2026-12-01</td></tr></table>");
+                node.dispatchEvent(new ClipboardEvent("paste", {clipboardData: data, bubbles: true, cancelable: true}));
+            });
+            await expect(page.getByTestId("prose-before").locator("table")).toContainText("Design");
+            await page.getByLabel("Row 2 description", {exact: true}).click(); // MBR's field reports on leaving it
+            await expect(page.getByTestId("editor-saved")).toHaveText("Unsaved changes");
+
+            // Away by the sidebar: the dialog; Cancel stays, with the edits.
+            await page.getByTestId("sidebar").getByRole("link", {name: "Invoices"}).click();
+            const dialog = page.getByTestId("unsaved-dialog");
+            await expect(dialog).toBeVisible();
+            await expect(page.getByTestId("unsaved-save")).toBeFocused();
+            await page.keyboard.press("Escape");
+            await expect(dialog).toHaveCount(0);
+            await expect(page).toHaveURL(/\/app\/invoices\/108\/edit$/);
+            await expect(page.getByTestId("editor-saved")).toHaveText("Unsaved changes");
+
+            // Discard changes (the button) is clean again; then an edit, and Discard in the dialog leaves without saving.
+            await page.getByTestId("editor-discard").click();
+            await expect(page.getByTestId("editor-saved")).not.toHaveText("Unsaved changes");
+            await expect(page.getByTestId("editor-send")).toHaveCount(0); // 108 is sent by now: Re-book…, not Send…
+            await expect(page.getByTestId("editor-void")).toBeVisible();
+            await page.getByLabel("Row 2 description", {exact: true}).fill("Not saved");
+            await page.getByTestId("sidebar").getByRole("link", {name: "Invoices"}).click();
+            await page.getByTestId("unsaved-discard").click();
+            await expect(page).toHaveURL(/\/app\/invoices$/);
+            expect(read(INVOICE_108)).toBe(original);
+        } finally {
+            writeFileSync(resolve(BOOKS, INVOICE_108), original);
+        }
+    });
+
     test("an outside edit while editing raises the conflict notice; Reload theirs shows it", async ({page}) => {
         const original = read(INVOICE_108);
         try {
             await open(page);
             await page.goto("/app/invoices/108/edit");
             await expect(page.getByTestId("editor-heading")).toHaveText("Invoice 108");
-            const description = page.getByLabel("Row 2 description");
+            const description = page.getByLabel("Row 2 description", {exact: true});
             await expect(description).toHaveValue("Senior architect hours");
             await description.fill("Architect hours (mine)");
             await expect(page.getByTestId("editor-saved")).toHaveText("Unsaved changes");
