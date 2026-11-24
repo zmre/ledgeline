@@ -8,6 +8,14 @@
 #                                                  graphics-sources/ledgeline-logo-no-word-no-bg.svg
 #                                                  and the indigo (#524ED2) background is
 #                                                  the document's `fill` in icon.json.
+#   graphics-sources/ledgeline-invoicer-logo-no-word.svg
+#                                                  Ledgeline Invoicer's flat logo: the same
+#                                                  artwork on green (#007B36: the indigo's
+#                                                  OKLCH L and C at hue 150°, clamped to
+#                                                  sRGB) plus a script "i" drawn as a path
+#                                                  (graphics-sources/invoicer-script-i.py)
+#   assets/LedgelineInvoicer.icon/                 its Icon Composer document: Ledgeline's
+#                                                  layers plus Assets/i.svg, fill swapped
 #
 # Outputs (all committed):
 #
@@ -23,6 +31,15 @@
 #                                   and the Linux hicolor icons.
 #   assets/ledgeline-small.png      the same, zoomed in (the small variant); flake.nix
 #                                   uses it for the 16/32/48px icns and hicolor slots.
+#
+#   invoicer/web/static/ledgeline-invoicer-icon{,-small}.svg   as above, for the invoicer SPA
+#   assets/invoicer/Assets.car                 the invoicer's compiled icon (CFBundleIconName
+#                                              LedgelineInvoicer)
+#   assets/invoicer/ledgeline-invoicer{,-small}.png   its flattened render, for the icns
+#                                              and hicolor icons (Phase 6 wires them in)
+#   The invoicer's "-small" files are copies of the full ones, not a zoomed
+#   crop: its "i" sits low on the right, and any crop that keeps both it and
+#   the arrowhead puts them under the squircle mask's corners.
 #
 # WHY COMMITTED rather than built by flake.nix: `actool` and `ictool` ship only
 # inside Xcode, which the Nix sandbox cannot reach. So this runs by hand on a
@@ -102,3 +119,25 @@ perl -pi -e "s/viewBox=\"[^\"]*\"/viewBox=\"$SMALL_VIEWBOX\"/" "$tmp"/LedgelineS
 render_flat "$tmp/LedgelineSmall.icon" assets/ledgeline-small.png
 
 echo "regenerated: web/static/ledgeline-icon{,-small}.svg docs/images/ledgeline-icon.svg docs/.mbr/favicon.png assets/Assets.car assets/ledgeline{,-small}.png"
+
+# ---- Ledgeline Invoicer: the same steps for the invoicer's icon ------------
+# No docs copy or favicon: the invoicer has no docs site of its own yet.
+INV_SRC=graphics-sources/ledgeline-invoicer-logo-no-word.svg
+INV_ICON="$PWD/assets/LedgelineInvoicer.icon"
+mkdir -p invoicer/web/static assets/invoicer
+
+sed -E 's/viewBox="[^"]*"/viewBox="91.07 93.6 951.65 951.65"/' "$INV_SRC" > invoicer/web/static/ledgeline-invoicer-icon.svg
+cp invoicer/web/static/ledgeline-invoicer-icon.svg invoicer/web/static/ledgeline-invoicer-icon-small.svg
+
+mkdir "$tmp/invoicer"
+xcrun actool "$INV_ICON" --compile "$tmp/invoicer" --app-icon LedgelineInvoicer \
+    --enable-on-demand-resources NO --development-region en \
+    --target-device mac --platform macosx --minimum-deployment-target 10.15 \
+    --output-partial-info-plist "$tmp/invoicer/partial.plist" \
+    --output-format human-readable-text 2>&1 | grep -v 'unhandled Platform key' || true
+cp "$tmp/invoicer/Assets.car" assets/invoicer/Assets.car
+
+render_flat "$INV_ICON" assets/invoicer/ledgeline-invoicer.png
+cp assets/invoicer/ledgeline-invoicer.png assets/invoicer/ledgeline-invoicer-small.png
+
+echo "regenerated: invoicer/web/static/ledgeline-invoicer-icon{,-small}.svg assets/invoicer/Assets.car assets/invoicer/ledgeline-invoicer{,-small}.png"
