@@ -31,7 +31,7 @@
                 <p class="text-sm text-base-content/70">Sending it books{dirty ? " (with your unsaved edits)" : ""}:</p>
                 <pre class="overflow-x-auto rounded-box bg-base-200 p-2 text-xs" data-testid="would-book-text">{books.would_book}</pre>
             {:else if books.basis === "cash"}
-                <p class="text-sm text-base-content/70">Cash books: sending writes only the markdown; the books take the invoice when a payment is applied.</p>
+                <p class="text-sm text-base-content/70">Cash books: sending marks it sent; the books take the invoice when its payment is applied.</p>
             {:else}
                 <p class="text-sm text-base-content/70">Nothing to book.</p>
             {/if}

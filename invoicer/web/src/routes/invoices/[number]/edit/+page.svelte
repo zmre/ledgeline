@@ -1,11 +1,15 @@
 <!-- The invoice editor (invoicer PLAN 4a, ARCHITECTURE §6.3): the header, the
      prose above the bill table, the bill grid, the prose below; the live
-     preview and the Books panel beside them on a wide window; Save, Send…,
-     Void…, Re-book… and the Send panel (PDF) above. State and the save and
-     conflict rules are lib/invoiceEditor.svelte.ts; every write goes through
-     the server, which writes through invoicer-core like the CLI.
+     preview and the Books panel beside them when the page is wide, below
+     them when it is narrow (a container query on the page). Save, Discard and
+     the save state are top right, as on the customer page; Send…, Void…,
+     Re-book… and the Send panel (PDF) show only while nothing is unsaved
+     (Phase 4 feedback H14): save, then send. State and the save and conflict
+     rules are lib/invoiceEditor.svelte.ts; every write goes through the
+     server, which writes through invoicer-core like the CLI.
 
-     Keyboard: Cmd/Ctrl+S saves. Steps that touch the books ask first
+     Keyboard: Cmd/Ctrl+S saves. Leaving with unsaved changes (a link, Back)
+     asks Save / Discard / Cancel (H13). Steps that touch the books ask first
      (ARCHITECTURE §4): Send books it; Void reverses it; Re-book replaces its
      transaction; saving a sent invoice re-books it. -->
 <script lang="ts">
@@ -17,10 +21,11 @@
     import {fetchDelivery, fetchTemplates, sendInvoice} from "#lib/api.js";
     import {changes} from "#lib/changes.svelte.js";
     import {defaultVia, sendBlocker, VIA_CHOICES, type Delivery} from "#lib/delivery.js";
-    import {DEFAULT_WORDS, type EditorForm} from "#lib/editor.js";
+    import {DEFAULT_WORDS, isDepositTable, totalWords, type EditorForm} from "#lib/editor.js";
     import {fetchDeposits, fetchEditorOptions, fetchFieldValues, rebookInvoice, voidInvoice} from "#lib/editorApi.js";
     import {InvoiceEditor} from "#lib/invoiceEditor.svelte.js";
     import {localToday, pageUrl, type TemplateEntry} from "#lib/invoices.js";
+    import {friendlyProblem} from "#lib/labels.js";
     import AddCustomerDialog from "#lib/components/AddCustomerDialog.svelte";
     import BillGrid from "#lib/components/BillGrid.svelte";
     import ConfirmDialog from "#lib/components/ConfirmDialog.svelte";
@@ -29,6 +34,7 @@
     import InvoiceFrame from "#lib/components/InvoiceFrame.svelte";
     import ProseField from "#lib/components/ProseField.svelte";
     import SendSection from "#lib/components/SendSection.svelte";
+    import UnsavedDialog from "#lib/components/UnsavedDialog.svelte";
     import WouldBookPanel from "#lib/components/WouldBookPanel.svelte";
 
     const editor = new InvoiceEditor();
@@ -60,9 +66,46 @@
     });
     onDestroy(() => editor.dispose());
 
+    // Leaving with unsaved edits: Save / Discard / Cancel. Closing the window is the browser's own prompt (beforeunload).
+    let leaving = $state<URL | null>(null);
+    let leaveError = $state<string | null>(null);
+    let leavingNow = false;
     beforeNavigate((navigation) => {
-        if (editor.dirty && navigation.type !== "leave" && !confirm("Leave this invoice? Your edits aren't saved.")) navigation.cancel();
+        if (leavingNow || !editor.dirty || readonly || navigation.type === "leave" || navigation.to === null) return;
+        navigation.cancel();
+        leaveError = null;
+        leaving = navigation.to.url;
     });
+
+    async function leaveTo(url: URL): Promise<void> {
+        leavingNow = true;
+        leaving = null;
+        try {
+            // eslint-disable-next-line svelte/no-navigation-without-resolve -- SvelteKit's own navigation target, already an app URL
+            await goto(url);
+        } finally {
+            leavingNow = false;
+        }
+    }
+
+    async function leaveWith(choice: "save" | "discard" | "cancel"): Promise<void> {
+        const url = leaving;
+        if (url === null) return;
+        if (choice === "cancel") {
+            leaving = null;
+            return;
+        }
+        if (choice === "discard") {
+            editor.discard();
+            await leaveTo(url);
+            return;
+        }
+        await save();
+        if (!editor.dirty) await leaveTo(url);
+        else if (editor.confirmRebook)
+            leaving = null; // the re-book confirmation asks next; the user goes on from there
+        else leaveError = editor.saveError ?? "It couldn't be saved.";
+    }
 
     // A change on disk (lib/events.ts): this file, or anything when `paths` is [].
     let seenSeq = changes.seq;
@@ -82,6 +125,8 @@
 
     const edit = (form: EditorForm): void => editor.edit(form);
     const words = $derived(editor.options?.words ?? DEFAULT_WORDS);
+    const labels = $derived(totalWords(editor.options, words));
+    const deposit = $derived(isDepositTable(editor.form?.table ?? null, editor.options?.deposit_account));
     const commodity = $derived(editor.computed?.commodity ?? "$");
     const readonly = $derived(editor.status === "void");
 
@@ -157,7 +202,7 @@
     <title>Edit {editor.title || `invoice ${number}`} · Ledgeline Invoicer</title>
 </svelte:head>
 
-<div class="mx-auto flex max-w-[110rem] flex-col gap-4">
+<div class="@container mx-auto flex max-w-[110rem] flex-col gap-4">
     <a class="link text-sm link-hover" href={resolve("/invoices/[number]", {number})}>← Invoice {number}</a>
 
     {#if editor.loadError !== null}
@@ -169,59 +214,37 @@
         <span class="loading loading-md loading-spinner" aria-label="Loading the invoice"></span>
     {:else}
         {@const form = editor.form}
-        <header class="flex flex-wrap items-center gap-2">
+        <header class="flex flex-wrap items-center gap-x-3 gap-y-2">
             <h1 class="text-2xl font-semibold tracking-tight" data-testid="editor-heading">Invoice {editor.number}</h1>
             <span class="badge badge-sm" data-testid="editor-status">{editor.status}</span>
-            <span class="text-sm text-base-content/60" aria-live="polite" data-testid="editor-saved">
-                {#if editor.saving}Saving…{:else if editor.dirty}Unsaved changes{:else if editor.savedAt !== null}Saved{/if}
-            </span>
             {#if editor.computed?.total}
-                <span class="ml-auto text-lg font-semibold tabular-nums {editor.pending ? 'text-base-content/60 italic' : ''}" data-testid="editor-total"
+                <span class="text-lg font-semibold tabular-nums {editor.pending ? 'text-base-content/60 italic' : ''}" data-testid="editor-total"
                     >{editor.computed.total}</span
                 >
             {/if}
+            <div class="ml-auto flex items-center gap-2">
+                <span class="text-sm text-base-content/70" aria-live="polite" data-testid="editor-saved">
+                    {#if editor.saving}Saving…{:else if editor.dirty}Unsaved changes{:else if editor.savedAt !== null}Saved{/if}
+                </span>
+                {#if !readonly}
+                    <button
+                        type="button"
+                        class="btn btn-ghost btn-sm"
+                        disabled={!editor.dirty || editor.saving}
+                        onclick={() => editor.discard()}
+                        data-testid="editor-discard">Discard changes</button
+                    >
+                    <button
+                        type="button"
+                        class="btn btn-primary btn-sm"
+                        disabled={!editor.dirty || editor.saving}
+                        onclick={() => void save()}
+                        title="Save (⌘S)"
+                        data-testid="editor-save">Save</button
+                    >
+                {/if}
+            </div>
         </header>
-
-        <div class="flex flex-wrap gap-2" role="toolbar" aria-label="Invoice actions">
-            <button
-                type="button"
-                class="btn btn-primary btn-sm"
-                disabled={!editor.dirty || editor.saving || readonly}
-                onclick={() => void save()}
-                title="Save (⌘S)"
-                data-testid="editor-save">Save</button
-            >
-            {#if editor.status === "draft"}
-                <button
-                    type="button"
-                    class="btn btn-sm"
-                    disabled={editor.dirty}
-                    title={editor.dirty ? "Save first" : undefined}
-                    onclick={() => void ask("send")}
-                    data-testid="editor-send">Send…</button
-                >
-            {/if}
-            {#if editor.status === "sent"}
-                <button
-                    type="button"
-                    class="btn btn-sm"
-                    disabled={editor.dirty}
-                    title={editor.dirty ? "Save first" : undefined}
-                    onclick={() => void ask("rebook")}
-                    data-testid="editor-rebook">Re-book…</button
-                >
-            {/if}
-            {#if editor.status !== "void"}
-                <button
-                    type="button"
-                    class="btn btn-outline btn-error btn-sm"
-                    disabled={editor.dirty}
-                    title={editor.dirty ? "Save first" : undefined}
-                    onclick={() => void ask("void")}
-                    data-testid="editor-void">Void…</button
-                >
-            {/if}
-        </div>
 
         {#if notice !== null}<div class="alert text-sm alert-success" role="status" data-testid="editor-notice">{notice}</div>{/if}
         {#if editor.saveError !== null}<div class="alert text-sm alert-error" role="alert" data-testid="editor-save-error">{editor.saveError}</div>{/if}
@@ -233,23 +256,39 @@
                 onKeepMine={() => void editor.keepMine()}
             />
         {/if}
-        {#if readonly}<div class="alert text-sm" role="status">This invoice is void: it is shown as it was booked, and isn't edited.</div>{/if}
+        {#if readonly}<div class="alert text-sm" role="status">This invoice is void, so it can't be edited.</div>{/if}
 
-        <SendSection number={editor.number} reload={sendReload} onChanged={() => void editor.load(editor.number)} />
+        {#if editor.dirty}
+            <p class="text-sm text-base-content/60" data-testid="editor-save-to-send">Save your changes to send it, export its PDF or void it.</p>
+        {:else}
+            {#if !readonly}
+                <div class="flex flex-wrap gap-2" role="toolbar" aria-label="Invoice actions">
+                    {#if editor.status === "draft"}
+                        <button type="button" class="btn btn-sm" onclick={() => void ask("send")} data-testid="editor-send">Send…</button>
+                    {/if}
+                    {#if editor.status === "sent"}
+                        <button type="button" class="btn btn-sm" onclick={() => void ask("rebook")} data-testid="editor-rebook">Re-book…</button>
+                    {/if}
+                    <button type="button" class="btn btn-outline btn-error btn-sm" onclick={() => void ask("void")} data-testid="editor-void">Void…</button>
+                </div>
+            {/if}
+            <SendSection number={editor.number} reload={sendReload} onChanged={() => void editor.load(editor.number)} />
+        {/if}
 
-        <div class="grid gap-4 xl:grid-cols-2">
+        <div class="grid gap-4 @7xl:grid-cols-2">
             <div class="flex min-w-0 flex-col gap-4">
                 <HeaderForm
                     {form}
                     options={editor.options}
                     {templates}
                     status={editor.status}
+                    {deposit}
                     onChange={edit}
                     onAddCustomer={(name) => (addingCustomer = name)}
                     fieldValues={fetchFieldValues}
                 />
-                <label class="flex flex-col gap-1 text-sm"
-                    >Above the table
+                <div class="flex flex-col gap-1 text-sm">
+                    <span aria-hidden="true">Above the table</span>
                     <ProseField
                         value={form.prose_before}
                         label="Prose above the table"
@@ -259,7 +298,7 @@
                         onChange={(v) => edit({...form, prose_before: v})}
                         testid="prose-before"
                     />
-                </label>
+                </div>
                 {#if form.table !== null}
                     <BillGrid
                         table={form.table}
@@ -269,24 +308,25 @@
                         accounts={editor.options?.accounts ?? []}
                         catalog={editor.options?.catalog ?? []}
                         {words}
+                        {labels}
                         {commodity}
                         {readonly}
                         loadDeposits={() => fetchDeposits(editor.number)}
                         onChange={(table) => edit({...form, table})}
                     />
                 {:else}
-                    <p class="alert text-sm alert-warning">This document has no bill table (a table with an Amount column). Add one in the file.</p>
+                    <p class="alert text-sm alert-warning">This invoice has no bill table (a table with an {words.amount} column). Add one in the file.</p>
                 {/if}
                 {#if editor.computed !== null && (editor.computed.table_error !== null || editor.computed.problems.length > 0)}
                     <ul class="flex flex-col gap-1 text-sm" aria-label="Problems" data-testid="editor-problems">
-                        {#if editor.computed.table_error !== null}<li class="text-error">{editor.computed.table_error}</li>{/if}
+                        {#if editor.computed.table_error !== null}<li class="text-error">{friendlyProblem(editor.computed.table_error)}</li>{/if}
                         {#each editor.computed.problems as problem, p (p)}
-                            <li class={problem.severity === "error" ? "text-error" : "text-warning"}>{problem.message}</li>
+                            <li class={problem.severity === "error" ? "text-error" : "text-warning"}>{friendlyProblem(problem.message)}</li>
                         {/each}
                     </ul>
                 {/if}
-                <label class="flex flex-col gap-1 text-sm"
-                    >Below the table
+                <div class="flex flex-col gap-1 text-sm">
+                    <span aria-hidden="true">Below the table</span>
                     <ProseField
                         value={form.prose_after}
                         label="Prose below the table"
@@ -296,9 +336,9 @@
                         onChange={(v) => edit({...form, prose_after: v})}
                         testid="prose-after"
                     />
-                </label>
+                </div>
             </div>
-            <div class="flex min-w-0 flex-col gap-4 xl:sticky xl:top-0 xl:self-start">
+            <div class="flex min-w-0 flex-col gap-4 @7xl:sticky @7xl:top-0 @7xl:self-start">
                 <section aria-label="Preview" class="flex flex-col gap-1">
                     <h2 class="text-sm font-medium text-base-content/70">Preview{editor.dirty ? " (unsaved)" : ""}</h2>
                     {#if editor.previewUrl !== null}
@@ -324,6 +364,17 @@
                 .then((o) => (editor.options = o))
                 .catch(() => undefined);
         }}
+    />
+{/if}
+
+{#if leaving !== null}
+    <UnsavedDialog
+        title="Leave invoice {editor.number}?"
+        busy={editor.saving}
+        error={leaveError}
+        onSave={() => void leaveWith("save")}
+        onDiscard={() => void leaveWith("discard")}
+        onCancel={() => void leaveWith("cancel")}
     />
 {/if}
 

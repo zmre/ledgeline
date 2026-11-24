@@ -14,6 +14,7 @@
     import type {EditorOptions} from "#lib/editor.js";
     import {createInvoice, fetchEditorOptions} from "#lib/editorApi.js";
     import {localToday, type TemplateEntry} from "#lib/invoices.js";
+    import {linkName, toLink} from "#lib/links.js";
     import AddCustomerDialog from "#lib/components/AddCustomerDialog.svelte";
 
     let options = $state<EditorOptions | null>(null);
@@ -39,8 +40,9 @@
             .catch((e: unknown) => console.warn("templates:", e));
     });
 
-    const customerOptions = $derived<ComboOption[]>((options?.customers ?? []).map((c) => ({value: c.link, label: c.title, detail: c.kind})));
-    const chosen = $derived((options?.customers ?? []).find((c) => c.link === customer || c.title === customer));
+    // The field shows names; the file gets `[[Name]]` (Phase 4 feedback H2).
+    const customerOptions = $derived<ComboOption[]>((options?.customers ?? []).map((c) => ({value: c.title, label: c.title, detail: c.kind})));
+    const chosen = $derived((options?.customers ?? []).find((c) => c.title.toLowerCase() === customer.trim().toLowerCase()));
 
     // The customer's own template is the default, until one is picked by hand.
     $effect(() => {
@@ -54,7 +56,8 @@
         busy = true;
         error = null;
         try {
-            const made = await createInvoice({customer: customer.trim(), template: template === "" ? null : template, date});
+            const link = chosen?.link ?? toLink(customer, [], true);
+            const made = await createInvoice({customer: link, template: template === "" ? null : template, date});
             await goto(resolve("/invoices/[number]/edit", {number: made.number}));
         } catch (e) {
             error = e instanceof Error ? e.message : String(e);
@@ -112,7 +115,7 @@
         onCancel={() => (adding = null)}
         onCreated={(made) => {
             adding = null;
-            customer = made.link;
+            customer = linkName(made.link);
             loadOptions();
         }}
     />

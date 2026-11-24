@@ -96,6 +96,17 @@ describe("InvoiceEditor", () => {
         editor.dispose();
     });
 
+    it("Discard drops the unsaved edits and is clean again", async () => {
+        const editor = await opened();
+        rename(editor, "Architect hours");
+        expect(editor.dirty).toBe(true);
+        editor.discard();
+        expect(editor.dirty).toBe(false);
+        expect(editor.form?.table?.rows[0][0]).toBe("Senior architect hours");
+        expect(saves).toHaveLength(0);
+        editor.dispose();
+    });
+
     it("ignores its own save coming back as a change on disk", async () => {
         const editor = await opened();
         rename(editor, "Architect hours");

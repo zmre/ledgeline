@@ -12,7 +12,19 @@
 //   revision); with nothing unsaved here the file is shown; with unsaved
 //   edits it is a conflict for the user to settle. Nothing is clobbered.
 import {computeTable, type LocalTable} from "./arithmetic.js";
-import {copyForm, formsDiffer, onDiskChange, type Computed, type EditorForm, type EditorOptions, type EditorState, type WouldBook} from "./editor.js";
+import {
+    allTotalWords,
+    copyForm,
+    DEFAULT_WORDS,
+    formsDiffer,
+    onDiskChange,
+    totalWords,
+    type Computed,
+    type EditorForm,
+    type EditorOptions,
+    type EditorState,
+    type WouldBook,
+} from "./editor.js";
 import {computeForm, draftPreview, EditorApiError, fetchForm, saveForm} from "./editorApi.js";
 
 /** Debounces, in milliseconds. */
@@ -54,7 +66,8 @@ export class InvoiceEditor {
             ? {rows: [], total: 0n}
             : computeTable(
                   this.form.table.columns.map((c) => c.role),
-                  this.form.table.rows
+                  this.form.table.rows,
+                  allTotalWords(totalWords(this.options, this.options?.words ?? DEFAULT_WORDS))
               )
     );
 
@@ -196,6 +209,14 @@ export class InvoiceEditor {
             case "conflict":
                 this.conflict = theirs;
         }
+    }
+
+    /** Drop the unsaved edits: the form as last saved (or read), its amounts asked for again. */
+    discard(): void {
+        if (this.baseline === null || !this.dirty) return;
+        this.edit(copyForm(this.baseline));
+        this.saveError = null;
+        this.confirmRebook = false;
     }
 
     /** Settle a conflict with their file: the edits here are dropped. */
