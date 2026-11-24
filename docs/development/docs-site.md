@@ -70,7 +70,7 @@ A few more rules come from mbr:
 | Run by hand (workflow dispatch) | Build, link-check, deploy |
 | A pull request touches `docs/**` | Build and link-check only |
 
-The job downloads mbr's Linux release binary for the version pinned in `MBR_VERSION` and checks it against `MBR_SHA256` before running it; building mbr with Nix took 16 to 27 minutes a run. A guard step fails the job if the binary links into `/nix/store` or is missing a library (mbr's own docs.yml once warned that its binary did); the fix then is to build that version with Nix, as the comment at the top of `docs.yml` shows. It then runs `mbr -b --fail-on-broken-links`. The output is tarred by hand with `--dereference`, because mbr symlinks its assets and `upload-pages-artifact` would drop the `.mbr/` folder that holds the theme and the search index.
+The job builds mbr with Nix from the release tag pinned in `MBR_FLAKE` (`github:zmre/mbr-markdown-browser/v0.7.4#mbr`). mbr's CI pushes each release's build to the `zmre` Cachix, so this downloads in seconds; the earlier pin was a commit no cache held and took 16 to 27 minutes to compile. mbr's Linux release binary is no shortcut: it links into `/nix/store` and won't start on a stock runner. It then runs `mbr -b --fail-on-broken-links`. The output is tarred by hand with `--dereference`, because mbr symlinks its assets and `upload-pages-artifact` would drop the `.mbr/` folder that holds the theme and the search index.
 
 ### One-time repository setup
 
