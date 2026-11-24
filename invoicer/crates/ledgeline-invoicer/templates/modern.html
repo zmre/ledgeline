@@ -1,0 +1,271 @@
+{# invoicer: name="Modern" kinds="invoice,estimate,credit-note" #}
+{#-
+  Ledgeline Invoicer's "Modern" starter template: a sans-serif layout with
+  one accent colour and the amount due in a band at the foot of the bill.
+
+  It was copied into your books folder the first time an invoice used it,
+  and it is yours now: the invoicer never overwrites it. Edit freely. It is
+  an MBR page template (Tera), so it sees exactly what MBR sees:
+
+  - `frontmatter`: the invoice's frontmatter (`frontmatter.invoice_num`,
+    `frontmatter.invoicee_address`, your own custom fields, …);
+  - `markdown`: the rendered body, the bill table included.
+
+  Opened in MBR itself (`server_mode`), the sheet sits inside MBR's usual
+  page: sidebar, search, breadcrumbs, previous and next. Where scripts are
+  off (the invoicer's own frame, a mail client's viewer) that chrome can't
+  work, so the <noscript> rule shows the sheet alone; on paper (Print, PDF
+  export) MBR's print rules keep only <main>. Rendered on its own (the
+  invoicer's preview, QuickLook) there is no chrome. For the sheet alone
+  everywhere, set `chrome` below to `false`.
+
+  Change `--accent` below to your brand colour. To print on A4, change
+  `size: letter` to `size: A4`.
+-#}
+{%- set fm = frontmatter -%}
+{%- set kind = "Invoice" -%}
+{%- if fm.type == "estimate" %}{% set kind = "Estimate" %}{% elif fm.type == "credit-note" %}{% set kind = "Credit note" %}{% endif -%}
+{%- set paid = fm.paid | default(value="") | as_str -%}
+{%- set chrome = server_mode | default(value=false) -%}
+<!doctype html>
+<html lang="en">
+<head>
+{%- if chrome %}
+{#- MBR's own head: its stylesheets, scripts and the page title. #}
+{% include "/.mbr/_head_markdown.html" %}
+{% include "/.mbr/_head_custom.html" %}
+<noscript><style>
+  body.invoice-page > :not(main) { display: none !important; }
+  :root { --pico-font-size: 100%; background: #eef0f3; }
+  body.invoice-page { background: #eef0f3; }
+</style></noscript>
+{%- else %}
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ fm.title | default(value=kind ~ " " ~ fm.invoice_num) }}</title>
+{%- endif %}
+{#- Tells MBR's PDF export when the page is ready (fonts, images). -#}
+{% include "/.mbr/_export_ready.html" %}
+<style>
+  @page { size: letter; margin: 0.6in 0.65in; }
+
+  :root {
+    --accent: #17785a;
+    --accent-soft: #e6f2ed;
+    --ink: #16191d;
+    --muted: #68707a;
+    --rule: #e3e6ea;
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body.invoice-page:not(.with-chrome) { margin: 0; }
+  .sheet {
+    /* MBR's stylesheet (Pico) is on the page when MBR serves it: pin its
+       variables on the sheet so the invoice looks the same everywhere. */
+    --pico-color: var(--ink);
+    --pico-background-color: transparent;
+    --pico-font-family: inherit;
+    --pico-table-border-color: var(--rule);
+    color: var(--ink);
+    font-family: "Inter", "SF Pro Text", system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    font-size: 10pt;
+    line-height: 1.5;
+    font-variant-numeric: tabular-nums;
+    text-align: left;
+  }
+  .sheet :is(h1, h2, h3, h4, p, th, td) { color: inherit; font-family: inherit; }
+
+  .sheet { position: relative; background: #fff; }
+  .sheet::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 6px;
+    background: var(--accent);
+  }
+
+  .top { display: flex; justify-content: space-between; align-items: flex-start; gap: 2rem; padding-top: 0.6rem; }
+  .company-name { margin: 0; font-size: 15pt; font-weight: 700; letter-spacing: -0.01em; }
+  .company-contact { margin-top: 0.2rem; color: var(--muted); font-size: 9pt; }
+  .doc-title { text-align: right; }
+  .doc-title h1 { margin: 0; font-size: 26pt; font-weight: 300; line-height: 1.1; letter-spacing: -0.02em; }
+  .doc-number { margin-top: 0.2rem; color: var(--accent); font-size: 11pt; font-weight: 600; }
+  .badge {
+    display: inline-block;
+    margin-top: 0.45rem;
+    padding: 0.1rem 0.6rem;
+    border-radius: 999px;
+    font-size: 8pt;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .badge.draft { background: #eceef1; color: #4a525c; }
+  .badge.void { background: #fbe9e7; color: #a3271a; }
+  .badge.paid { background: var(--accent-soft); color: var(--accent); }
+
+  .meta {
+    display: grid;
+    grid-template-columns: 1.4fr 1fr 1fr;
+    gap: 1.5rem;
+    margin: 2rem 0 2rem;
+    padding: 1rem 0;
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+  }
+  .label {
+    display: block;
+    margin-bottom: 0.25rem;
+    color: var(--muted);
+    font-size: 7.5pt;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .meta .name { font-weight: 600; }
+  .meta :is(.email, .phone) { color: var(--muted); }
+  .meta .facts { margin: 0; }
+  .meta .fact { margin: 0 0 0.5rem; }
+
+  .body :is(section, main) > :first-child { margin-top: 0; }
+  .body p { margin: 0 0 0.8rem; }
+  .body h2 { margin: 1.8rem 0 0.5rem; font-size: 10pt; font-weight: 700; color: var(--accent); }
+  .body h3 { margin: 1.2rem 0 0.4rem; font-size: 10pt; }
+  .body a { color: var(--accent); }
+  .body table { width: 100%; margin: 0.6rem 0 1.4rem; border-collapse: collapse; }
+  .body thead th {
+    padding: 0.45rem 0.6rem;
+    background: #f6f7f9;
+    color: var(--muted);
+    font-size: 7.5pt;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .body td { padding: 0.55rem 0.6rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  .body tr { break-inside: avoid; }
+  .body thead { display: table-header-group; }
+  /* Subtotal and total rows (their cells are bold); the last one is the amount due. */
+  .body tbody tr:has(td strong) td { border-bottom: 1px solid var(--rule); }
+  .body tbody tr:last-child:has(td strong) td { border-bottom: none; background: var(--accent-soft); font-size: 12pt; }
+  .body tbody tr:last-child:has(td strong) strong { color: var(--accent); }
+
+  /* The books column: last column, italic header. Works in any engine with :has(). */
+  table:has(thead th:last-child > em:only-child) :is(th, td):last-child { display: none; }
+
+  .footer { margin-top: 2.5rem; color: var(--muted); font-size: 8.5pt; }
+
+  @media screen {
+    body.invoice-page:not(.with-chrome) { background: #eef0f3; }
+    .invoice-main { padding: 24px 12px; }
+    .sheet {
+      max-width: 8.5in;
+      min-height: 11in;
+      margin: 0 auto;
+      padding: 0.6in 0.65in;
+      border-radius: 4px;
+      overflow: hidden;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 12px 32px rgba(16, 24, 40, 0.08);
+    }
+  }
+  @media screen and (max-width: 640px) {
+    .sheet { padding: 1.5rem 1.25rem; min-height: 0; }
+    .top { display: block; }
+    .doc-title { margin-top: 1rem; text-align: left; }
+    .meta { grid-template-columns: 1fr; }
+  }
+  @media print {
+    /* MBR's print rules shrink its root font size; the sheet keeps its own. */
+    :root { --pico-font-size: 100%; background: none; }
+    body.invoice-page { background: none; }
+    .invoice-main { padding: 0; }
+  }
+</style>
+</head>
+<body class="invoice-page{% if chrome %} with-chrome{% endif %}">
+{%- if chrome %}
+{% if sidebar_style == "single" %}<mbr-browse-single{% if sidebar_max_items %} max-items="{{ sidebar_max_items }}"{% endif %}>{% include "/.mbr/_browse_footer.html" %}</mbr-browse-single>{% endif %}
+{% include "/.mbr/_nav.html" %}
+{% include "/.mbr/_breadcrumbs.html" %}
+{%- endif %}
+<main class="invoice-main">
+<div class="sheet">
+  <div class="top">
+    <div>
+      <p class="company-name">{{ fm.invoicer_name | default(value="") }}</p>
+      <div class="company-contact">
+        {%- if fm.invoicer_address %}{{ fm.invoicer_address | trim | escape | linebreaksbr | safe }}{% endif %}
+        {%- if fm.invoicer_email %}<br>{{ fm.invoicer_email }}{% endif %}
+        {%- if fm.invoicer_phone %}<br>{{ fm.invoicer_phone }}{% endif %}
+      </div>
+    </div>
+    <div class="doc-title">
+      <h1>{{ kind }}</h1>
+      <div class="doc-number">#{{ fm.invoice_num }}</div>
+      {%- if fm.status == "void" %}
+      <span class="badge void">Void</span>
+      {%- elif fm.status == "draft" %}
+      <span class="badge draft">Draft</span>
+      {%- elif paid is matching("^\d{4}-\d{2}-\d{2}") %}
+      <span class="badge paid">Paid</span>
+      {%- endif %}
+    </div>
+  </div>
+
+  <section class="meta">
+    <div>
+      <span class="label">Billed to</span>
+      <div class="name">{{ fm.invoicee_name | default(value="") }}</div>
+      {%- if fm.invoicee_address %}
+      <div>{{ fm.invoicee_address | trim | escape | linebreaksbr | safe }}</div>
+      {%- endif %}
+      {%- if fm.invoicee_email %}
+      <div class="email">{{ fm.invoicee_email }}</div>
+      {%- endif %}
+      {%- if fm.invoicee_phone %}
+      <div class="phone">{{ fm.invoicee_phone }}</div>
+      {%- endif %}
+    </div>
+    <div class="facts">
+      {%- if fm.date %}
+      <span class="label">Issued</span><div class="fact">{{ fm.date | date(format="%b %-d, %Y") }}</div>
+      {%- endif %}
+      {%- if fm.due_date and kind != "Credit note" %}
+      <span class="label">{% if kind == "Estimate" %}Valid until{% else %}Due{% endif %}</span><div class="fact">{{ fm.due_date | date(format="%b %-d, %Y") }}{% if fm.terms and kind == "Invoice" %} · Net {{ fm.terms }}{% endif %}</div>
+      {%- endif %}
+    </div>
+    <div class="facts">
+      {%- if fm.reference %}
+      <span class="label">Reference</span><div class="fact">{{ fm.reference }}</div>
+      {%- endif %}
+      {%- if fm.deposit_for %}
+      <span class="label">Deposit for</span><div class="fact">{{ fm.deposit_for }}</div>
+      {%- endif %}
+    </div>
+  </section>
+
+  <div class="body">
+    {{ markdown | safe }}
+  </div>
+
+  {%- if fm.invoicer_email %}
+  <div class="footer">{{ fm.invoicer_name | default(value="") }} · {{ fm.invoicer_email }}</div>
+  {%- endif %}
+</div>
+</main>
+{%- if chrome %}
+<footer class="container" data-pagefind-ignore>
+  <mbr-nav></mbr-nav>
+  <nav class="mbr-footer-links" aria-label="Footer links"><ul>{% include "/.mbr/_page_footer_links.html" %}</ul></nav>
+</footer>
+{% include "/.mbr/_footer.html" %}
+{% include "/.mbr/_footer_custom.html" %}
+{%- endif %}
+</body>
+{%- if chrome %}
+{% include "/.mbr/_scripts.html" %}
+{%- endif %}
+</html>

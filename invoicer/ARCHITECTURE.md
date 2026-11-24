@@ -232,7 +232,7 @@ frontmatter.
 | `status`                         | yes      | Author intent: `draft` \| `sent` \| `void`. Estimates use `estimate-open` \| `estimate-closed`.                               |
 | `template`                       | yes      | MBR's per-file template path (`/`-rooted, `.html`). MBR itself renders the styled invoice.                                    |
 | `customer`                       | yes      | Wikilink to the customer note. This is the stable link. The `invoicee_*` fields are a snapshot of what was sent.              |
-| `invoicee_name`, `_email`, `_address` | yes  | A snapshot copied from the customer at creation. Edits to the customer later don't change sent invoices. Use `\|` (literal) for addresses, never `>`, which folds lines. |
+| `invoicee_name`, `_email`, `_phone`, `_address` | yes  | A snapshot copied from the customer at creation. Edits to the customer later don't change sent invoices. Use `\|` (literal) for addresses, never `>`, which folds lines. `_phone` is optional (copied when the customer has `phones:`). |
 | `invoicer`, `invoicer_*`         | yes      | The same pattern for your own company.                                                                                        |
 | `terms`                          | no       | Net days (integer). The customer's default is copied in.                                                                      |
 | `due_date`                       | no       | Written for grep and templates: `date + terms` unless set by hand. Overdue is always derived from it, never stored.          |
@@ -322,7 +322,11 @@ amount due.
 save the editor recomputes all computed amounts. `ledgeline-invoicer recalc`
 does the same from the CLI. `ledgeline-invoicer check` reports a table whose
 written amounts disagree with its own arithmetic, for example after a hand
-edit, without changing anything.
+edit, without changing anything. The app recalculates a draft after an
+outside edit settles (`[invoicer] recalc-on-save = "drafts"`, the default,
+or `"never"`), only if the file is still what it read; a sent invoice it
+never rewrites on its own: the invoice page shows the mismatch, and its
+Recalculate re-books a sent invoice after a confirmation (PLAN F10).
 
 **The books column.** Its header is italic and it is the last column. The
 cell grammar is:
@@ -451,6 +455,8 @@ tags: [customer]
 emails:
   - billing: accounts_receivable@customerx.com
   - work: hello@customerx.com
+phones:                             # MBR's labelled list, chosen as emails are
+  - billing: "+1 (303) 555-0142"
 addresses:
   - billing: |
       1234 Main St. #555
@@ -548,13 +554,22 @@ is the point, since a third party can render our invoices with plain `mbr`.
   `{# invoicer: name="MyCo default" kinds="invoice,estimate" #}`. Tera
   comments aren't HTML comments, and this is an HTML file anyway. With no
   such comment, the name is the file stem and the kind is `invoice`.
-- **Starter templates.** The invoicer ships two (clean, classic). They are
-  copied into `invoices/tpl/` the first time they're used, and from then on
-  they are the user's files. Each starter includes:
+- **Starter templates.** The invoicer ships two (Classic, Modern). Each is
+  copied into `invoices/tpl/` the first time an invoice uses it, and from
+  then on it is the user's file. Each starter includes:
   - print CSS (`@page` size and margins);
   - the books-column CSS;
   - MBR's export-ready script (MBR-CHANGES M5);
-  - no navigation chrome.
+  - MBR's chrome only where it works: see "MBR's chrome" below.
+- **MBR's chrome.** Served by MBR (`server_mode`), a template includes MBR's
+  partials (`/.mbr/_head_markdown.html`, `_nav.html`, `_breadcrumbs.html`,
+  the previous/next footer, `_footer.html`, `_scripts.html`), so an invoice
+  opened in MBR keeps its sidebar, search and navigation, and the sheet sits
+  in `<main>`. The sheet alone shows: in a standalone render (`/api/preview`,
+  QuickLook: `server_mode` is false); where scripts are off (the app's
+  frame, B2), by a `<noscript>` rule hiding every child of `<body>` but
+  `<main>`; and on paper, by MBR's own print rule doing the same. The
+  sheet pins Pico's variables so MBR's stylesheet doesn't restyle it.
 - **Template editor.** The GUI has a code editor with live preview against a
   sample invoice. This is the "customize templates" path.
 - **App theme vs. invoice look.** The app's theme (purple, catppuccin, …)
@@ -610,6 +625,7 @@ There are no new config files. This follows the rules in
 | `invoices-dir`, `customers-dir`, `templates-dir`, `catalog`, `company`                          | `ledgeline.toml [invoicer]`        | Hand, or the first-run setup action (an explicit action, like `[sync]`) |
 | `receivable-account`, `revenue-account`, `deposit-account`, `discount-account`                  | `ledgeline.toml [invoicer]`        | Hand / first-run setup                                                  |
 | `cash-deposits`, `payment-allocation` (accounting policy; PLAN "Configurable accounting flows") | `ledgeline.toml [invoicer]`        | Hand                                                                    |
+| `recalc-on-save` (`drafts` or `never`; PLAN F10)                                                | `ledgeline.toml [invoicer]`        | Hand                                                                    |
 | `filename`, `number-start`, `pdf-dir`                                                           | `ledgeline.toml [invoicer]`        | Hand                                                                    |
 | Recognized words (below)                                                                        | `ledgeline.toml [invoicer.words]`  | Hand                                                                    |
 | `basis`, `closed-through`, `recognition-file`                                                   | `ledgeline.toml [books]` (plan 45) | Shared with Ledgeline                                                   |
@@ -1151,13 +1167,18 @@ then recents. File → Open swaps state. The bundle is
 Putting MBR at the root and the SPA under `/app` avoids any need for MBR to
 support a base path. The invoicer shows MBR pages in two ways:
 
-- **Browse mode:** an iframe or second webview with MBR's chrome, so the user
-  can jump between invoices, customers and backlinks.
-- **Preview mode:** the invoice template page alone. A template has no
-  chrome, which is what a customer sees.
+- **Browse mode:** MBR itself (a browser tab or MBR's own app) with MBR's
+  chrome, so the user can jump between invoices, customers and backlinks.
+  The templates include that chrome when MBR serves the page.
+- **Preview mode:** the invoice template page alone, which is what a
+  customer sees: the app's frame runs no scripts, so the template's
+  `<noscript>` rule hides the chrome; a standalone render has none.
 
 A live preview of unsaved edits renders from a string (MBR-CHANGES M3). The
-theme reaches MBR's chrome through MBR-CHANGES M8.
+theme reaches MBR's chrome through MBR-CHANGES M8. The SPA frames a preview
+by URL (`/.ledgeline-invoicer/preview`, behind MBR's gate and CSP), never
+as `srcdoc`: a srcdoc document inherits the SPA's CSP, whose
+`frame-ancestors 'none'` WebKit applies to it (PLAN, Phase 3 feedback).
 
 ### 6.2 HTTP API (sketch)
 
@@ -1173,6 +1194,7 @@ theme reaches MBR's chrome through MBR-CHANGES M8.
 | `GET /api/receivables`                        | Dashboard: outstanding bar, aging, overdue, DSO.                              |
 | `GET /api/fields/{key}/values`                | Autocomplete for custom frontmatter fields.                                   |
 | `GET /api/books`                              | Basis, accounts, gate, recognition file, closed-through.                       |
+| `GET /api/events`                             | Server-sent change events after the watcher re-reads a change (live reload).  |
 
 Every write returns the new content hash and the books generation, and
 accepts the expected ones (`409` on mismatch), as Ledgeline's API does.

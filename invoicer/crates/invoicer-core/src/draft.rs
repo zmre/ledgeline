@@ -399,6 +399,12 @@ pub fn render(
     );
     fields.extend(
         bill_to
+            .phone
+            .as_deref()
+            .map(|p| ("invoicee_phone", text(p))),
+    );
+    fields.extend(
+        bill_to
             .address
             .as_deref()
             .map(|a| ("invoicee_address", block_text(a))),
@@ -407,6 +413,7 @@ pub fn render(
         fields.push(("invoicer", text(&format!("[[{}]]", company.title))));
         fields.push(("invoicer_name", text(&company.title)));
         fields.extend(company.email(labels).map(|e| ("invoicer_email", text(e))));
+        fields.extend(company.phone(labels).map(|p| ("invoicer_phone", text(p))));
         fields.extend(
             company
                 .address(labels)

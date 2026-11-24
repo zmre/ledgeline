@@ -16,3 +16,7 @@ node_modules
 vite.config.ts.timestamp-*
 # Vitest 5 artifacts (attachments, reports)
 .vitest
+
+# Playwright
+test-results
+playwright-report

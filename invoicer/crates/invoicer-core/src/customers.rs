@@ -3,7 +3,8 @@
 //! on top of MBR's contact schema.
 //!
 //! The contact fields follow `mbr-apple-contact-sync`'s markdown schema:
-//! `emails` and `addresses` are lists of single-key maps (`- billing: …`),
+//! `emails`, `phones` and `addresses` are lists of single-key maps
+//! (`- billing: …`; MBR's contact card reads `phones:` the same way),
 //! and an address is either text or a map of `street`, `city`, `region`,
 //! `postcode`, `country`. Plain strings and a single map are read too, since
 //! people write those by hand.
@@ -48,6 +49,8 @@ pub struct Contact {
     pub kind: ContactKind,
     /// `emails:`.
     pub emails: Vec<Labelled>,
+    /// `phones:` (`- work: "+1 303 555 0100"`), as written.
+    pub phones: Vec<Labelled>,
     /// `addresses:`, each formatted as lines of text.
     pub addresses: Vec<Labelled>,
     /// `company:`, as written (usually `"[[Org]]"`).
@@ -158,6 +161,7 @@ impl Contact {
             title: note.title.clone(),
             kind,
             emails: labelled(note.frontmatter.get("emails"), plain_text),
+            phones: labelled(note.frontmatter.get("phones"), plain_text),
             addresses: labelled(note.frontmatter.get("addresses"), address_text),
             company: note.str("company").map(str::to_string),
         })
@@ -168,6 +172,12 @@ impl Contact {
     #[must_use]
     pub fn email(&self, labels: &WordList) -> Option<&str> {
         pick(&self.emails, labels)
+    }
+
+    /// The billing phone number, chosen as [`Contact::email`] is.
+    #[must_use]
+    pub fn phone(&self, labels: &WordList) -> Option<&str> {
+        pick(&self.phones, labels)
     }
 
     /// The billing address, chosen as [`Contact::email`] is.
@@ -265,6 +275,8 @@ pub struct BillingContact {
     pub name: String,
     /// The billing email.
     pub email: Option<String>,
+    /// The billing phone number.
+    pub phone: Option<String>,
     /// The billing address.
     pub address: Option<String>,
 }
@@ -419,6 +431,7 @@ impl Customer {
             note: self.contact.path.clone(),
             name: self.contact.title.clone(),
             email: self.contact.email(labels).map(str::to_string),
+            phone: self.contact.phone(labels).map(str::to_string),
             address: self.contact.address(labels).map(str::to_string),
         };
         let org = (self.contact.kind == ContactKind::Person)
@@ -433,6 +446,7 @@ impl Customer {
                 note: org.path.clone(),
                 name: org.title.clone(),
                 email: org.email(labels).map(str::to_string).or(own.email),
+                phone: org.phone(labels).map(str::to_string).or(own.phone),
                 address: org.address(labels).map(str::to_string).or(own.address),
             },
         }
@@ -555,6 +569,9 @@ tags: [customer]
 emails:
   - billing: accounts_receivable@customerx.com
   - work: hello@customerx.com
+phones:
+  - work: \"+1 303 555 0100\"
+  - billing: \"+1 303 555 0142\"
 addresses:
   - billing: |
       1234 Main St. #555
@@ -590,7 +607,7 @@ Fred Smith is the champion.
             .with_file("customers/contracts/Customer X SOW 3 renewal (signed).pdf", "%PDF-")
             .with_file(
                 "customers/Fred Smith.md",
-                "---\ntype: person\ntags: [customer]\ncompany: \"[[Acme]]\"\nemails:\n  - home: fred@home.example\n---\n",
+                "---\ntype: person\ntags: [customer]\ncompany: \"[[Acme]]\"\nemails:\n  - home: fred@home.example\nphones: \"555 0199\"\n---\n",
             )
             .with_file(
                 "orgs/Acme.md",
@@ -641,6 +658,12 @@ Fred Smith is the champion.
             Some("accounts_receivable@customerx.com")
         );
         assert_eq!(
+            bill.phone.as_deref(),
+            Some("+1 303 555 0142"),
+            "billing before work, as for emails"
+        );
+        assert_eq!(x.contact.phones.len(), 2);
+        assert_eq!(
             bill.address.as_deref(),
             Some("1234 Main St. #555\nSpringfield, CO 80000")
         );
@@ -663,6 +686,11 @@ Fred Smith is the champion.
             bill.email.as_deref(),
             Some("fred@home.example"),
             "the org has none"
+        );
+        assert_eq!(
+            bill.phone.as_deref(),
+            Some("555 0199"),
+            "a bare phone, and the org has none"
         );
         assert_eq!(
             bill.address.as_deref(),

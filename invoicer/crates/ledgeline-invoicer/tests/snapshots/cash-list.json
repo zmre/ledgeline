@@ -9,13 +9,15 @@
       "address": "1234 Main St. #555\nSpringfield, CO 80000\n",
       "email": "accounts_receivable@customerx.com",
       "link": "[[Customer X]]",
-      "name": "Customer X"
+      "name": "Customer X",
+      "phone": "+1 (303) 555-0142"
     },
     "invoicer": {
       "address": "1234 Background Blvd.\nAnywhere, CA 90000\n",
       "email": "finance@mycompany.com",
       "link": "[[My Company]]",
-      "name": "My Company"
+      "name": "My Company",
+      "phone": "+1 (555) 010-2000"
     },
     "number": "204",
     "open": false,
@@ -46,13 +48,15 @@
       "address": "1234 Main St. #555\nSpringfield, CO 80000\n",
       "email": "accounts_receivable@customerx.com",
       "link": "[[Customer X]]",
-      "name": "Customer X"
+      "name": "Customer X",
+      "phone": "+1 (303) 555-0142"
     },
     "invoicer": {
       "address": "1234 Background Blvd.\nAnywhere, CA 90000\n",
       "email": "finance@mycompany.com",
       "link": "[[My Company]]",
-      "name": "My Company"
+      "name": "My Company",
+      "phone": "+1 (555) 010-2000"
     },
     "number": "207",
     "open": true,
@@ -85,13 +89,15 @@
       "address": "1 Wingtip Way\nSpringfield, IL 62701\nUSA\n",
       "email": "ap@wingtip.example",
       "link": "[[Wingtip]]",
-      "name": "Wingtip"
+      "name": "Wingtip",
+      "phone": null
     },
     "invoicer": {
       "address": "1234 Background Blvd.\nAnywhere, CA 90000\n",
       "email": "finance@mycompany.com",
       "link": "[[My Company]]",
-      "name": "My Company"
+      "name": "My Company",
+      "phone": null
     },
     "number": "203",
     "open": true,
@@ -124,13 +130,15 @@
       "address": "1 Tailspin Way\nSpringfield, IL 62701\nUSA\n",
       "email": "ap@tailspin.example",
       "link": "[[Tailspin]]",
-      "name": "Tailspin"
+      "name": "Tailspin",
+      "phone": null
     },
     "invoicer": {
       "address": "1234 Background Blvd.\nAnywhere, CA 90000\n",
       "email": "finance@mycompany.com",
       "link": "[[My Company]]",
-      "name": "My Company"
+      "name": "My Company",
+      "phone": null
     },
     "number": "205",
     "open": false,
@@ -163,13 +171,15 @@
       "address": "1234 Main St. #555\nSpringfield, CO 80000\n",
       "email": "accounts_receivable@customerx.com",
       "link": "[[Customer X]]",
-      "name": "Customer X"
+      "name": "Customer X",
+      "phone": null
     },
     "invoicer": {
       "address": "1234 Background Blvd.\nAnywhere, CA 90000\n",
       "email": "finance@mycompany.com",
       "link": "[[My Company]]",
-      "name": "My Company"
+      "name": "My Company",
+      "phone": null
     },
     "number": "206",
     "open": false,
@@ -203,13 +213,15 @@
       "address": "1 Fabrikam Way\nSpringfield, IL 62701\nUSA\n",
       "email": "ap@fabrikam.example",
       "link": "[[Fabrikam]]",
-      "name": "Fabrikam"
+      "name": "Fabrikam",
+      "phone": null
     },
     "invoicer": {
       "address": "1234 Background Blvd.\nAnywhere, CA 90000\n",
       "email": "finance@mycompany.com",
       "link": "[[My Company]]",
-      "name": "My Company"
+      "name": "My Company",
+      "phone": null
     },
     "number": "202",
     "open": true,
@@ -248,13 +260,15 @@
       "address": "1 Contoso Way\nSpringfield, IL 62701\nUSA\n",
       "email": "ap@contoso.example",
       "link": "[[Contoso]]",
-      "name": "Contoso"
+      "name": "Contoso",
+      "phone": null
     },
     "invoicer": {
       "address": "1234 Background Blvd.\nAnywhere, CA 90000\n",
       "email": "finance@mycompany.com",
       "link": "[[My Company]]",
-      "name": "My Company"
+      "name": "My Company",
+      "phone": null
     },
     "number": "201",
     "open": false,

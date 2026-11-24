@@ -294,7 +294,7 @@ pub fn show(detail: &DocDetail<'_>) -> String {
 }
 
 /// The frontmatter keys `show` already prints (or that are noise there).
-const STANDARD_KEYS: [&str; 24] = [
+const STANDARD_KEYS: [&str; 26] = [
     "title",
     "type",
     "template",
@@ -307,10 +307,12 @@ const STANDARD_KEYS: [&str; 24] = [
     "customer",
     "invoicee_name",
     "invoicee_email",
+    "invoicee_phone",
     "invoicee_address",
     "invoicer",
     "invoicer_name",
     "invoicer_email",
+    "invoicer_phone",
     "invoicer_address",
     "paid",
     "sent_date",
@@ -341,6 +343,7 @@ fn party(p: &invoicer_core::doc::Party) -> String {
         (None, None) => {}
     }
     lines.extend(p.email.clone());
+    lines.extend(p.phone.clone());
     lines.extend(p.address.as_deref().map(|a| a.trim_end().to_string()));
     lines.join("\n")
 }
@@ -410,6 +413,7 @@ pub fn customer(detail: &CustomerDetail<'_>) -> String {
     let billing = [
         Some(e.billing.name.clone()),
         e.billing.email.clone(),
+        e.billing.phone.clone(),
         e.billing
             .address
             .as_deref()
@@ -645,6 +649,36 @@ pub fn sent(s: &Sent) -> String {
         }
         (Some(_), false) => out.push_str("  Already booked; only its file was finished.\n"),
         (None, _) => out.push_str("  Cash books: nothing booked until it is paid.\n"),
+    }
+    out
+}
+
+/// `pdf`.
+pub fn exported(e: &crate::pdf::Exported) -> String {
+    use crate::pdf::Destination;
+    let path = e.path.as_deref().unwrap_or(e.file.as_str());
+    let mut out = format!(
+        "Wrote invoice {}'s PDF to {path} ({} bytes)\n",
+        e.number, e.bytes
+    );
+    match e.destination {
+        Destination::Kept => {
+            if let Some(earlier) = &e.earlier {
+                let _ = writeln!(out, "  The earlier export is kept as {earlier}");
+            }
+        }
+        Destination::Temp => {
+            let _ = writeln!(
+                out,
+                "  Not kept: it isn't sent. Send it (ledgeline-invoicer send {}), then export \
+                 again to keep its PDF.",
+                e.number
+            );
+        }
+        Destination::Copy => {}
+    }
+    for warning in &e.warnings {
+        let _ = writeln!(out, "  warning: {warning}");
     }
     out
 }

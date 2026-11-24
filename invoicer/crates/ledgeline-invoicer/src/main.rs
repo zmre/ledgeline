@@ -5,12 +5,18 @@
 //! `check`, `next-number`, `config` and `customers list|show` write markdown
 //! only, never the journal (I2). The books (PLAN 2c): `send`, `void`,
 //! `rebook`, `apply-payment`, `reconcile`, `receivables` and `recognize`.
+//! The PDF (PLAN 3c): `pdf`, in a desktop build ([`pdf`], `app::pdf`).
 //! Every command takes `--json`.
 //!
 //! This file parses arguments, opens the books and prints; each operation is
 //! one `invoicer_core` function (`session`, `views`, `edit`, `books`,
-//! `reconcile`, `receivables`), shared with the API to come. The GUI
-//! arrives in Phase 3.
+//! `reconcile`, `receivables`), shared with the API ([`app`]).
+//!
+//! **CLI or app** (PLAN 3a): a subcommand is a job, run and exit, whatever
+//! the build. With no subcommand, a build with the `server` feature runs the
+//! app: `--server` is the headless server (e2e, port 5199), otherwise the
+//! window (`gui`, the default build). A CLI-only build
+//! (`--no-default-features`) asks for a command.
 //!
 //! Every write to the books is retried once when the journal or the file
 //! changed between reading and writing (Ledgeline saved meanwhile): nothing
@@ -19,7 +25,11 @@
 //! Exit codes: 0 done; 1 `check` or `reconcile` found errors; 2 the command
 //! couldn't run (a usage error, books that don't open, a refused write).
 
+#[cfg(feature = "server")]
+mod app;
 mod human;
+mod pdf;
+mod starters;
 
 use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser, Subcommand};
 use invoicer_core::books::{
@@ -34,10 +44,12 @@ use invoicer_core::index::ListFilter;
 use invoicer_core::reconcile::{self, MirrorChange, ReconcileOptions};
 use invoicer_core::session::Session;
 use invoicer_core::table::books::is_iso_date;
+use invoicer_core::templates;
 use invoicer_core::views::{self, ListQuery};
 use ledgeline_core::vault::VaultPath;
 use ledgeline_shell::AppDirs;
 use serde::Serialize;
+use serde_json::Value;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -68,6 +80,30 @@ struct Cli {
     /// what "overdue" is measured against. Default: the local date.
     #[arg(long, value_name = "DATE", global = true)]
     today: Option<String>,
+
+    /// Run the headless server (API, SPA and MBR pages; no window), for
+    /// e2e and scripts. Default port 5199.
+    #[cfg(feature = "server")]
+    #[arg(short = 's', long)]
+    server: bool,
+
+    /// The address the server binds (the app only).
+    #[cfg(feature = "server")]
+    #[arg(long, default_value = app::DEFAULT_HOST)]
+    host: String,
+
+    /// The port the server binds (the app only). Default: 5199 with
+    /// --server, an ephemeral port for the window.
+    #[cfg(feature = "server")]
+    #[arg(long)]
+    port: Option<u16>,
+
+    /// DEV ONLY: let a browser SPA on this exact origin call the API
+    /// cross-origin (e.g. `--allow-origin http://localhost:4273`).
+    /// Repeatable; never a wildcard.
+    #[cfg(feature = "server")]
+    #[arg(long = "allow-origin", value_name = "ORIGIN")]
+    allow_origin: Vec<String>,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -114,6 +150,10 @@ enum Command {
     /// Mirror the books' payment state into each sent invoice's `paid:`, and
     /// report where the books and the files disagree. Exit 1 on errors.
     Reconcile(ReconcileArgs),
+    /// Export an invoice's PDF: a sent one is kept in `pdf-dir` (earlier
+    /// exports kept under their date), a draft goes to a temporary file.
+    /// Needs the desktop build.
+    Pdf(PdfArgs),
     /// Open invoices, aging, DSO and average days to pay.
     Receivables(ReceivablesArgs),
     /// Post the recognition entries due through a date (never after today).
@@ -130,6 +170,16 @@ struct SendArgs {
     /// Show what would be booked; write nothing.
     #[arg(long)]
     dry_run: bool,
+}
+
+#[derive(clap::Args, Debug)]
+struct PdfArgs {
+    /// A number (`105`) or a file in the books folder.
+    document: String,
+    /// Write the PDF here instead: a copy, so nothing is kept in `pdf-dir`
+    /// and `sent_hash` is left alone. Its folder must exist.
+    #[arg(short = 'o', long = "output", value_name = "PATH")]
+    output: Option<PathBuf>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -356,8 +406,9 @@ enum Source {
 }
 
 /// The journal to open: JOURNAL or `-f`, then `$LEDGELINE_FIXTURE`, then the
-/// most recent journal (shared with Ledgeline). Never `$LEDGER_FILE`.
-fn resolve_journal(cli: &Cli) -> Result<(PathBuf, Source), Failure> {
+/// most recent journal (shared with Ledgeline), or none. Never
+/// `$LEDGER_FILE`.
+fn find_journal(cli: &Cli) -> Result<Option<(PathBuf, Source)>, Failure> {
     if let (Some(a), Some(b)) = (&cli.journal, &cli.file)
         && a != b
     {
@@ -367,18 +418,25 @@ fn resolve_journal(cli: &Cli) -> Result<(PathBuf, Source), Failure> {
         ));
     }
     if let Some(path) = cli.journal.clone().or_else(|| cli.file.clone()) {
-        return Ok((path, Source::Given));
+        return Ok(Some((path, Source::Given)));
     }
     if let Some(path) = std::env::var_os(FIXTURE_ENV).filter(|v| !v.is_empty()) {
-        return Ok((PathBuf::from(path), Source::Env));
+        return Ok(Some((PathBuf::from(path), Source::Env)));
     }
-    ledgeline_shell::recents::most_recent(&AppDirs::from_env())
-        .map(|path| (path, Source::Recent))
-        .ok_or_else(|| {
-            Failure(format!(
+    Ok(ledgeline_shell::recents::most_recent(&AppDirs::from_env())
+        .map(|path| (path, Source::Recent)))
+}
+
+/// [`find_journal`], where a command needs one.
+fn resolve_journal(cli: &Cli) -> Result<(PathBuf, Source), Failure> {
+    find_journal(cli)?.ok_or_else(|| {
+        Failure(
+            format!(
                 "no journal: pass one (ledgeline-invoicer -f books.journal list) or set ${FIXTURE_ENV}"
-            ), None)
-        })
+            ),
+            None,
+        )
+    })
 }
 
 fn open(cli: &Cli) -> Result<Session, Failure> {
@@ -477,6 +535,39 @@ fn new_rows(
     Ok(rows.into_iter().map(|(_, row)| row).collect())
 }
 
+/// The starter template `new` uses (PLAN 3b): the template `--template` or
+/// the customer's `invoice_template` names, when that is a starter's path in
+/// `templates-dir`; else, when the books have no invoice template at all,
+/// the default starter. Returns the `template:` value to write when it is
+/// the default starter's (otherwise the draft picks it as before), and the
+/// starter to copy in once the invoice is written. Nothing for an unknown
+/// customer: the draft reports that.
+fn starter_for_new(
+    session: &Session,
+    args: &NewArgs,
+) -> (Option<String>, Option<&'static starters::Starter>) {
+    let dir = &session.settings().templates_dir;
+    let Ok(customer) = views::find_customer(session.index(), &args.customer) else {
+        return (None, None);
+    };
+    match args.template.clone().or(customer.invoice_template) {
+        Some(value) => (None, starters::named(dir, &value)),
+        None => {
+            let has_one = templates::discover(session.vault(), session.index().site())
+                .iter()
+                .any(|t| t.supports(DocType::Invoice));
+            if has_one {
+                (None, None)
+            } else {
+                (
+                    starters::template_value(dir, starters::DEFAULT),
+                    Some(starters::DEFAULT),
+                )
+            }
+        }
+    }
+}
+
 fn run_new(cli: &Cli, args: &NewArgs, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
     let mut session = open(cli)?;
     let rows = new_rows(&session, args, matches)?;
@@ -485,8 +576,9 @@ fn run_new(cli: &Cli, args: &NewArgs, matches: Option<&ArgMatches>) -> Result<Ex
         .iter()
         .map(|f| edit::assignment(f))
         .collect::<Result<Vec<_>, WriteError>>()?;
+    let (starter_template, starter) = starter_for_new(&session, args);
     let new = NewInvoice {
-        template: args.template.clone(),
+        template: args.template.clone().or(starter_template),
         number: args.number.clone(),
         terms: args.terms,
         reference: args.reference.clone(),
@@ -501,6 +593,21 @@ fn run_new(cli: &Cli, args: &NewArgs, matches: Option<&ArgMatches>) -> Result<Ex
     let booked: Vec<&str> = booked.iter().map(String::as_str).collect();
     let (index, vault) = session.parts_mut();
     let created = edit::create(index, vault, &new, &booked, args.dry_run)?;
+    // The starter it uses is copied in now that the invoice is written
+    // (first use; an existing file is never replaced), and indexed so
+    // `check` knows the template at once.
+    let copied = match starter.filter(|_| !args.dry_run) {
+        Some(starter) => {
+            let dir = session.settings().templates_dir.clone();
+            let installed = starters::install(session.vault(), &dir, starter).map_err(|e| {
+                Failure(format!("copying the {} template: {e}", starter.name), None)
+            })?;
+            let (index, vault) = session.parts_mut();
+            index.refresh(vault, std::slice::from_ref(&installed.path));
+            installed.written.then_some(installed.path)
+        }
+        None => None,
+    };
     let problems: Vec<_> = if args.dry_run {
         Vec::new()
     } else {
@@ -514,14 +621,24 @@ fn run_new(cli: &Cli, args: &NewArgs, matches: Option<&ArgMatches>) -> Result<Ex
         #[serde(flatten)]
         created: &'a edit::Created,
         problems: Vec<invoicer_core::problem::Problem>,
+        /// The starter template this invoice uses, copied in on first use.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        template_copied: Option<&'a VaultPath>,
     }
     emit(
         cli.json,
         &Out {
             created: &created,
             problems,
+            template_copied: copied.as_ref(),
         },
-        |out| human::created(out.created, &out.problems),
+        |out| {
+            let mut text = human::created(out.created, &out.problems);
+            if let Some(path) = out.template_copied {
+                text.push_str(&format!("  copied the starter template to {path}\n"));
+            }
+            text
+        },
     );
     Ok(ExitCode::SUCCESS)
 }
@@ -532,11 +649,7 @@ fn parse_status(text: &str) -> Result<Status, Failure> {
 
 fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
     let Some(command) = &cli.command else {
-        return Err(Failure(
-            "the invoicer's window arrives in a later release; run a command (see --help)"
-                .to_string(),
-            None,
-        ));
+        return run_app(cli);
     };
     match command {
         Command::New(args) => run_new(cli, args, matches),
@@ -601,7 +714,45 @@ fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
                 .collect::<Result<_, WriteError>>()?;
             let (index, vault) = session.parts_mut();
             let outcome = edit::set(index, vault, &path, &edits)?;
-            emit(cli.json, &outcome, human::set);
+            // A `template:` naming a starter copies it in on first use (B1),
+            // as `new` does; never over a file already there.
+            let dir = session.settings().templates_dir.clone();
+            let mut copied = None;
+            for change in &edits {
+                if let FieldEdit::Set(key, Value::String(template)) = change
+                    && key == "template"
+                {
+                    let installed = starters::install_named(session.vault(), &dir, template)
+                        .map_err(|e| Failure(format!("copying the starter template: {e}"), None))?;
+                    if let Some(done) = installed.filter(|d| d.written) {
+                        let (index, vault) = session.parts_mut();
+                        index.refresh(vault, std::slice::from_ref(&done.path));
+                        copied = Some(done.path);
+                    }
+                }
+            }
+            #[derive(Serialize)]
+            struct Out<'a> {
+                #[serde(flatten)]
+                outcome: &'a edit::SetOutcome,
+                /// The starter template it now names, copied in on first use.
+                #[serde(skip_serializing_if = "Option::is_none")]
+                template_copied: Option<&'a VaultPath>,
+            }
+            emit(
+                cli.json,
+                &Out {
+                    outcome: &outcome,
+                    template_copied: copied.as_ref(),
+                },
+                |out| {
+                    let mut text = human::set(out.outcome);
+                    if let Some(path) = out.template_copied {
+                        text.push_str(&format!("  copied the starter template to {path}\n"));
+                    }
+                    text
+                },
+            );
             Ok(ExitCode::SUCCESS)
         }
         Command::Recalc(args) => {
@@ -684,6 +835,7 @@ fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
         }
         Command::Send(args) => run_send(cli, args),
         Command::Void(args) => run_void(cli, args),
+        Command::Pdf(args) => run_pdf(cli, args),
         Command::Rebook(args) => run_rebook(cli, args),
         Command::ApplyPayment(args) => run_apply_payment(cli, args),
         Command::Reconcile(args) => run_reconcile(cli, args),
@@ -717,6 +869,37 @@ fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
     }
 }
 
+/// No subcommand: the app (the window, or `--server`). `--json` means a
+/// script is asking, and a script never wants a window: it needs a command.
+#[cfg(feature = "server")]
+fn run_app(cli: &Cli) -> Result<ExitCode, Failure> {
+    if cli.json {
+        return Err(Failure(
+            "--json needs a command (see --help)".to_string(),
+            None,
+        ));
+    }
+    let args = app::AppArgs {
+        journal: find_journal(cli)?.map(|(path, _)| path),
+        server: cli.server,
+        host: cli.host.clone(),
+        port: cli.port,
+        allow_origin: cli.allow_origin.clone(),
+    };
+    app::run(&args).map_err(|message| Failure(message, None))?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// No subcommand in a CLI-only build.
+#[cfg(not(feature = "server"))]
+fn run_app(_cli: &Cli) -> Result<ExitCode, Failure> {
+    Err(Failure(
+        "built without the app (the `server` and `gui` features); run a command (see --help)"
+            .to_string(),
+        None,
+    ))
+}
+
 fn run_send(cli: &Cli, args: &SendArgs) -> Result<ExitCode, Failure> {
     let mut session = open(cli)?;
     let number = number_of(&session, &args.document)?;
@@ -740,6 +923,53 @@ fn run_send(cli: &Cli, args: &SendArgs) -> Result<ExitCode, Failure> {
     let sent = retrying(|| books.send(index, &request))?;
     emit(cli.json, &sent, human::sent);
     Ok(ExitCode::SUCCESS)
+}
+
+fn run_pdf(cli: &Cli, args: &PdfArgs) -> Result<ExitCode, Failure> {
+    let (journal, _) = resolve_journal(cli)?;
+    // Resolve the invoice (and report a bad one) before any window system
+    // is touched.
+    let number = {
+        let session = open(cli)?;
+        number_of(&session, &args.document)?
+    };
+    let output = match &args.output {
+        Some(path) if path.is_absolute() => Some(path.clone()),
+        Some(path) => Some(std::env::current_dir()?.join(path)),
+        None => None,
+    };
+    let exported = export_pdf(&journal, number, output, today(cli)?)?;
+    emit(cli.json, &exported, human::exported);
+    Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(feature = "gui")]
+fn export_pdf(
+    journal: &Path,
+    number: String,
+    output: Option<PathBuf>,
+    today: String,
+) -> Result<pdf::Exported, Failure> {
+    app::pdf::run_cli(
+        journal,
+        app::pdf::ExportRequest {
+            target: number,
+            output,
+            temp: false,
+            today,
+        },
+    )
+    .map_err(|message| Failure(message, None))
+}
+
+#[cfg(not(feature = "gui"))]
+fn export_pdf(
+    _journal: &Path,
+    _number: String,
+    _output: Option<PathBuf>,
+    _today: String,
+) -> Result<pdf::Exported, Failure> {
+    Err(Failure(pdf::NEEDS_GUI.to_string(), Some("needs-gui")))
 }
 
 fn run_void(cli: &Cli, args: &VoidArgs) -> Result<ExitCode, Failure> {

@@ -8,6 +8,8 @@ type: organization
 tags: [customer]
 emails:
   - billing: ar@customerx.com
+phones:
+  - work: \"+1 303 555 0100\"
 addresses:
   - billing: |
       1234 Main St. #555
@@ -38,7 +40,7 @@ fn vault() -> MemVault {
         .with_file("customers/Plain.md", "---\ntype: person\n---\n")
         .with_file(
             "orgs/My Company.md",
-            "---\ntype: organization\nemails: [finance@mycompany.com]\naddresses:\n  - work: \"1 Background Blvd.\\nAnywhere, CA 90000\"\n---\n",
+            "---\ntype: organization\nemails: [finance@mycompany.com]\nphones: [\"(555) 010-0000\"]\naddresses:\n  - work: \"1 Background Blvd.\\nAnywhere, CA 90000\"\n---\n",
         )
         .with_file("invoices/tpl/myco.html", "{# invoicer: name=\"MyCo\" #}\n{{ frontmatter.invoice_num }}")
         .with_file("invoices/tpl/snippets/net-30.md", "---\ntitle: Net 30 ACH\ntype: snippet\n---\n\n## Payment\n\nPay by ACH within 30 days.\n")
@@ -96,12 +98,14 @@ reference: \"PO #PY75334\"
 customer: \"[[Customer X]]\"
 invoicee_name: Customer X
 invoicee_email: ar@customerx.com
+invoicee_phone: +1 303 555 0100
 invoicee_address: |
   1234 Main St. #555
   Springfield, CO 80000
 invoicer: \"[[My Company]]\"
 invoicer_name: My Company
 invoicer_email: finance@mycompany.com
+invoicer_phone: (555) 010-0000
 invoicer_address: |
   1 Background Blvd.
   Anywhere, CA 90000

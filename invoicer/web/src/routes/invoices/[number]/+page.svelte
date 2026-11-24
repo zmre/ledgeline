@@ -1,0 +1,325 @@
+<!-- One invoice (invoicer PLAN 3b, 3c): the Send panel (its PDF, the Send flow)
+     above the page its template renders, and the Books panel under it. The saved invoice is MBR's own page in a frame; another
+     template (a starter not copied in yet, say) is the preview page
+     (`/.ledgeline-invoicer/preview`), which writes nothing, until "Use this
+     template" makes it the invoice's own. When the bill table's written
+     amounts disagree with its rows, a notice says so, with Recalculate
+     (Phase 3 feedback F9, F10). -->
+<script lang="ts">
+    import {onMount, untrack} from "svelte";
+    import {resolve} from "$app/paths";
+    import {page} from "$app/state";
+    import AsyncSection from "#ui/components/AsyncSection.svelte";
+    import type {DataView} from "#ui/ui/dataView.js";
+    import {
+        copyPdf,
+        ensureSession,
+        exportPdf,
+        fetchDelivery,
+        fetchInvoice,
+        fetchInvoiceBooks,
+        fetchTemplates,
+        chooseTemplate,
+        openPdf,
+        openPortal,
+        recalculate,
+        sendInvoice,
+        sharePdf,
+    } from "#lib/api.js";
+    import type {Anchor, Delivery, Destination, Exported} from "#lib/delivery.js";
+    import {kindLabel, mismatches, pageUrl, previewUrl, type InvoiceBooks, type InvoiceDetail, type TemplateEntry} from "#lib/invoices.js";
+    import BooksPanel from "#lib/components/BooksPanel.svelte";
+    import InvoiceFrame from "#lib/components/InvoiceFrame.svelte";
+    import SendPanel from "#lib/components/SendPanel.svelte";
+    import TemplatePicker from "#lib/components/TemplatePicker.svelte";
+    import TotalsNotice from "#lib/components/TotalsNotice.svelte";
+    import {changes} from "#lib/changes.svelte.js";
+    import StatusBadge from "#lib/components/StatusBadge.svelte";
+
+    const number = $derived(page.params.number ?? "");
+
+    const asError = (e: unknown): Error => (e instanceof Error ? e : new Error(String(e)));
+
+    let detail = $state<InvoiceDetail | null>(null);
+    let detailError = $state<Error | null>(null);
+    let books = $state<InvoiceBooks | null>(null);
+    let booksError = $state<Error | null>(null);
+    let templates = $state<TemplateEntry[]>([]);
+    let sessionReady = $state(false);
+    let sessionError = $state<Error | null>(null);
+
+    /** The template the frame shows: the invoice's own (MBR's page), or another (a preview). */
+    let chosen = $state<string>("");
+
+    const detailView = $derived<DataView>(detailError !== null ? "error" : detail !== null ? "data" : "loading");
+    const booksView = $derived<DataView>(booksError !== null ? "error" : books !== null ? "data" : "loading");
+    const own = $derived(detail?.template ?? null);
+    const showingOwn = $derived(chosen === "" || chosen === own);
+
+    /** Load the invoice; `quiet` keeps what is shown until the new one arrives (a refresh). */
+    function loadDetail(target: string, quiet = false): void {
+        if (!quiet) {
+            detail = null;
+            detailError = null;
+        }
+        fetchInvoice(target)
+            .then((d) => {
+                if (target !== number) return;
+                detail = d;
+                detailError = null;
+            })
+            .catch((e: unknown) => {
+                if (target === number) detailError = asError(e);
+            });
+    }
+
+    function loadBooks(target: string, quiet = false): void {
+        if (!quiet) {
+            books = null;
+            booksError = null;
+        }
+        fetchInvoiceBooks(target)
+            .then((b) => {
+                if (target !== number) return;
+                books = b;
+                booksError = null;
+            })
+            .catch((e: unknown) => {
+                if (target === number) booksError = asError(e);
+            });
+    }
+
+    // The Send panel (PLAN 3c).
+    let delivery = $state<Delivery | null>(null);
+    let exported = $state<Exported | null>(null);
+    let sending = $state(false);
+    let sendError = $state<string | null>(null);
+    /** Bumped after a write, so MBR's page in the frame shows the file again. */
+    let frameKey = $state(0);
+
+    function loadDelivery(target: string): void {
+        fetchDelivery(target)
+            .then((d) => {
+                if (target === number) delivery = d;
+            })
+            .catch((e: unknown) => (sendError = asError(e).message));
+    }
+
+    /** Run one Send-panel action: busy while it runs, its error shown. */
+    async function act(action: () => Promise<void>): Promise<void> {
+        sending = true;
+        sendError = null;
+        try {
+            await action();
+        } catch (e: unknown) {
+            sendError = asError(e).message;
+        } finally {
+            sending = false;
+        }
+    }
+
+    /** Everything again, keeping what is shown until it arrives; the frame reloads its page. */
+    function refreshAll(target: string): void {
+        loadDetail(target, true);
+        loadBooks(target, true);
+        loadDelivery(target);
+        frameKey += 1;
+    }
+
+    // Live reload: a file changed on disk (this invoice, its template, a
+    // wikilinked note, the journal), so show it all again.
+    let seenSeq = changes.seq;
+    $effect(() => {
+        const seq = changes.seq;
+        if (seq === seenSeq) return;
+        seenSeq = seq;
+        untrack(() => {
+            refreshAll(number);
+            loadTemplates();
+        });
+    });
+
+    const onExport = (options: {temp: boolean}): Promise<void> =>
+        act(async () => {
+            const target = number;
+            exported = await exportPdf(target, options);
+            loadDelivery(target);
+        });
+
+    const onSendAndExport = (via: string): Promise<void> =>
+        act(async () => {
+            const target = number;
+            await sendInvoice(target, via);
+            refreshAll(target);
+            exported = await exportPdf(target);
+            refreshAll(target);
+        });
+
+    // The invoice's own writes: its template, its amounts (F9, F10).
+    let editing = $state<"template" | "recalc" | null>(null);
+    let templateError = $state<string | null>(null);
+    let recalcError = $state<string | null>(null);
+    const mismatched = $derived(mismatches(detail?.table ?? null));
+
+    function loadTemplates(): void {
+        fetchTemplates()
+            .then((list) => (templates = list))
+            .catch((e: unknown) => console.warn("templates:", e));
+    }
+
+    async function onUseTemplate(template: string): Promise<void> {
+        const target = number;
+        editing = "template";
+        templateError = null;
+        try {
+            await chooseTemplate(target, template);
+            chosen = "";
+            loadTemplates();
+            refreshAll(target);
+        } catch (e: unknown) {
+            templateError = asError(e).message;
+        } finally {
+            editing = null;
+        }
+    }
+
+    async function onRecalculate(rebook: boolean): Promise<void> {
+        const target = number;
+        editing = "recalc";
+        recalcError = null;
+        try {
+            await recalculate(target, {rebook});
+            refreshAll(target);
+        } catch (e: unknown) {
+            recalcError = asError(e).message;
+        } finally {
+            editing = null;
+        }
+    }
+
+    const onShare = (destination: Destination, file: string, anchor: Anchor): Promise<void> => act(() => sharePdf(destination, file, anchor));
+    const onCopyFile = (destination: Destination, file: string): Promise<void> => act(() => copyPdf(destination, file));
+    const onOpenFile = (destination: Destination, file: string): Promise<void> => act(() => openPdf(destination, file));
+    const onOpenPortal = (): Promise<void> => act(() => openPortal(number));
+    const onCopyText = (label: string, text: string): Promise<void> =>
+        act(async () => {
+            try {
+                await navigator.clipboard.writeText(text);
+            } catch {
+                throw new Error(`Couldn't copy the ${label.toLowerCase()}; select it and copy by hand.`);
+            }
+        });
+
+    $effect(() => {
+        const target = number;
+        delivery = null;
+        exported = null;
+        sendError = null;
+        loadDelivery(target);
+    });
+
+    $effect(() => {
+        const target = number;
+        chosen = "";
+        templateError = null;
+        recalcError = null;
+        loadDetail(target);
+        loadBooks(target);
+    });
+
+    onMount(() => {
+        loadTemplates();
+        ensureSession()
+            .then(() => (sessionReady = true))
+            .catch((e: unknown) => (sessionError = asError(e)));
+    });
+</script>
+
+<svelte:head>
+    <title>{detail?.title ?? `Invoice ${number}`} · Ledgeline Invoicer</title>
+</svelte:head>
+
+<div class="mx-auto flex max-w-7xl flex-col gap-4">
+    <a class="link text-sm link-hover" href={resolve("/invoices")}>← Invoices</a>
+    <AsyncSection
+        view={detailView}
+        value={detail}
+        error={detailError}
+        testid="invoice-error"
+        label="this invoice"
+        loadingLabel="Loading the invoice"
+        onRetry={() => loadDetail(number)}
+    >
+        {#snippet children(doc)}
+            <header class="flex flex-wrap items-center gap-x-3 gap-y-1">
+                <h1 class="text-2xl font-semibold tracking-tight" data-testid="invoice-heading">
+                    {kindLabel(doc.doc_type) ?? "Invoice"}
+                    {doc.number ?? ""}
+                </h1>
+                <StatusBadge {doc} />
+                <span class="text-base-content/70" data-testid="invoice-customer">{doc.invoicee.name ?? ""}</span>
+                {#if doc.table?.total}
+                    <span class="ml-auto text-lg font-semibold tabular-nums" data-testid="invoice-total">{doc.table.total}</span>
+                {/if}
+            </header>
+
+            <!-- Top to bottom, each full width (Patrick, 2026-11-23): sending, the
+                 invoice as wide as the page allows, then the books with room for their tables. -->
+            {#if delivery !== null}
+                <SendPanel
+                    {delivery}
+                    {exported}
+                    busy={sending}
+                    error={sendError}
+                    {onExport}
+                    {onSendAndExport}
+                    {onShare}
+                    {onCopyFile}
+                    {onOpenFile}
+                    {onOpenPortal}
+                    {onCopyText}
+                />
+            {:else if sendError !== null}
+                <div class="alert text-sm alert-error" role="alert" data-testid="send-error">{sendError}</div>
+            {/if}
+
+            <section class="flex min-w-0 flex-col gap-2" aria-label="The invoice">
+                <TotalsNotice
+                    number={doc.number ?? number}
+                    status={doc.status}
+                    items={mismatched}
+                    busy={editing === "recalc"}
+                    error={recalcError}
+                    {onRecalculate}
+                />
+                <TemplatePicker {templates} {own} bind:chosen busy={editing === "template"} error={templateError} onUse={onUseTemplate} />
+                {#if sessionError !== null}
+                    <div class="alert text-sm alert-error" role="alert" data-testid="preview-error">Couldn't show the invoice: {sessionError.message}</div>
+                {:else if sessionReady}
+                    <!-- Re-made after a write or a change on disk (frameKey), so it shows the file again. -->
+                    {#key frameKey}
+                        {#if showingOwn}
+                            <InvoiceFrame src={pageUrl(doc.path)} title={doc.title} />
+                        {:else}
+                            <InvoiceFrame src={previewUrl(number, chosen)} title="{doc.title}, previewed" mode="preview" />
+                        {/if}
+                    {/key}
+                {/if}
+            </section>
+
+            <AsyncSection
+                view={booksView}
+                value={books}
+                error={booksError}
+                testid="books-error"
+                label="the books"
+                loadingLabel="Loading the books"
+                onRetry={() => loadBooks(number)}
+            >
+                {#snippet children(panel)}
+                    <BooksPanel books={panel} />
+                {/snippet}
+            </AsyncSection>
+        {/snippet}
+    </AsyncSection>
+</div>

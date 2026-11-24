@@ -11,7 +11,9 @@
 //!   (a mirror the reconciler writes, I7), and refuses a new `invoice_num`
 //!   on anything but a draft (the number is how the books find it, §4.3).
 //! - `recalc` over every document rewrites drafts only; a sent or void
-//!   document is recalculated only when named.
+//!   document is recalculated only when named. The app's automatic
+//!   recalculation after an outside edit ([`recalc_on_save`]) is drafts
+//!   only, always.
 
 use crate::catalog::{self, Catalog};
 use crate::doc::{Invoice, InvoiceNumber, Status};
@@ -19,17 +21,18 @@ use crate::draft::{self, DraftError, DraftRow, NewInvoice};
 use crate::frontmatter::{self, EditError, FieldEdit};
 use crate::index::DocumentIndex;
 use crate::problem::Problem;
+use crate::settings::RecalcOnSave;
 use crate::table::TableError;
 use crate::table::gfm::apply_edits;
 use crate::table::money::plain;
 use crate::table::words::Words;
-use ledgeline_core::vault::{Revision, Vault, VaultError, VaultPath};
+use ledgeline_core::vault::{Fingerprint, Revision, Vault, VaultError, VaultPath};
 use serde::Serialize;
 use serde_json::Value;
 use thiserror::Error;
 
 /// Frontmatter keys `set` refuses, and why.
-const PROTECTED: [(&str, &str); 2] = [
+const PROTECTED: [(&str, &str); 3] = [
     (
         "status",
         "status changes are lifecycle steps: send and void (Phase 2) book them",
@@ -37,6 +40,10 @@ const PROTECTED: [(&str, &str); 2] = [
     (
         "paid",
         "paid is a mirror of the books, written only by the reconciler",
+    ),
+    (
+        "sent_hash",
+        "sent_hash is a mirror of the last kept PDF, written only by the PDF export",
     ),
 ];
 
@@ -338,8 +345,21 @@ pub fn recalc_one(
     dry_run: bool,
 ) -> Result<Recalculated, WriteError> {
     let (source, revision) = read_text(vault, path)?;
+    recalc_source(index, vault, path, &source, &revision, dry_run)
+}
+
+/// [`recalc_one`] over `source`, read at `revision` (the save is
+/// conditional on it).
+fn recalc_source(
+    index: &mut DocumentIndex,
+    vault: &dyn Vault,
+    path: &VaultPath,
+    source: &str,
+    revision: &Revision,
+    dry_run: bool,
+) -> Result<Recalculated, WriteError> {
     let words = index.settings().words.clone();
-    let invoice = Invoice::parse(source.as_str(), &words);
+    let invoice = Invoice::parse(source, &words);
     let header = invoice.header().clone();
     let mut out = Recalculated {
         path: path.clone(),
@@ -367,11 +387,54 @@ pub fn recalc_one(
         })
         .collect();
     if !dry_run {
-        let text = apply_edits(&source, &recalc.table.edits(&source)?);
-        draft::save(index, vault, path, &text, &revision)?;
+        let text = apply_edits(source, &recalc.table.edits(source)?);
+        draft::save(index, vault, path, &text, revision)?;
         out.written = true;
     }
     Ok(out)
+}
+
+/// Recalculate a draft after an outside edit (the app's watcher, once the
+/// edit has settled), as `[invoicer] recalc-on-save` says: `drafts` (the
+/// default) or `never`. `Ok(None)` when there is nothing to do: the setting
+/// is `never`, the document isn't a draft (a sent invoice's amount is
+/// booked: it is recalculated only when asked, and then re-booked), or its
+/// amounts already agree.
+///
+/// Two guards, since the file is the user's and may still be open:
+///
+/// - **No clobbering.** The write happens only if the file is still exactly
+///   what the index last read (the change the watcher settled on): a newer
+///   edit is left alone, and its own settled change comes back here. The
+///   save is atomic and conditional on the revision read, so an edit landing
+///   between the read and the write is never overwritten either.
+/// - **No loop.** The rewrite is itself a change on disk the watcher reports;
+///   by then the index already holds the new text (the save refreshed it),
+///   and its amounts agree, so it ends here.
+///
+/// # Errors
+/// [`WriteError`] (the file can't be read, verified or saved).
+pub fn recalc_on_save(
+    index: &mut DocumentIndex,
+    vault: &dyn Vault,
+    path: &VaultPath,
+) -> Result<Option<Recalculated>, WriteError> {
+    if index.settings().recalc_on_save == RecalcOnSave::Never {
+        return Ok(None);
+    }
+    let Some(doc) = index.doc(path) else {
+        return Ok(None);
+    };
+    let disagrees = doc.summary.as_ref().is_some_and(|s| s.discrepancies > 0);
+    if doc.header.status != Some(Status::Draft) || !disagrees {
+        return Ok(None);
+    }
+    let seen = doc.stamp.fingerprint.clone();
+    let (source, revision) = read_text(vault, path)?;
+    if Fingerprint::of_bytes(source.as_bytes()) != seen {
+        return Ok(None);
+    }
+    recalc_source(index, vault, path, &source, &revision, false).map(Some)
 }
 
 /// `recalc`: the documents at `targets`, any status; or, with none, every
@@ -693,6 +756,69 @@ mod tests {
         let named = recalc(&mut index, &vault, &[path("b.md")], false);
         assert_eq!(named.changed.len(), 1);
         assert!(recalc(&mut index, &vault, &[], false).changed.is_empty());
+    }
+
+    #[test]
+    fn recalc_on_save_rewrites_settled_drafts_only() {
+        let sent = DRAFT
+            .replace("status: draft", "status: sent")
+            .replace("invoice_num: 7", "invoice_num: 9");
+        let (vault, mut index) = open(&[("a.md", DRAFT), ("b.md", &sent)]);
+        let (a, b) = (path("a.md"), path("b.md"));
+
+        // A sent invoice's amount is booked: never rewritten on its own.
+        assert!(
+            recalc_on_save(&mut index, &vault, &b)
+                .expect("runs")
+                .is_none()
+        );
+        assert_eq!(vault.read_to_string(&b).expect("reads"), sent);
+
+        // A file changed again since the index read it is still being
+        // edited: left alone until that change settles too.
+        let newer = DRAFT.replace("| Work |", "| Working |");
+        vault.write_atomic(&a, newer.as_bytes()).expect("edits");
+        assert!(
+            recalc_on_save(&mut index, &vault, &a)
+                .expect("runs")
+                .is_none()
+        );
+        assert_eq!(vault.read_to_string(&a).expect("reads"), newer);
+
+        // Once the index has it, the draft's amounts are rewritten.
+        index.refresh(&vault, std::slice::from_ref(&a));
+        let done = recalc_on_save(&mut index, &vault, &a)
+            .expect("runs")
+            .expect("rewrites");
+        assert!(done.written);
+        assert_eq!(done.changes[0].after, "$20.00");
+        let text = vault.read_to_string(&a).expect("reads");
+        assert!(
+            text.contains("**$20.00**") && text.contains("Working"),
+            "{text}"
+        );
+        // Its own write coming back is no loop: the amounts agree now.
+        index.refresh(&vault, std::slice::from_ref(&a));
+        assert!(
+            recalc_on_save(&mut index, &vault, &a)
+                .expect("runs")
+                .is_none()
+        );
+        assert_eq!(vault.read_to_string(&a).expect("reads"), text);
+
+        // `recalc-on-save = "never"` leaves even a draft alone.
+        let vault = MemVault::new().with_file("a.md", DRAFT);
+        let settings = Settings {
+            recalc_on_save: RecalcOnSave::Never,
+            ..Settings::default()
+        };
+        let mut index = DocumentIndex::open(&vault, settings, Money::default());
+        assert!(
+            recalc_on_save(&mut index, &vault, &a)
+                .expect("runs")
+                .is_none()
+        );
+        assert_eq!(vault.read_to_string(&a).expect("reads"), DRAFT);
     }
 
     #[test]

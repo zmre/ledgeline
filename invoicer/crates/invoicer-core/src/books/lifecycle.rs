@@ -759,6 +759,24 @@ impl InvoiceBooks {
             }
             _ => return Err(status_error(&document, "only a draft invoice can be sent")),
         };
+        // A vendor portal that rejects invoices without a PO rejects this
+        // one: refused before anything is booked (ARCHITECTURE §3.4).
+        if header
+            .reference
+            .as_deref()
+            .is_none_or(|r| r.trim().is_empty())
+            && let Ok(customer) = self.customer(index, &document)
+            && customer
+                .billing_portal
+                .as_ref()
+                .is_some_and(|p| p.requires_reference)
+        {
+            return Err(BooksError::Refused(format!(
+                "{}'s portal rejects invoices without a `reference`; add the customer's PO as \
+                 `reference` first",
+                customer.contact.title
+            )));
+        }
         let mut loaded = self.load()?;
         check_generation(&loaded, request.expected.as_ref())?;
         let booking = self.booking(index, &document, &loaded)?;
@@ -860,6 +878,36 @@ impl InvoiceBooks {
             journal_written,
             markdown_written,
         })
+    }
+
+    /// Whether [`InvoiceBooks::rebook`] would refuse `number` for its
+    /// status or its dates, checked without writing anything: so a caller
+    /// about to rewrite a sent invoice's markdown (the app's Recalculate)
+    /// can refuse before the file changes, not after. The checks are
+    /// rebook's own: a sent invoice, and neither its booked date nor its
+    /// own on or before `closed-through` (I8: void and reissue instead).
+    /// Rebook may still refuse for what only the new booking shows (a
+    /// dropped schedule, a zero total with payments linked).
+    ///
+    /// # Errors
+    /// As [`InvoiceBooks::rebook`] for those checks.
+    pub fn check_rebook(&self, index: &DocumentIndex, number: &str) -> Result<(), BooksError> {
+        let document = self.document(index, number)?;
+        match document.invoice.header().status {
+            Some(Status::Sent) => {}
+            Some(Status::Draft) => {
+                return Err(status_error(&document, "a draft isn't booked; send it"));
+            }
+            _ => return Err(status_error(&document, "only a sent invoice is re-booked")),
+        }
+        let loaded = self.load()?;
+        if let Some(found) = booked(&loaded, number)? {
+            check_open(&loaded, number, &found.transaction.date)?;
+            if let Some(date) = document.invoice.header().date.as_deref() {
+                check_open(&loaded, number, date)?;
+            }
+        }
+        Ok(())
     }
 
     /// **Re-book** (§4.5): replace a sent invoice's transaction with what

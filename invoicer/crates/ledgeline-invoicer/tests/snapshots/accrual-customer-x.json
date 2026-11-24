@@ -3,7 +3,8 @@
     "address": "1234 Main St. #555\nSpringfield, CO 80000",
     "email": "accounts_receivable@customerx.com",
     "name": "Customer X",
-    "note": "customers/Customer X.md"
+    "note": "customers/Customer X.md",
+    "phone": "+1 (303) 555-0142"
   },
   "billing_portal": {
     "instructions": "Upload the PDF under Invoices → Create from PO, then attach the timesheet.\n",
@@ -33,6 +34,16 @@
     ],
     "kind": "organization",
     "path": "customers/Customer X.md",
+    "phones": [
+      {
+        "label": "work",
+        "value": "+1 (303) 555-0100"
+      },
+      {
+        "label": "billing",
+        "value": "+1 (303) 555-0142"
+      }
+    ],
     "title": "Customer X"
   },
   "contracts": [
@@ -58,13 +69,15 @@
         "address": "1234 Main St. #555\nSpringfield, CO 80000\n",
         "email": "accounts_receivable@customerx.com",
         "link": "[[Customer X]]",
-        "name": "Customer X"
+        "name": "Customer X",
+        "phone": "+1 (303) 555-0142"
       },
       "invoicer": {
         "address": "1234 Background Blvd.\nAnywhere, CA 90000\n",
         "email": "finance@mycompany.com",
         "link": "[[My Company]]",
-        "name": "My Company"
+        "name": "My Company",
+        "phone": "+1 (555) 010-2000"
       },
       "number": "108",
       "open": false,
@@ -95,13 +108,15 @@
         "address": "1234 Main St. #555\nSpringfield, CO 80000\n",
         "email": "accounts_receivable@customerx.com",
         "link": "[[Customer X]]",
-        "name": "Customer X"
+        "name": "Customer X",
+        "phone": "+1 (303) 555-0142"
       },
       "invoicer": {
         "address": "1234 Background Blvd.\nAnywhere, CA 90000\n",
         "email": "finance@mycompany.com",
         "link": "[[My Company]]",
-        "name": "My Company"
+        "name": "My Company",
+        "phone": "+1 (555) 010-2000"
       },
       "number": "105",
       "open": true,
@@ -134,13 +149,15 @@
         "address": "1234 Main St. #555\nSpringfield, CO 80000\n",
         "email": "accounts_receivable@customerx.com",
         "link": "[[Customer X]]",
-        "name": "Customer X"
+        "name": "Customer X",
+        "phone": null
       },
       "invoicer": {
         "address": "1234 Background Blvd.\nAnywhere, CA 90000\n",
         "email": "finance@mycompany.com",
         "link": "[[My Company]]",
-        "name": "My Company"
+        "name": "My Company",
+        "phone": null
       },
       "number": "104",
       "open": false,

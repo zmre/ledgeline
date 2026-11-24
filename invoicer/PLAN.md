@@ -86,6 +86,7 @@ are `ledgeline.toml [invoicer]` keys unless the row says otherwise.
 | Recognition due in a closed period                 | `recognize --include-closed`    | left unposted (listed), as Ledgeline leaves it                                                                     | one catch-up adjustment per schedule, dated today                             | Built (2c)              |
 | The DSO window                                     | `receivables --dso-days`        | 90 days                                                                                                            | any number of days                                                            | Built (2c)              |
 | Aging buckets                                      | —                               | Ledgeline's: Current, 1–30, 31–60, 61–90, 91+ days past due                                                        | planned: custom bucket edges, in `ledgeline-core` so both apps share them     | Planned                 |
+| A draft's amounts after an outside edit            | `recalc-on-save`                | `drafts`: the app recalculates a draft once the edit settles (a sent invoice never: its amount is booked)          | `never` (the page shows the mismatch and a Recalculate button)                | Built (feedback F10)    |
 
 Technical choices that are not policy stay fixed: a zero-total accrual
 invoice has no receivable posting (Ledgeline's receivables ignore a zero
@@ -641,6 +642,60 @@ changed core.
   triggers the reconciler.
 - The same token and Host guard. Theme and scale come from shared prefs.
 
+*3a built (2026-11-22).* The app is `ledgeline-invoicer/src/app/`: `mod.rs`
+(identity, router), `books.rs` (the open books: session plus MBR), `api.rs`,
+`mbr.rs` (MBR's mount and its gate), `prefs.rs`, `watch.rs`, `serve.rs`
+(`--server`) and `gui.rs` (the window). The router tests run in-process on
+a fixture copy (`app/tests.rs`). The API so far: `GET /api/version`,
+`/api/books`, `/api/invoices` (`list --json`), `/api/invoices/{num}` (`show
+--json`), `/api/customers`, `GET`/`PATCH /api/ui-prefs`, and `POST
+/api/session`. The SPA stub loads the saved theme and scale and asks for the
+session cookie; `vite dev` and `preview` run on 4273 and proxy `/api` to
+5199. Decided while building, open to veto:
+
+| #  | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                |
+|----|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| A1 | **GUI or CLI.** A subcommand is always a CLI job, in any build. With no subcommand, `--server` runs the headless server and otherwise the window opens. Features: `server` (API, SPA, MBR, watcher), `gui` (implies `server`; the default, as Ledgeline's is). `--no-default-features` is the CLI alone, and with no subcommand it asks for one. `--json` with no subcommand is an error in every build: a script never wants a window. |
+| A2 | **MBR's pages are gated.** They are the books' notes, so they need the token like `/api`. A browser loads them by navigation, which can't send a header, so `POST /api/session` (token-gated) sets a second per-process secret as an `HttpOnly`, `SameSite=Strict` cookie, named after the port. A page is served with the bearer token or that cookie; otherwise `401`.                                                                |
+| A3 | **MBR's pages get their own CSP**: inline scripts allowed (MBR's page config needs them), `https:` images, media and frames, `connect-src 'self'`, `frame-ancestors 'self'` (so the SPA can frame a page). The SPA shell keeps the shell's script-hash policy.                                                                                                                                                                          |
+| A4 | **MBR's in-browser editing is off** (`edit_enabled = false`, also applied when its `.mbr/config.toml` reloads). Every write goes through the invoicer's token-gated, hash-checked API. MBR runs as a `LiveServer` read at the books folder (`Config::read_at_root`), with its own watcher on.                                                                                                                                           |
+| A5 | **The token globals are Ledgeline's** (`__LEDGELINE_TOKEN__`, `__LEDGELINE_EMBEDDED__`): the shared API client in `packages/ui` reads them. The token variable is the invoicer's own: `LEDGELINE_INVOICER_TOKEN`. The e2e switch is shared: `LEDGELINE_UI_PREFS_IN_BROWSER`.                                                                                                                                                            |
+| A6 | **`--server` needs a journal** (JOURNAL, `-f`, `$LEDGELINE_FIXTURE` or recents) and never records recents, since it runs over fixtures; the window records the books it opens. With nothing to open, the window starts with no books (File → Open).                                                                                                                                                                                     |
+| A7 | **The watcher** covers the books folder recursively (hidden folders skipped) plus the folder of any journal file outside it, debounced 250 ms. Markdown changes refresh the index; a journal change reloads the journal and `[books]` (`Session::reload_books`) and reconciles only the invoices whose payment state moved; a `ledgeline.toml` change reopens the session and reconciles all. The reconciler also runs once on open.    |
+| A8 | **The invoicer's UI-prefs schema** is the two common keys (`theme`, `uiScale`), both pinnable. A key only Ledgeline knows is refused by `PATCH` and survives this app's saves.                                                                                                                                                                                                                                                          |
+| A9 | **File → New Invoice** loads `/app/new`, the page 4a builds; until then the SPA shows its empty shell there.                                                                                                                                                                                                                                                                                                                            |
+
+**MBR 0.7.4** (crates.io, pinned `=0.7.4`; `mbr-server` with `watcher`)
+has everything MBR-CHANGES asks for P0/P1: `site::Site` (M2),
+`frontmatter_links` (M1), `standalone::render_note_source` (M3),
+`pdf_export::ExportSession::start` in `mbr-markdown-browser` (M4, with
+`@page` winning), `/.mbr/_export_ready.html` (M5), `<mbr-markdown-field>`
+(M6), `ServerConfig::{extra_head_html, theme_vars}` (M8), the
+frontmatter-cap fallback (M9) and `render_source_with_template` (M10). Gaps:
+
+- **M7** (P2, `data-col` on table cells) isn't in 0.7.4. Not needed: the
+  books column uses the `:has()` rule.
+- **`Server::retire` is `pub(crate)`.** An embedder swapping folders can't
+  stop a plain `Server`'s background tasks. Worked around by using
+  `LiveServer`, whose `Drop` retires its server; the old one stops once its
+  router's last request ends.
+- **Tera turns on serde_json's `preserve_order`**, workspace-wide in any
+  build that includes the app: JSON objects keep insertion order instead of
+  sorting. `cargo build -p ledgeline` (and `.#ledgeline`) is unaffected,
+  but a workspace build or `.#tests` is. Three places assumed sorted keys:
+  bank sync's `extra` column (`feeds::simplefin`, now sorted explicitly, so
+  its CSV is the same either way), the CLI snapshot tests (now normalized
+  with sorted keys) and one frontmatter test (accepts both). The invoicer's
+  `--json` frontmatter maps follow insertion order in the app build.
+
+Left for later: the `notes` → `mbr_core::Site` swap (not low-risk: the two
+APIs differ in path types, note stamps and line lookup, and it would put
+mbr-core into the CLI-only build; Phase 4, or once `Site` can be shared
+with the server's own via `Server::site()`), pushing the theme into MBR's
+chrome (M8 `theme_vars`, 3b), saving the View-menu zoom back to the prefs,
+the recognition file in the watcher. (The e2e harness on 5199/4273 came
+in 3b.)
+
 **3b. Templates and preview:**
 - Two starter templates in `invoicer/crates/ledgeline-invoicer/templates/`,
   copied into the user's `invoices/tpl/` on first use. Each has:
@@ -652,6 +707,40 @@ changed core.
   - the sidebar;
   - an invoice list (read-only, from Phase 1's API);
   - an invoice page showing the MBR-rendered invoice and a Books panel.
+
+*3b built (2026-11-23).* The starters are `ledgeline-invoicer/templates/`
+(`include_str!`, in flake.nix's source filter) and `src/starters.rs`. The
+API gains `POST /api/preview` (`app/preview.rs`: `{number|path, source?,
+template?}` → `{html, path, template}`, MBR's standalone `Renderer`, one
+per MBR server, with its live wikilink index; `Server-Timing: render;dur=`;
+400/404/422; writes nothing), `GET /api/templates` (the books' templates,
+then the starters not copied in) and `GET /api/invoices/{num}/books` (the
+Books panel: `invoicer_core::views::invoice_books`). The watcher refreshes
+`.html` files too. The SPA has the sidebar, the read-only list
+(`/app/invoices`) and the invoice page (`/app/invoices/[number]`: MBR's page
+in a frame, a template picker that previews through `/api/preview`, the
+Books panel), with vitest `unit` and `components` projects. The vite proxy
+now forwards everything outside `/app` to 5199, so MBR's pages and their
+cookie are same-origin under `vite dev`/`preview`. The Playwright suite is
+`invoicer/web/e2e/` (`just invoicer-e2e`: open, list, open an invoice,
+preview, plus a same-origin CSP spec); written, not yet run.
+
+**Pending:** the `--server` smoke test of `/api/preview` and its timing
+against the 50 ms keystroke-to-preview budget were not run (the agent's
+permission to start the server was denied). Router tests render every case
+in process; the budget still needs a release-build measurement
+(`Server-Timing`), with Patrick.
+
+Decided while building, open to veto:
+
+| #  | Decision                                                                                                                                                                                                                                                                                                                                                                                                       |
+|----|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| B1 | **Starters are copied one at a time, on first use**: when `new` writes an invoice whose `template:` is a starter's path in `templates-dir` (named by `--template` or the customer's `invoice_template`), or Classic when the books have no invoice template at all. The copy is create-new (an existing file is never replaced), made only once the invoice is written; a dry run or a preview copies nothing. |
+| B2 | **Invoice frames are sandboxed `allow-same-origin`, with no scripts.** MBR's pages are same-origin with the SPA, so a script in a template could otherwise read the app's token from the parent window. A template needs no script to show an invoice; the export-ready partial matters only in the PDF export's own webview.                                                                                  |
+| B3 | **A preview frame (`srcdoc`) inherits the SPA's CSP**, so a template's remote (`https:`) images show on MBR's page but not in a preview of another template or of unsaved text.                                                                                                                                                                                                                                |
+| B4 | **The SPA sends the browser's local date as `today`** on the list and the invoice, so overdue follows the user's calendar (and a pinned clock in e2e), not the server process's.                                                                                                                                                                                                                               |
+| B5 | **invoicer/web declares no test libraries of its own.** jsdom, `@testing-library/svelte` and `@playwright/test` resolve from the hoisted root `node_modules`, where `web/` and `packages/ui` declare them; declaring them again would change `bun.lock` and so the `spaNodeModules` pin. Their versions follow `web/`'s.                                                                                       |
+| B6 | **Template details:** `paid` is read with `\| as_str` (it may be a YAML date); dates print through Tera's `date` filter ("November 10, 2026"); Paid/Void/Draft marks come from `status` and a dated `paid:`. A preview through a starter not copied in uses the shipped text (M10).                                                                                                                            |
 
 **3c. PDF:**
 - `pdf NUM [-o PATH]` and `POST /api/invoices/{num}/pdf`, by calling MBR's
@@ -665,6 +754,58 @@ changed core.
 - Share… (`NSSharingServicePicker`) and Copy file.
 - **Spike:** native drag-out of a temp PDF from the webview, timeboxed to 1
   day. If it isn't feasible, ship Share and Copy and record why.
+
+*3c built (2026-11-23).* `ledgeline-invoicer pdf NUM [-o PATH]` and the
+API: `GET`/`POST /api/invoices/{num}/pdf` (the Send panel's state; an
+export), `POST /api/invoices/{num}/send` (`{via}`), `POST
+/api/invoices/{num}/portal`, `POST /api/pdf/share` and `/api/pdf/copy`.
+Code: `src/pdf.rs` (naming, filing, every build), `invoicer_core::sent` (the
+mirror), `app/native.rs` (the seam), `app/desktop.rs` (the event-loop host:
+MBR's `ExportSession`, `NSSharingServicePicker`, the pasteboard),
+`app/pdf.rs` (routes and the CLI loop). The SPA's invoice page has a Send
+panel (`SendPanel.svelte`, `lib/delivery.ts`): Export PDF, the prompts,
+Share… and Copy file when the window backs them, the kept PDFs, and the
+portal's instructions, Open portal and copy buttons. `pdftotext`
+(poppler-utils) is in the dev shell; the e2e spec exports 105 through the
+API and the panel and reads the PDF's text.
+
+**Pending (the lead):** nothing here has printed a real PDF yet. The agent
+didn't launch the app; router tests use a mock printer. Run
+`nix develop -c cargo test -p ledgeline-invoicer --test cli -- --ignored pdf_`
+(prints through WKWebView: needs a desktop session) and `just
+invoicer-e2e`, and try Share… and Copy file in the window (the picker is
+documented as wanting a mouse-down; it is shown after an API round trip).
+
+Decided while building, open to veto:
+
+| #  | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+|----|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| P1 | **One print path, three event loops.** The window's loop, `--server`'s (a desktop build runs a windowless loop on the main thread, no Dock icon, so the e2e can print; where MBR's `preflight` fails, as on Linux with no display, the server runs alone and the PDF routes answer `503`), and the CLI's own `pdf` loop (a private server on an ephemeral port). The API reaches the loop through a `Native` trait (`app/native.rs`), which the router tests mock. A CLI-only build's `pdf` says it needs the `gui` feature (`code: needs-gui`).                                                                                                                                                                                                              |
+| P2 | **One-time export links.** The hidden export webview can carry neither the token nor the cookie, so the PDF route mints a link, `/.ledgeline-invoicer/export/<ticket>`, for one page: good once, within 60 s, it sets the session cookie and redirects to that page. The ticket names the page server-side, so it redirects nowhere else.                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| P3 | **Where a PDF goes.** Sent: kept as `pdf-dir/<the markdown's name>.pdf`, printed to a hidden file beside it and moved in only once MBR has verified it. Draft or void: a temporary file (`$TMPDIR/ledgeline-invoicer/`). `pdf -o PATH`: a copy there, nothing kept, no mirror. An existing kept PDF is first renamed `<name> <its own date>.pdf` (then ` (2)`, …); a failed move puts it back.                                                                                                                                                                                                                                                                                                                                                                |
+| P4 | **`sent_hash`** is FNV-1a 64 (16 hex digits) of the whole file minus the `paid` and `sent_hash` lines, so a payment never reads as a change; the template is not hashed. Every kept export writes it, unless the file changed while printing (then the next export warns). `set` refuses it, like `paid`.                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| P5 | **The prompts.** Exporting a draft asks "Mark invoice N as sent?": *Mark as sent and export* sends (books it) with `sent_via` (default `portal` when the customer has one, else `email`), then exports the kept PDF; *Export a draft PDF* writes a temporary one. Exporting a sent invoice whose hash differs asks first and warns in the result. There is no separate "mark sent" button: one path.                                                                                                                                                                                                                                                                                                                                                          |
+| P6 | **`send` refuses** an invoice whose customer's portal has `requires_reference` and which has none (in core, so the CLI too; ARCHITECTURE §3.4 said Send refuses, and it didn't).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| P7 | **Templates without MBR's export-ready partial** (the fixture's own) print on `load` plus fonts (`ReadySignal::Load`), not after the 30 s timeout. Paper and margins: MBR's `[pdf]` settings, the template's `@page` winning.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| P8 | **The API never shows full paths.** Kept PDFs are named by books-folder path; Share… and Copy file take `{destination: kept|temp, file}` and only reach a plain `.pdf` name in `pdf-dir` or the temp folder. Open portal opens only the customer note's plain `https:` URL; without a window the SPA opens it in a tab.                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| P9 | **Drag-out (spike): not shipped.** WKWebView has no drag-out of a file: an HTML drag gives a URL or an image, never a file, and the `DownloadURL` drag type is Chromium's. A native drag needs `beginDraggingSessionWithItems:event:source:` with the live mouse-down event, but the click reaches Rust only after a round trip through WebKit's web-content process (IPC or HTTP), when AppKit's current event is no longer that drag. It would mean intercepting `mouseDown` on the WKWebView itself (subclassing or swizzling tao/wry's view) and asking the page what is under the pointer: possible, but not verifiable without a GUI session, so it was not attempted. Share… and Copy file cover Mail, Messages and a browser upload (paste the file). |
+
+*Templates revisited (2026-11-23).* Patrick's review: the fixture's MyCo
+default had no addresses or contact and an unruled table; an invoice opened
+in MBR lost MBR's sidebar, search and navigation. Now:
+
+| #  | Decision |
+|----|----------|
+| T1 | **The fixture's template** (both books) shows "From" the company and "Bill to" the customer, each with address and email, a dates line (date, due, terms, reference, deposit for), and a bill table with a rule on every cell and padding. It stays plain test data, without MBR's export-ready partial (P7's print-on-load path keeps its test). |
+| T2 | **MBR's chrome where it works, the sheet alone elsewhere**, using only what 0.7.4 has: when MBR serves the page (`server_mode`) a template includes MBR's partials (head, nav, breadcrumbs, previous/next footer, scripts) around `<main>`; a `<noscript>` rule hides everything but `<main>` (the app's frame runs no scripts, B2); MBR's print rule does the same on paper and in PDF export; a standalone render (`/api/preview`, QuickLook) has `server_mode` false and no chrome. The app needs no change. No MBR change is proposed. |
+| T3 | **The sheet is guarded against MBR's stylesheet**: Pico's variables are pinned on the sheet, and the templates avoid elements Pico or MBR's theme restyle inside `<main>` (`article`/`header`/`footer` cards, `dl` lists), so the sheet looks the same in MBR, the frame, the preview and on paper. Pico's print root size (62.5%) is reset to 100%. |
+
+**Pending (the lead):** the `<noscript>` rule was checked in a sandboxed
+(no-scripts) frame in Firefox; check it in the app's WKWebView frame
+(`just invoicer-e2e`, and a look at 105), and print one PDF from a template
+with chrome (`cargo test ... --ignored pdf_`) to see MBR's print rules keep
+only the sheet. If a frame ever runs scripts, the chrome would show there:
+see MBR-CHANGES "Not needed", `?embed=1`.
 
 **3d. Branding:**
 - The icon is derived from `graphics-sources/ledgeline-logo-no-word.svg`.
@@ -685,6 +826,54 @@ changed core.
   invoice, preview, export a PDF and check that it starts with `%PDF-` and
   has the expected text (`pdftotext`, in the dev shell).
 - The lead runs Playwright; agents don't.
+
+## Phase 3 feedback (2026-11-23)
+
+Patrick tried the 3a–3c app on a copy of `fixtures/accrual`. Fixed on
+`2026-11-23-invoicer-feedback` (stacked on 3c):
+
+| #  | Patrick saw / asked                                                            | What changed, and why                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+|----|--------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| F1 | A starter template's preview was a blank white frame.                          | The preview was a `srcdoc` frame, which inherits the SPA's CSP; its `frame-ancestors 'none'` is applied to it by WebKit (not Chromium, so the e2e passed). A preview is now a page, `GET /.ledgeline-invoicer/preview?number=&template=`: MBR's gate (the session cookie), MBR's CSP, a `<base>` at the note's page. The SPA frames it by URL. `POST /api/preview` stays for Phase 4's unsaved text.                                                                   |
+| F2 | Editing the open invoice in another editor changed nothing in the app.         | Nothing told the SPA. `OpenBooks` broadcasts a change event once each settled watcher burst is applied (markdown, `.html`, journal files, `ledgeline.toml`; never a PDF), naming files by the books folder. `GET /api/events` streams them (server-sent events, token-gated, read with `fetch`; `ready` first; ends on File → Open, and the SPA reconnects and reloads). The list, the invoice page (detail, Books, Send, the frame) and the sidebar re-fetch quietly. |
+| F3 | Mark as sent: "invoice 108 is sent, but the books have no transaction for it". | Send did book it, through the books bridge's own copy of the journal editor; the app's session kept the old journal, and the SPA asked at once. `POST /api/invoices/{num}/send` now reloads the session's journal before answering (accrual and cash).                                                                                                                                                                                                                 |
+| F4 | Click anywhere on a list row to open it.                                       | A row click opens the invoice unless it lands on a link or button. The number stays the row's one link (Tab, Enter), so nothing interactive is nested.                                                                                                                                                                                                                                                                                                                 |
+| F5 | The Books panel under the invoice, full width.                                 | The page is Send panel (two columns), the invoice, the Books panel, each full width.                                                                                                                                                                                                                                                                                                                                                                                   |
+| F6 | Show where it was booked; the payments list and `paid:` line confused.         | One plain status line from a new `settlement` (Paid in full on …, Partly paid: $X of $Y, $Z due …, Unpaid: … due …, Void); each booking's postings (receivable marked); a payments-and-credits table (date, account, description, amount; `ReceivableState.settled_by` carries each one's transaction); cash books' payment transactions. The file's `paid:` is mentioned only when it disagrees (`mirror_problem`, plain words).                                      |
+| F7 | Click the saved PDF to open it; one line, not two.                             | `POST /api/pdf/open` takes only the `{destination, file}` handles of Share…/Copy file and runs `/usr/bin/open` on the vetted file (capability `open_file`: the window, macOS). The current PDF is one line (Saved … or Kept …), clickable, and earlier PDFs are listed and clickable.                                                                                                                                                                                  |
+| F8 | "No invoices yet" should say how to make one.                                  | It shows `ledgeline-invoicer new --customer … --row …` and what it needs (the company and customer notes, `[invoicer]`), until Phase 4's editor.                                                                                                                                                                                                                                                                                                                       |
+
+**Pending (the lead):** the e2e (`just invoicer-e2e`) and the window. The
+srcdoc root cause (F1) is WebKit behaviour inferred, not observed: check a
+starter preview in the window. Playwright's Chromium never showed the bug.
+New e2e: 108 through both starters (content visible in the frame), a row
+click and Enter, the new Books lines, live reload of an edited 106 (restored
+after), and Mark as sent on 108 (last in the file: it sends 108). The
+starters' markers (`No. 108`, `#108`) assume the templates as of 3b.
+
+**Second pass (2026-11-23).** Patrick on a copy of the accrual fixture again:
+
+| #   | Patrick saw / asked                                                                           | What changed, and why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+|-----|-----------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| F9  | The template picker only previews; editing `template:` to the Modern starter's path "failed". | Starters are copied in only on first use (B1), so `/invoices/tpl/modern.html` wasn't in the books: MBR's page for the invoice was its own 500 page, "Page template error: invoices/….md: template `/invoices/tpl/modern.html` was not found", inside the frame (`show` and `check` warned `unknown-template`). Now the picker says which template the invoice uses and has **Use this template**: `POST /api/invoices/{num}/template` writes `template:` through `set` and copies a starter in (create-new). `set template=…` on the CLI copies it too. A hand edit naming a starter is copied in when the watcher sees it, and when the books open. |
+| F10 | Editing a row in an editor updates the view, but subtotals and totals stay stale.             | The watcher recalculates a **draft** once an outside edit settles (`edit::recalc_on_save`, `[invoicer] recalc-on-save = "drafts"`, the default; `"never"` turns it off). A sent invoice never: the invoice page shows "Totals don't match the rows" (each written amount next to the computed one, from `show`'s `table.discrepancies`) with **Recalculate**: `POST /api/invoices/{num}/recalc`, the CLI's `recalc`; for a sent invoice only after a confirmation (`rebook: true`), and then re-booked by `rebook`'s rules. A void invoice gets the notice and no button.                                                                            |
+| F11 | Phone numbers for the company and customers.                                                  | `phones:` on person and organization notes, MBR's labelled list (its contact card reads the same key), picked by the billing labels as `emails:` is. `new` snapshots `invoicee_phone` and `invoicer_phone`; `show`, `customers` and the API carry them; Classic, Modern and the fixtures' `myco-default.html` print both. The fixture company, Customer X and Contoso have phones; Customer X's 105, 108, 204 and 207 have the snapshot.                                                                                                                                                                                                             |
+
+Decided while building, open to veto:
+
+| #    | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+|------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| F9a  | **A starter an invoice names is copied in on demand**, rather than `check` reporting it with a fix: it is what the user plainly meant, and the copy is create-new (never over a file already there), so it only ever adds the shipped text. It does write a file the user didn't save: the app logs it ("copied the starter template to …"). The CLI copies only when it writes the `template:` itself (`new`, `set`); `check` stays read-only and keeps the `unknown-template` warning. |
+| F9b  | **Use this template follows `set`'s rules**: any template the books have or a starter, for the document's type; a sent or void invoice may change it too (styling; the books never see it). The `template:` line is part of what `sent_hash` covers, so a sent invoice whose template changed warns at its next export that the PDF differs from what the customer has (P4, P5).                                                                                                         |
+| F10a | **Loops and clobbering.** `recalc_on_save` rewrites only a draft whose file is still exactly what the index read for the settled change (a newer edit is left for its own settle), and the save is atomic and conditional on the revision read (`Vault::replace`). Its write comes back as a change whose amounts agree, so it ends there; no "ignore my own write" list is needed. An editor holding the file open sees it change on disk, as with any outside write.                   |
+| F10b | **Recalculating a sent invoice checks rebook's refusals before writing** (`InvoiceBooks::check_rebook`: a sent invoice, neither its booked nor its own date on or before `closed-through`), so a closed period leaves the file as it was. A refusal only the new booking shows (a dropped schedule) comes after the markdown is rewritten; the answer says so and names `ledgeline-invoicer rebook N`.                                                                                   |
+
+**Pending (the lead):** the e2e, new specs: Use this template on 108
+(Modern, the file and the starter put back after), an outside edit to 108's
+hours recalculated, 105's totals notice and its confirmation (cancelled, so
+the books stay), and the phone numbers on 105's page. The real-watcher
+recalculation is covered in process (`the_watcher_recalculates_an_edited_draft_and_stops`);
+try it once in the window with an editor that keeps the file open.
 
 ## Phase 4 — Editors (PRs 4a–4d)
 
@@ -843,3 +1032,80 @@ to `Site` when the dependency arrives.
 
 All five were answered on 2026-11-19 (I1, I10, I11, I12, I17). New
 questions go here as they come up.
+
+### Q1 (2026-11-23): how templates are customised, in the invoicer and in MBR
+
+**Why it's open:**
+
+- **Whole pages today.** An invoice's `template:` names a whole page, and MBR's
+  `index.html` has no `{% block %}`s to extend.
+- **Copied set-up.** The chrome switch (T1–T3: `server_mode`, MBR's partials,
+  the `<noscript>` rule, the Pico pins, the print reset) is copied into every
+  template. A custom template without it looks bare in MBR.
+- **No template.** An invoice note with no `template:` shows only its markdown
+  body in MBR, and the addresses in its frontmatter never appear.
+
+**What MBR 0.7.4 can and can't do** (read in its source):
+
+| Fact                                                                    | Where (mbr 0.7.4)                                            |
+|-------------------------------------------------------------------------|--------------------------------------------------------------|
+| A note's `template:` replaces `index.html` for the whole page           | `mbr-core/src/page_template.rs`, `src/templates.rs`          |
+| `.html` files beside a template can be included or extended by name     | `page_template.rs` (siblings), `templates.rs:128-150`        |
+| MBR's own partials can be included as `/.mbr/<name>`                    | `templates.rs:802-806`                                       |
+| MBR's `index.html` has no blocks, so extending it overrides nothing     | `templates/index.html`                                       |
+| A template can't see the request, only `server_mode`                    | `mbr-server/src/server.rs:8183`, `standalone.rs:321`         |
+| PDF export is marked only on the client (`window.__MBR_EXPORT__`)       | `mbr-markdown-browser/src/pdf_export/mod.rs`                 |
+| The note's `type` becomes a `<body>` class (`invoice`)                  | `templates.rs:687`                                           |
+| A books folder can override MBR's templates and partials with `.mbr/*.html` | `templates.rs:173-180`                                   |
+| There's no default template by type or folder                           | `page_template.rs`; nothing in `config.rs`                   |
+
+**The options:**
+
+| Option                                        | What a user writes                                                                              | In MBR                                                                                     | MBR release? |
+|-----------------------------------------------|-------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------|--------------|
+| A. Whole-page templates (today)               | A whole page, plus the copied chrome switch                                                     | Nothing new                                                                                | No           |
+| **B. A shipped base with blocks**             | `{% extends "_invoice_base.html" %}` and only the blocks they change: `theme`, `header`, `parties`, `details`, `body`, `footer` | Nothing new                                                                                | No           |
+| C. CSS only                                   | Colours and fonts over a fixed structure. Too limited on its own, so it becomes B's `theme` block. | Nothing new                                                                                | No           |
+| D. MBR supplies the page (M11 and M12)        | Only the invoice, `{% block invoice %}`; MBR wraps it in its own page, or a bare one             | M11: blocks in `index.html` plus a bare layout chosen by `?mbr-bare`. M12: a default template by note `type` | Yes          |
+
+**B in detail:**
+
+- **The base file.** The invoicer ships one versioned `_invoice_base.html`. It
+  holds the chrome switch, the structure, the Pico pins, the print reset and
+  the books-column rule.
+- **The children.** Classic, Modern and the fixture's MyCo become children of
+  10–40 lines.
+- **Discovery and the starter copy.** Discovery skips `_*.html`, so the base is
+  never offered in the picker. Copying a starter also copies the base.
+- **Existing templates.** Whole-page templates keep working.
+- **Updates.** The base is versioned (`_invoice_base.v1.html`) because the user
+  owns the copy; a later fix ships as `v2`.
+
+**To check before building B:**
+
+- whether the preview of an unsaved template (M10) finds the base file next to
+  it;
+- how `.mbr/` overrides resolve when MBR is opened at a folder above the books.
+
+**D in detail:**
+
+- **M11.** MBR splits `index.html` into blocks (`head_extra`, `chrome_top`,
+  `content`, `chrome_bottom`) and adds `/.mbr/_layout_bare.html`. It sets
+  `page_layout` to the bare layout for standalone renders, for `?mbr-bare`,
+  and for export, which would need to send that flag.
+- **Templates under M11.** A template becomes `{% extends page_layout %}` plus
+  `{% block content %}`.
+- **M11 defaults.** Today's behaviour stays the default.
+- **M12.** `.mbr/config.toml` gets `[page_templates] invoice =
+  "/invoices/tpl/x.html"`, keyed by note `type`. It applies only when a note
+  has no `template:`, which fixes how an invoice without a template looks in
+  MBR.
+
+**Ruled out:** shipping a `.mbr/index.html` override in the user's books. It
+changes every note, and it depends on which folder MBR is opened at.
+
+**Recommendation:** B now. Propose M11 and M12 for the next MBR release; once
+they land, `_invoice_base.html` shrinks to `{% extends page_layout %}`, and
+invoices without a template look right in MBR.
+
+**Decision:** pending (Patrick).

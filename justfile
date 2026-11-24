@@ -6,9 +6,9 @@ dev:
     cd web && bun run dev
 
 # Run the front-end suite: BOTH vitest projects, `unit` (node) and `components`
-# (jsdom, mounted .svelte files), in web/ and in the shared packages/ui (which
-# has the same two projects), plus invoicer/web's (node only, so far). See
-# web/README.md for which to write.
+# (jsdom, mounted .svelte files), in web/, the shared packages/ui and
+# invoicer/web (all three have the same two projects). See web/README.md for
+# which to write.
 # Run unit + component tests (vitest)
 test:
     cd web && bun run test:unit
@@ -19,12 +19,13 @@ test:
 test-node:
     cd web && bun run test:node
     cd packages/ui && bun run test:node
-    cd invoicer/web && bun run test:unit
+    cd invoicer/web && bun run test:node
 
 # Run only the mounted-component tests (vitest --project=components)
 test-components:
     cd web && bun run test:components
     cd packages/ui && bun run test:components
+    cd invoicer/web && bun run test:components
 
 # Without LEDGELINE_API_URL the *.integration.test.ts suites report as SKIPPED, so
 # plain `just test` never exercises the fixture→engine→JSON→decode→rendered-string
@@ -74,6 +75,18 @@ e2e:
     cd web && bun run build
     cargo build -p ledgeline --features test-fakes
     cd web && bun run test:e2e
+
+# The invoicer's suite (invoicer/web/e2e), set up as `e2e`'s is but on the
+# invoicer's ports, 5199 (the server, over a scratch copy of
+# invoicer/fixtures/accrual in target/e2e-invoicer-accrual/) and 4273 (the
+# SPA's `vite preview`), so it can run beside Ledgeline's. The SPA is built
+# before the binary for the same reason: e2e/csp.same-origin.e2e.ts loads the
+# SPA the server embeds. $LEDGELINE_INVOICER_BIN overrides the binary.
+# Run the invoicer's e2e tests (playwright)
+invoicer-e2e:
+    cd invoicer/web && bun run build
+    cargo build -p ledgeline-invoicer
+    cd invoicer/web && bun run test:e2e
 
 # The SPA is built before the binary for the same reason as `e2e`: every docs
 # shot loads the app the engine itself embeds (same-origin, as the packaged app
@@ -266,6 +279,12 @@ build:
 # Production build of the invoicer's static SPA (invoicer/web/build)
 build-invoicer:
     cd invoicer/web && bun run build
+
+# The invoicer's headless server (port 5199) over a journal, for the SPA's
+# `vite dev` on 4273 (invoicer PLAN 3a). Run it on a copy of a fixture: the
+# reconciler writes `paid:` mirrors.
+invoicer-server JOURNAL:
+    cargo run -p ledgeline-invoicer -- --server {{JOURNAL}}
 
 # The SPA is built inside Nix, so no prior `just build` is needed. The bundle
 # also carries its own `hledger` in Contents/MacOS/ (see docs/development/releasing.md).
