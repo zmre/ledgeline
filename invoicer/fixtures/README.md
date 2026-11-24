@@ -1,6 +1,7 @@
 # Invoicer fixtures
 
-Two books folders for the invoicer (PLAN 0d). Every name, number and amount
+Three books folders for the invoicer (PLAN 0d, and `empty/` from Phase 4
+feedback H22). Every name, number and amount
 is invented. The clock is **2026-11-17**.
 `invoicer-core/tests/fixtures.rs` checks that both read with no problems and
 that every booked invoice's total equals its receivable posting.
@@ -51,10 +52,21 @@ deposit row books nothing.
 | 206     | Customer X | Deposit, paid by wire: income on receipt            |
 | 207     | Customer X | Final, applying 206; unpaid ($7,000 left to pay)    |
 
+## `empty/`
+
+Books on the invoicer's first day: `books.journal` declares a few accounts and
+books nothing; `ledgeline.toml` has `[invoicer]` (with `number-start = 1001`);
+`company/My Company.md` is the company note. No invoices, customers, catalog
+or snippets, so every list shows its empty state and the next number is
+1001, "the first number". The e2e spec `invoicer/web/e2e/empty.e2e.ts` runs a
+second server over a scratch copy of it; `session.rs` and the app's
+`files_tests.rs` check it reads empty.
+
 ## Check the books with hledger
 
 ```sh
 hledger -s -f accrual/books.journal -f accrual/recognition.journal check
 hledger -f accrual/books.journal bal 'tag:invoice=^10[1-7]$' 'assets:accounts receivable'
 hledger -s -f cash/books.journal check
+hledger -s -f empty/books.journal check
 ```

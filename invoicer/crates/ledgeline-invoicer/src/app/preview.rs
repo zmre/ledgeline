@@ -10,7 +10,8 @@
 //! saved file is rendered. `template` renders through another template (a
 //! `/`-rooted `.html` path) instead of the one the note names: a file in
 //! the books, or a starter that isn't copied in yet, whose shipped text is
-//! used.
+//! used (folded into the shipped base when the books don't have the base
+//! either: [`starters::preview_source`]).
 //!
 //! **The preview page** (`GET /.ledgeline-invoicer/preview?number=&template=`,
 //! [`page`]) is the same render as a page of its own, for the SPA's frame.
@@ -48,7 +49,7 @@ pub(crate) const PREVIEW_PAGE: &str = "/.ledgeline-invoicer/preview";
 pub(crate) const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 
 /// The request body.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PreviewRequest {
     /// An invoice number (or a path, as `show` takes it).
@@ -152,7 +153,7 @@ pub(crate) fn render(books: &OpenBooks, request: PreviewRequest) -> Result<Previ
                         note_rel,
                         &source,
                         Path::new(path.as_str()),
-                        starter.source,
+                        &starters::preview_source(&**vault, &templates_dir, starter),
                     ),
                     None => Err(MbrError::PageTemplate(PageTemplateError::NotFound {
                         template,
@@ -175,10 +176,71 @@ pub(crate) fn render(books: &OpenBooks, request: PreviewRequest) -> Result<Previ
     })
 }
 
-/// The preview page's query: the saved invoice, through `template`.
+/// How many unsaved previews are kept for the frame (the editor posts one
+/// per pause in typing, and frames the newest).
+const MAX_DRAFTS: usize = 16;
+
+/// How long an unsaved preview is kept.
+const DRAFT_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Unsaved previews (invoicer PLAN 4a): the editor posts its unsaved text
+/// (`POST /api/preview/draft`, token-gated) and frames
+/// `/.ledgeline-invoicer/preview?draft=<id>`, behind MBR's gate, since a
+/// preview can't be a `srcdoc` (see the module docs). Each id is random, one
+/// per post; the oldest are dropped past [`MAX_DRAFTS`] or [`DRAFT_TTL`].
+/// Held by the open books, so File → Open forgets them.
+#[derive(Debug, Default)]
+pub(crate) struct DraftPreviews {
+    drafts: std::sync::Mutex<std::collections::HashMap<String, (PreviewRequest, Instant)>>,
+}
+
+impl DraftPreviews {
+    /// Keep `request` (a path and its unsaved source); its id.
+    pub(crate) fn put(&self, request: PreviewRequest) -> Option<String> {
+        let id = ledgeline_shell::security::AccessToken::generate()
+            .ok()?
+            .as_str()
+            .to_string();
+        let mut drafts = self
+            .drafts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = Instant::now();
+        drafts.retain(|_, (_, at)| now.duration_since(*at) < DRAFT_TTL);
+        while drafts.len() >= MAX_DRAFTS {
+            let Some(oldest) = drafts
+                .iter()
+                .min_by_key(|(_, (_, at))| *at)
+                .map(|(id, _)| id.clone())
+            else {
+                break;
+            };
+            drafts.remove(&oldest);
+        }
+        drafts.insert(id.clone(), (request, now));
+        Some(id)
+    }
+
+    /// The preview `id` names (kept: the frame may load it again).
+    fn get(&self, id: &str) -> Option<PreviewRequest> {
+        let drafts = self
+            .drafts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        drafts
+            .get(id)
+            .filter(|(_, at)| at.elapsed() < DRAFT_TTL)
+            .map(|(request, _)| request.clone())
+    }
+}
+
+/// The preview page's query: the saved invoice, through `template`; or an
+/// unsaved preview (`draft`).
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PageParams {
+    /// An unsaved preview's id ([`DraftPreviews`]).
+    pub draft: Option<String>,
     /// An invoice number (or a path, as `show` takes it).
     pub number: Option<String>,
     /// The note's path in the books folder.
@@ -207,11 +269,22 @@ pub(crate) async fn page(
         Ok(params) => params,
         Err(error) => return problem_page(StatusCode::BAD_REQUEST, &error.body_text()),
     };
-    let request = PreviewRequest {
-        number: params.number,
-        path: params.path,
-        source: None,
-        template: params.template,
+    let request = match params.draft {
+        Some(id) => match books.drafts().get(&id) {
+            Some(request) => request,
+            None => {
+                return problem_page(
+                    StatusCode::NOT_FOUND,
+                    "this preview has expired; edit the invoice to preview it again",
+                );
+            }
+        },
+        None => PreviewRequest {
+            number: params.number,
+            path: params.path,
+            source: None,
+            template: params.template,
+        },
     };
     let rendered = tokio::task::spawn_blocking(move || render(&books, request)).await;
     let preview = match rendered {
@@ -344,7 +417,7 @@ fn template_text(
             .map(|text| (path, text))
             .map_err(|_| bad("not UTF-8")),
         Err(e) if e.is_not_found() => starters::named(templates_dir, template)
-            .map(|s| (path, s.source.to_string()))
+            .map(|s| (path, starters::preview_source(vault, templates_dir, s)))
             .ok_or_else(|| PreviewError::NotFound(format!("template {template}: no such file"))),
         Err(e) => Err(PreviewError::Internal(e.to_string())),
     }

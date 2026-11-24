@@ -693,8 +693,23 @@ impl InvoiceBooks {
     /// [`BooksError::Setup`] for accrual books with no receivable account.
     pub fn preview(&self, index: &DocumentIndex, number: &str) -> Result<Preview, BooksError> {
         let document = self.document(index, number)?;
+        self.preview_of(index, &document)
+    }
+
+    /// [`preview`](Self::preview) of `document` as given: the editor's
+    /// unsaved text (invoicer PLAN 4a), read nowhere, so the Books panel
+    /// shows what saving and sending would book. Writes nothing.
+    ///
+    /// # Errors
+    /// As [`InvoiceBooks::preview`].
+    pub fn preview_of(
+        &self,
+        index: &DocumentIndex,
+        document: &Document,
+    ) -> Result<Preview, BooksError> {
+        let number = document.number();
         let loaded = self.load()?;
-        let booking = self.booking(index, &document, &loaded)?;
+        let booking = self.booking(index, document, &loaded)?;
         let basis = Basis::of(&loaded);
         let mut preview = Preview {
             number: number.to_string(),

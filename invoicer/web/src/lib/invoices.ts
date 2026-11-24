@@ -90,10 +90,59 @@ export function mismatches(table: TableDetail | null): Mismatch[] {
 /** `GET /api/books`. */
 export interface BooksInfo {
     journal: string | null;
+    /** The books' name as Ledgeline shows it (the journal's leading comment, else its folder); null when none. */
+    title?: string | null;
     basis: "accrual" | "cash";
     documents: number;
+    /** The sidebar's counts: invoices (drafts, open, overdue today). */
+    invoices?: {all: number; drafts: number; open: number; overdue: number};
     customers: number;
+    /** Catalog items. */
+    catalog?: number;
+    snippets?: number;
     nextNumber: string;
+    /** The number `nextNumber` follows; null at the start (Phase 4 feedback H19). */
+    nextNumberAfter?: string | null;
+    /** Where `nextNumberAfter` is. */
+    nextNumberSource?: NumberSource;
+}
+
+/** Where a proposed number's predecessor is: a document, only the journal, or none yet (`[invoicer] number-start`). */
+export type NumberSource = "document" | "books" | "start";
+
+/**
+ * Why the next number is what it is, in words (Phase 4 feedback H19): the
+ * numbering rule never reuses a number the journal books, even one with no
+ * invoice file (2001–2004 in the accrual fixture), so "2005" after a highest
+ * file of 108 needs saying. Null when the server didn't say.
+ */
+export function nextNumberReason(after: string | null | undefined, source: NumberSource | string | null | undefined): string | null {
+    if (source === "start") return "the first number";
+    if (after === null || after === undefined || after === "") return null;
+    if (source === "books") return `next after ${after}, booked in the journal`;
+    if (source === "document") return `next after ${after}`;
+    return null;
+}
+
+/** The sidebar's invoice counts, exclusive (Phase 4 feedback H17): overdue, and open but not yet due. Drafts are neither. */
+export interface InvoiceCounts {
+    overdue: number;
+    notDue: number;
+    drafts: number;
+}
+
+/** `GET /api/books`' invoices as the sidebar shows them: its `open` includes the overdue ones, so they come off. */
+export function invoiceCounts(invoices: BooksInfo["invoices"]): InvoiceCounts | null {
+    if (invoices === undefined) return null;
+    const overdue = Math.max(0, invoices.overdue);
+    return {overdue, notDue: Math.max(0, invoices.open - overdue), drafts: Math.max(0, invoices.drafts)};
+}
+
+/** The tooltip for the sidebar's Invoices link: every count in words, drafts included. */
+export function invoiceCountsTitle(counts: InvoiceCounts): string {
+    const parts = [`${counts.overdue} overdue`, `${counts.notDue} open, not yet due`];
+    if (counts.drafts > 0) parts.push(`${counts.drafts} ${counts.drafts === 1 ? "draft" : "drafts"}, not counted`);
+    return parts.join(" · ");
 }
 
 /** A posting, amounts in the journal's style. */

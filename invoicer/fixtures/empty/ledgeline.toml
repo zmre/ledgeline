@@ -1,0 +1,9 @@
+# Ledgeline settings for the invoicer's empty fixture (synthetic): books with
+# the invoicer set up and nothing in them yet.
+
+[invoicer]
+company = "[[My Company]]"
+receivable-account = "assets:accounts receivable"
+revenue-account = "revenue:consulting"
+deposit-account = "liabilities:customer-deposits"
+number-start = 1001

@@ -11,26 +11,11 @@
     import {page} from "$app/state";
     import AsyncSection from "#ui/components/AsyncSection.svelte";
     import type {DataView} from "#ui/ui/dataView.js";
-    import {
-        copyPdf,
-        ensureSession,
-        exportPdf,
-        fetchDelivery,
-        fetchInvoice,
-        fetchInvoiceBooks,
-        fetchTemplates,
-        chooseTemplate,
-        openPdf,
-        openPortal,
-        recalculate,
-        sendInvoice,
-        sharePdf,
-    } from "#lib/api.js";
-    import type {Anchor, Delivery, Destination, Exported} from "#lib/delivery.js";
+    import {ensureSession, fetchInvoice, fetchInvoiceBooks, fetchTemplates, chooseTemplate, recalculate} from "#lib/api.js";
     import {kindLabel, mismatches, pageUrl, previewUrl, type InvoiceBooks, type InvoiceDetail, type TemplateEntry} from "#lib/invoices.js";
     import BooksPanel from "#lib/components/BooksPanel.svelte";
     import InvoiceFrame from "#lib/components/InvoiceFrame.svelte";
-    import SendPanel from "#lib/components/SendPanel.svelte";
+    import SendSection from "#lib/components/SendSection.svelte";
     import TemplatePicker from "#lib/components/TemplatePicker.svelte";
     import TotalsNotice from "#lib/components/TotalsNotice.svelte";
     import {changes} from "#lib/changes.svelte.js";
@@ -89,40 +74,16 @@
             });
     }
 
-    // The Send panel (PLAN 3c).
-    let delivery = $state<Delivery | null>(null);
-    let exported = $state<Exported | null>(null);
-    let sending = $state(false);
-    let sendError = $state<string | null>(null);
+    // The Send panel (PLAN 3c), with its own wiring (SendSection), re-read on every refresh.
+    let sendReload = $state(0);
     /** Bumped after a write, so MBR's page in the frame shows the file again. */
     let frameKey = $state(0);
-
-    function loadDelivery(target: string): void {
-        fetchDelivery(target)
-            .then((d) => {
-                if (target === number) delivery = d;
-            })
-            .catch((e: unknown) => (sendError = asError(e).message));
-    }
-
-    /** Run one Send-panel action: busy while it runs, its error shown. */
-    async function act(action: () => Promise<void>): Promise<void> {
-        sending = true;
-        sendError = null;
-        try {
-            await action();
-        } catch (e: unknown) {
-            sendError = asError(e).message;
-        } finally {
-            sending = false;
-        }
-    }
 
     /** Everything again, keeping what is shown until it arrives; the frame reloads its page. */
     function refreshAll(target: string): void {
         loadDetail(target, true);
         loadBooks(target, true);
-        loadDelivery(target);
+        sendReload += 1;
         frameKey += 1;
     }
 
@@ -138,22 +99,6 @@
             loadTemplates();
         });
     });
-
-    const onExport = (options: {temp: boolean}): Promise<void> =>
-        act(async () => {
-            const target = number;
-            exported = await exportPdf(target, options);
-            loadDelivery(target);
-        });
-
-    const onSendAndExport = (via: string): Promise<void> =>
-        act(async () => {
-            const target = number;
-            await sendInvoice(target, via);
-            refreshAll(target);
-            exported = await exportPdf(target);
-            refreshAll(target);
-        });
 
     // The invoice's own writes: its template, its amounts (F9, F10).
     let editing = $state<"template" | "recalc" | null>(null);
@@ -197,27 +142,6 @@
         }
     }
 
-    const onShare = (destination: Destination, file: string, anchor: Anchor): Promise<void> => act(() => sharePdf(destination, file, anchor));
-    const onCopyFile = (destination: Destination, file: string): Promise<void> => act(() => copyPdf(destination, file));
-    const onOpenFile = (destination: Destination, file: string): Promise<void> => act(() => openPdf(destination, file));
-    const onOpenPortal = (): Promise<void> => act(() => openPortal(number));
-    const onCopyText = (label: string, text: string): Promise<void> =>
-        act(async () => {
-            try {
-                await navigator.clipboard.writeText(text);
-            } catch {
-                throw new Error(`Couldn't copy the ${label.toLowerCase()}; select it and copy by hand.`);
-            }
-        });
-
-    $effect(() => {
-        const target = number;
-        delivery = null;
-        exported = null;
-        sendError = null;
-        loadDelivery(target);
-    });
-
     $effect(() => {
         const target = number;
         chosen = "";
@@ -257,6 +181,7 @@
                     {doc.number ?? ""}
                 </h1>
                 <StatusBadge {doc} />
+                <a class="btn btn-outline btn-xs" href={resolve("/invoices/[number]/edit", {number})} data-testid="invoice-edit">Edit</a>
                 <span class="text-base-content/70" data-testid="invoice-customer">{doc.invoicee.name ?? ""}</span>
                 {#if doc.table?.total}
                     <span class="ml-auto text-lg font-semibold tabular-nums" data-testid="invoice-total">{doc.table.total}</span>
@@ -265,23 +190,7 @@
 
             <!-- Top to bottom, each full width (Patrick, 2026-11-23): sending, the
                  invoice as wide as the page allows, then the books with room for their tables. -->
-            {#if delivery !== null}
-                <SendPanel
-                    {delivery}
-                    {exported}
-                    busy={sending}
-                    error={sendError}
-                    {onExport}
-                    {onSendAndExport}
-                    {onShare}
-                    {onCopyFile}
-                    {onOpenFile}
-                    {onOpenPortal}
-                    {onCopyText}
-                />
-            {:else if sendError !== null}
-                <div class="alert text-sm alert-error" role="alert" data-testid="send-error">{sendError}</div>
-            {/if}
+            <SendSection {number} reload={sendReload} onChanged={() => refreshAll(number)} />
 
             <section class="flex min-w-0 flex-col gap-2" aria-label="The invoice">
                 <TotalsNotice

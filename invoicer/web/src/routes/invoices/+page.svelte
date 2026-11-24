@@ -47,10 +47,21 @@
 </svelte:head>
 
 <div class="mx-auto flex max-w-6xl flex-col gap-4">
-    <h1 class="text-2xl font-semibold tracking-tight">Invoices</h1>
+    <!-- The page's New button is top right, primary, as on every list (H21); the empty state has its own. -->
+    <div class="flex flex-wrap items-center justify-between gap-2">
+        <h1 class="text-2xl font-semibold tracking-tight">Invoices</h1>
+        {#if (invoices?.length ?? 0) > 0}
+            <a class="btn btn-primary btn-sm" href={resolve("/new")} data-testid="invoices-new">New invoice</a>
+        {/if}
+    </div>
     <AsyncSection {view} value={invoices} {error} testid="invoices-error" label="the invoices" loadingLabel="Loading invoices" onRetry={load}>
         {#snippet children(list)}
-            <InvoiceList invoices={list} href={invoiceHref} onOpen={(doc) => void goto(resolve("/invoices/[number]", {number: doc.number ?? doc.path}))} />
+            <InvoiceList
+                invoices={list}
+                href={invoiceHref}
+                newHref={resolve("/new")}
+                onOpen={(doc) => void goto(resolve("/invoices/[number]", {number: doc.number ?? doc.path}))}
+            />
         {/snippet}
     </AsyncSection>
 </div>

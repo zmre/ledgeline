@@ -202,7 +202,7 @@ fn fill_pattern(pattern: &str, date: &str, customer: &str, number: &str) -> Stri
 
 /// A number as frontmatter writes it: a YAML integer when it reads back the
 /// same (`105`), else text (`"0042"`, `2026-0042`).
-fn number_value(number: &InvoiceNumber) -> Value {
+pub(crate) fn number_value(number: &InvoiceNumber) -> Value {
     number
         .as_str()
         .parse::<u64>()
@@ -215,7 +215,7 @@ fn number_value(number: &InvoiceNumber) -> Value {
 }
 
 /// Multi-line text as a `|` block wants it: ending in a newline.
-fn block_text(text: &str) -> Value {
+pub(crate) fn block_text(text: &str) -> Value {
     if text.contains('\n') && !text.ends_with('\n') {
         Value::String(format!("{text}\n"))
     } else {

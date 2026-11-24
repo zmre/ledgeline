@@ -126,7 +126,7 @@ pub(crate) async fn use_template(
         let copied = match starters::install_named(session.vault(), &dir, &wanted) {
             Ok(Some(done)) if done.written => {
                 let (index, vault) = session.parts_mut();
-                index.refresh(vault, std::slice::from_ref(&done.path));
+                index.refresh(vault, &done.written_files());
                 Some(done.path.to_string())
             }
             Ok(_) => None,

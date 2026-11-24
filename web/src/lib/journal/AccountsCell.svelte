@@ -23,7 +23,7 @@
     import {rootPx} from "#ui/theme/scale.js";
     import {accountColumn} from "./accountColumn.svelte";
     import {flowChipRooms, splitChipRooms} from "./chipGeometry";
-    import AccountInput from "./edit/AccountInput.svelte";
+    import AccountInput from "#ui/components/AccountInput.svelte";
     import {rowActions} from "./rowAction.svelte";
     import {type AccountFlow, accountFlow, generatedPostings, generatingRules} from "./rowModel";
 

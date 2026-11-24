@@ -210,6 +210,17 @@ impl DocumentIndex {
         numbering::next_number(self.numbers(), books, &self.settings.first_number())
     }
 
+    /// [`Self::next_number`] with where it comes from (Phase 4 feedback H19).
+    ///
+    /// # Errors
+    /// [`NumberingError`].
+    pub fn explain_next_number<'a>(
+        &'a self,
+        books: impl IntoIterator<Item = &'a str>,
+    ) -> Result<numbering::NextNumber, NumberingError> {
+        numbering::explain_next_number(self.numbers(), books, &self.settings.first_number())
+    }
+
     /// Documents matching `filter`, newest first (date, then number).
     #[must_use]
     pub fn list(&self, filter: &ListFilter) -> Vec<&IndexedDoc> {
@@ -414,8 +425,21 @@ impl DocumentIndex {
             if let Some(template) = &doc.header.template
                 && templates::find(&templates, template).is_none()
             {
+                let is_base = VaultPath::new(template.trim().trim_start_matches('/'))
+                    .is_ok_and(|p| templates::is_partial(&p));
+                let message = if is_base {
+                    format!(
+                        "`template: {template}` is a base for templates to extend (its name \
+                         starts with `_`), not a template: name one that extends it"
+                    )
+                } else {
+                    format!(
+                        "`template: {template}` isn't a template (an .html file mentioning \
+                         invoice_num, or extending an invoice base)"
+                    )
+                };
                 out.push(at(
-                    Problem::warning(ProblemCode::UnknownTemplate, format!("`template: {template}` isn't a template (an .html file mentioning invoice_num)")),
+                    Problem::warning(ProblemCode::UnknownTemplate, message),
                     "template",
                 ));
             }

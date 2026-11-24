@@ -30,6 +30,7 @@ mod app;
 mod human;
 mod pdf;
 mod starters;
+mod tera_scan;
 
 use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser, Subcommand};
 use invoicer_core::books::{
@@ -544,13 +545,14 @@ fn new_rows(
 /// customer: the draft reports that.
 fn starter_for_new(
     session: &Session,
-    args: &NewArgs,
+    customer: &str,
+    template: Option<&str>,
 ) -> (Option<String>, Option<&'static starters::Starter>) {
     let dir = &session.settings().templates_dir;
-    let Ok(customer) = views::find_customer(session.index(), &args.customer) else {
+    let Ok(customer) = views::find_customer(session.index(), customer) else {
         return (None, None);
     };
-    match args.template.clone().or(customer.invoice_template) {
+    match template.map(str::to_string).or(customer.invoice_template) {
         Some(value) => (None, starters::named(dir, &value)),
         None => {
             let has_one = templates::discover(session.vault(), session.index().site())
@@ -576,7 +578,8 @@ fn run_new(cli: &Cli, args: &NewArgs, matches: Option<&ArgMatches>) -> Result<Ex
         .iter()
         .map(|f| edit::assignment(f))
         .collect::<Result<Vec<_>, WriteError>>()?;
-    let (starter_template, starter) = starter_for_new(&session, args);
+    let (starter_template, starter) =
+        starter_for_new(&session, &args.customer, args.template.as_deref());
     let new = NewInvoice {
         template: args.template.clone().or(starter_template),
         number: args.number.clone(),
@@ -603,7 +606,7 @@ fn run_new(cli: &Cli, args: &NewArgs, matches: Option<&ArgMatches>) -> Result<Ex
                 Failure(format!("copying the {} template: {e}", starter.name), None)
             })?;
             let (index, vault) = session.parts_mut();
-            index.refresh(vault, std::slice::from_ref(&installed.path));
+            index.refresh(vault, &installed.written_files());
             installed.written.then_some(installed.path)
         }
         None => None,
@@ -726,7 +729,7 @@ fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
                         .map_err(|e| Failure(format!("copying the starter template: {e}"), None))?;
                     if let Some(done) = installed.filter(|d| d.written) {
                         let (index, vault) = session.parts_mut();
-                        index.refresh(vault, std::slice::from_ref(&done.path));
+                        index.refresh(vault, &done.written_files());
                         copied = Some(done.path);
                     }
                 }
@@ -784,15 +787,20 @@ fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
         }
         Command::NextNumber => {
             let session = open(cli)?;
-            let next = session.next_number()?;
+            let next = session.explain_next_number()?;
+            /// `after` and `source` say what it follows (PLAN H19).
             #[derive(Serialize)]
             struct Out {
                 next: String,
+                after: Option<String>,
+                source: &'static str,
             }
             emit(
                 cli.json,
                 &Out {
-                    next: next.to_string(),
+                    next: next.number.to_string(),
+                    after: next.after,
+                    source: next.source.as_str(),
                 },
                 |o| format!("{}\n", o.next),
             );

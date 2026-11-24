@@ -6,7 +6,7 @@
 <script lang="ts">
     import DateInput from "#ui/components/DateInput.svelte";
     import type {JournalTarget} from "#lib/imports/importTypes.js";
-    import AccountInput from "#lib/journal/edit/AccountInput.svelte";
+    import AccountInput from "#ui/components/AccountInput.svelte";
     import {localToday} from "#lib/stores/filters.svelte.js";
     import {formatMoney} from "../format";
     import type {NewAccountType, WireRemoteAccount} from "../types";

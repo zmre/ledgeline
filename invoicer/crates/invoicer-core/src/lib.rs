@@ -12,14 +12,18 @@
 //! - [`settings`]: `ledgeline.toml [invoicer]` (§3.8);
 //! - [`notes`]: discovery, behind an API shaped like MBR's `Site` (§3.1);
 //! - [`customers`] (§3.4) and [`snippets`] (§3.7);
+//! - [`customer_edit`]: creating and editing customer notes (PLAN 4b);
 //! - [`doc`]: the invoice document and its validation (§3.2);
 //! - [`catalog`] (§3.6) and [`templates`] (§3.5);
+//! - [`catalog_edit`] and [`snippet_edit`]: the catalog and snippets editors
+//!   (PLAN 4c);
 //! - [`numbering`] (§5.1);
 //! - [`index`]: the in-memory document index (§5.6);
 //! - [`draft`]: creating drafts and saving documents (§5.2);
 //! - [`session`]: an open books folder (§6.4);
 //! - [`views`]: what the read commands show, for the CLI and the API;
 //! - [`edit`]: the commands that write documents (`new`, `set`, `recalc`);
+//! - [`editor`]: the app editor's form of a document, and saving it (4a);
 //! - [`books`]: the books bridge — what an invoice books, send, re-book,
 //!   void, deposits, cash-books Apply payment and recognition (§4);
 //! - [`reconcile`]: the books' payment state, the `paid:` mirror, and the
@@ -32,10 +36,13 @@
 pub mod booking;
 pub mod books;
 pub mod catalog;
+pub mod catalog_edit;
+pub mod customer_edit;
 pub mod customers;
 pub mod doc;
 pub mod draft;
 pub mod edit;
+pub mod editor;
 pub mod frontmatter;
 pub mod index;
 pub mod notes;
@@ -47,6 +54,7 @@ pub mod reconcile;
 pub mod sent;
 pub mod session;
 pub mod settings;
+pub mod snippet_edit;
 pub mod snippets;
 pub mod table;
 pub mod templates;

@@ -1,5 +1,5 @@
 // The invoice list, mounted: every row links to its invoice, overdue due
-// dates stand out, and an empty books folder says how to make one.
+// dates stand out, and an empty books folder offers New invoice.
 import {fireEvent, render, screen, within} from "@testing-library/svelte";
 import {describe, expect, it, vi} from "vitest";
 import InvoiceList from "./InvoiceList.svelte";
@@ -62,14 +62,13 @@ describe("COMPONENT InvoiceList", () => {
         expect(rows[0].getAttribute("role")).toBeNull();
     });
 
-    it("says how to make the first invoice when there are none", () => {
-        render(InvoiceList, {href, invoices: []});
+    it("offers the editor's New invoice when there are none", () => {
+        render(InvoiceList, {href, invoices: [], newHref: "/app/new"});
         const empty = screen.getByTestId("invoice-list-empty").textContent ?? "";
         expect(empty).toContain("No invoices yet");
-        expect(empty).toContain("ledgeline-invoicer new --customer");
-        expect(empty).toContain("--row");
-        expect(empty).toContain("[invoicer]");
-        expect(empty).toContain("tagged customer");
+        expect(screen.getByTestId("invoice-list-new").getAttribute("href")).toBe("/app/new");
+        expect(empty).not.toContain("ledgeline-invoicer");
+        expect(screen.getByTestId("invoice-list-new").className).toContain("btn-primary");
         expect(screen.queryByTestId("invoice-list")).toBeNull();
     });
 });

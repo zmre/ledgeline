@@ -4,3 +4,12 @@
  * rules go after it.
  */
 @import "@ledgeline/ui/theme.css";
+
+/* A dragged grid row's landing place (BillGrid, CatalogGrid): a line above
+   the row it would go before, or below the last row. */
+tr[data-drop="before"] > td {
+    box-shadow: inset 0 2px 0 var(--color-primary);
+}
+tr[data-drop="after"] > td {
+    box-shadow: inset 0 -2px 0 var(--color-primary);
+}

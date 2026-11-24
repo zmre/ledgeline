@@ -10,7 +10,7 @@
 <script lang="ts">
     import {decToInput} from "#lib/api/editMapping.js";
     import type {AccountClasses} from "#lib/domain/accountClass.js";
-    import AccountInput from "#lib/journal/edit/AccountInput.svelte";
+    import AccountInput from "#ui/components/AccountInput.svelte";
     import {accountOrNull, eventBalances, isIsoDate, noteProblem, parseSignedInput} from "../../../scenarioModel";
     import type {ForecastDefaults, ScenarioEvent} from "../../../types";
     import TypeBadge from "../TypeBadge.svelte";

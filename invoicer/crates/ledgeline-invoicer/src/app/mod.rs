@@ -18,11 +18,15 @@
 
 pub(crate) mod api;
 pub(crate) mod books;
+pub(crate) mod customers;
 #[cfg(feature = "gui")]
 pub(crate) mod desktop;
+pub(crate) mod editor;
 pub(crate) mod edits;
+pub(crate) mod files;
 #[cfg(feature = "gui")]
 mod gui;
+pub(crate) mod library;
 pub(crate) mod mbr;
 pub(crate) mod native;
 pub(crate) mod pdf;
@@ -228,5 +232,11 @@ async fn spa_page(uri: Uri) -> Response {
     }
 }
 
+#[cfg(test)]
+mod customers_tests;
+#[cfg(test)]
+mod files_tests;
+#[cfg(test)]
+mod library_tests;
 #[cfg(test)]
 mod tests;

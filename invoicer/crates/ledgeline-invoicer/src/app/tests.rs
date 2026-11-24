@@ -14,9 +14,9 @@ use tower::ServiceExt as _;
 use super::books::OpenBooks;
 use super::{AppState, router};
 
-const TOKEN: &str = "router-test-token-0123456789";
+pub(super) const TOKEN: &str = "router-test-token-0123456789";
 const PORT: u16 = 5199;
-const HOST: &str = "127.0.0.1:5199";
+pub(super) const HOST: &str = "127.0.0.1:5199";
 
 fn copy_tree(src: &Path, dest: &Path) {
     std::fs::create_dir_all(dest).expect("mkdir");
@@ -47,14 +47,14 @@ fn fixture_named(name: &str) -> (tempfile::TempDir, PathBuf) {
     (dir, journal)
 }
 
-struct App {
+pub(super) struct App {
     _dir: tempfile::TempDir,
-    books: Arc<OpenBooks>,
-    router: Router,
+    pub(super) books: Arc<OpenBooks>,
+    pub(super) router: Router,
 }
 
 /// Must run inside a tokio runtime (MBR spawns on it).
-fn app() -> App {
+pub(super) fn app() -> App {
     app_with(None)
 }
 
@@ -64,7 +64,7 @@ fn app_with(native: Option<Arc<dyn super::native::Native>>) -> App {
 }
 
 /// [`app_with`] over the fixture `name` (`accrual`, `cash`).
-fn app_on(name: &str, native: Option<Arc<dyn super::native::Native>>) -> App {
+pub(super) fn app_on(name: &str, native: Option<Arc<dyn super::native::Native>>) -> App {
     let (dir, journal) = fixture_named(name);
     let books = Arc::new(OpenBooks::open(&journal, false).expect("opens"));
     let app_dirs = AppDirs::under(dir.path().join("config"));
@@ -78,7 +78,7 @@ fn app_on(name: &str, native: Option<Arc<dyn super::native::Native>>) -> App {
     }
 }
 
-async fn send(
+pub(super) async fn send(
     router: &Router,
     request: Request<Body>,
 ) -> (StatusCode, axum::http::HeaderMap, String) {
@@ -98,7 +98,7 @@ fn get(path: &str) -> axum::http::request::Builder {
     Request::get(path).header(header::HOST, HOST)
 }
 
-fn authed(path: &str) -> Request<Body> {
+pub(super) fn authed(path: &str) -> Request<Body> {
     get(path)
         .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
         .body(Body::empty())
@@ -322,7 +322,7 @@ async fn the_first_paint_reads_the_shared_prefs() {
     );
 }
 
-fn post_json(path: &str, body: &serde_json::Value) -> Request<Body> {
+pub(super) fn post_json(path: &str, body: &serde_json::Value) -> Request<Body> {
     Request::post(path)
         .header(header::HOST, HOST)
         .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
@@ -829,11 +829,11 @@ fn mocked() -> (App, Arc<MockNative>) {
     (app, native)
 }
 
-fn books_root(app: &App) -> PathBuf {
+pub(super) fn books_root(app: &App) -> PathBuf {
     app.books.vault().root().to_path_buf()
 }
 
-async fn json_of(app: &App, request: Request<Body>) -> (StatusCode, serde_json::Value) {
+pub(super) async fn json_of(app: &App, request: Request<Body>) -> (StatusCode, serde_json::Value) {
     let (status, _, body) = send(&app.router, request).await;
     let value = serde_json::from_str(&body).unwrap_or(serde_json::Value::String(body));
     (status, value)
@@ -856,7 +856,7 @@ async fn pdf_routes_say_when_this_process_cannot_print() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
         body["capabilities"],
-        serde_json::json!({"pdf": false, "share": false, "copy_file": false, "open_url": false, "open_file": false})
+        serde_json::json!({"pdf": false, "share": false, "copy_file": false, "open_url": false, "open_file": false, "pick_file": false})
     );
     // The token, as everywhere under /api.
     let anonymous = Request::post("/api/invoices/105/pdf")
@@ -1930,3 +1930,308 @@ async fn recalculating_a_sent_invoice_in_a_closed_period_writes_nothing() {
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
 }
+
+// ---------------------------------------------------------------------------
+// The shipped base (PLAN Q1, option B): the starters and the fixture's
+// template extend `_invoice_base.v1.html`.
+// ---------------------------------------------------------------------------
+
+const BASE_FILE: &str = "invoices/tpl/_invoice_base.v1.html";
+
+/// Q1's first unknown: MBR reads a template's siblings from disk only, so a
+/// starter not copied in, in books without the base either (books from
+/// before the base: whole-page templates only), can't find what it
+/// extends. The preview folds it into the shipped base, which gives the
+/// page the real `extends` gives once the base is there.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_starter_previews_in_books_without_the_base() {
+    let app = app();
+    let root = books_root(&app);
+    std::fs::remove_file(root.join(BASE_FILE)).unwrap();
+    // A child without its base beside it would break every template in the
+    // folder (Tera checks the inheritance of all the siblings MBR
+    // registers), so these books' own template is a whole page, as before.
+    std::fs::write(
+        root.join("invoices/tpl/myco-default.html"),
+        "<p>Invoice {{ frontmatter.invoice_num }}</p>{{ markdown | safe }}",
+    )
+    .unwrap();
+    let before = snapshot(&root);
+    let mut folded = Vec::new();
+    for template in ["/invoices/tpl/classic.html", "/invoices/tpl/modern.html"] {
+        for number in ["104", "105", "108"] {
+            let (status, page, _) = preview(
+                &app,
+                serde_json::json!({"number": number, "template": template}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{template} {number}: {page}");
+            if number == "105" {
+                assert_bill_table_105(&page);
+            }
+            folded.push(page);
+        }
+    }
+    // A note naming a starter that isn't there (unsaved text) folds too.
+    let source = std::fs::read_to_string(root.join(INVOICE_105))
+        .unwrap()
+        .replace(
+            "/invoices/tpl/myco-default.html",
+            "/invoices/tpl/classic.html",
+        );
+    let (status, page, _) = preview(
+        &app,
+        serde_json::json!({"path": INVOICE_105, "source": source}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert!(page.contains("class=\"letterhead\""), "{page}");
+    assert_eq!(snapshot(&root), before, "a preview writes nothing");
+
+    // The same pages through the real `extends`, the base on disk.
+    std::fs::write(root.join(BASE_FILE), crate::starters::BASE.source).unwrap();
+    let mut extended = Vec::new();
+    for template in ["/invoices/tpl/classic.html", "/invoices/tpl/modern.html"] {
+        for number in ["104", "105", "108"] {
+            let (status, page, _) = preview(
+                &app,
+                serde_json::json!({"number": number, "template": template}),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{page}");
+            extended.push(page);
+        }
+    }
+    assert_eq!(folded, extended);
+
+    // The user's base, when the books have one, is what a starter extends.
+    std::fs::write(
+        root.join(BASE_FILE),
+        crate::starters::BASE.source.replace(
+            "<main class=\"invoice-main\">",
+            "<main class=\"invoice-main\" data-mine>",
+        ),
+    )
+    .unwrap();
+    let (_, page, _) = preview(
+        &app,
+        serde_json::json!({"number": "105", "template": "/invoices/tpl/modern.html"}),
+    )
+    .await;
+    assert!(page.contains("data-mine"), "{page}");
+}
+
+/// Copying a starter in brings the base it extends: Use this template, a
+/// hand edit (the watcher) and opening the books. Never over a base that
+/// is there.
+#[tokio::test(flavor = "multi_thread")]
+async fn copying_a_starter_in_brings_the_base() {
+    // Use this template.
+    let (sending, _native) = mocked();
+    let root = books_root(&sending);
+    std::fs::remove_file(root.join(BASE_FILE)).unwrap();
+    let (status, body) = json_of(
+        &sending,
+        post_json(
+            "/api/invoices/108/template",
+            &serde_json::json!({"template": MODERN}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["copied"], "invoices/tpl/modern.html");
+    assert_eq!(
+        std::fs::read_to_string(root.join(BASE_FILE)).unwrap(),
+        crate::starters::BASE.source
+    );
+    let (status, _, page) = send(&sending.router, authed(PAGE_108)).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert!(page.contains("#108"), "{page}");
+    // The base isn't a template: not listed, and nothing warns of it.
+    let (_, list) = json_of(&sending, authed("/api/templates")).await;
+    assert!(!list.to_string().contains("_invoice_base"), "{list}");
+    let (_, detail) = json_of(&sending, authed("/api/invoices/108")).await;
+    assert!(!detail.to_string().contains("unknown-template"), "{detail}");
+
+    // A hand edit, seen by the watcher.
+    let app = app();
+    let root = books_root(&app);
+    std::fs::remove_file(root.join(BASE_FILE)).unwrap();
+    let file = root.join(INVOICE_108);
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(
+        &file,
+        text.replace("/invoices/tpl/myco-default.html", MODERN),
+    )
+    .unwrap();
+    app.books.apply_changes(std::slice::from_ref(&file));
+    assert_eq!(
+        std::fs::read_to_string(root.join(BASE_FILE)).unwrap(),
+        crate::starters::BASE.source
+    );
+    let (status, _, page) = send(&app.router, authed(PAGE_108)).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+
+    // Opening the books.
+    let (dir, journal) = fixture();
+    let books_dir = dir.path().join("books");
+    std::fs::remove_file(books_dir.join(BASE_FILE)).unwrap();
+    let file = books_dir.join(INVOICE_108);
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(
+        &file,
+        text.replace(
+            "/invoices/tpl/myco-default.html",
+            "/invoices/tpl/classic.html",
+        ),
+    )
+    .unwrap();
+    let books = OpenBooks::open(&journal, false).expect("opens");
+    let copied = books.install_starters();
+    assert_eq!(
+        copied.iter().map(|p| p.as_str()).collect::<Vec<_>>(),
+        [BASE_FILE, "invoices/tpl/classic.html"]
+    );
+}
+
+/// A whole-page template (no base), as every template was before Q1,
+/// keeps working: listed, previewed, and served by MBR.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_whole_page_template_keeps_working() {
+    let app = app();
+    let root = books_root(&app);
+    let whole = "{# invoicer: name=\"Whole page\" #}\n<!doctype html>\n<html><head><title>{{ frontmatter.title }}</title></head>\n\
+                 <body><h1 class=\"whole\">Invoice {{ frontmatter.invoice_num }}</h1>{{ markdown | safe }}</body></html>\n";
+    std::fs::write(root.join("invoices/tpl/whole.html"), whole).unwrap();
+    app.books
+        .apply_changes(&[root.join("invoices/tpl/whole.html")]);
+    let (_, list) = json_of(&app, authed("/api/templates")).await;
+    assert!(
+        list.as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["path"] == "/invoices/tpl/whole.html" && t["name"] == "Whole page"),
+        "{list}"
+    );
+    let (status, page, _) = preview(
+        &app,
+        serde_json::json!({"number": "105", "template": "/invoices/tpl/whole.html"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert!(
+        page.contains("<h1 class=\"whole\">Invoice 105</h1>"),
+        "{page}"
+    );
+    assert_bill_table_105(&page.replace(
+        "</h1>",
+        "</h1>table:has(thead th:last-child &gt; em:only-child)",
+    ));
+
+    let file = root.join(INVOICE_105);
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(
+        &file,
+        text.replace(
+            "/invoices/tpl/myco-default.html",
+            "/invoices/tpl/whole.html",
+        ),
+    )
+    .unwrap();
+    let (status, _, page) = send(
+        &app.router,
+        authed("/invoices/2026-11-10%20Customer%20X%20Invoice%20105/"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert!(
+        page.contains("<h1 class=\"whole\">Invoice 105</h1>"),
+        "{page}"
+    );
+    assert!(
+        !page.contains("invoice-main"),
+        "nothing of the base: {page}"
+    );
+}
+
+/// A child that only restyles (`theme`) is a template though it never
+/// names `invoice_num`, and gets the base's layout: both parties with
+/// address, email and phone, the dates, the bill. `settings` can turn
+/// MBR's chrome off.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_theme_only_child_gets_the_bases_layout() {
+    let app = app();
+    let root = books_root(&app);
+    let child = "{# invoicer: name=\"Mine\" #}\n{% extends \"_invoice_base.v1.html\" %}\n\
+                 {% block theme %}{{ super() }} .sheet { font-family: Georgia, serif; }{% endblock theme %}\n";
+    std::fs::write(root.join("invoices/tpl/mine.html"), child).unwrap();
+    let bare = "{# invoicer: name=\"Bare\" #}\n{% extends \"_invoice_base.v1.html\" %}\n\
+                {% block settings %}{% set chrome = false %}{% endblock settings %}\n";
+    std::fs::write(root.join("invoices/tpl/bare.html"), bare).unwrap();
+    app.books.apply_changes(&[
+        root.join("invoices/tpl/mine.html"),
+        root.join("invoices/tpl/bare.html"),
+    ]);
+    let (_, list) = json_of(&app, authed("/api/templates")).await;
+    let names: Vec<&str> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"Mine") && names.contains(&"Bare"),
+        "{names:?}"
+    );
+
+    let (status, page, _) = preview(
+        &app,
+        serde_json::json!({"number": "105", "template": "/invoices/tpl/mine.html"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_bill_table_105(&page);
+    for text in [
+        "Georgia, serif",
+        "--desk: #eef0f2",
+        "<h1>Invoice 105</h1>",
+        "From My Company",
+        "1234 Background Blvd.",
+        "finance@mycompany.com",
+        "+1 (555) 010-2000",
+        "Bill to Customer X",
+        "1234 Main St. #555",
+        "accounts_receivable@customerx.com",
+        "+1 (303) 555-0142",
+        "<b>Terms</b> Net 30",
+        "mbr-export-ready",
+    ] {
+        assert!(page.contains(text), "missing {text:?}");
+    }
+
+    // MBR's own page: chrome through `mine`, none through `bare`.
+    let file = root.join(INVOICE_105);
+    let text = std::fs::read_to_string(&file).unwrap();
+    for (template, chrome) in [("mine", true), ("bare", false)] {
+        std::fs::write(
+            &file,
+            text.replace(
+                "/invoices/tpl/myco-default.html",
+                &format!("/invoices/tpl/{template}.html"),
+            ),
+        )
+        .unwrap();
+        let (status, _, page) = send(
+            &app.router,
+            authed("/invoices/2026-11-10%20Customer%20X%20Invoice%20105/"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        assert!(page.contains("Bill to Customer X"), "{page}");
+        assert_eq!(page.contains("<mbr-search>"), chrome, "{template}: {page}");
+    }
+}
+
+/// The invoice editor's routes (4a), with these helpers.
+#[path = "editor_tests.rs"]
+mod editor_tests;

@@ -549,19 +549,30 @@ The invoicer adds nothing magic: a template sees exactly what MBR sees. That
 is the point, since a third party can render our invoices with plain `mbr`.
 
 - **Discovery.** A template is any non-ignored `.html` file whose source
-  mentions `invoice_num`. Its display name and kind can come from a Tera
-  comment on its first line, for example
-  `{# invoicer: name="MyCo default" kinds="invoice,estimate" #}`. Tera
-  comments aren't HTML comments, and this is an HTML file anyway. With no
-  such comment, the name is the file stem and the kind is `invoice`.
-- **Starter templates.** The invoicer ships two (Classic, Modern). Each is
-  copied into `invoices/tpl/` the first time an invoice uses it, and from
-  then on it is the user's file. Each starter includes:
-  - print CSS (`@page` size and margins);
-  - the books-column CSS;
-  - MBR's export-ready script (MBR-CHANGES M5);
-  - MBR's chrome only where it works: see "MBR's chrome" below.
-- **MBR's chrome.** Served by MBR (`server_mode`), a template includes MBR's
+  mentions `invoice_num` or extends an invoice base
+  (`{% extends "_invoice_base.v1.html" %}`), unless its name starts with
+  `_`: a `_` file is a base or a partial, never offered as a template. Its
+  display name and kind can come from a Tera comment on its first line,
+  for example `{# invoicer: name="MyCo default" kinds="invoice,estimate" #}`.
+  Tera comments aren't HTML comments, and this is an HTML file anyway. With
+  no such comment, the name is the file stem and the kind is `invoice`.
+- **The base** (PLAN Q1, option B). The invoicer ships one base,
+  `_invoice_base.v1.html`, which holds the page around the sheet: MBR's
+  chrome where it works (below), Pico's pinned variables, the print reset,
+  the books-column CSS and MBR's export-ready script (MBR-CHANGES M5). A
+  template extends it and overrides only its blocks: `settings`, `ready`,
+  `head`, `theme` (the CSS), `header`, `parties`, `details`, `body`,
+  `footer`. The base's own blocks make a complete invoice, both parties'
+  address, email and phone included, so a template may override `theme`
+  alone. The base's comment header is the guide. It is versioned in its
+  name because the user owns the copy: a fix ships as `v2`, and templates
+  that extend `v1` keep it. A whole-page template (no base) works as well.
+- **Starter templates.** The invoicer ships two (Classic, Modern), both
+  children of the base. Each is copied into `invoices/tpl/` the first time
+  an invoice uses it, with the base beside it (create-new), and from then
+  on both are the user's files. Each starter adds its own print CSS
+  (`@page` size and margins) and look.
+- **MBR's chrome.** Served by MBR (`server_mode`), the base includes MBR's
   partials (`/.mbr/_head_markdown.html`, `_nav.html`, `_breadcrumbs.html`,
   the previous/next footer, `_footer.html`, `_scripts.html`), so an invoice
   opened in MBR keeps its sidebar, search and navigation, and the sheet sits
@@ -1234,9 +1245,10 @@ scale, container-query breakpoints) and the same native-mode contract.
   - **Books panel:** what will be booked, or what was booked. Postings,
     schedules, settlement and payments, re-using Ledgeline's transaction-card
     rendering.
-- **Customer view.** The contact card (MBR render), invoicing fields, open
-  POs, contracts, backlinked invoices with paid state, AR balance, and the
-  last payment.
+- **Customer view.** Read-only first (PLAN J1): the contact, invoicing
+  fields, open POs, contracts by name, open and all invoices with paid
+  state, AR balance, the last payment, and the notes linking it (each
+  opening in the app: PLAN J9). **Edit** swaps in the form.
 - **Templates.** A list, plus a code editor with live preview against a
   chosen invoice.
 
