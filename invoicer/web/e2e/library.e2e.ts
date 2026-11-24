@@ -81,9 +81,13 @@ test.describe("the catalog and snippets over the accrual fixture (:5199)", () =>
         await expect(page.getByTestId("catalog-row")).toHaveCount(4);
         await expect(page.getByLabel("Row 1 code")).toHaveValue("ARCH");
 
-        // A rate changed, an item added at the end.
+        // A rate changed, an item added at the end. Add item inserts after
+        // the focused row (as the bill grid does), so focus the last row first.
         await page.getByLabel("Row 2 rate").fill("$250");
+        await page.getByLabel("Row 4 code").focus();
         await page.getByTestId("add-catalog-item").click();
+        await expect(page.getByLabel("Row 5 code")).toHaveValue("");
+        await expect(page.getByLabel("Row 4 code")).toHaveValue("SAAS-Y");
         await expect(page.getByTestId("catalog-row")).toHaveCount(5);
         // Its own check: a row needs a code before Save.
         await page.getByLabel("Row 5 description").fill("Security audit");
