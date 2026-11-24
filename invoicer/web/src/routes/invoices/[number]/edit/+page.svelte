@@ -73,6 +73,10 @@
         untrack(() => {
             void editor.diskChanged(changes.paths);
             sendReload += 1;
+            // The pickers follow the books: a catalog item or customer added elsewhere is offered at once.
+            fetchEditorOptions()
+                .then((o) => (editor.options = o))
+                .catch((e: unknown) => console.warn("editor options:", e));
         });
     });
 

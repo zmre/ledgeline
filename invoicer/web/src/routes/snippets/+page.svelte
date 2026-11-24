@@ -1,0 +1,342 @@
+<!-- Snippets (invoicer PLAN 4c, ARCHITECTURE §3.7): payment instructions,
+     terms, late-fee wording, thank-yous. The list on the left (with how each
+     is used), the chosen one's form on the right; New snippet asks a title
+     and a kind and writes the note at once in `<templates-dir>/snippets/`.
+
+     Saving sends only what changed with the note's content hash: the title
+     and kind are edited by key (a rename keeps the old title as an alias, so
+     customers' links still resolve), the body replaced, and an outside edit
+     made meanwhile is refused (409): reload theirs, or keep mine. Delete asks
+     first, and says which customers name it as a default.
+
+     Keyboard: Cmd/Ctrl+S saves. -->
+<script lang="ts">
+    import {onMount, untrack} from "svelte";
+    import {beforeNavigate} from "$app/navigation";
+    import {resolve} from "$app/paths";
+    import {changes} from "#lib/changes.svelte.js";
+    import {routeParam} from "#lib/customers.js";
+    import {EditorApiError} from "#lib/editorApi.js";
+    import {
+        SNIPPET_KINDS,
+        createSnippet,
+        deleteSnippet,
+        fetchSnippets,
+        namingCustomers,
+        saveSnippet,
+        snippetChanges,
+        snippetDirty,
+        snippetForm,
+        usageText,
+        type SnippetEntry,
+        type SnippetForm,
+        type SnippetUse,
+    } from "#lib/library.js";
+    import ConfirmDialog from "#lib/components/ConfirmDialog.svelte";
+    import ConflictNotice from "#lib/components/ConflictNotice.svelte";
+    import SnippetEditor from "#lib/components/SnippetEditor.svelte";
+
+    const asMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+    let list = $state<SnippetEntry[] | null>(null);
+    let loadError = $state<string | null>(null);
+    let chosen = $state<string | null>(null);
+    const entry = $derived<SnippetEntry | null>(list?.find((s) => s.path === chosen) ?? null);
+
+    /** The form as read and as edited, and the hash it was read at. */
+    let original = $state<SnippetForm>({title: "", kind: "", body: ""});
+    let form = $state<SnippetForm>({title: "", kind: "", body: ""});
+    let hash = $state("");
+    const dirty = $derived(entry !== null && snippetDirty(original, form));
+
+    let saving = $state(false);
+    let saveError = $state<string | null>(null);
+    let savedNote = $state<string | null>(null);
+    /** The note changed on disk under unsaved edits: its hash now. */
+    let conflict = $state<string | null>(null);
+    /** The hash this page last wrote: its own save coming back isn't a conflict. */
+    let lastSaved = "";
+
+    let creating = $state(false);
+    let newTitle = $state("");
+    let newKind = $state<string>(SNIPPET_KINDS[0]);
+    let createError = $state<string | null>(null);
+
+    let deleting = $state(false);
+    let deleteError = $state<string | null>(null);
+
+    function select(path: string | null, from: SnippetEntry[] | null = list): void {
+        chosen = path;
+        const found = from?.find((s) => s.path === path) ?? null;
+        original = found === null ? {title: "", kind: "", body: ""} : snippetForm(found);
+        form = {...original};
+        hash = found?.hash ?? "";
+        conflict = null;
+        saveError = null;
+    }
+
+    async function load(keep: string | null = chosen): Promise<void> {
+        loadError = null;
+        try {
+            const next = await fetchSnippets();
+            list = next;
+            select(next.some((s) => s.path === keep) ? keep : (next[0]?.path ?? null), next);
+        } catch (e) {
+            loadError = asMessage(e);
+        }
+    }
+
+    function choose(path: string): void {
+        if (path === chosen) return;
+        if (dirty && !confirm("This snippet has unsaved changes. Switch without saving?")) return;
+        savedNote = null;
+        select(path);
+    }
+
+    /** After a change on disk: adopt it when nothing is unsaved; else say so. */
+    async function refresh(): Promise<void> {
+        if (saving) return;
+        try {
+            const next = await fetchSnippets();
+            const theirs = next.find((s) => s.path === chosen);
+            if (!dirty || theirs === undefined) {
+                list = next;
+                select(theirs === undefined ? (next[0]?.path ?? null) : chosen, next);
+                return;
+            }
+            // Keep the edits and the hash they were read at; the uses refresh.
+            list = next;
+            if (theirs.hash !== hash && theirs.hash !== lastSaved) conflict = theirs.hash;
+        } catch (e) {
+            console.warn("snippets:", e);
+        }
+    }
+
+    async function save(over: string = hash): Promise<void> {
+        if (entry === null) return;
+        saving = true;
+        saveError = null;
+        savedNote = null;
+        try {
+            const saved = await saveSnippet(entry.path, over, snippetChanges(original, form));
+            lastSaved = saved.hash;
+            savedNote = saved.written ? `Saved ${saved.changed.join(", ")}.` : "Nothing to save.";
+            await load(saved.path);
+        } catch (e) {
+            if (e instanceof EditorApiError && e.code === "changed") conflict = e.revision ?? "";
+            else saveError = asMessage(e);
+        } finally {
+            saving = false;
+        }
+    }
+
+    async function create(event: SubmitEvent): Promise<void> {
+        event.preventDefault();
+        createError = null;
+        try {
+            const made = await createSnippet({title: newTitle, kind: newKind});
+            creating = false;
+            newTitle = "";
+            savedNote = null;
+            await load(made.path);
+        } catch (e) {
+            createError = asMessage(e);
+        }
+    }
+
+    function startCreate(): void {
+        if (dirty && !confirm("This snippet has unsaved changes. Start a new one without saving?")) return;
+        creating = true;
+        createError = null;
+    }
+
+    async function remove(force: boolean): Promise<void> {
+        if (entry === null) return;
+        saving = true;
+        deleteError = null;
+        try {
+            await deleteSnippet(entry.path, hash, force);
+            deleting = false;
+            savedNote = null;
+            await load(null);
+        } catch (e) {
+            deleteError = asMessage(e);
+        } finally {
+            saving = false;
+        }
+    }
+
+    function onKeydown(event: KeyboardEvent): void {
+        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+            event.preventDefault();
+            if (dirty && !saving) void save();
+        }
+    }
+
+    beforeNavigate(({cancel, to}) => {
+        if (dirty && to !== null && !confirm("This snippet has unsaved changes. Leave without saving?")) cancel();
+    });
+
+    onMount(() => {
+        void load();
+        const warn = (event: BeforeUnloadEvent): void => {
+            if (dirty) event.preventDefault();
+        };
+        window.addEventListener("beforeunload", warn);
+        return () => window.removeEventListener("beforeunload", warn);
+    });
+
+    let seenSeq = changes.seq;
+    $effect(() => {
+        const seq = changes.seq;
+        if (seq === seenSeq) return;
+        seenSeq = seq;
+        untrack(() => void refresh());
+    });
+
+    const customerHref = (use: SnippetUse): string => resolve("/customers/[...path]", {path: routeParam(use.path)});
+    const invoiceHref = (use: SnippetUse): string => resolve("/invoices/[number]", {number: use.number ?? use.path});
+</script>
+
+<svelte:head>
+    <title>Snippets · Ledgeline Invoicer</title>
+</svelte:head>
+
+<svelte:window onkeydown={onKeydown} />
+
+<div class="mx-auto flex max-w-7xl flex-col gap-4" data-testid="snippets-page">
+    <header class="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <h1 class="text-2xl font-semibold tracking-tight">Snippets</h1>
+        <button type="button" class="btn ml-auto btn-outline btn-sm" onclick={startCreate} data-testid="new-snippet">New snippet</button>
+    </header>
+    <p class="text-sm text-base-content/70">
+        Payment instructions, terms and notes an invoice can copy. A customer's <code>snippets:</code> names the ones its new invoices start with.
+    </p>
+
+    {#if creating}
+        <form class="flex flex-wrap items-end gap-2 rounded-box border border-base-300 p-3" onsubmit={create} data-testid="new-snippet-form">
+            <label class="flex flex-col gap-1 text-sm">
+                <span class="font-medium">Title</span>
+                <!-- svelte-ignore a11y_autofocus -->
+                <input class="input w-72 input-sm" bind:value={newTitle} required autofocus data-testid="new-snippet-title" />
+            </label>
+            <label class="flex flex-col gap-1 text-sm">
+                <span class="font-medium">Kind</span>
+                <select class="select select-sm" bind:value={newKind} data-testid="new-snippet-kind">
+                    {#each SNIPPET_KINDS as kind (kind)}<option value={kind}>{kind}</option>{/each}
+                </select>
+            </label>
+            <button type="submit" class="btn btn-primary btn-sm" disabled={newTitle.trim() === ""} data-testid="create-snippet">Create</button>
+            <button type="button" class="btn btn-ghost btn-sm" onclick={() => (creating = false)}>Cancel</button>
+            {#if createError !== null}<p role="alert" class="w-full text-sm text-error" data-testid="new-snippet-error">{createError}</p>{/if}
+        </form>
+    {/if}
+
+    {#if loadError !== null}
+        <div role="alert" class="alert alert-soft alert-error" data-testid="snippets-load-error">
+            <span>{loadError}</span>
+            <button type="button" class="btn btn-sm" onclick={() => void load()}>Try again</button>
+        </div>
+    {:else if list === null}
+        <span class="loading loading-md loading-spinner" aria-label="Loading the snippets"></span>
+    {:else if list.length === 0}
+        <p class="rounded-box border border-dashed border-base-300 p-6 text-sm" data-testid="snippets-empty">No snippets yet. New snippet writes the first.</p>
+    {:else}
+        <div class="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,3fr)]">
+            <nav aria-label="Snippets">
+                <ul class="menu w-full gap-0.5 rounded-box border border-base-300 p-1" data-testid="snippet-list">
+                    {#each list as snippet (snippet.path)}
+                        <li>
+                            <button
+                                type="button"
+                                class={snippet.path === chosen ? "menu-active" : ""}
+                                aria-current={snippet.path === chosen ? "true" : undefined}
+                                onclick={() => choose(snippet.path)}
+                                data-testid="snippet-item"
+                                data-path={snippet.path}
+                            >
+                                <span class="flex min-w-0 flex-col items-start">
+                                    <span class="truncate font-medium">{snippet.title}</span>
+                                    <span class="text-xs text-base-content/60">{snippet.kind ?? "—"} · {usageText(snippet)}</span>
+                                </span>
+                            </button>
+                        </li>
+                    {/each}
+                </ul>
+            </nav>
+
+            {#if entry !== null}
+                {#key entry.path}
+                    <section class="flex flex-col gap-3" aria-label={entry.title}>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <h2 class="text-lg font-semibold" data-testid="snippet-heading">{entry.title}</h2>
+                            <span class="text-xs text-base-content/60" title="The note in the books folder">{entry.path}</span>
+                            <div class="ml-auto flex items-center gap-2">
+                                {#if dirty}<span class="text-sm text-base-content/70" data-testid="unsaved">Unsaved changes</span>{/if}
+                                <button
+                                    type="button"
+                                    class="btn btn-ghost btn-sm"
+                                    disabled={saving}
+                                    onclick={() => (deleting = true)}
+                                    data-testid="delete-snippet">Delete…</button
+                                >
+                                <button type="button" class="btn btn-ghost btn-sm" disabled={!dirty || saving} onclick={() => (form = {...original})}
+                                    >Discard</button
+                                >
+                                <button
+                                    type="button"
+                                    class="btn btn-primary btn-sm"
+                                    disabled={!dirty || saving}
+                                    onclick={() => void save()}
+                                    data-testid="save-snippet">{saving ? "Saving…" : "Save"}</button
+                                >
+                            </div>
+                        </div>
+                        {#if conflict !== null}
+                            <ConflictNotice
+                                theirs={null}
+                                what="snippet"
+                                busy={saving}
+                                onReload={() => void load()}
+                                onKeepMine={() => {
+                                    const over = conflict ?? hash;
+                                    conflict = null;
+                                    void save(over);
+                                }}
+                            />
+                        {/if}
+                        {#if saveError !== null}<div role="alert" class="alert alert-soft alert-error" data-testid="snippet-save-error">{saveError}</div>{/if}
+                        {#if savedNote !== null && !dirty}<div role="status" class="text-sm text-success" data-testid="snippet-saved">{savedNote}</div>{/if}
+                        <SnippetEditor bind:form {entry} {customerHref} {invoiceHref} />
+                    </section>
+                {/key}
+            {/if}
+        </div>
+    {/if}
+</div>
+
+{#if deleting && entry !== null}
+    {@const naming = namingCustomers(entry)}
+    <ConfirmDialog
+        title="Delete {entry.title}?"
+        confirmLabel={naming.length > 0 ? "Delete anyway" : "Delete"}
+        tone="error"
+        busy={saving}
+        error={deleteError}
+        onConfirm={() => void remove(naming.length > 0)}
+        onCancel={() => {
+            deleting = false;
+            deleteError = null;
+        }}
+        testid="delete-snippet-dialog"
+    >
+        <p>This removes {entry.path}. Invoices keep their copies of its text.</p>
+        {#if naming.length > 0}
+            <p class="mt-2">
+                {naming.map((u) => u.title).join(", ")}
+                {naming.length === 1 ? "names" : "name"} it as a default snippet: their new invoices will no longer get it, and the link in their note will point
+                nowhere.
+            </p>
+        {/if}
+    </ConfirmDialog>
+{/if}

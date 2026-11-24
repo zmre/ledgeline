@@ -65,10 +65,14 @@ export default defineConfig({
     //      $8,350.00, 108 a draft), creates Northwind Traders and removes it;
     //   2. the rest (invoices.e2e.ts sends 108, so Customer X owes more; it
     //      counts eight invoices);
-    //   3. editor.e2e.ts adds invoice 2005 and expects 108 sent.
+    //   3. editor.e2e.ts adds invoice 2005 and expects 108 sent (and the
+    //      catalog's ARCH as the fixture has it);
+    //   4. library.e2e.ts edits the catalog and the snippets, and puts them
+    //      back after.
     projects: [
         {name: "customers", testMatch: "**/customers.e2e.ts"},
-        {name: "pages", testIgnore: ["**/customers.e2e.ts", "**/editor.e2e.ts"], dependencies: ["customers"]},
+        {name: "pages", testIgnore: ["**/customers.e2e.ts", "**/editor.e2e.ts", "**/library.e2e.ts"], dependencies: ["customers"]},
         {name: "editor", testMatch: "**/editor.e2e.ts", dependencies: ["pages"]},
+        {name: "library", testMatch: "**/library.e2e.ts", dependencies: ["editor"]},
     ],
 });

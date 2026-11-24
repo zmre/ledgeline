@@ -11,20 +11,23 @@ export class EditorApiError extends Error {
     readonly status: number;
     readonly code: string;
     readonly revision: string | null;
+    /** The whole error body (`problems`, `customers` and the like ride along in it). */
+    readonly body: Record<string, unknown>;
 
-    constructor(status: number, code: string, message: string, revision: string | null = null) {
+    constructor(status: number, code: string, message: string, revision: string | null = null, body: Record<string, unknown> = {}) {
         super(message);
         this.name = "EditorApiError";
         this.status = status;
         this.code = code;
         this.revision = revision;
+        this.body = body;
     }
 }
 
 const isObject = (body: unknown): body is Record<string, unknown> => typeof body === "object" && body !== null && !Array.isArray(body);
 
-/** A request whose refusal is an EditorApiError (`code` "unreachable" when the server can't be reached). */
-async function send<T>(method: string, path: string, check: (body: unknown) => boolean, body?: unknown): Promise<T> {
+/** A request whose refusal is an EditorApiError (an ApiUnreachableError when the server can't be reached). */
+export async function send<T>(method: string, path: string, check: (body: unknown) => boolean, body?: unknown): Promise<T> {
     const headers = authHeaders(body === undefined ? {Accept: "application/json"} : {Accept: "application/json", "Content-Type": "application/json"}, path);
     let response: Response;
     try {
@@ -42,7 +45,7 @@ async function send<T>(method: string, path: string, check: (body: unknown) => b
         const error = isObject(parsed) && typeof parsed.error === "string" && parsed.error !== "" ? parsed.error : `${method} ${path}: HTTP ${response.status}`;
         const code = isObject(parsed) && typeof parsed.code === "string" ? parsed.code : `http-${response.status}`;
         const revision = isObject(parsed) && typeof parsed.revision === "string" ? parsed.revision : null;
-        throw new EditorApiError(response.status, code, error, revision);
+        throw new EditorApiError(response.status, code, error, revision, isObject(parsed) ? parsed : {});
     }
     if (!check(parsed)) throw new ApiShapeError(`${method} ${path}: not the shape this app expects`);
     return parsed as T;

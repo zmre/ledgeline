@@ -27,6 +27,8 @@
             {id: "new", href: resolve("/new"), label: "New invoice", active: path === resolve("/new")},
             {id: "invoices", href: resolve("/invoices"), label: "Invoices", active: path.startsWith(resolve("/invoices"))},
             {id: "customers", href: resolve("/customers"), label: "Customers", active: path.startsWith(resolve("/customers"))},
+            {id: "catalog", href: resolve("/catalog"), label: "Catalog", active: path.startsWith(resolve("/catalog"))},
+            {id: "snippets", href: resolve("/snippets"), label: "Snippets", active: path.startsWith(resolve("/snippets"))},
         ];
     });
 

@@ -1,16 +1,19 @@
-<!-- The invoice changed on disk while it had unsaved edits here (another
+<!-- A note (the invoice, the catalog, a snippet) changed on disk while it had unsaved edits here (another
      editor, git, a sync). Nothing is overwritten on either side until the
      user picks: their file (discarding the edits here), or these edits saved
      over it. Their text is one click away to compare. -->
 <script lang="ts">
     let {
         theirs,
+        what = "invoice",
         busy = false,
         onReload,
         onKeepMine,
     }: {
         /** The file as it is now on disk. */
         theirs: string | null;
+        /** What changed, in the sentence ("invoice", "catalog", "snippet"). */
+        what?: string;
         busy?: boolean;
         onReload: () => void;
         onKeepMine: () => void;
@@ -19,7 +22,7 @@
 
 <div class="alert flex-col items-start alert-warning" role="alert" data-testid="conflict-notice">
     <div>
-        <p class="font-medium">This invoice changed on disk while you were editing it.</p>
+        <p class="font-medium">This {what} changed on disk while you were editing it.</p>
         <p class="text-sm">Your edits here aren't saved. Keep theirs and lose yours, or save yours over theirs.</p>
     </div>
     <div class="flex flex-wrap gap-2">
