@@ -33,6 +33,7 @@ pub(crate) mod pdf;
 pub(crate) mod prefs;
 pub(crate) mod preview;
 mod serve;
+pub(crate) mod templates;
 pub(crate) mod watch;
 
 use std::path::PathBuf;

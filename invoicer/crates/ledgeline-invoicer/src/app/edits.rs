@@ -37,7 +37,6 @@ use super::AppState;
 use super::api::{ApiError, ApiResult, blocking, no_books, to_value, today};
 use super::books::{reconcile_in, reload_after_write};
 use super::pdf::books_error;
-use super::preview;
 use crate::starters;
 
 /// A write the core refused, as an API error: `409` when the file changed
@@ -85,7 +84,7 @@ pub(crate) async fn use_template(
             .map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
         let (path, doc_type, status) = (doc.path.clone(), doc.header.doc_type, doc.header.status);
         let wanted = format!("/{}", body.template.trim().trim_start_matches('/'));
-        let entry = preview::templates_in(&session)
+        let entry = super::templates::templates_in(&session)
             .into_iter()
             .find(|t| t.path == wanted)
             .ok_or_else(|| {

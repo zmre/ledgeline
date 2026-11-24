@@ -2048,8 +2048,15 @@ async fn copying_a_starter_in_brings_the_base() {
     assert_eq!(status, StatusCode::OK, "{page}");
     assert!(page.contains("#108"), "{page}");
     // The base isn't a template: not listed, and nothing warns of it.
+    // (Templates say they extend it, since 4d; none is it.)
     let (_, list) = json_of(&sending, authed("/api/templates")).await;
-    assert!(!list.to_string().contains("_invoice_base"), "{list}");
+    assert!(
+        list.as_array()
+            .unwrap()
+            .iter()
+            .all(|t| !t["path"].as_str().unwrap().contains("_invoice_base")),
+        "{list}"
+    );
     let (_, detail) = json_of(&sending, authed("/api/invoices/108")).await;
     assert!(!detail.to_string().contains("unknown-template"), "{detail}");
 
@@ -2235,3 +2242,6 @@ async fn a_theme_only_child_gets_the_bases_layout() {
 /// The invoice editor's routes (4a), with these helpers.
 #[path = "editor_tests.rs"]
 mod editor_tests;
+
+#[path = "templates_tests.rs"]
+mod templates_tests;

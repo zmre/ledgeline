@@ -14,7 +14,9 @@
 //! - [`customers`] (§3.4) and [`snippets`] (§3.7);
 //! - [`customer_edit`]: creating and editing customer notes (PLAN 4b);
 //! - [`doc`]: the invoice document and its validation (§3.2);
-//! - [`catalog`] (§3.6) and [`templates`] (§3.5);
+//! - [`catalog`] (§3.6) and [`templates`] (§3.5), with [`tera_scan`] (a
+//!   light scan of Tera tags) and [`template_edit`] (the template editor,
+//!   PLAN 4d);
 //! - [`catalog_edit`] and [`snippet_edit`]: the catalog and snippets editors
 //!   (PLAN 4c);
 //! - [`numbering`] (§5.1);
@@ -57,5 +59,7 @@ pub mod settings;
 pub mod snippet_edit;
 pub mod snippets;
 pub mod table;
+pub mod template_edit;
 pub mod templates;
+pub mod tera_scan;
 pub mod views;

@@ -29,6 +29,18 @@ async fn empty_books_answer_every_list_empty() {
     assert_eq!(books["customers"], 0);
     assert_eq!(books["catalog"], 0);
     assert_eq!(books["snippets"], 0);
+    // No templates of their own: the two starters (4d's list).
+    assert_eq!(books["templates"], 2);
+    let (status, templates) = json_of(&app, authed("/api/templates")).await;
+    assert_eq!(status, StatusCode::OK, "{templates}");
+    assert!(
+        templates
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["installed"] == false),
+        "{templates}"
+    );
     assert_eq!(books["nextNumber"], "1001");
     assert_eq!(books["nextNumberAfter"], Value::Null);
     assert_eq!(books["nextNumberSource"], "start");
@@ -70,6 +82,8 @@ async fn the_books_carry_their_name_and_the_sidebars_counts() {
     );
     assert!(books["catalog"].as_u64().is_some_and(|n| n > 0), "{books}");
     assert_eq!(books["snippets"], 2);
+    // MyCo default, and the two starters not copied in.
+    assert_eq!(books["templates"], 3);
     // The next number says what it follows (H19): 2004, booked only.
     assert_eq!(books["nextNumber"], "2005");
     assert_eq!(books["nextNumberAfter"], "2004");

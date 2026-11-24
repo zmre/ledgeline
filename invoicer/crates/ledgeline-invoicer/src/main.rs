@@ -30,7 +30,6 @@ mod app;
 mod human;
 mod pdf;
 mod starters;
-mod tera_scan;
 
 use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser, Subcommand};
 use invoicer_core::books::{
@@ -46,6 +45,7 @@ use invoicer_core::reconcile::{self, MirrorChange, ReconcileOptions};
 use invoicer_core::session::Session;
 use invoicer_core::table::books::is_iso_date;
 use invoicer_core::templates;
+use invoicer_core::tera_scan;
 use invoicer_core::views::{self, ListQuery};
 use ledgeline_core::vault::VaultPath;
 use ledgeline_shell::AppDirs;
