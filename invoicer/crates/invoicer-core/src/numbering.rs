@@ -14,6 +14,7 @@ use crate::doc::InvoiceNumber;
 use ledgeline_core::Journal;
 use ledgeline_core::accrual::documents::document_posting;
 use ledgeline_core::accrual::{AccrualRole, AccrualRoles, INVOICE_TAG};
+use serde::Serialize;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use thiserror::Error;
@@ -110,6 +111,45 @@ pub fn increment(number: &str) -> Option<String> {
     })
 }
 
+/// Where a next number came from: the number it follows, or the start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NumberSource {
+    /// It follows a document's number (a file in the books folder).
+    Document,
+    /// It follows a number booked in the journal (an `invoice:` tag) that no
+    /// file has a larger one than: plan 45's invoices, a removed file.
+    Books,
+    /// Nothing is numbered yet: `[invoicer] number-start`, else `1`.
+    Start,
+}
+
+impl NumberSource {
+    /// The wire name (`document`, `books`, `start`).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Document => "document",
+            Self::Books => "books",
+            Self::Start => "start",
+        }
+    }
+}
+
+/// The next number and why: the number it follows and where that is, so an
+/// app can say "2005, next after 2004 booked in the journal" (Phase 4
+/// feedback H19). The rule is [`next_number`]'s; this only explains it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NextNumber {
+    /// The number proposed.
+    pub number: InvoiceNumber,
+    /// The largest number in use, which it follows; `None` at the start.
+    pub after: Option<String>,
+    /// Where `after` is: a document, or only the books. A number that is
+    /// both is a document's.
+    pub source: NumberSource,
+}
+
 /// The next number: the largest incrementable number among `files` and
 /// `books`, plus one; or `start` when there is none.
 ///
@@ -121,19 +161,50 @@ pub fn next_number<'a>(
     books: impl IntoIterator<Item = &'a str>,
     start: &str,
 ) -> Result<InvoiceNumber, NumberingError> {
+    explain_next_number(files, books, start).map(|next| next.number)
+}
+
+/// [`next_number`] with where it comes from ([`NextNumber`]).
+///
+/// # Errors
+/// [`NumberingError::BadStart`] when `start` is needed and can't be a
+/// number.
+pub fn explain_next_number<'a>(
+    files: impl IntoIterator<Item = &'a str>,
+    books: impl IntoIterator<Item = &'a str>,
+    start: &str,
+) -> Result<NextNumber, NumberingError> {
+    // The first of equal largest wins, so a number with a file is the
+    // file's even when the books tag it too.
     let largest = files
         .into_iter()
-        .chain(books)
-        .map(str::trim)
-        .filter(|n| n.ends_with(|c: char| c.is_ascii_digit()))
-        .max_by(|a, b| natural_cmp(a, b));
+        .map(|n| (n, NumberSource::Document))
+        .chain(books.into_iter().map(|n| (n, NumberSource::Books)))
+        .map(|(n, source)| (n.trim(), source))
+        .filter(|(n, _)| n.ends_with(|c: char| c.is_ascii_digit()))
+        .fold(
+            None::<(&str, NumberSource)>,
+            |best, (n, source)| match best {
+                Some((b, _)) if natural_cmp(n, b) != Ordering::Greater => best,
+                _ => Some((n, source)),
+            },
+        );
     match largest {
-        Some(n) => increment(n)
+        Some((n, source)) => increment(n)
             .and_then(|next| InvoiceNumber::new(&next))
+            .map(|number| NextNumber {
+                number,
+                after: Some(n.to_string()),
+                source,
+            })
             .ok_or_else(|| NumberingError::BadStart(n.to_string())),
-        None => {
-            InvoiceNumber::new(start).ok_or_else(|| NumberingError::BadStart(start.to_string()))
-        }
+        None => InvoiceNumber::new(start)
+            .map(|number| NextNumber {
+                number,
+                after: None,
+                source: NumberSource::Start,
+            })
+            .ok_or_else(|| NumberingError::BadStart(start.to_string())),
     }
 }
 
@@ -181,6 +252,31 @@ mod tests {
         )
         .expect("parses");
         assert_eq!(booked_numbers(&journal), ["2001", "2002"]);
+    }
+
+    #[test]
+    fn explains_where_the_next_number_comes_from() {
+        let books =
+            explain_next_number(["105", "108"], ["2001", "2004", " 105"], "1").expect("next");
+        assert_eq!(books.number.as_str(), "2005");
+        assert_eq!(books.after.as_deref(), Some("2004"));
+        assert_eq!(books.source, NumberSource::Books);
+        // A number both filed and booked is the document's.
+        let doc = explain_next_number(["105", "108"], ["108"], "1").expect("next");
+        assert_eq!(
+            (doc.number.as_str(), doc.after.as_deref(), doc.source),
+            ("109", Some("108"), NumberSource::Document)
+        );
+        let start = explain_next_number([], [], "1001").expect("next");
+        assert_eq!(
+            (start.number.as_str(), start.after, start.source),
+            ("1001", None, NumberSource::Start)
+        );
+        assert_eq!(NumberSource::Books.as_str(), "books");
+        assert_eq!(
+            serde_json::to_value(NumberSource::Document).expect("json"),
+            "document"
+        );
     }
 
     fn next(files: &[&str]) -> String {

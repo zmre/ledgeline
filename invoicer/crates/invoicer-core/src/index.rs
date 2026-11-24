@@ -210,6 +210,17 @@ impl DocumentIndex {
         numbering::next_number(self.numbers(), books, &self.settings.first_number())
     }
 
+    /// [`Self::next_number`] with where it comes from (Phase 4 feedback H19).
+    ///
+    /// # Errors
+    /// [`NumberingError`].
+    pub fn explain_next_number<'a>(
+        &'a self,
+        books: impl IntoIterator<Item = &'a str>,
+    ) -> Result<numbering::NextNumber, NumberingError> {
+        numbering::explain_next_number(self.numbers(), books, &self.settings.first_number())
+    }
+
     /// Documents matching `filter`, newest first (date, then number).
     #[must_use]
     pub fn list(&self, filter: &ListFilter) -> Vec<&IndexedDoc> {

@@ -17,6 +17,35 @@ fn mocked() -> (App, Arc<MockNative>) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn empty_books_answer_every_list_empty() {
+    // invoicer/fixtures/empty (H22): the e2e empty states' server side.
+    let app = app_on("empty", None);
+    let (status, books) = json_of(&app, authed("/api/books?today=2026-11-22")).await;
+    assert_eq!(status, StatusCode::OK, "{books}");
+    assert_eq!(
+        books["invoices"],
+        json!({"all": 0, "drafts": 0, "open": 0, "overdue": 0})
+    );
+    assert_eq!(books["customers"], 0);
+    assert_eq!(books["catalog"], 0);
+    assert_eq!(books["snippets"], 0);
+    assert_eq!(books["nextNumber"], "1001");
+    assert_eq!(books["nextNumberAfter"], Value::Null);
+    assert_eq!(books["nextNumberSource"], "start");
+    for (url, empty) in [
+        ("/api/invoices", json!([])),
+        ("/api/customers", json!([])),
+        ("/api/snippets", json!([])),
+    ] {
+        let (status, body) = json_of(&app, authed(url)).await;
+        assert_eq!((status, body), (StatusCode::OK, empty), "{url}");
+    }
+    let (status, catalog) = json_of(&app, authed("/api/catalog")).await;
+    assert_eq!(status, StatusCode::OK, "{catalog}");
+    assert_eq!(catalog["catalogs"], json!([]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_books_carry_their_name_and_the_sidebars_counts() {
     let app = super::tests::app();
     let (status, books) = json_of(&app, authed("/api/books?today=2026-11-22")).await;
@@ -41,6 +70,10 @@ async fn the_books_carry_their_name_and_the_sidebars_counts() {
     );
     assert!(books["catalog"].as_u64().is_some_and(|n| n > 0), "{books}");
     assert_eq!(books["snippets"], 2);
+    // The next number says what it follows (H19): 2004, booked only.
+    assert_eq!(books["nextNumber"], "2005");
+    assert_eq!(books["nextNumberAfter"], "2004");
+    assert_eq!(books["nextNumberSource"], "books");
     let (status, _) = json_of(&app, authed("/api/books?today=soon")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }

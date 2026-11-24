@@ -287,7 +287,7 @@ async fn options(State(state): State<AppState>) -> Answer {
             .map(|n| json!({ "title": n.title, "link": format!("[[{}]]", n.title), "kind": n.note_type }))
             .collect();
         let journal = session.journal();
-        let next = session.next_number().map(|n| n.to_string()).ok();
+        let next = session.explain_next_number().ok();
         Ok(json!({
             "customers": customers,
             "catalog": catalog,
@@ -310,7 +310,9 @@ async fn options(State(state): State<AppState>) -> Answer {
             "total_words": words.total.words(),
             "subtotal_words": words.subtotal.words(),
             "link_notes": link_notes,
-            "next_number": next,
+            "next_number": next.as_ref().map(|n| n.number.to_string()),
+            "next_number_after": next.as_ref().and_then(|n| n.after.clone()),
+            "next_number_source": next.as_ref().map(|n| n.source.as_str()),
             "customers_dir": settings.customers_dir,
         }))
     })

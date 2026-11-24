@@ -11,7 +11,7 @@
 use crate::books::{Basis, InvoiceBooks};
 use crate::doc::{InvoiceNumber, Money};
 use crate::index::{DocumentIndex, IndexedDoc};
-use crate::numbering::{self, NumberingError};
+use crate::numbering::{self, NextNumber, NumberingError};
 use crate::reconcile::BookStates;
 use crate::settings::{Settings, SettingsError};
 use ledgeline_core::accrual::books_config::{self, BooksConfig, BooksError};
@@ -219,6 +219,16 @@ impl Session {
             .next_number(self.booked.iter().map(String::as_str))
     }
 
+    /// [`Self::next_number`] with the number it follows and where that is:
+    /// a document or only the books (Phase 4 feedback H19).
+    ///
+    /// # Errors
+    /// [`NumberingError`].
+    pub fn explain_next_number(&self) -> Result<NextNumber, NumberingError> {
+        self.index
+            .explain_next_number(self.booked.iter().map(String::as_str))
+    }
+
     /// A vault path as a local file path, for messages.
     #[must_use]
     pub fn local_path(&self, path: &VaultPath) -> PathBuf {
@@ -316,8 +326,22 @@ mod tests {
         // Plan 45's invoices 2001–2004 have no files, but their numbers are
         // used (fixtures/README.md).
         assert_eq!(session.next_number().expect("next").as_str(), "2005");
+        let why = session.explain_next_number().expect("next");
+        assert_eq!(why.after.as_deref(), Some("2004"));
+        assert_eq!(why.source, numbering::NumberSource::Books);
         let cash = Session::open_local(&fixture("cash")).expect("opens");
         assert_eq!(cash.next_number().expect("next").as_str(), "208");
+        let why = cash.explain_next_number().expect("next");
+        assert_eq!(why.after.as_deref(), Some("207"));
+        assert_eq!(why.source, numbering::NumberSource::Document);
+        // The empty books (PLAN H22): nothing numbered, so the start.
+        let empty = Session::open_local(&fixture("empty")).expect("opens");
+        assert_eq!(empty.index().docs().count(), 0);
+        let why = empty.explain_next_number().expect("next");
+        assert_eq!(
+            (why.number.as_str(), why.after, why.source),
+            ("1001", None, numbering::NumberSource::Start)
+        );
     }
 
     #[test]

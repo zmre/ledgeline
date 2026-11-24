@@ -184,14 +184,14 @@ struct BooksParams {
 /// books' name as Ledgeline shows it (`ledgeline_core::title`: the main
 /// file's leading comment, else its folder's name), the basis, and the
 /// counts the sidebar shows: invoices (all, drafts, open, overdue on
-/// `today`), customers, catalog items and snippets.
+/// `today`), customers, catalog items and snippets; and the next number
+/// with what it follows (`nextNumberAfter`, `nextNumberSource`).
 async fn books(State(state): State<AppState>, Query(params): Query<BooksParams>) -> ApiResult {
     let today = today(params.today.as_deref())?;
     with_books(&state, move |books| {
         let session = books.session();
         let next = session
-            .next_number()
-            .map(|n| n.to_string())
+            .explain_next_number()
             .map_err(|e| ApiError(StatusCode::CONFLICT, e.to_string()))?;
         let index = session.index();
         let states = Some(session.book_states());
@@ -217,7 +217,11 @@ async fn books(State(state): State<AppState>, Query(params): Query<BooksParams>)
             "customers": index.customers().len(),
             "catalog": catalog_items,
             "snippets": invoicer_core::snippets::snippets(index.site()).len(),
-            "nextNumber": next,
+            "nextNumber": next.number.to_string(),
+            // What it follows, and where that is (H19): `document`, `books`
+            // (booked in the journal, no file) or `start`.
+            "nextNumberAfter": next.after,
+            "nextNumberSource": next.source.as_str(),
         }))
     })
     .await

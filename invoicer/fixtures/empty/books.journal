@@ -1,0 +1,11 @@
+; Invoicer empty fixture books (invoicer PLAN, Phase 4 feedback H22): a
+; company's first day with the invoicer. Accounts are declared; nothing is
+; booked, and there are no invoices, customers, catalog or snippets yet.
+; Every name here is invented.
+commodity $1,000.00
+
+account assets:bank:checking            ; type: C
+account assets:accounts receivable      ; type: A, kpi: receivable
+account liabilities:customer-deposits   ; type: L
+account revenue:consulting              ; type: R
+account equity:opening                  ; type: E

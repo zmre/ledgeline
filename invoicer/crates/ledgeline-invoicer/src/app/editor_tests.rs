@@ -92,6 +92,8 @@ async fn the_options_offer_what_the_pickers_need() {
         "documents aren't offered: {options}"
     );
     assert_eq!(options["next_number"], "2005");
+    assert_eq!(options["next_number_after"], "2004");
+    assert_eq!(options["next_number_source"], "books");
 
     let (status, values) = json_of(&app, authed("/api/fields/support_tier/values")).await;
     assert_eq!(status, StatusCode::OK);

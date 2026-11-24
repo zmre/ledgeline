@@ -787,15 +787,20 @@ fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
         }
         Command::NextNumber => {
             let session = open(cli)?;
-            let next = session.next_number()?;
+            let next = session.explain_next_number()?;
+            /// `after` and `source` say what it follows (PLAN H19).
             #[derive(Serialize)]
             struct Out {
                 next: String,
+                after: Option<String>,
+                source: &'static str,
             }
             emit(
                 cli.json,
                 &Out {
-                    next: next.to_string(),
+                    next: next.number.to_string(),
+                    after: next.after,
+                    source: next.source.as_str(),
                 },
                 |o| format!("{}\n", o.next),
             );

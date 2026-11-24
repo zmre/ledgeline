@@ -260,10 +260,11 @@ fn human_output_is_aligned() {
 fn next_number_counts_the_books() {
     // Plan 45's invoices 2001–2004 are booked without files; a vendor's
     // bill numbered PA-9 is in its own namespace.
-    assert_eq!(
-        Books::of("accrual").json(&["next-number"], 0)["next"],
-        "2005"
-    );
+    let accrual = Books::of("accrual").json(&["next-number"], 0);
+    assert_eq!(accrual["next"], "2005");
+    // What it follows: 2004, booked in the journal with no file (H19).
+    assert_eq!(accrual["after"], "2004");
+    assert_eq!(accrual["source"], "books");
     assert_eq!(Books::of("cash").json(&["next-number"], 0)["next"], "208");
 }
 
