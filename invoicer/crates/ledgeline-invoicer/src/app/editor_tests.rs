@@ -77,6 +77,20 @@ async fn the_options_offer_what_the_pickers_need() {
         "{options}"
     );
     assert_eq!(options["words"]["subtotal"], "Subtotal");
+    assert_eq!(
+        options["total_words"],
+        json!(["Total due", "Total", "Balance due", "Amount due"])
+    );
+    assert_eq!(options["subtotal_words"], json!(["Subtotal"]));
+    let links = options["link_notes"].as_array().unwrap();
+    assert!(
+        links.iter().any(|n| n["link"] == "[[Customer X]]"),
+        "{options}"
+    );
+    assert!(
+        !links.iter().any(|n| n["kind"] == "invoice"),
+        "documents aren't offered: {options}"
+    );
     assert_eq!(options["next_number"], "2005");
 
     let (status, values) = json_of(&app, authed("/api/fields/support_tier/values")).await;

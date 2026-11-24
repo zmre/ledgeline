@@ -217,6 +217,9 @@ fn kind_name(kind: ContactKind) -> &'static str {
     }
 }
 
+/// How many notes `link_notes` offers (a suggestion list, not an index).
+const LINK_NOTES_LIMIT: usize = 2000;
+
 /// `GET /api/editor/options`.
 async fn options(State(state): State<AppState>) -> Answer {
     with_books(&state, |books| {
@@ -270,6 +273,19 @@ async fn options(State(state): State<AppState>) -> Answer {
         }
         let mut fields: Vec<(String, usize)> = keys.into_iter().collect();
         fields.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        // What `deposit_for` may link to: estimates first, then the other
+        // notes that aren't documents, the catalog or snippets.
+        let not_linkable = ["invoice", "credit-note", "catalog", "snippet"];
+        let site = index.site();
+        let estimates = site.notes_of_type(DocType::Estimate.as_str());
+        let others = site.notes().filter(|n| {
+            !n.is_type(DocType::Estimate.as_str()) && !not_linkable.iter().any(|t| n.is_type(t))
+        });
+        let link_notes: Vec<Value> = estimates
+            .chain(others)
+            .take(LINK_NOTES_LIMIT)
+            .map(|n| json!({ "title": n.title, "link": format!("[[{}]]", n.title), "kind": n.note_type }))
+            .collect();
         let journal = session.journal();
         let next = session.next_number().map(|n| n.to_string()).ok();
         Ok(json!({
@@ -291,6 +307,9 @@ async fn options(State(state): State<AppState>) -> Answer {
                 "deposit": words.deposit.first(),
                 "tax": words.tax.first(),
             },
+            "total_words": words.total.words(),
+            "subtotal_words": words.subtotal.words(),
+            "link_notes": link_notes,
             "next_number": next,
             "customers_dir": settings.customers_dir,
         }))
