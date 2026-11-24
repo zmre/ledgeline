@@ -159,9 +159,16 @@ test("review unknowns from the keyboard: suggestion, similar, skip and back — 
     // `s` focuses the first Similar row after a render tick; ⇧A pressed before
     // that lands mid-move and is lost (seen on CI), so wait for the focus.
     //
-    // This step flakes about once in 16 full e2e runs: the row never gets
-    // focus. The two checks say which way it fails: did `s` open the section
-    // at all, and if it did, what holds focus instead of the row.
+    // This step used to flake about once in 16 full e2e runs. The cause: card
+    // 23's ⌘⇧↵ save lands ~50 ms later, around `s`, and the store dropped
+    // every held similar set on the new generation. Card 22's rows went to []
+    // until the refetch came back, so the section unmounted: an `s` in that
+    // gap found no rows and did nothing (data-open never set), and a row that
+    // already had focus took it down to <body>. The store now keeps each set
+    // (less what the save edited) until its refetch replaces it —
+    // `ReviewOverlay.refresh.svelte.test.ts` holds that gap open. The two
+    // checks still say which way it fails: did `s` open the section at all,
+    // and if it did, what holds focus instead of the row.
     await expect(cardOf(page, 22).getByTestId("review-similar"), "`s` opened Similar").toHaveAttribute("data-open", "");
     await expect
         .poll(() => focusedElement(page), {message: "the first Similar row has focus"})
