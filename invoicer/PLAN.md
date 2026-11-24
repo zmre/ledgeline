@@ -141,6 +141,7 @@ phases can cite them.
 | 3     | App shell, rendering, PDF, branding    | The GUI app boots, MBR mounted, preview, starter templates, `pdf`, icon | 2; MBR M3, M4, M5 (crates.io)  |
 | 4     | Editors                                | Invoice, customer, catalog, snippet and template editors   | 3; MBR M1, M2 (M6 optional)    |
 | 5     | Dashboard and lists                    | Receivables dashboard, invoice and customer lists          | 2, 4                           |
+| 5k    | Keyboard-first                         | Ledgeline's keymap in `packages/ui`, app-wide and list/editor keys | 4, 5                    |
 | 6     | Packaging, release, docs               | Signed DMGs in lock-step, docs section, README             | 3 (can start in parallel with 4) |
 | 7     | Later                                  | Each item is its own plan                                  | —                              |
 
@@ -1078,6 +1079,55 @@ preview against a chosen invoice.
 - e2e: create a customer, create an invoice with discount, subtotal and tax,
   save, send, check the journal text, and export a PDF.
 
+## Phase 4 feedback (2026-11-24) — customers & chrome
+
+Patrick used the 4b customer pages and the app chrome. Fixed on
+`2026-11-24-invoicer-customer-polish` (stacked on 4c):
+
+| #   | Patrick saw / asked                                                                           | What changed, and why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+|-----|-----------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| J1  | Show a customer read-only; Edit for the form.                                                 | **The customer page opens as a view** (`CustomerView`): name, kind, labelled emails, phones and addresses, a person's company, terms, the template by name, revenue account, name in the books, the portal, contracts, open POs, default snippets; beside it the account (`CustomerAccount`). **Edit** swaps in the form; Save and Discard sit top right; Cancel returns to the view, and a save does too. Replaces K9: MBR's contact-card frame is gone from the page.                                                                                                                                                                                                                                                                     |
+| J2  | On the organization form the Name field overlaps Kind.                                        | daisyUI's `.label` is `white-space: nowrap`, so Name's help text ran under the Kind column. Help texts now wrap (`whitespace-normal`), every field is `min-w-0`, the kind radios wrap, labelled-list rows shrink, and the grid is one column below `sm` (a container query, plan 39). Person and organization alike.                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| J3  | Unsaved changes: prompt like the invoice editor.                                              | Leaving the page (a link, the sidebar) or Cancel with unsaved changes opens **Save / Discard / Cancel** (`SaveDiscardDialog`; focus on Cancel, Escape cancels). Save writes then goes on; a refused save keeps the dialog with the reason. Closing or reloading the window gets the browser's own prompt.                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| J4  | Open invoices, and the full list.                                                             | `CustomerAccount` lists the open invoices first, then every invoice (number, date, due, total, status), each opening the app's invoice page; balance, overdue and the last payment above.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| J5  | Adding a contract needs the exact name.                                                       | **Add contract…** opens `ContractPicker`. In the window it offers **Choose a file…**: the system's open dialog (rfd, new native capability `pick_file`, macOS window only) at the books folder, `POST /api/files/pick`. A file outside the books folder (after resolving links) is refused, saying to move or copy it in. In a browser (`--server`) the picker searches `GET /api/files`: every note except invoices and other documents, plus documents and scans (pdf, doc(x), odt, pages, rtf, txt, images, spreadsheets), skipping hidden and ignored folders and `pdf-dir`, at most 50,000 entries walked. A pick writes `[[Title]]` for a note whose title links only it, else the `/`-rooted path (`customer_edit::contract_entry`). |
+| J6  | No raw `[[…]]` anywhere on customer pages.                                                    | Names, never syntax: the company is typed or picked by name (organization customers suggested) and the server writes the link (K6); contracts show `ContractView.name` (the note's title or the file's name); default snippets and templates by name; server refusals no longer quote `[[…]]` ("other notes link to it by name").                                                                                                                                                                                                                                                                                                                                                                                                           |
+| J7  | Opening a contract.                                                                           | A note opens in the app's note view (J9). A file opens in its viewer in the window (`POST /api/files/open`, a path inside the books folder only, capability `open_file`), else in a new browser tab at MBR's URL for it (behind the session cookie).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| J8  | Remove implementation detail shown to users.                                                  | Swept customer, catalog and snippet pages and the chrome: "MBR's page for the saved note…", "Invoices link it as [[Name]]", "Edit `open_pos:` in the note itself", "a note with `type: catalog`", "Create invoices/catalog.md", "A customer's `snippets:` names…", "Customers link it as [[Title]]", "Also answers to [[…]]" now say what they mean in plain words.                                                                                                                                                                                                                                                                                                                                                                         |
+| J9  | "Also linked from": Fred Smith labelled a company; a click left the app.                      | The label was the linking frontmatter key (`company:`). Backlinks now carry the note's `kind` (its `type:`), a document's `number` and `customer`; the page shows the type (Person, Organization, Invoice, Contract…). Links stay in the app: an invoice opens its page, a customer its page, any other note **`/app/notes/<path>`**, MBR's page in the sandboxed frame under the sidebar with Back. The frame runs no scripts, so its links move only the frame.                                                                                                                                                                                                                                                                           |
+| J10 | Friendly field names in messages.                                                             | `invoicer/web/src/lib/labels.ts`: one flat `FIELD_LABELS` map (customer and invoice keys), `fieldLabel`, `fieldList`, `friendlyMessage` (a known key in backticks, or before a colon, becomes its label). Customer pages run save errors and problems through it; Saved lists labels ("Saved: Phones, Terms."). Core messages say "supplier ID", "URL", "an email" instead of keys.                                                                                                                                                                                                                                                                                                                                                         |
+| J11 | Status area: "9 documents" is unclear; show the books' name; the basis badge looks clickable. | "N documents" is gone. Counts sit beside the sidebar items from `GET /api/books?today=`: Invoices (open, with overdue as a red badge), Customers, Catalog (items), Snippets. The foot shows the books' name from Ledgeline's own source (`ledgeline_core::title::journal_title`: the main file's leading comment if it reads as a title, else its folder), the journal file and the basis as plain text, no border.                                                                                                                                                                                                                                                                                                                         |
+| J12 | Narrow widths now, mobile later.                                                              | **A standing requirement for every page from now on**: usable in a narrow window, no overlapping fields, tables scroll in their own box. Breakpoints are the shared container queries (plan 39: `sm`–`2xl` follow the UI scale); media queries only for true viewport facts. Below `md` the sidebar becomes a bar across the top, sections in a wrapping row, the books' name beside the app's. A narrow-window e2e covers the customer form.                                                                                                                                                                                                                                                                                               |
+
+New routes:
+
+| Route                         | Body     | Answers                                                                                                   |
+|-------------------------------|----------|-----------------------------------------------------------------------------------------------------------|
+| `GET /api/files[?list=false]` | —        | `{pick, open, files: [{path, name, kind, entry}]}`; `list=false`: the capabilities only                   |
+| `POST /api/files/pick`        | —        | `{cancelled: true}` or `{cancelled: false, file}`; `422` a file outside the books folder; `503` no window |
+| `POST /api/files/open`        | `{path}` | `{done: true}`; `404` not a file in the books; `422` a link out of the folder; `503` no window            |
+| `GET /api/books?today=`       | —        | adds `title`, `invoices: {all, drafts, open, overdue}`, `catalog` (items), `snippets`                     |
+
+`GET /api/customers/{key}` adds `contracts[].name` and `backlinks[].kind`,
+`.number`, `.customer`.
+
+Planned from this round (open to veto):
+
+| #   | Decision                                                                                                                                                                                                                                                              |
+|-----|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| J13 | **Keyboard-first** is its own phase (5k): the app should make the user fast, fully on the keyboard where possible. Reuse Ledgeline's keymap (`web/src/lib/keys/`: layers, chords, the help sheet) by **extracting it into `packages/ui`**, not building a second one. |
+| J14 | **Mobile later** (Phase 7): the invoicer follows Ledgeline's iOS approach (plan 42, `apple/ios`) when it comes; until then narrow windows (J12) are the bar.                                                                                                          |
+| J15 | **Sorting and filtering both lists** (invoices and customers) are Phase 5 work, in the URL so a filtered list can be linked and survives reload.                                                                                                                      |
+| J16 | **Managing a customer's open POs in the app** is Phase 5 (today read-only, edited by hand): add, edit and close POs on the customer page, written by key like K1, and the invoice editor's reference suggestions follow.                                              |
+
+**Pending (the lead):** `just invoicer-e2e` (customers spec: the view,
+in-app links and the note view, Edit/Cancel, a narrow window, adding a
+contract by search, the Save / Discard / Cancel prompt; library spec's
+alias text). In the window: **Choose a file…** (the rfd dialog over the
+app; a file inside and one outside the books folder), opening a PDF
+contract in Preview, the note view's frame, and the sidebar at a narrow
+width and at 150–200 % scale.
+
 ## Phase 5 — Dashboard and lists (PR 5)
 
 - **Dashboard:**
@@ -1088,11 +1138,36 @@ preview against a chosen invoice.
   - DSO and average days to pay;
   - drafts waiting;
   - recognition due (a count, plus "Open in Ledgeline").
-- **Invoice list:** filters, sort, overdue highlighting, quick jump (MBR
-  search).
+- **Invoice list:** filters (status, customer, open/overdue, date range),
+  sort by any column, overdue highlighting, quick jump (MBR search); the
+  filter and sort live in the URL (J15).
+- **Customer list:** sort (name, owed, overdue, last payment) and filter
+  (owes, overdue, person or organization, a text search), in the URL as
+  above (J15).
+- **Open POs on the customer page:** add, edit and close a customer's
+  `open_pos` in the app, written by key (K1); the editor's reference
+  suggestions read them (J16).
+- **Narrow windows** for every page (J12, a standing requirement).
 - **Charts:** follow the `dataviz` skill and the Ledgeline palette.
 - **Tests:** API goldens on the accrual and cash fixtures, and dashboard
   screenshots for the docs.
+
+## Phase 5k — Keyboard-first (TODO)
+
+The goal: the app makes the user fast, and works fully from the keyboard
+where it can (J13).
+- **Extract Ledgeline's keymap** (`web/src/lib/keys/`: layers, chords,
+  dispatch, hints, the `KeyHelp` sheet) into `packages/ui`, Ledgeline
+  importing it from there, as `AccountInput` was (E12). One keymap, two apps.
+- **App-wide:** go-to chords (`g i` invoices, `g c` customers, `g k`
+  catalog, `g s` snippets, `n` new invoice), `?` for the help sheet, `/`
+  to search the current list; maybe a command palette.
+- **Lists:** `j`/`k` to move, Enter to open, sort and filter keys (J15).
+- **Editors:** save, discard, add each row type, move rows (Alt+↑/↓ today),
+  open the customer, template and catalog pickers; Edit/Cancel on the
+  customer page.
+- **Tests:** the keymap's own unit tests move with it; component tests per
+  binding; one e2e that does an invoice end to end without the mouse.
 
 ## Phase 6 — Packaging, release, docs (PRs 6a–6b)
 
@@ -1140,7 +1215,7 @@ The order is a suggestion:
 8. Ledgeline "Open invoice" link from `document:` (L9).
 9. E-invoice (UBL) export.
 10. Email and reminders.
-11. iOS (`invoicer-ffi`).
+11. Mobile: iOS (`invoicer-ffi`), following Ledgeline's plan 42 approach (J14).
 12. M:N settlement.
 13. Multi-currency.
 
