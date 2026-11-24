@@ -26,6 +26,7 @@
 //! | `GET /api/customers`        | `customers list --json`.                       |
 //! | `GET`/`PATCH /api/ui-prefs` | The shared theme and scale (Ledgeline's shape). |
 //! | `POST /api/session`         | The cookie MBR's pages need ([`super::mbr`]).  |
+//! | the invoice editor's routes | Form, compute, save, new, void, rebook… (4a): [`super::editor`]. |
 //!
 //! Errors are `{"error": "…"}` with a status: `400` for a bad parameter,
 //! `404` for an unknown invoice, `409` when no books are open, `422` for a
