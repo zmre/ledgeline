@@ -20,6 +20,7 @@ pub(crate) mod api;
 pub(crate) mod books;
 #[cfg(feature = "gui")]
 pub(crate) mod desktop;
+pub(crate) mod editor;
 pub(crate) mod edits;
 #[cfg(feature = "gui")]
 mod gui;

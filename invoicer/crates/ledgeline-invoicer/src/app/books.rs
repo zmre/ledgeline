@@ -22,6 +22,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 
 use super::APP;
+use super::preview::DraftPreviews;
 use crate::starters;
 
 /// The settings file beside the main journal: `[books]` and `[invoicer]`.
@@ -62,6 +63,8 @@ pub(crate) struct OpenBooks {
     /// every listener's stream (File → Open: the SPA reconnects to the new
     /// books).
     changes: broadcast::Sender<Changed>,
+    /// The editor's unsaved previews (invoicer PLAN 4a).
+    drafts: DraftPreviews,
 }
 
 impl std::fmt::Debug for OpenBooks {
@@ -96,6 +99,7 @@ impl OpenBooks {
             live,
             renderer: Mutex::new(None),
             changes: broadcast::channel(CHANGE_BACKLOG).0,
+            drafts: DraftPreviews::default(),
         })
     }
 
@@ -150,6 +154,11 @@ impl OpenBooks {
     /// The main journal in the vault.
     pub(crate) fn main(&self) -> &VaultPath {
         &self.main
+    }
+
+    /// The editor's unsaved previews.
+    pub(crate) fn drafts(&self) -> &DraftPreviews {
+        &self.drafts
     }
 
     /// MBR's router for this folder.

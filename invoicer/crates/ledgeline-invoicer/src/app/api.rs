@@ -80,6 +80,8 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/customers", get(customers))
         .route("/api/ui-prefs", get(ui_prefs).patch(patch_ui_prefs))
         .route("/api/session", post(session))
+        // The invoice editor (4a): its own table, merged.
+        .merge(super::editor::routes())
 }
 
 /// An API failure: a status and a sentence.

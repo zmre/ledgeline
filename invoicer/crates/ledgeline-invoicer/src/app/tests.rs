@@ -1930,3 +1930,7 @@ async fn recalculating_a_sent_invoice_in_a_closed_period_writes_nothing() {
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
 }
+
+/// The invoice editor's routes (4a), with these helpers.
+#[path = "editor_tests.rs"]
+mod editor_tests;

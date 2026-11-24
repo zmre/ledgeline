@@ -544,13 +544,14 @@ fn new_rows(
 /// customer: the draft reports that.
 fn starter_for_new(
     session: &Session,
-    args: &NewArgs,
+    customer: &str,
+    template: Option<&str>,
 ) -> (Option<String>, Option<&'static starters::Starter>) {
     let dir = &session.settings().templates_dir;
-    let Ok(customer) = views::find_customer(session.index(), &args.customer) else {
+    let Ok(customer) = views::find_customer(session.index(), customer) else {
         return (None, None);
     };
-    match args.template.clone().or(customer.invoice_template) {
+    match template.map(str::to_string).or(customer.invoice_template) {
         Some(value) => (None, starters::named(dir, &value)),
         None => {
             let has_one = templates::discover(session.vault(), session.index().site())
@@ -576,7 +577,8 @@ fn run_new(cli: &Cli, args: &NewArgs, matches: Option<&ArgMatches>) -> Result<Ex
         .iter()
         .map(|f| edit::assignment(f))
         .collect::<Result<Vec<_>, WriteError>>()?;
-    let (starter_template, starter) = starter_for_new(&session, args);
+    let (starter_template, starter) =
+        starter_for_new(&session, &args.customer, args.template.as_deref());
     let new = NewInvoice {
         template: args.template.clone().or(starter_template),
         number: args.number.clone(),
