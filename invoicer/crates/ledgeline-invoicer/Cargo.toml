@@ -13,12 +13,50 @@ publish = false
 name = "ledgeline-invoicer"
 path = "src/main.rs"
 
+[features]
+# The desktop app is the default, as Ledgeline's is (invoicer PLAN 3a):
+#
+# - `server` — the local HTTP server (`--server`, and the GUI's in-process
+#   one): the `/api` routes, the SPA under `/app`, MBR's router at the root,
+#   and the watcher that runs the reconciler on every journal or markdown
+#   change.
+# - `gui` — the wry/tao window around that server, through `ledgeline-shell`.
+#
+# `--no-default-features` is the CLI alone: every subcommand, no MBR, no
+# server, no window.
+default = ["gui"]
+server = [
+    "dep:axum",
+    "dep:tokio",
+    "dep:tower",
+    "dep:tower-http",
+    "dep:notify",
+    "dep:futures-util",
+    "dep:arc-swap",
+    "dep:rust-embed",
+    "dep:mbr-core",
+    "dep:mbr-server",
+]
+gui = [
+    "server",
+    "ledgeline-shell/gui",
+    "dep:wry",
+    "dep:tao",
+    "dep:muda",
+    "dep:rfd",
+    "dep:mbr-markdown-browser",
+    "dep:objc2",
+    "dep:objc2-foundation",
+    "dep:objc2-app-kit",
+]
+
 [dependencies]
 invoicer-core = { workspace = true }
 ledgeline-core = { workspace = true }
 # Opening the books the way Ledgeline does: the positional journal, then
 # `$LEDGELINE_FIXTURE`, then recents (`ledgeline_shell::recents`, through the
-# shared config directory). The default features only: no GUI yet.
+# shared config directory); and, with `server`, the token, Host guard, CSP and
+# SPA embed; with `gui`, the window (its `gui` feature follows ours).
 ledgeline-shell = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -32,6 +70,66 @@ unicode-width = "0.2"
 # features as ledgeline-server's, so no crate is added.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
+# The server (`server`). The same versions Ledgeline's server uses, so cargo
+# unifies them; MBR's router is an axum 0.8 `Router` too.
+axum = { version = "0.8", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"], optional = true }
+tower = { version = "0.5", features = ["util"], optional = true }
+tower-http = { version = "0.7", features = ["set-header"], optional = true }
+# The watcher over the journal's files and the markdown under the books
+# folder, feeding the reconciler (ARCHITECTURE §5.4).
+notify = { version = "8", optional = true }
+# The change events' stream (`GET /api/events`, server-sent events). Already
+# in Cargo.lock (axum's own).
+futures-util = { version = "0.3", default-features = false, features = ["alloc"], optional = true }
+# The open books, swapped whole on File → Open.
+arc-swap = { version = "1", optional = true }
+# The invoicer SPA (`invoicer/web`), mirrored into `spa/` by build.rs.
+rust-embed = { version = "8", features = ["interpolate-folder-path"], optional = true }
+# MBR renders the notes (invoices, customers) at the server's root
+# (ARCHITECTURE §6.1). From crates.io only: a git rev can't work, because the
+# embedded JS bundles exist only in the published package (PLAN I16). Exact
+# pins: MBR's crates make no API stability promise. `watcher` keeps MBR's
+# index and live reload current as files change.
+mbr-core = { version = "=0.7.4", optional = true }
+mbr-server = { version = "=0.7.4", features = ["watcher"], optional = true }
+
+# The desktop window (`gui`). The same versions as ledgeline-shell's.
+wry = { version = "0.57", optional = true }
+tao = { version = "0.37", optional = true }
+muda = { version = "0.21", optional = true }
+rfd = { version = "0.17", optional = true }
+# PDF export (`gui`, invoicer PLAN 3c): MBR's `pdf_export::ExportSession`,
+# started on the app's own tao event loop (MBR-CHANGES M4). The lean feature
+# set: the webview export and nothing else (no ffmpeg, no CLI, no SSG). Its
+# wry and tao are the versions above, which is what lets it take our loop.
+mbr-markdown-browser = { version = "=0.7.4", default-features = false, features = ["gui"], optional = true }
+
+# Share… and Copy file (`gui`, macOS): `NSSharingServicePicker` and a file
+# URL on the general pasteboard. The same objc2 crates tao and MBR link.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-foundation = { version = "0.3", optional = true, default-features = false, features = [
+    "std",
+    "objc2-core-foundation",
+    "NSArray",
+    "NSGeometry",
+    "NSObject",
+    "NSString",
+    "NSURL",
+] }
+objc2-app-kit = { version = "0.3", optional = true, default-features = false, features = [
+    "std",
+    "objc2-core-foundation",
+    "NSPasteboard",
+    "NSResponder",
+    "NSSharingService",
+    "NSView",
+] }
+
 [dev-dependencies]
 # Each integration test runs on its own copy of a fixture.
 tempfile = "3"
+# The server's router tests drive it in-process. Both already in Cargo.lock.
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

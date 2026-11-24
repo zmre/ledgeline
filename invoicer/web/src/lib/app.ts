@@ -1,5 +1,5 @@
-// What the empty shell needs before the invoicer has an API (invoicer PLAN 0d).
-// Phase 3 replaces the default appearance with the saved prefs, read from the
+// The shell's constants (invoicer PLAN 0d). The layout replaces the default
+// appearance with the saved prefs from `GET /api/ui-prefs` (PLAN 3a): the
 // same ui-prefs.toml and ledgeline.toml [ui] pin Ledgeline uses.
 import {DEFAULT_THEME_PREF} from "#ui/theme/catalog.js";
 import {DEFAULT_SCALE} from "#ui/theme/scale.js";

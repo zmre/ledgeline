@@ -44,6 +44,7 @@ mod par;
 pub mod problem;
 pub mod receivables;
 pub mod reconcile;
+pub mod sent;
 pub mod session;
 pub mod settings;
 pub mod snippets;

@@ -669,6 +669,414 @@ pub fn customer_detail<'a>(
     }
 }
 
+/// One posting of a transaction, as the books panel shows it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PostingView {
+    /// The account.
+    pub account: String,
+    /// Its amounts, each in the journal's style (`-$8,350.00`).
+    pub amounts: Vec<String>,
+}
+
+/// One transaction the books hold under an invoice's number.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EntryView {
+    /// Its date.
+    pub date: String,
+    /// Its description.
+    pub description: String,
+    /// The journal file it is in, relative to the books folder (or its file
+    /// name, when it is outside the folder): never a full local path.
+    pub file: String,
+    /// Its first line in that file.
+    pub line: u32,
+    /// Its postings, in file order.
+    pub postings: Vec<PostingView>,
+}
+
+/// One payment or credit against an invoice's receivable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReceivedView {
+    /// When.
+    pub date: String,
+    /// How much, in the journal's style.
+    pub amount: String,
+    /// `payment` (money came in) or `credit` (a credit note, a write-off).
+    pub kind: &'static str,
+    /// The settling transaction's description.
+    pub description: String,
+    /// Where it came from: the transaction's other accounts (the bank, a
+    /// credit's account), not the receivable.
+    pub from: Vec<String>,
+    /// The journal file it is in (as [`EntryView::file`]).
+    pub file: String,
+    /// Its first line in that file.
+    pub line: u32,
+}
+
+/// Where an invoice stands with the books, in one line: what the Books
+/// panel says first ("Paid in full on …", "Partly paid: $X of $Y, $Z due").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SettlementView {
+    /// `paid`, `partial`, `unpaid` or `void`.
+    pub state: &'static str,
+    /// What it is for, in the journal's style.
+    pub total: String,
+    /// What has been paid or credited.
+    pub paid: String,
+    /// What is left to pay.
+    pub outstanding: String,
+    /// When it was paid in full.
+    pub paid_on: Option<String>,
+    /// When it is due (the file's `due_date`).
+    pub due_date: Option<String>,
+}
+
+/// An invoice's receivable posting (accrual books).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReceivableView {
+    /// The receivable account.
+    pub account: String,
+    /// What was booked.
+    pub amount: String,
+    /// What is left to settle.
+    pub outstanding: String,
+    /// `open`, `partial`, `paid` or `void`.
+    pub state: &'static str,
+    /// Its payments and credits, oldest first.
+    pub payments: Vec<ReceivedView>,
+}
+
+/// A cash-books payment applied to an invoice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PaymentView {
+    /// The payment transaction.
+    #[serde(flatten)]
+    pub entry: EntryView,
+    /// What it paid toward the invoice.
+    pub amount: String,
+}
+
+/// What the books say about one invoice: the Books panel (ARCHITECTURE
+/// §6.3), read-only. `GET /api/invoices/{num}/books`.
+#[derive(Debug, Clone, Serialize)]
+pub struct InvoiceBooksView {
+    /// The books' basis.
+    pub basis: crate::books::Basis,
+    /// `invoice_num`, when the document has one.
+    pub number: Option<String>,
+    /// `status`.
+    pub status: Option<Status>,
+    /// The transactions it is booked as (one, normally).
+    pub bookings: Vec<EntryView>,
+    /// Its receivable (accrual books, once booked).
+    pub receivable: Option<ReceivableView>,
+    /// The reversals that void it.
+    pub voids: Vec<EntryView>,
+    /// Cash books: the payments applied to it.
+    pub payments: Vec<PaymentView>,
+    /// What the books say `paid:` should be, when they can say.
+    pub books_paid: Option<reconcile::BooksPaid>,
+    /// The `paid:` mirror the books say (`no`, a date, `partial …`).
+    pub books_paid_text: Option<String>,
+    /// The `paid:` mirror as the file writes it.
+    pub paid: Option<Paid>,
+    /// Whether the file's mirror says what the books say (`None` when the
+    /// books can't say).
+    pub in_step: Option<bool>,
+    /// Where it stands, in one line (a sent or void invoice the books can
+    /// say something about).
+    pub settlement: Option<SettlementView>,
+    /// When the file's `paid:` mirror disagrees with the books: that, in
+    /// plain words.
+    pub mirror_problem: Option<String>,
+    /// What `check` finds in the books for this invoice.
+    pub problems: Vec<Problem>,
+}
+
+fn payment_state(state: ledgeline_core::accrual::receivables::PaymentState) -> &'static str {
+    use ledgeline_core::accrual::receivables::PaymentState;
+    match state {
+        PaymentState::Open => "open",
+        PaymentState::Partial => "partial",
+        PaymentState::Paid => "paid",
+        PaymentState::Void => "void",
+    }
+}
+
+/// A journal file as the panel names it: by the books folder, else by its
+/// file name (never a full local path).
+fn journal_file(session: &Session, file: &std::path::Path) -> String {
+    session.vault().vault_path(file).map_or_else(
+        |_| {
+            file.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        },
+        |p| p.to_string(),
+    )
+}
+
+/// A payment or credit on `receivable`, as the panel shows it.
+fn received_view(
+    session: &Session,
+    receivable: &reconcile::ReceivableState,
+    settled: &reconcile::SettledBy,
+    style: &crate::table::money::MoneyStyle,
+) -> ReceivedView {
+    let txn = session.journal().transactions.get(settled.position);
+    let mut from: Vec<String> = Vec::new();
+    for posting in txn.map(|t| t.postings.as_slice()).unwrap_or_default() {
+        let account = &posting.account.0;
+        if account != &receivable.account && !from.contains(account) {
+            from.push(account.clone());
+        }
+    }
+    ReceivedView {
+        date: settled.date.clone(),
+        amount: style.format(settled.amount),
+        kind: if settled.credit { "credit" } else { "payment" },
+        description: txn.map(|t| t.description.clone()).unwrap_or_default(),
+        from,
+        file: txn
+            .map(|t| journal_file(session, &t.source_file))
+            .unwrap_or_default(),
+        line: txn.map_or(0, |t| t.source_span.0.line),
+    }
+}
+
+/// The transaction at `source`, as the panel shows it.
+fn entry_view(session: &Session, source: &reconcile::Source) -> EntryView {
+    let money = session.index().money();
+    let txn = session.journal().transactions.get(source.position);
+    let file = journal_file(session, &source.file);
+    EntryView {
+        date: source.date.clone(),
+        description: txn.map(|t| t.description.clone()).unwrap_or_default(),
+        file,
+        line: source.line,
+        postings: txn
+            .map(|t| {
+                t.postings
+                    .iter()
+                    .map(|p| PostingView {
+                        account: p.account.0.clone(),
+                        amounts: p
+                            .amounts
+                            .iter()
+                            .map(|a| money.style(Some(&a.commodity.0)).format(a.quantity))
+                            .collect(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    }
+}
+
+/// The Books panel for `doc`: what the journal holds under its number.
+#[must_use]
+pub fn invoice_books(session: &Session, doc: &IndexedDoc) -> InvoiceBooksView {
+    let states = session.book_states();
+    let money = session.index().money();
+    let commodity = doc.summary.as_ref().map(|s| s.commodity.as_str());
+    let style = money.style(commodity);
+    let number = doc.number().map(str::to_string);
+    let standing = number.as_deref().and_then(|n| states.standing(n));
+    let entries = |sources: &mut dyn Iterator<Item = &reconcile::Source>| -> Vec<EntryView> {
+        sources.map(|s| entry_view(session, s)).collect()
+    };
+    let bookings = standing.map_or_else(Vec::new, |s| {
+        entries(&mut s.bookings.iter().map(|b| &b.source))
+    });
+    let voids = standing.map_or_else(Vec::new, |s| entries(&mut s.voids.iter()));
+    let receivable = standing
+        .and_then(|s| s.bookings.iter().find_map(|b| b.receivable.as_ref()))
+        .map(|r| {
+            let style = money.style(Some(&r.commodity));
+            ReceivableView {
+                account: r.account.clone(),
+                amount: style.format(r.amount),
+                outstanding: style.format(r.outstanding),
+                state: payment_state(r.state),
+                payments: r
+                    .settled_by
+                    .iter()
+                    .map(|settled| received_view(session, r, settled, &style))
+                    .collect(),
+            }
+        });
+    let payments = standing.map_or_else(Vec::new, |s| {
+        s.payments
+            .iter()
+            .map(|p| PaymentView {
+                entry: entry_view(session, &p.source),
+                amount: money.style(Some(&p.commodity)).format(p.amount),
+            })
+            .collect()
+    });
+    let books_paid = states.paid(doc);
+    let in_step = books_paid
+        .as_ref()
+        .map(|b| b.agrees_with(doc.header.paid.as_ref(), &style));
+    let problems = number.as_ref().map_or_else(Vec::new, |n| {
+        books_problems(session, Some(std::slice::from_ref(n)))
+    });
+    let settlement = settlement(session, doc, standing, books_paid.as_ref());
+    let mirror_problem = match (&books_paid, in_step) {
+        (Some(books), Some(false)) => Some(mirror_problem(doc.header.paid.as_ref(), books, &style)),
+        _ => None,
+    };
+    InvoiceBooksView {
+        basis: session.basis(),
+        number,
+        status: doc.header.status,
+        bookings,
+        receivable,
+        voids,
+        payments,
+        books_paid_text: books_paid.as_ref().map(|b| b.text(&style)),
+        books_paid,
+        paid: doc.header.paid.clone(),
+        in_step,
+        settlement,
+        mirror_problem,
+        problems,
+    }
+}
+
+/// Where `doc` stands with the books, for the panel's first line: from its
+/// receivable (accrual books), else from the payments applied to it (cash
+/// books), else from what the books say its `paid:` should be. `None` for a
+/// draft, or a sent invoice the books know nothing of (a problem says so).
+fn settlement(
+    session: &Session,
+    doc: &IndexedDoc,
+    standing: Option<&reconcile::Standing>,
+    books_paid: Option<&reconcile::BooksPaid>,
+) -> Option<SettlementView> {
+    use ledgeline_core::accrual::receivables::PaymentState;
+    let money = session.index().money();
+    let due_date = doc.header.due_date.clone();
+    let paid_on = match books_paid {
+        Some(reconcile::BooksPaid::Full { date }) => Some(date.clone()),
+        _ => None,
+    };
+    if let Some(r) = standing.and_then(|s| s.bookings.iter().find_map(|b| b.receivable.as_ref())) {
+        let style = money.style(Some(&r.commodity));
+        let paid = if r.state == PaymentState::Void {
+            ledgeline_core::Dec::zero()
+        } else {
+            r.amount.sub(r.outstanding).unwrap_or(r.amount)
+        };
+        let state = match r.state {
+            PaymentState::Open => "unpaid",
+            PaymentState::Partial => "partial",
+            PaymentState::Paid => "paid",
+            PaymentState::Void => "void",
+        };
+        return Some(SettlementView {
+            state,
+            total: style.format(r.amount),
+            paid: style.format(paid),
+            outstanding: style.format(r.outstanding),
+            paid_on,
+            due_date,
+        });
+    }
+    if doc.header.status == Some(Status::Void) {
+        let summary = doc.summary.as_ref();
+        let style = money.style(summary.map(|s| s.commodity.as_str()));
+        let total = summary.map_or_else(ledgeline_core::Dec::zero, |s| s.total);
+        return Some(SettlementView {
+            state: "void",
+            total: style.format(total),
+            paid: style.format(ledgeline_core::Dec::zero()),
+            outstanding: style.format(ledgeline_core::Dec::zero()),
+            paid_on: None,
+            due_date,
+        });
+    }
+    if doc.header.status != Some(Status::Sent) {
+        return None;
+    }
+    let summary = doc.summary.as_ref()?;
+    let style = money.style(Some(&summary.commodity));
+    let applied = standing.map_or_else(ledgeline_core::Dec::zero, |s| {
+        s.payments
+            .iter()
+            .filter(|p| p.commodity == summary.commodity)
+            .fold(ledgeline_core::Dec::zero(), |sum, p| {
+                sum.add(p.amount).unwrap_or(sum)
+            })
+    });
+    let paid = if paid_on.is_some() {
+        summary.total
+    } else {
+        applied
+    };
+    let outstanding = summary.total.sub(paid).unwrap_or(summary.total);
+    let state = if paid_on.is_some() || (!summary.total.is_zero() && outstanding.mantissa <= 0) {
+        "paid"
+    } else if !paid.is_zero() {
+        "partial"
+    } else if session.basis() == crate::books::Basis::Accrual && books_paid.is_none() {
+        // Accrual books, not booked: the missing transaction is a problem.
+        return None;
+    } else {
+        "unpaid"
+    };
+    Some(SettlementView {
+        state,
+        total: summary.total_text.clone(),
+        paid: style.format(paid),
+        outstanding: style.format(if outstanding.mantissa < 0 {
+            ledgeline_core::Dec::zero()
+        } else {
+            outstanding
+        }),
+        paid_on,
+        due_date,
+    })
+}
+
+/// The file's `paid:` mirror against the books', in plain words.
+fn mirror_problem(
+    written: Option<&Paid>,
+    books: &reconcile::BooksPaid,
+    style: &crate::table::money::MoneyStyle,
+) -> String {
+    let file_says = match written {
+        None => "has no `paid:` line".to_string(),
+        Some(Paid::No) => "says it is unpaid (`paid: no`)".to_string(),
+        Some(Paid::Full { date }) => format!("says it was paid on {date}"),
+        Some(Paid::Partial { parts }) => format!(
+            "says it was partly paid ({})",
+            parts
+                .iter()
+                .map(|p| format!("{} on {}", p.amount, p.date))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    let books_say = match books {
+        reconcile::BooksPaid::No => "nothing has been paid".to_string(),
+        reconcile::BooksPaid::Full { date } => format!("it was paid in full on {date}"),
+        reconcile::BooksPaid::Partial { parts } => format!(
+            "it was partly paid ({})",
+            parts
+                .iter()
+                .map(|p| format!("{} on {}", style.format_compact(p.amount), p.date))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    format!(
+        "The invoice file {file_says}, but the books say {books_say}. The books are right: \
+         the file's `paid:` line is rewritten from them when they change, or now with \
+         `ledgeline-invoicer reconcile`."
+    )
+}
+
 /// `[books]`, as `config` shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]

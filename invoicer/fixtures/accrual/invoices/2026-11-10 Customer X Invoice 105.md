@@ -11,12 +11,14 @@ reference: "PO #PY75334, rev. 2"
 customer: "[[Customer X]]"
 invoicee_name: Customer X
 invoicee_email: accounts_receivable@customerx.com
+invoicee_phone: +1 (303) 555-0142
 invoicee_address: |
   1234 Main St. #555
   Springfield, CO 80000
 invoicer: "[[My Company]]"
 invoicer_name: My Company
 invoicer_email: finance@mycompany.com
+invoicer_phone: +1 (555) 010-2000
 invoicer_address: |
   1234 Background Blvd.
   Anywhere, CA 90000

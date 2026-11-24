@@ -201,7 +201,12 @@ impl AccessToken {
     /// timing oracle over loopback HTTP is not a practical attack; this only
     /// avoids handing one out for free. (Rust makes no formal guarantee that the
     /// optimiser preserves this; a dedicated crate would.)
-    fn matches(&self, presented: &str) -> bool {
+    ///
+    /// Public for an app that accepts the token (or a second secret of its
+    /// own) somewhere [`token_guard`] does not reach: the invoicer's gate over
+    /// MBR's pages, which a browser loads by navigation, with a cookie.
+    #[must_use]
+    pub fn matches(&self, presented: &str) -> bool {
         let (expected, actual) = (self.0.as_bytes(), presented.as_bytes());
         expected.len() == actual.len()
             && expected
@@ -485,7 +490,8 @@ pub async fn token_guard(
 
 /// The credential from an `Authorization: Bearer <token>` value (scheme matched
 /// case-insensitively, per RFC 7235).
-fn bearer_token(value: &str) -> Option<&str> {
+#[must_use]
+pub fn bearer_token(value: &str) -> Option<&str> {
     let (scheme, token) = value.split_once(' ')?;
     scheme
         .eq_ignore_ascii_case("Bearer")

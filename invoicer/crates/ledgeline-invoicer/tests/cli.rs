@@ -122,12 +122,32 @@ impl Books {
         String::from_utf8(out.stdout).expect("utf-8")
     }
 
-    /// `value` as committed: pretty JSON with this copy's folder written
-    /// `<BOOKS>`.
+    /// `value` as committed: pretty JSON, keys sorted, with this copy's
+    /// folder written `<BOOKS>`. Sorted here because the build's
+    /// serde_json may keep insertion order (`preserve_order`, which MBR's
+    /// Tera turns on in the app build) or sort, and a JSON object's key
+    /// order is no part of the output's meaning.
     fn normalized(&self, value: &Value) -> String {
         let root = fs::canonicalize(self.root()).expect("canonical");
-        let text = serde_json::to_string_pretty(value).expect("json");
+        let text = serde_json::to_string_pretty(&sorted(value)).expect("json");
         format!("{}\n", text.replace(&root.display().to_string(), "<BOOKS>"))
+    }
+}
+
+/// `value` with every object's keys in sorted order, whatever the map type.
+fn sorted(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            Value::Object(
+                keys.into_iter()
+                    .map(|k| (k.clone(), sorted(&map[k])))
+                    .collect(),
+            )
+        }
+        Value::Array(items) => Value::Array(items.iter().map(sorted).collect()),
+        other => other.clone(),
     }
 }
 
@@ -293,6 +313,139 @@ fn check_strict_fails_on_warnings() {
     let report = books.json(&["check"], 0);
     assert_eq!(report["warnings"], 1);
     books.json(&["check", "--strict"], 1);
+}
+
+/// The shipped starter's text (`templates/` beside this crate).
+fn starter(file: &str) -> String {
+    fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("templates")
+            .join(file),
+    )
+    .expect("a starter")
+}
+
+#[test]
+fn new_copies_a_starter_template_on_first_use_and_never_overwrites() {
+    let books = Books::of("accrual");
+    // Books with no template at all, and a customer who names none.
+    fs::remove_file(books.file("invoices/tpl/myco-default.html")).expect("removes");
+    let wingtip = books.read("customers/Wingtip.md");
+    let without: String = wingtip
+        .lines()
+        .filter(|l| !l.starts_with("invoice_template:"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    fs::write(books.file("customers/Wingtip.md"), without).expect("writes");
+    let row = ["--row", "Work|1|$100"];
+
+    // A dry run copies nothing.
+    let mut dry = vec!["new", "--customer", "Wingtip", "--dry-run"];
+    dry.extend_from_slice(&row);
+    let preview = books.json(&dry, 0);
+    assert!(preview.get("template_copied").is_none(), "{preview}");
+    assert!(!books.file("invoices/tpl/classic.html").exists());
+
+    // The first invoice gets the default starter, copied in byte for byte.
+    let mut args = vec!["new", "--customer", "Wingtip"];
+    args.extend_from_slice(&row);
+    let made = books.json(&args, 0);
+    assert_eq!(made["template_copied"], "invoices/tpl/classic.html");
+    assert_eq!(
+        made["problems"],
+        serde_json::json!([]),
+        "the template is known at once"
+    );
+    assert_eq!(
+        books.read("invoices/tpl/classic.html"),
+        starter("classic.html")
+    );
+    let path = made["path"].as_str().expect("path");
+    assert!(
+        books
+            .read(path)
+            .contains("template: /invoices/tpl/classic.html")
+    );
+
+    // From then on it is the user's: the next invoice uses it as it is.
+    fs::write(
+        books.file("invoices/tpl/classic.html"),
+        "{# invoicer: name=\"Mine\" #}\n{{ frontmatter.invoice_num }}",
+    )
+    .expect("edits");
+    let next = books.json(&args, 0);
+    assert!(next.get("template_copied").is_none(), "{next}");
+    assert!(books.read("invoices/tpl/classic.html").contains("Mine"));
+
+    // Naming the other starter copies that one.
+    let mut modern = vec![
+        "new",
+        "--customer",
+        "Wingtip",
+        "--template",
+        "/invoices/tpl/modern.html",
+    ];
+    modern.extend_from_slice(&row);
+    let made = books.json(&modern, 0);
+    assert_eq!(made["template_copied"], "invoices/tpl/modern.html");
+    assert_eq!(
+        books.read("invoices/tpl/modern.html"),
+        starter("modern.html")
+    );
+
+    // A template that is no starter is never invented: the draft names it
+    // and `check` warns.
+    let mut contoso = vec!["new", "--customer", "Contoso"];
+    contoso.extend_from_slice(&row);
+    let made = books.json(&contoso, 0);
+    assert!(made.get("template_copied").is_none(), "{made}");
+    assert_eq!(made["problems"][0]["code"], "unknown-template", "{made}");
+    assert!(!books.file("invoices/tpl/myco-default.html").exists());
+
+    // The text output says what was copied.
+    fs::remove_file(books.file("invoices/tpl/modern.html")).expect("removes");
+    let mut text = vec![
+        "new",
+        "--customer",
+        "Wingtip",
+        "--template",
+        "/invoices/tpl/modern.html",
+    ];
+    text.extend_from_slice(&row);
+    let out = books.text(&text);
+    assert!(
+        out.contains("copied the starter template to invoices/tpl/modern.html"),
+        "{out}"
+    );
+}
+
+/// `set template=` naming a starter copies it in on first use, as `new`
+/// does (PLAN F9): the CLI side of the app's "Use this template".
+#[test]
+fn set_template_copies_a_starter_in() {
+    let books = Books::of("accrual");
+    let set = books.json(&["set", "108", "template=/invoices/tpl/modern.html"], 0);
+    assert_eq!(set["changed"], serde_json::json!(["template"]), "{set}");
+    assert_eq!(set["template_copied"], "invoices/tpl/modern.html");
+    assert_eq!(
+        books.read("invoices/tpl/modern.html"),
+        starter("modern.html")
+    );
+    // Named again: the file is the user's now, never replaced.
+    fs::write(
+        books.file("invoices/tpl/modern.html"),
+        "{{ frontmatter.invoice_num }} mine",
+    )
+    .expect("edits");
+    let again = books.json(&["set", "105", "template=/invoices/tpl/modern.html"], 0);
+    assert!(again.get("template_copied").is_none(), "{again}");
+    assert_eq!(
+        books.read("invoices/tpl/modern.html"),
+        "{{ frontmatter.invoice_num }} mine"
+    );
+    // A template that is no starter is written as given; `check` warns.
+    let other = books.json(&["set", "108", "template=/invoices/tpl/nope.html"], 0);
+    assert!(other.get("template_copied").is_none(), "{other}");
 }
 
 #[test]
@@ -561,7 +714,11 @@ fn bad_arguments_exit_2() {
     assert_eq!(bad_today.status.code(), Some(2));
     let missing = books.json(&["show", "999"], 2);
     assert!(missing["error"].as_str().expect("message").contains("999"));
+    // No command: `--json` never opens the window (a script is asking).
     let out = books.bare().arg("--json").output().expect("runs");
+    assert_eq!(out.status.code(), Some(2));
+    // `--server` with no journal to serve refuses before binding anything.
+    let out = books.bare().arg("--server").output().expect("runs");
     assert_eq!(out.status.code(), Some(2));
 }
 
@@ -986,4 +1143,85 @@ fn reconcile_and_check_exit_1_on_books_errors() {
     let sent = books.json(&["send", "107"], 0);
     assert_eq!(sent["journal_written"], true);
     assert_eq!(books.json(&["check"], 0)["errors"], 0);
+}
+
+// ---------------------------------------------------------------------------
+// `pdf` (PLAN 3c). Printing needs a real webview and the main thread, so the
+// export itself is `#[ignore]`d: the lead runs it on a desktop session with
+//   nix develop -c cargo test -p ledgeline-invoicer --test cli -- --ignored pdf_
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pdf_refuses_an_unknown_invoice_before_starting_anything() {
+    let books = Books::of("accrual");
+    let error = books.json(&["pdf", "999"], 2);
+    assert!(error["error"].as_str().unwrap().contains("999"), "{error}");
+}
+
+#[cfg(not(feature = "gui"))]
+#[test]
+fn pdf_needs_the_desktop_build() {
+    let books = Books::of("accrual");
+    let error = books.json(&["pdf", "105"], 2);
+    assert_eq!(error["code"], "needs-gui", "{error}");
+    assert!(
+        error["error"].as_str().unwrap().contains("`gui` feature"),
+        "{error}"
+    );
+}
+
+/// `pdftotext FILE -` when it is on PATH (the dev shell has it).
+#[cfg(feature = "gui")]
+fn pdf_text(file: &Path) -> Option<String> {
+    let out = Command::new("pdftotext").arg(file).arg("-").output().ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+#[cfg(feature = "gui")]
+#[test]
+#[ignore = "prints through the system webview: needs a desktop session (see above)"]
+fn pdf_keeps_a_sent_invoice_and_its_earlier_export() {
+    let books = Books::of("accrual");
+    let first = books.json(&["pdf", "105"], 0);
+    assert_eq!(first["destination"], "kept", "{first}");
+    assert_eq!(first["sent_hash"], "written", "{first}");
+    let kept = books.file("invoices/pdf/2026-11-10 Customer X Invoice 105.pdf");
+    let bytes = fs::read(&kept).expect("kept");
+    assert!(bytes.starts_with(b"%PDF-"));
+    if let Some(text) = pdf_text(&kept) {
+        assert!(text.contains("Customer X"), "{text}");
+        // The fixture's template prints amounts as the bill table writes them.
+        assert!(text.contains("$8,350"), "{text}");
+        assert!(text.contains("Less deposit (Invoice 104)"), "{text}");
+        // The books column is hidden by the template.
+        assert!(!text.contains("liabilities:customer-deposits"), "{text}");
+    }
+    assert!(
+        books
+            .read("invoices/2026-11-10 Customer X Invoice 105.md")
+            .contains("sent_hash: ")
+    );
+
+    let second = books.json(&["pdf", "105"], 0);
+    let earlier = second["earlier"].as_str().expect("the first is kept");
+    assert!(books.file(earlier).is_file(), "{second}");
+
+    // A draft: a temporary file, the books untouched.
+    let draft = books.json(&["pdf", "108"], 0);
+    assert_eq!(draft["destination"], "temp", "{draft}");
+    let path = PathBuf::from(draft["path"].as_str().unwrap());
+    assert!(fs::read(&path).unwrap().starts_with(b"%PDF-"));
+    assert!(
+        !books
+            .read("invoices/2026-11-17 Customer X Invoice 108.md")
+            .contains("sent_hash")
+    );
+
+    // -o: a copy, nothing kept.
+    let copy = books.dir.path().join("copy.pdf");
+    let out = books.json(&["pdf", "105", "-o", copy.to_str().unwrap()], 0);
+    assert_eq!(out["destination"], "copy", "{out}");
+    assert!(fs::read(&copy).unwrap().starts_with(b"%PDF-"));
 }

@@ -4,7 +4,7 @@
     "version": "0.2.3",
     "license": "AGPL-3.0-or-later",
     "type": "module",
-    "description": "Ledgeline Invoicer's SPA, served under /app by the ledgeline-invoicer binary (invoicer/ARCHITECTURE.md §6.1).",
+    "description": "Ledgeline Invoicer's SPA, served under /app by the ledgeline-invoicer binary (invoicer/ARCHITECTURE.md \u00a76.1).",
     "scripts": {
         "dev": "vite dev",
         "build": "vite build",
@@ -13,8 +13,12 @@
         "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && tsc --noEmit",
         "lint": "prettier --check . && eslint .",
         "format": "prettier --write .",
-        "test:unit": "vitest run"
+        "test:unit": "vitest run",
+        "test:node": "vitest run --project=unit",
+        "test:components": "vitest run --project=components",
+        "test:e2e": "playwright test"
     },
+    "//devDependencies": "jsdom, @testing-library/svelte and @playwright/test (the components project and e2e) resolve from the hoisted root node_modules, where web/ and packages/ui declare them; declaring them here too would change bun.lock and so the spaNodeModules pin. Keep their versions in step with web/.",
     "devDependencies": {
         "@eslint/js": "^10.0.1",
         "@sveltejs/adapter-static": "^4.0.1",

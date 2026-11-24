@@ -6,7 +6,10 @@
 //     loads as the cursor nears the end of what is held.
 //   - SIMILAR — fetched once per card, keyed on its ORIGINAL description (the
 //     engine's), for the card on screen and the next one, so the section is
-//     there the moment a card is.
+//     there the moment a card is. A new generation makes the held sets
+//     stale, never absent: each is shown until its refetch lands, so the
+//     section on screen is not unmounted (and its open state, focus and `s`
+//     lost) for the length of a round trip after every save.
 //   - SAVES — queued and sent strictly in order. `save` advances the cursor at
 //     once (optimistic); the write happens behind it. A failure stops the run:
 //     the cursor rewinds to the failed card, its draft intact, with the error,
@@ -218,6 +221,10 @@ async function fetchSimilar(index: number): Promise<SimilarSet | null> {
                     ? decodeKeySimilarSet(await api(target.serverUrl).reviewSimilarKey(key as string, target.today))
                     : decodeSimilarSet(await api(target.serverUrl).reviewSimilar(index, target.today, openIndices()));
             if (started !== epoch) return null;
+            // A request from before a newer generation landed late: the set
+            // already held for the run's generation wins.
+            const held = similarCache.get(index);
+            if (held !== undefined && held.generation === run?.generation && set.generation !== held.generation) return held;
             const next = new Map(similarCache);
             next.set(index, set);
             similarCache = next;
@@ -307,8 +314,32 @@ function applyResult(card: number, edited: readonly ReviewTxn[], generation: str
     fixed += removed;
     replaceCards(next);
     if (run !== null) run = {...run, generation};
-    similarCache = new Map();
+    similarCache = withoutEdited(similarCache, byIndex);
+    // Each set is now stale; `prefetch` asks again at the new generation, not
+    // through a request made at the old one.
     inflight.clear();
+}
+
+/**
+ * The held similar sets less the candidates a save just `edited`: their
+ * fingerprints are gone, and the save may have categorised or reviewed them.
+ * Everything else in a set is as the engine last said, so it stays on
+ * screen until the refetch at the new generation replaces it — dropping the
+ * whole set instead unmounted the Similar section under the card on screen
+ * (the review e2e's step 3 flake: an `s` in that gap did nothing, and a
+ * focused row took focus down with it).
+ */
+function withoutEdited(sets: ReadonlyMap<number, SimilarSet>, edited: ReadonlyMap<number, unknown>): ReadonlyMap<number, SimilarSet> {
+    const next = new Map<number, SimilarSet>();
+    for (const [index, set] of sets) {
+        const candidates = set.candidates.filter((candidate) => !edited.has(candidate.txn.index));
+        const dropped = set.candidates.length - candidates.length;
+        next.set(
+            index,
+            dropped === 0 ? set : {...set, candidates, total: Math.max(0, set.total - dropped), inQueue: set.inQueue.filter((at) => !edited.has(at))}
+        );
+    }
+    return next;
 }
 
 /** A save failed: rewind to its card, keep every draft, cancel what was queued behind it. */
@@ -718,10 +749,14 @@ export const review = {
         cards = cards.map((held, at) => (at === cursor ? {...held, draft} : held));
     },
 
-    /** `index`'s similar set when it has arrived (reactive), else null. */
+    /**
+     * `index`'s similar set when one has arrived (reactive), else null. After
+     * a generation change it may be the previous generation's (less what the
+     * run's own saves edited) until the refetch lands: a set never blinks out
+     * from under the card on screen.
+     */
     similar(index: number): SimilarSet | null {
-        const set = similarCache.get(index);
-        return set !== undefined && (run?.source === "staged" || set.generation === run?.generation) ? set : null;
+        return run === null ? null : (similarCache.get(index) ?? null);
     },
     /** `index`'s similar set, fetched if it is not held. Null when it cannot be had. */
     loadSimilar(index: number): Promise<SimilarSet | null> {

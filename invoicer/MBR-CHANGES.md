@@ -252,5 +252,9 @@ Partials included by the template keep coming from disk.
   root and moves its own SPA to `/app`.
 - **Bare-name template lookup** (`template: myco-default`). The invoicer
   writes full `/`-rooted paths.
-- **A separate `?embed=1` mode.** Invoice templates are chrome-free already,
-  and browse mode wants the chrome.
+- **A separate `?embed=1` mode.** MBR 0.7.4 already lets a template choose:
+  it includes MBR's chrome partials when `server_mode` is set, and hides
+  them itself where scripts are off (the app's frame, a `<noscript>` rule)
+  and on paper (MBR's print rule keeps only `<main>`). Revisit only if a
+  frame ever needs scripts: then a request flag MBR turns into a template
+  variable (`?mbr-bare` → `bare = true`) would be the clean switch.

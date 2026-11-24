@@ -309,6 +309,17 @@ fn send_rebook_and_void_on_accrual_books() {
     write(&dir, INV_102, &edited_102);
     let (books, index) = reopen(books);
     let journal = read(&dir, "books.journal");
+    // The check a caller runs before rewriting the markdown says so first.
+    let checked = books.check_rebook(&index, "102");
+    assert!(
+        matches!(&checked, Err(BooksError::Refused(why)) if why.contains("closed-through 2026-09-30")),
+        "{checked:?}"
+    );
+    assert!(books.check_rebook(&index, "105").is_ok());
+    assert!(matches!(
+        books.check_rebook(&index, "106"),
+        Err(BooksError::Status { .. })
+    ));
     let refused = books.rebook(&index, &rebook("102"));
     assert!(
         matches!(&refused, Err(BooksError::Ops(OpsError::Refused(why))) if why.contains("closed-through")),

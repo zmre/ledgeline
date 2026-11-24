@@ -4,7 +4,8 @@
       "address": "1 Contoso Way\nSpringfield, IL 62701\nUSA",
       "email": "ap@contoso.example",
       "name": "Contoso",
-      "note": "customers/Contoso.md"
+      "note": "customers/Contoso.md",
+      "phone": "+1 (217) 555-0123"
     },
     "invoices": 2,
     "kind": "organization",
@@ -20,7 +21,8 @@
       "address": "1234 Main St. #555\nSpringfield, CO 80000",
       "email": "accounts_receivable@customerx.com",
       "name": "Customer X",
-      "note": "customers/Customer X.md"
+      "note": "customers/Customer X.md",
+      "phone": "+1 (303) 555-0142"
     },
     "invoices": 3,
     "kind": "organization",
@@ -36,7 +38,8 @@
       "address": "1 Fabrikam Way\nSpringfield, IL 62701\nUSA",
       "email": "ap@fabrikam.example",
       "name": "Fabrikam",
-      "note": "customers/Fabrikam.md"
+      "note": "customers/Fabrikam.md",
+      "phone": null
     },
     "invoices": 1,
     "kind": "organization",
@@ -52,7 +55,8 @@
       "address": "1234 Main St. #555\nSpringfield, CO 80000",
       "email": "accounts_receivable@customerx.com",
       "name": "Customer X",
-      "note": "customers/Customer X.md"
+      "note": "customers/Customer X.md",
+      "phone": "+1 (303) 555-0142"
     },
     "invoices": 0,
     "kind": "person",
@@ -68,7 +72,8 @@
       "address": "1 Tailspin Way\nSpringfield, IL 62701\nUSA",
       "email": "ap@tailspin.example",
       "name": "Tailspin",
-      "note": "customers/Tailspin.md"
+      "note": "customers/Tailspin.md",
+      "phone": null
     },
     "invoices": 1,
     "kind": "organization",
@@ -84,7 +89,8 @@
       "address": "1 Wingtip Way\nSpringfield, IL 62701\nUSA",
       "email": "ap@wingtip.example",
       "name": "Wingtip",
-      "note": "customers/Wingtip.md"
+      "note": "customers/Wingtip.md",
+      "phone": null
     },
     "invoices": 1,
     "kind": "organization",

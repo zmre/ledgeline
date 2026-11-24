@@ -235,6 +235,8 @@ pub struct Party {
     pub name: Option<String>,
     /// `_email`.
     pub email: Option<String>,
+    /// `_phone`.
+    pub phone: Option<String>,
     /// `_address`.
     pub address: Option<String>,
 }
@@ -427,6 +429,7 @@ fn header_of(fields: &frontmatter::Fields, keys: &[KeyLine]) -> Header {
         link: text(link),
         name: text(&format!("{prefix}_name")),
         email: text(&format!("{prefix}_email")),
+        phone: text(&format!("{prefix}_phone")),
         address: text(&format!("{prefix}_address")),
     };
     Header {
@@ -688,10 +691,12 @@ impl Invoice {
             "void_date",
             "invoicee_name",
             "invoicee_email",
+            "invoicee_phone",
             "invoicee_address",
             "invoicer",
             "invoicer_name",
             "invoicer_email",
+            "invoicer_phone",
             "invoicer_address",
         ];
         out.extend(scalar_keys.iter().filter_map(|k| {

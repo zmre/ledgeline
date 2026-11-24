@@ -3,10 +3,12 @@ Invoice 105 (sent)  invoices/2026-11-10 Customer X Invoice 105.md
   Due          2026-12-10 (net 30)
   Customer     Customer X  [[Customer X]]
                accounts_receivable@customerx.com
+               +1 (303) 555-0142
                1234 Main St. #555
                Springfield, CO 80000
   From         My Company  [[My Company]]
                finance@mycompany.com
+               +1 (555) 010-2000
                1234 Background Blvd.
                Anywhere, CA 90000
   Reference    PO #PY75334, rev. 2
