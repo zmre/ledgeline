@@ -24,6 +24,7 @@
 //! | `POST /api/pdf/open`        | Open an exported PDF in the default viewer.    |
 //! | `GET /api/events`           | Change events (server-sent events), see [`events`]. |
 //! | `GET`/`POST /api/customers`, `GET`/`PUT /api/customers/{*key}` | Customers: list, create, show, edit ([`super::customers`], 4b). |
+//! | `GET`/`POST /api/catalog`, `PUT /api/catalog/{*path}`; `GET`/`POST /api/snippets`, `PUT`/`DELETE /api/snippets/{*path}` | The catalog and snippets editors ([`super::library`], 4c). |
 //! | `GET`/`PATCH /api/ui-prefs` | The shared theme and scale (Ledgeline's shape). |
 //! | `POST /api/session`         | The cookie MBR's pages need ([`super::mbr`]).  |
 //! | the invoice editor's routes | Form, compute, save, new, void, rebook… (4a): [`super::editor`]. |
@@ -79,6 +80,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/pdf/open", post(pdf::open_pdf))
         .route("/api/events", get(events))
         .merge(super::customers::routes())
+        .merge(super::library::routes())
         .route("/api/ui-prefs", get(ui_prefs).patch(patch_ui_prefs))
         .route("/api/session", post(session))
         // The invoice editor (4a): its own table, merged.

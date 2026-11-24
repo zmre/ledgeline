@@ -227,28 +227,37 @@ fn one_line(what: &str, text: &str) -> Result<Option<String>, CustomerError> {
 }
 
 fn clean_title(title: &str) -> Result<String, CustomerError> {
-    let title = one_line("the name", title)?.ok_or_else(|| invalid("the name can't be empty"))?;
+    link_safe_title(title, "customer").map_err(CustomerError::Invalid)
+}
+
+/// A note title that a `[[Title]]` link and a file name can both carry (K4):
+/// one line, none of `[ ] | # ^ / \`, not ending in `.md`, at most 120
+/// characters. `noun` names the thing in the refusal ("name the snippet").
+pub(crate) fn link_safe_title(title: &str, noun: &str) -> Result<String, String> {
+    let title = title.trim();
+    if title.chars().any(char::is_control) {
+        return Err("the name: one line of text, please".to_string());
+    }
+    if title.is_empty() {
+        return Err("the name can't be empty".to_string());
+    }
     if let Some(c) = title.chars().find(|c| TITLE_FORBIDDEN.contains(c)) {
-        return Err(invalid(format!(
-            "the name can't hold {c:?}: invoices link it as [[{title}]]"
-        )));
+        return Err(format!(
+            "the name can't hold {c:?}: it is linked as [[{title}]]"
+        ));
     }
     if title.chars().count() > MAX_TITLE {
-        return Err(invalid(format!(
-            "the name is longer than {MAX_TITLE} characters"
-        )));
+        return Err(format!("the name is longer than {MAX_TITLE} characters"));
     }
     let lower = title.to_lowercase();
     if lower.ends_with(".md") || lower.ends_with(".markdown") || title.starts_with('.') {
-        return Err(invalid(format!(
-            "{title:?} reads as a file name; name the customer"
-        )));
+        return Err(format!("{title:?} reads as a file name; name the {noun}"));
     }
-    Ok(title)
+    Ok(title.to_string())
 }
 
 /// The file name for a title: characters file systems refuse become `-`.
-fn file_stem(title: &str) -> String {
+pub(crate) fn file_stem(title: &str) -> String {
     title
         .chars()
         .map(|c| {

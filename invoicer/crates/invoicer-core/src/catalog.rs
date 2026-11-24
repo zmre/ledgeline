@@ -62,16 +62,8 @@ impl Catalog {
         words: &Words,
         money: &Money,
     ) -> (Self, Vec<Problem>) {
-        let masked = masked_body(source, locate(source).as_ref());
         let mut problems = Vec::new();
-        let found =
-            gfm::tables(&masked).into_iter().find_map(|table| {
-                match Columns::recognize_any(&table.grid.header, words) {
-                    Ok(columns) if columns.find(Role::Item).is_some() => Some((table, columns)),
-                    _ => None,
-                }
-            });
-        let Some((table, columns)) = found else {
+        let Some((table, columns)) = catalog_table(source, words) else {
             let problem = Problem::error(
                 ProblemCode::Catalog,
                 format!(
@@ -175,6 +167,20 @@ impl Catalog {
     pub fn item_for(&self, code: &ItemCode) -> Option<&CatalogItem> {
         self.item(&code.0)
     }
+}
+
+/// A catalog note's table: the first in its body whose header has a code
+/// column (and a description, as every table the invoicer reads), with its
+/// columns. Its source map is into `source` itself.
+#[must_use]
+pub fn catalog_table(source: &str, words: &Words) -> Option<(gfm::Table, Columns)> {
+    let masked = masked_body(source, locate(source).as_ref());
+    gfm::tables(&masked).into_iter().find_map(|table| {
+        match Columns::recognize_any(&table.grid.header, words) {
+            Ok(columns) if columns.find(Role::Item).is_some() => Some((table, columns)),
+            _ => None,
+        }
+    })
 }
 
 /// Every `type: catalog` note, read. Unreadable notes are problems.

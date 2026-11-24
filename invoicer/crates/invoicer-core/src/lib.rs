@@ -15,6 +15,8 @@
 //! - [`customer_edit`]: creating and editing customer notes (PLAN 4b);
 //! - [`doc`]: the invoice document and its validation (§3.2);
 //! - [`catalog`] (§3.6) and [`templates`] (§3.5);
+//! - [`catalog_edit`] and [`snippet_edit`]: the catalog and snippets editors
+//!   (PLAN 4c);
 //! - [`numbering`] (§5.1);
 //! - [`index`]: the in-memory document index (§5.6);
 //! - [`draft`]: creating drafts and saving documents (§5.2);
@@ -34,6 +36,7 @@
 pub mod booking;
 pub mod books;
 pub mod catalog;
+pub mod catalog_edit;
 pub mod customer_edit;
 pub mod customers;
 pub mod doc;
@@ -51,6 +54,7 @@ pub mod reconcile;
 pub mod sent;
 pub mod session;
 pub mod settings;
+pub mod snippet_edit;
 pub mod snippets;
 pub mod table;
 pub mod templates;
