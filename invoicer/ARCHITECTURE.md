@@ -1245,9 +1245,10 @@ scale, container-query breakpoints) and the same native-mode contract.
   - **Books panel:** what will be booked, or what was booked. Postings,
     schedules, settlement and payments, re-using Ledgeline's transaction-card
     rendering.
-- **Customer view.** The contact card (MBR render), invoicing fields, open
-  POs, contracts, backlinked invoices with paid state, AR balance, and the
-  last payment.
+- **Customer view.** Read-only first (PLAN J1): the contact, invoicing
+  fields, open POs, contracts by name, open and all invoices with paid
+  state, AR balance, the last payment, and the notes linking it (each
+  opening in the app: PLAN J9). **Edit** swaps in the form.
 - **Templates.** A list, plus a code editor with live preview against a
   chosen invoice.
 

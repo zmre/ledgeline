@@ -48,7 +48,11 @@ export function customerX(over: Partial<CustomerDetail> = {}): CustomerDetail {
         }),
         revenue_account: "revenue:consulting",
         invoice_template: "/invoices/tpl/myco-default.html",
-        contracts: [],
+        contracts: [
+            {kind: "note", link: "[[Customer X MSA 2026]]", found: "customers/contracts/Customer X MSA 2026.md", name: "Customer X MSA 2026"},
+            {kind: "file", path: "/customers/contracts/SOW 3.pdf", found: "customers/contracts/SOW 3.pdf", name: "SOW 3.pdf"},
+            {kind: "file", path: "/customers/contracts/gone.pdf", found: null, name: "gone.pdf"},
+        ],
         open_pos: [],
         snippets: [],
         documents: [
@@ -72,7 +76,7 @@ export function customerX(over: Partial<CustomerDetail> = {}): CustomerDetail {
             revenue_account: "revenue:consulting",
             invoice_template: "/invoices/tpl/myco-default.html",
             ledger_customer: "Customer X",
-            contracts: ["[[Customer X MSA 2026]]"],
+            contracts: ["[[Customer X MSA 2026]]", "/customers/contracts/SOW 3.pdf", "/customers/contracts/gone.pdf"],
             billing_portal: {
                 name: "Coupa",
                 url: "https://customerx.coupahost.com/",
@@ -83,9 +87,18 @@ export function customerX(over: Partial<CustomerDetail> = {}): CustomerDetail {
             },
         },
         backlinks: [
-            {url: "/invoices/2026-11-10 Customer X Invoice 105/", path: "invoices/2026-11-10 Customer X Invoice 105.md", title: "Invoice 105", key: "customer"},
-            {url: "/customers/Fred Smith/", path: "customers/Fred Smith.md", title: "Fred Smith", key: "company"},
-            {url: "/notes/kickoff/", path: "notes/kickoff.md", title: "Kickoff", key: null},
+            {
+                url: "/invoices/2026-11-10 Customer X Invoice 105/",
+                path: "invoices/2026-11-10 Customer X Invoice 105.md",
+                title: "Invoice 105",
+                key: "customer",
+                kind: "invoice",
+                number: "105",
+                customer: false,
+            },
+            {url: "/customers/Fred Smith/", path: "customers/Fred Smith.md", title: "Fred Smith", key: "company", kind: "person", number: null, customer: true},
+            {url: "/notes/kickoff/", path: "notes/kickoff.md", title: "Kickoff", key: null, kind: null, number: null, customer: false},
+            {url: "/invoices/old%20quote/", path: "invoices/old quote.md", title: "Quote 7", key: null, kind: "estimate", number: "E7", customer: false},
         ],
         ...over,
     };

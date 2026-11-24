@@ -243,7 +243,7 @@ pub(crate) fn link_safe_title(title: &str, noun: &str) -> Result<String, String>
     }
     if let Some(c) = title.chars().find(|c| TITLE_FORBIDDEN.contains(c)) {
         return Err(format!(
-            "the name can't hold {c:?}: it is linked as [[{title}]]"
+            "the name can't hold {c:?}: other notes link to it by name"
         ));
     }
     if title.chars().count() > MAX_TITLE {
@@ -357,7 +357,7 @@ fn clean_company(company: &str) -> Result<Option<String>, CustomerError> {
     }
     if company.contains(['[', ']', '|']) {
         return Err(invalid(
-            "the company: a name, or a [[wikilink]] to its note",
+            "the company: the organization's name, without brackets or |",
         ));
     }
     Ok(Some(format!("[[{company}]]")))
@@ -374,14 +374,14 @@ fn portal_value(
         _ => Map::new(),
     };
     let texts = [
-        ("name", &portal.name),
-        ("url", &portal.url),
-        ("login", &portal.login),
-        ("supplier_id", &portal.supplier_id),
+        ("name", "name", &portal.name),
+        ("url", "URL", &portal.url),
+        ("login", "login", &portal.login),
+        ("supplier_id", "supplier ID", &portal.supplier_id),
     ];
-    for (key, value) in texts {
+    for (key, shown, value) in texts {
         let value = match value {
-            Some(v) => one_line(&format!("the portal's {key}"), v)?,
+            Some(v) => one_line(&format!("the portal's {shown}"), v)?,
             None => None,
         };
         set_text(&mut map, key, value);
@@ -390,7 +390,7 @@ fn portal_value(
         && !(url.starts_with("https://") || url.starts_with("http://"))
     {
         return Err(invalid(
-            "the portal's url must start with https:// (or http://)",
+            "the portal's URL must start with https:// (or http://)",
         ));
     }
     if portal.requires_reference || map.contains_key("requires_reference") {
@@ -460,13 +460,13 @@ fn wanted(
         out.put("type", text(kind.as_str().to_string()));
     }
     let lists = [
-        ("emails", &fields.emails, false),
-        ("phones", &fields.phones, false),
-        ("addresses", &fields.addresses, true),
+        ("emails", "an email", &fields.emails, false),
+        ("phones", "a phone number", &fields.phones, false),
+        ("addresses", "an address", &fields.addresses, true),
     ];
-    for (key, items, multi_line) in lists {
+    for (key, shown, items, multi_line) in lists {
         if let Some(items) = items {
-            let items = clean_labelled(key, items, multi_line)?;
+            let items = clean_labelled(shown, items, multi_line)?;
             out.put(key, (!items.is_empty()).then(|| labelled_value(&items)));
         }
     }
@@ -773,6 +773,95 @@ pub fn update(
         index.refresh(vault, std::slice::from_ref(path));
     }
     Ok(saved(path.clone(), &text, written, changed))
+}
+
+// ---------------------------------------------------------------------------
+// Contracts: what the picker offers, and what `contracts:` writes for a pick
+// ---------------------------------------------------------------------------
+
+/// The file kinds a contract may be besides a note: documents and scans.
+pub const CONTRACT_FILE_EXTENSIONS: &[&str] = &[
+    "pdf", "doc", "docx", "odt", "pages", "rtf", "txt", "png", "jpg", "jpeg", "heic", "xls",
+    "xlsx", "numbers", "csv",
+];
+
+/// The most directory entries [`contract_candidates`] looks at.
+const MAX_CANDIDATE_ENTRIES: usize = 50_000;
+
+/// A note or file a customer's `contracts:` can name (the contract picker).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ContractCandidate {
+    /// In the books folder.
+    pub path: VaultPath,
+    /// What to call it: a note's title, a file's name.
+    pub name: String,
+    /// A note's `type:` (`contract`, `person`, …); `None` for a file.
+    pub kind: Option<String>,
+    /// What `contracts:` writes for it ([`contract_entry`]).
+    pub entry: String,
+}
+
+/// What `contracts:` writes for the note or file at `path`: `[[Title]]`
+/// for a note whose title links to it and nothing else, otherwise the
+/// `/`-rooted path (ARCHITECTURE §3.4: a path is relative to the books
+/// folder when it starts with `/`).
+#[must_use]
+pub fn contract_entry(index: &DocumentIndex, path: &VaultPath) -> String {
+    if let Some(note) = index.site().note(path) {
+        let link = format!("[[{}]]", note.title);
+        let safe = link_safe_title(&note.title, "contract").is_ok();
+        if safe
+            && index
+                .site()
+                .resolve_wikilink(&VaultPath::root(), &link)
+                .is_some_and(|n| n.path == *path)
+        {
+            return link;
+        }
+    }
+    format!("/{path}")
+}
+
+/// Every note (but the invoices and other documents) and every document or
+/// scan ([`CONTRACT_FILE_EXTENSIONS`]) in the books folder, by name: what
+/// the contract picker searches when the app has no native file dialog.
+/// Hidden folders, MBR's ignored ones and `pdf-dir` are skipped, as the
+/// index skips them.
+#[must_use]
+pub fn contract_candidates(index: &DocumentIndex, vault: &dyn Vault) -> Vec<ContractCandidate> {
+    let site = index.site();
+    let mut out: Vec<ContractCandidate> = site
+        .notes()
+        .filter(|n| index.doc(&n.path).is_none())
+        .map(|n| ContractCandidate {
+            path: n.path.clone(),
+            name: n.title.clone(),
+            kind: n.note_type.clone(),
+            entry: contract_entry(index, &n.path),
+        })
+        .collect();
+    let mut config = crate::notes::SiteConfig::for_settings(index.settings());
+    config.markdown_extensions = Vec::new();
+    config.other_extensions = CONTRACT_FILE_EXTENSIONS
+        .iter()
+        .map(|e| (*e).to_string())
+        .collect();
+    config.max_entries = MAX_CANDIDATE_ENTRIES;
+    for file in crate::notes::walk(vault, &config).others {
+        out.push(ContractCandidate {
+            name: file.path.file_name().unwrap_or_default().to_string(),
+            entry: format!("/{}", file.path),
+            kind: None,
+            path: file.path,
+        });
+    }
+    out.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    out
 }
 
 #[cfg(test)]

@@ -90,9 +90,16 @@ export function mismatches(table: TableDetail | null): Mismatch[] {
 /** `GET /api/books`. */
 export interface BooksInfo {
     journal: string | null;
+    /** The books' name as Ledgeline shows it (the journal's leading comment, else its folder); null when none. */
+    title?: string | null;
     basis: "accrual" | "cash";
     documents: number;
+    /** The sidebar's counts: invoices (drafts, open, overdue today). */
+    invoices?: {all: number; drafts: number; open: number; overdue: number};
     customers: number;
+    /** Catalog items. */
+    catalog?: number;
+    snippets?: number;
     nextNumber: string;
 }
 

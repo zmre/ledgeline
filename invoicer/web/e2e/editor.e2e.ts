@@ -181,7 +181,7 @@ test.describe("the invoice editor over the accrual fixture (:5199)", () => {
             await page.getByTestId("sidebar").getByRole("link", {name: "Invoices"}).click();
             const dialog = page.getByTestId("unsaved-dialog");
             await expect(dialog).toBeVisible();
-            await expect(page.getByTestId("unsaved-save")).toBeFocused();
+            await expect(page.getByTestId("unsaved-cancel")).toBeFocused();
             await page.keyboard.press("Escape");
             await expect(dialog).toHaveCount(0);
             await expect(page).toHaveURL(/\/app\/invoices\/108\/edit$/);

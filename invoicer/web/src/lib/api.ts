@@ -85,9 +85,9 @@ export function resetSession(): void {
     session = null;
 }
 
-/** `GET /api/books`: the open books. */
-export function fetchBooks(): Promise<BooksInfo> {
-    return json<BooksInfo>("GET", "/api/books", (body) => isObject(body) && "basis" in body);
+/** `GET /api/books`: the open books, with the sidebar's counts on `today` (overdue). */
+export function fetchBooks(today: string = localToday()): Promise<BooksInfo> {
+    return json<BooksInfo>("GET", `/api/books?today=${today}`, (body) => isObject(body) && "basis" in body);
 }
 
 /**

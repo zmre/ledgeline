@@ -1,25 +1,61 @@
-// The sidebar, mounted: its sections and the open books.
-import {render, screen} from "@testing-library/svelte";
+// The sidebar, mounted: its sections with their counts, and the open books
+// by name, with the basis as plain text.
+import {render, screen, within} from "@testing-library/svelte";
+import type {ComponentProps} from "svelte";
 import {describe, expect, it} from "vitest";
 import Sidebar from "./Sidebar.svelte";
 
-const links = [{id: "invoices", href: "/app/invoices", label: "Invoices", active: true}];
+// Plain `tsc` sees a .svelte module's default export only, so the type comes from the props.
+type SidebarLink = ComponentProps<typeof Sidebar>["links"][number];
+
+const links: SidebarLink[] = [
+    {id: "invoices", href: "/app/invoices", label: "Invoices", active: true, count: 3, countLabel: "open", overdue: 1},
+    {id: "customers", href: "/app/customers", label: "Customers", active: false, count: 6},
+    {id: "catalog", href: "/app/catalog", label: "Catalog", active: false, count: null},
+];
+const books = {
+    journal: "books.journal",
+    title: "Acme Books",
+    basis: "accrual" as const,
+    documents: 8,
+    invoices: {all: 8, drafts: 1, open: 3, overdue: 1},
+    customers: 6,
+    catalog: 4,
+    snippets: 2,
+    nextNumber: "2005",
+};
 
 describe("COMPONENT Sidebar", () => {
-    it("marks the current section and names the open books", () => {
-        render(Sidebar, {links, books: {journal: "books.journal", basis: "accrual", documents: 8, customers: 6, nextNumber: "2005"}});
-        const invoices = screen.getByRole("link", {name: "Invoices"});
+    it("marks the current section and shows each section's count", () => {
+        render(Sidebar, {links, books});
+        const invoices = screen.getByTestId("sidebar-invoices");
         expect(invoices.getAttribute("href")).toBe("/app/invoices");
         expect(invoices.getAttribute("aria-current")).toBe("page");
-        const books = screen.getByTestId("sidebar-books");
-        expect(books.textContent).toContain("books.journal");
-        expect(books.textContent).toContain("Accrual basis");
-        expect(books.textContent).toContain("8 documents");
+        expect(within(invoices).getByTestId("sidebar-invoices-count").textContent).toBe("3 open");
+        expect(within(invoices).getByTestId("sidebar-invoices-overdue").textContent).toBe("1 overdue");
+        expect(screen.getByTestId("sidebar-customers-count").textContent).toBe("6");
+        expect(screen.queryByTestId("sidebar-catalog-count")).toBeNull();
+        expect(screen.queryByTestId("sidebar-customers-overdue")).toBeNull();
     });
 
-    it("says when no books are open", () => {
+    it("names the open books, with the basis as text and no document count", () => {
+        render(Sidebar, {links, books});
+        const foot = screen.getByTestId("sidebar-books");
+        expect(within(foot).getByTestId("sidebar-books-name").textContent).toBe("Acme Books");
+        expect(foot.textContent).toContain("books.journal");
+        const basis = within(foot).getByTestId("sidebar-basis");
+        expect(basis.textContent).toBe("Accrual basis");
+        expect(basis.className).not.toContain("badge");
+        expect(basis.closest("button")).toBeNull();
+        expect(foot.textContent).not.toContain("documents");
+    });
+
+    it("falls back to the journal's name, and says when no books are open", () => {
+        const {unmount} = render(Sidebar, {links, books: {...books, title: null}});
+        expect(screen.getByTestId("sidebar-books-name").textContent).toBe("books.journal");
+        unmount();
         render(Sidebar, {links: [{...links[0], active: false}], books: null});
         expect(screen.getByTestId("sidebar-books").textContent).toContain("No books open");
-        expect(screen.getByRole("link", {name: "Invoices"}).getAttribute("aria-current")).toBeNull();
+        expect(screen.getByTestId("sidebar-invoices").getAttribute("aria-current")).toBeNull();
     });
 });

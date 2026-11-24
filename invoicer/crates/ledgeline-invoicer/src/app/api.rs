@@ -25,6 +25,7 @@
 //! | `GET /api/events`           | Change events (server-sent events), see [`events`]. |
 //! | `GET`/`POST /api/customers`, `GET`/`PUT /api/customers/{*key}` | Customers: list, create, show, edit ([`super::customers`], 4b). |
 //! | `GET`/`POST /api/catalog`, `PUT /api/catalog/{*path}`; `GET`/`POST /api/snippets`, `PUT`/`DELETE /api/snippets/{*path}` | The catalog and snippets editors ([`super::library`], 4c). |
+//! | `GET /api/files`, `POST /api/files/pick`, `/api/files/open` | Files in the books folder for contracts: list, the open dialog, open one ([`super::files`]). |
 //! | `GET`/`PATCH /api/ui-prefs` | The shared theme and scale (Ledgeline's shape). |
 //! | `POST /api/session`         | The cookie MBR's pages need ([`super::mbr`]).  |
 //! | the invoice editor's routes | Form, compute, save, new, void, rebook… (4a): [`super::editor`]. |
@@ -81,6 +82,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/events", get(events))
         .merge(super::customers::routes())
         .merge(super::library::routes())
+        .merge(super::files::routes())
         .route("/api/ui-prefs", get(ui_prefs).patch(patch_ui_prefs))
         .route("/api/session", post(session))
         // The invoice editor (4a): its own table, merged.
@@ -171,20 +173,50 @@ async fn version() -> Response {
     }))
 }
 
+/// `GET /api/books`'s query.
+#[derive(Debug, Default, Deserialize)]
+struct BooksParams {
+    /// For "overdue" (YYYY-MM-DD); the local date by default.
+    today: Option<String>,
+}
+
 /// `GET /api/books`: the journal's file name (never its full path), the
-/// basis, and the counts the shell shows.
-async fn books(State(state): State<AppState>) -> ApiResult {
-    with_books(&state, |books| {
+/// books' name as Ledgeline shows it (`ledgeline_core::title`: the main
+/// file's leading comment, else its folder's name), the basis, and the
+/// counts the sidebar shows: invoices (all, drafts, open, overdue on
+/// `today`), customers, catalog items and snippets.
+async fn books(State(state): State<AppState>, Query(params): Query<BooksParams>) -> ApiResult {
+    let today = today(params.today.as_deref())?;
+    with_books(&state, move |books| {
         let session = books.session();
         let next = session
             .next_number()
             .map(|n| n.to_string())
             .map_err(|e| ApiError(StatusCode::CONFLICT, e.to_string()))?;
+        let index = session.index();
+        let states = Some(session.book_states());
+        let invoices: Vec<_> = index
+            .docs()
+            .filter(|d| d.header.doc_type.unwrap_or(DocType::Invoice) == DocType::Invoice)
+            .collect();
+        let catalog_items: usize = invoicer_core::edit::catalogs(index, session.vault())
+            .iter()
+            .map(|c| c.items.len())
+            .sum();
         Ok(json!({
             "journal": books.journal().file_name().map(|n| n.to_string_lossy().into_owned()),
+            "title": ledgeline_core::title::journal_title(session.journal()),
             "basis": to_value(session.basis())?,
-            "documents": session.index().docs().count(),
-            "customers": session.index().customers().len(),
+            "documents": index.docs().count(),
+            "invoices": {
+                "all": invoices.len(),
+                "drafts": invoices.iter().filter(|d| d.header.status == Some(Status::Draft)).count(),
+                "open": invoices.iter().filter(|d| views::open_in(states, d)).count(),
+                "overdue": invoices.iter().filter(|d| views::overdue_in(states, d, &today)).count(),
+            },
+            "customers": index.customers().len(),
+            "catalog": catalog_items,
+            "snippets": invoicer_core::snippets::snippets(index.site()).len(),
             "nextNumber": next,
         }))
     })

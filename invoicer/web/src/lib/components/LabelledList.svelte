@@ -54,7 +54,7 @@
     {#each items as item, at (at)}
         <div class="flex items-start gap-2" data-testid="{name}-row">
             <input
-                class="input w-28 shrink-0 input-sm"
+                class="input w-20 shrink-0 input-sm sm:w-28"
                 aria-label="{legend} {at + 1}: label"
                 list="{name}-labels"
                 placeholder="label"
@@ -62,9 +62,10 @@
                 oninput={(e) => setLabel(item, e.currentTarget.value)}
             />
             {#if multiline}
-                <textarea class="textarea min-h-16 flex-1 textarea-sm" aria-label="{legend} {at + 1}" {placeholder} rows="3" bind:value={item.value}></textarea>
+                <textarea class="textarea min-h-16 min-w-0 flex-1 textarea-sm" aria-label="{legend} {at + 1}" {placeholder} rows="3" bind:value={item.value}
+                ></textarea>
             {:else}
-                <input class="input flex-1 input-sm" aria-label="{legend} {at + 1}" {type} {placeholder} bind:value={item.value} />
+                <input class="input min-w-0 flex-1 input-sm" aria-label="{legend} {at + 1}" {type} {placeholder} bind:value={item.value} />
             {/if}
             <button type="button" class="btn btn-ghost btn-sm" aria-label="Move {legend} {at + 1} up" disabled={at === 0} onclick={() => up(at)}>↑</button>
             <button type="button" class="btn btn-ghost btn-sm" aria-label="Remove {legend} {at + 1}" onclick={() => remove(at)}>✕</button>

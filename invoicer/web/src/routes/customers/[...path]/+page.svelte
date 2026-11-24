@@ -1,6 +1,10 @@
-<!-- One customer (invoicer PLAN 4b): the form (MBR's contact fields and the
-     invoicing keys), MBR's contact card for the saved note, and its account:
-     what it owes, its last payment, its invoices (MBR backlinks, M1).
+<!-- One customer (invoicer PLAN 4b; Phase 4 feedback J1–J10).
+
+     It opens read-only: the contact, how it is invoiced, contracts, what it
+     owes, its open invoices and every invoice, and the notes that link it
+     (`CustomerView`, `CustomerAccount`). Edit swaps the view for the form;
+     Save and Discard are top right, and Cancel returns to the view.
+     Leaving with unsaved changes asks: Save, Discard, or stay.
 
      Saving sends only the fields changed since the note was read, with the
      note's content hash; the server writes them by key, so the rest of the
@@ -24,32 +28,44 @@
         cloneForm,
         emptyForm,
         fetchCustomer,
+        fetchCustomers,
+        fetchFiles,
         isDirty,
+        linkName,
+        openBooksFile,
+        routeParam,
         saveCustomer,
         type CustomerDetail,
         type CustomerFields,
         type CustomerForm,
     } from "#lib/customers.js";
     import {pageUrl, type InvoiceEntry, type TemplateEntry} from "#lib/invoices.js";
+    import {fieldList, friendlyMessage} from "#lib/labels.js";
     import CustomerAccount from "#lib/components/CustomerAccount.svelte";
     import CustomerFormView from "#lib/components/CustomerForm.svelte";
-    import NoteFrame from "#lib/components/NoteFrame.svelte";
+    import CustomerView from "#lib/components/CustomerView.svelte";
+    import SaveDiscardDialog from "#lib/components/SaveDiscardDialog.svelte";
 
     const key = $derived(page.params.path ?? "");
 
     const asError = (e: unknown): Error => (e instanceof Error ? e : new Error(String(e)));
+    const messageOf = (e: unknown): string => friendlyMessage(asError(e).message);
 
     let detail = $state<CustomerDetail | null>(null);
     let loadError = $state<Error | null>(null);
     const view = $derived<DataView>(loadError !== null ? "error" : detail !== null ? "data" : "loading");
 
-    /** The form as the note wrote it when read, and as edited. */
+    /** Read-only (the default) or the form. */
+    let editing = $state(false);
+    /** The form as the note wrote it when read, and as edited (the company by name). */
     let original = $state<CustomerForm>(emptyForm());
     let form = $state<CustomerForm>(emptyForm());
-    const dirty = $derived(detail !== null && isDirty(original, form));
+    const dirty = $derived(detail !== null && editing && isDirty(original, form));
 
     let templates = $state<TemplateEntry[]>([]);
-    let sessionReady = $state(false);
+    let companies = $state<string[]>([]);
+    /** The window can open a books file in its viewer. */
+    let canOpenFiles = $state(false);
     let saving = $state(false);
     let saveError = $state<string | null>(null);
     /** The last save was refused: the note changed on disk since it was read. */
@@ -57,13 +73,23 @@
     /** The note changed on disk while the form had unsaved changes. */
     let stale = $state(false);
     let savedNote = $state<string | null>(null);
-    /** Bumped after the note changes, so MBR's card shows it again. */
-    let frameKey = $state(0);
+    let openError = $state<string | null>(null);
+
+    /** A navigation held while the Save / Discard / Cancel dialog asks; `null` for "back to the view". */
+    let leaving = $state<{to: string | null} | null>(null);
+    let leaveError = $state<string | null>(null);
+
+    /** The note's form as the page edits it: the company by name (the server writes the link). */
+    function editable(f: CustomerForm): CustomerForm {
+        const copy = cloneForm(f);
+        copy.company = linkName(copy.company);
+        return copy;
+    }
 
     function apply(d: CustomerDetail): void {
         detail = d;
-        original = cloneForm(d.form);
-        form = cloneForm(d.form);
+        original = editable(d.form);
+        form = editable(d.form);
         loadError = null;
         conflict = false;
         stale = false;
@@ -74,6 +100,7 @@
         loadError = null;
         saveError = null;
         savedNote = null;
+        editing = false;
         fetchCustomer(target)
             .then((d) => {
                 if (target === key) apply(d);
@@ -89,7 +116,6 @@
             .then((d) => {
                 if (target !== key || detail === null) return;
                 const noteChanged = d.hash !== detail.hash;
-                if (noteChanged) frameKey += 1;
                 if (!dirty) {
                     apply(d);
                 } else if (noteChanged) {
@@ -104,7 +130,8 @@
             .catch((e: unknown) => console.warn("customer:", e));
     }
 
-    async function save(fields: CustomerFields, hash: string): Promise<void> {
+    /** Write `fields` over `hash`; true when saved (the page is back in the view). */
+    async function save(fields: CustomerFields, hash: string): Promise<boolean> {
         const target = key;
         saving = true;
         saveError = null;
@@ -112,11 +139,13 @@
         try {
             const saved = await saveCustomer(target, hash, fields);
             apply(await fetchCustomer(target));
-            frameKey += 1;
-            savedNote = saved.written ? `Saved ${saved.changed.join(", ")}.` : "Nothing to save.";
+            editing = false;
+            savedNote = saved.written ? `Saved: ${fieldList(saved.changed)}.` : "Nothing to save.";
+            return true;
         } catch (e: unknown) {
             conflict = e instanceof ApiStatusError && e.status === 409;
-            saveError = asError(e).message;
+            saveError = messageOf(e);
+            return false;
         } finally {
             saving = false;
         }
@@ -124,7 +153,7 @@
 
     function onSubmit(event: SubmitEvent): void {
         event.preventDefault();
-        if (detail === null) return;
+        if (detail === null || !dirty) return;
         void save(changedFields(original, form), detail.hash);
     }
 
@@ -135,7 +164,7 @@
             const fresh = await fetchCustomer(key);
             await save(fields, fresh.hash);
         } catch (e: unknown) {
-            saveError = asError(e).message;
+            saveError = messageOf(e);
         }
     }
 
@@ -145,8 +174,57 @@
         conflict = false;
     }
 
-    beforeNavigate(({cancel, to}) => {
-        if (dirty && to !== null && !confirm("This customer has unsaved changes. Leave without saving?")) cancel();
+    function startEditing(): void {
+        savedNote = null;
+        form = cloneForm(original);
+        editing = true;
+        if (companies.length === 0) {
+            fetchCustomers()
+                .then((rows) => (companies = rows.filter((r) => r.kind === "organization" && r.path !== detail?.path).map((r) => r.title)))
+                .catch((e: unknown) => console.warn("customers:", e));
+        }
+    }
+
+    function stopEditing(): void {
+        discard();
+        stale = false;
+        editing = false;
+    }
+
+    /** Cancel: back to the view, asking first when something is unsaved. */
+    function cancel(): void {
+        if (dirty) leaving = {to: null};
+        else stopEditing();
+    }
+
+    function finishLeaving(to: string | null): void {
+        leaving = null;
+        leaveError = null;
+        if (to === null) stopEditing();
+        // eslint-disable-next-line svelte/no-navigation-without-resolve -- a URL SvelteKit itself was navigating to
+        else void goto(to);
+    }
+
+    async function saveAndLeave(): Promise<void> {
+        if (leaving === null || detail === null) return;
+        const to = leaving.to;
+        if (await save(changedFields(original, form), detail.hash)) finishLeaving(to);
+        else leaveError = saveError;
+    }
+
+    function discardAndLeave(): void {
+        if (leaving === null) return;
+        const to = leaving.to;
+        stopEditing();
+        finishLeaving(to);
+    }
+
+    beforeNavigate((navigation) => {
+        if (!dirty || navigation.to === null) return;
+        // Closing the window or reloading: the browser's own prompt.
+        navigation.cancel();
+        if (navigation.type === "leave") return;
+        leaving = {to: navigation.to.url.pathname + navigation.to.url.search + navigation.to.url.hash};
     });
 
     $effect(() => {
@@ -166,13 +244,30 @@
         fetchTemplates()
             .then((list) => (templates = list))
             .catch((e: unknown) => console.warn("templates:", e));
-        ensureSession()
-            .then(() => (sessionReady = true))
-            .catch((e: unknown) => console.warn("session:", e));
+        fetchFiles({list: false})
+            .then((caps) => (canOpenFiles = caps.open))
+            .catch((e: unknown) => console.warn("files:", e));
+        // The cookie MBR needs to serve a contract file in a new tab.
+        ensureSession().catch((e: unknown) => console.warn("session:", e));
     });
 
-    const invoiceHref = (doc: InvoiceEntry): string => resolve("/invoices/[number]", {number: doc.number ?? doc.path});
+    const invoiceHref = (number: string): string => resolve("/invoices/[number]", {number});
     const openInvoice = (doc: InvoiceEntry): void => void goto(resolve("/invoices/[number]", {number: doc.number ?? doc.path}));
+    const customerHref = (path: string): string => resolve("/customers/[...path]", {path: routeParam(path)});
+    const noteHref = (path: string): string => resolve("/notes/[...path]", {path: routeParam(path)});
+    /** MBR serves a file at its path in the books folder (behind the session cookie). */
+    const fileHref = (path: string): string => pageUrl(path).replace(/\/$/, "");
+
+    function openFile(path: string): void {
+        openError = null;
+        openBooksFile(path).catch((e: unknown) => (openError = messageOf(e)));
+    }
+
+    /** A person's company, when it is a customer: its page. */
+    const companyHref = $derived(detail !== null && detail.kind === "person" && detail.billing.note !== detail.path ? customerHref(detail.billing.note) : null);
+    const contractNames = $derived(
+        Object.fromEntries((detail?.contracts ?? []).map((c) => [c.kind === "note" ? c.link : c.path, c.name])) as Record<string, string>
+    );
 </script>
 
 <svelte:head>
@@ -191,24 +286,30 @@
         onRetry={() => load(key)}
     >
         {#snippet children(customer)}
-            <form class="flex flex-col gap-4" onsubmit={onSubmit} data-testid="customer-page">
+            <form class="flex flex-col gap-4" onsubmit={onSubmit} data-testid="customer-page" data-mode={editing ? "edit" : "view"}>
                 <header class="flex flex-wrap items-center gap-x-3 gap-y-2">
-                    <h1 class="text-2xl font-semibold tracking-tight" data-testid="customer-heading">{customer.title}</h1>
+                    <h1 class="min-w-0 text-2xl font-semibold tracking-tight break-words" data-testid="customer-heading">{customer.title}</h1>
                     <span class="badge badge-outline badge-sm">{customer.kind === "person" ? "Person" : "Organization"}</span>
                     {#if customer.account.overdue > 0}<span class="badge badge-sm badge-error">Overdue</span>{/if}
-                    <span class="text-xs text-base-content/60" title="The note in the books folder">{customer.path}</span>
-                    <div class="ml-auto flex items-center gap-2">
-                        {#if dirty}<span class="text-sm text-base-content/70" data-testid="unsaved">Unsaved changes</span>{/if}
-                        <button type="button" class="btn btn-ghost btn-sm" disabled={!dirty || saving} onclick={discard}>Discard</button>
-                        <button type="submit" class="btn btn-primary btn-sm" disabled={!dirty || saving} data-testid="save-customer">
-                            {saving ? "Saving…" : "Save"}
-                        </button>
+                    <div class="ml-auto flex flex-wrap items-center gap-2">
+                        {#if editing}
+                            {#if dirty}<span class="text-sm text-base-content/70" data-testid="unsaved">Unsaved changes</span>{/if}
+                            <button type="button" class="btn btn-ghost btn-sm" disabled={saving} onclick={cancel} data-testid="cancel-edit">Cancel</button>
+                            <button type="button" class="btn btn-outline btn-sm" disabled={!dirty || saving} onclick={discard} data-testid="discard-customer"
+                                >Discard</button
+                            >
+                            <button type="submit" class="btn btn-primary btn-sm" disabled={!dirty || saving} data-testid="save-customer">
+                                {saving ? "Saving…" : "Save"}
+                            </button>
+                        {:else}
+                            <button type="button" class="btn btn-primary btn-sm" onclick={startEditing} data-testid="edit-customer">Edit</button>
+                        {/if}
                     </div>
                 </header>
 
                 {#if stale && !conflict}
                     <div role="status" class="alert alert-soft alert-warning" data-testid="customer-stale">
-                        <span>This customer's note changed on disk while you were editing it.</span>
+                        <span>This customer changed on disk while you were editing it.</span>
                         <button type="button" class="btn btn-sm" onclick={() => load(key)}>Reload it (discard my changes)</button>
                     </div>
                 {/if}
@@ -230,43 +331,55 @@
                 {#if savedNote !== null && !dirty}
                     <div role="status" class="text-sm text-success" data-testid="customer-saved">{savedNote}</div>
                 {/if}
+                {#if openError !== null}
+                    <div role="alert" class="alert alert-soft alert-error" data-testid="customer-open-error">{openError}</div>
+                {/if}
                 {#if customer.problems.length > 0}
                     <ul class="alert flex flex-col items-start alert-soft alert-warning" data-testid="customer-problems">
-                        {#each customer.problems as problem, at (at)}<li>{problem.message}</li>{/each}
+                        {#each customer.problems as problem, at (at)}<li>{friendlyMessage(problem.message)}</li>{/each}
                     </ul>
                 {/if}
 
                 <div class="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
-                    <div class="flex flex-col gap-4">
-                        <CustomerFormView bind:form {templates} />
-                        {#if customer.open_pos.length > 0}
-                            <section class="rounded-box border border-base-300 p-4 text-sm" data-testid="customer-open-pos">
-                                <h2 class="mb-2 text-sm font-semibold tracking-wide text-base-content/70 uppercase">Open POs</h2>
-                                <ul>
-                                    {#each customer.open_pos as po (po.reference)}
-                                        <li>
-                                            {po.reference}{po.amount === null ? "" : `, ${po.amount}`}{po.expires === null ? "" : `, expires ${po.expires}`}
-                                        </li>
-                                    {/each}
-                                </ul>
-                                <p class="mt-1 text-xs text-base-content/60">Edit <code>open_pos:</code> in the note itself.</p>
-                            </section>
+                    <div class="flex min-w-0 flex-col gap-4">
+                        {#if editing}
+                            <CustomerFormView bind:form {templates} {companies} {contractNames} />
+                            {#if customer.open_pos.length > 0}
+                                <section class="rounded-box border border-base-300 p-4 text-sm" data-testid="customer-open-pos">
+                                    <h2 class="mb-2 text-sm font-semibold tracking-wide text-base-content/70 uppercase">Open POs</h2>
+                                    <ul>
+                                        {#each customer.open_pos as po (po.reference)}
+                                            <li>
+                                                {po.reference}{po.amount === null ? "" : `, ${po.amount}`}{po.expires === null ? "" : `, expires ${po.expires}`}
+                                            </li>
+                                        {/each}
+                                    </ul>
+                                    <p class="mt-1 text-xs text-base-content/60">Open POs are edited in the customer's note for now.</p>
+                                </section>
+                            {/if}
+                        {:else}
+                            <CustomerView {customer} {templates} {companyHref} {noteHref} {fileHref} onOpenFile={canOpenFiles ? openFile : undefined} />
                         {/if}
                     </div>
-                    <div class="flex flex-col gap-4">
-                        <CustomerAccount {customer} {invoiceHref} pageHref={(url) => url} onOpen={openInvoice} />
-                        <section class="flex flex-col gap-2">
-                            <h2 class="text-sm font-semibold tracking-wide text-base-content/70 uppercase">Contact card</h2>
-                            {#if sessionReady}
-                                {#key frameKey}
-                                    <NoteFrame src={pageUrl(customer.path)} title="{customer.title}: contact card" />
-                                {/key}
-                            {/if}
-                            <p class="text-xs text-base-content/60">MBR's page for the saved note; it shows a save at once.</p>
-                        </section>
+                    <div class="flex min-w-0 flex-col gap-4">
+                        <CustomerAccount {customer} {invoiceHref} {customerHref} {noteHref} onOpen={openInvoice} />
                     </div>
                 </div>
             </form>
         {/snippet}
     </AsyncSection>
 </div>
+
+{#if leaving !== null}
+    <SaveDiscardDialog
+        message={leaving.to === null ? "This customer has unsaved changes." : "This customer has unsaved changes. Save them before you leave?"}
+        {saving}
+        error={leaveError}
+        onSave={() => void saveAndLeave()}
+        onDiscard={discardAndLeave}
+        onCancel={() => {
+            leaving = null;
+            leaveError = null;
+        }}
+    />
+{/if}

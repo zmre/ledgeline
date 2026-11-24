@@ -29,7 +29,7 @@
     } from "#lib/library.js";
     import CatalogGrid from "#lib/components/CatalogGrid.svelte";
     import ConflictNotice from "#lib/components/ConflictNotice.svelte";
-    import {friendlyProblem} from "#lib/labels.js";
+    import {friendlyMessage} from "#lib/labels.js";
 
     const asMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -236,9 +236,9 @@
         <span class="loading loading-md loading-spinner" aria-label="Loading the catalog"></span>
     {:else if note === null}
         <div class="rounded-box border border-dashed border-base-300 p-6 text-sm" data-testid="catalog-empty">
-            <p>There is no catalog yet: a note with <code>type: catalog</code> whose table lists your products and services.</p>
+            <p>There is no catalog yet: a list of your products and services, with their rates, for invoices to pick from.</p>
             <button type="button" class="btn mt-3 btn-primary btn-sm" disabled={saving} onclick={() => void create()} data-testid="create-catalog"
-                >Create {list.path}</button
+                >Create the catalog</button
             >
         </div>
     {:else}
@@ -264,12 +264,12 @@
         {#if note.problems.length > 0 && !dirty}
             <ul class="alert flex flex-col items-start alert-soft alert-warning" data-testid="catalog-note-problems">
                 {#each note.problems as problem, at (at)}<li>
-                        {problem.line === null ? "" : `Line ${problem.line}: `}{friendlyProblem(problem.message)}
+                        {problem.line === null ? "" : `Line ${problem.line}: `}{friendlyMessage(problem.message)}
                     </li>{/each}
             </ul>
         {/if}
         {#if table === null}
-            <p class="text-sm">This note has no table the invoicer reads. Edit it by hand: a table with Code and Description columns.</p>
+            <p class="text-sm">This catalog has no table with Code and Description columns yet. Add one in a text editor, then come back.</p>
         {:else}
             <CatalogGrid {table} {accounts} {problems} onChange={edit} />
         {/if}

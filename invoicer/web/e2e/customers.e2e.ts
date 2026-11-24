@@ -1,8 +1,10 @@
-// Customers end to end (invoicer PLAN 4b): the list with what each owes, a
-// customer's page (its invoices, backlinked from `customer:`, and MBR's
-// contact card), creating a customer, editing it (only what changed is
-// written; unknown keys and the body stay), and a save refused because the
-// note changed on disk meanwhile.
+// Customers end to end (invoicer PLAN 4b, Phase 4 feedback J1–J12): the
+// list with what each owes and the sidebar's counts, a customer's read-only
+// page (its open and all invoices, contracts by name, the notes linking it,
+// each opening inside the app), creating a customer, editing it (only what
+// changed is written; unknown keys and the body stay), adding a contract from
+// the books folder, the Save / Discard / Cancel prompt on leaving, a narrow
+// window, and a save refused because the note changed on disk meanwhile.
 //
 // Same harness as invoices.e2e.ts: `--server` on :5199 over a scratch copy of
 // invoicer/fixtures/accrual, the SPA's `vite preview` on :4273, the clock at
@@ -61,31 +63,101 @@ test.describe("customers over the accrual fixture (:5199)", () => {
         await expect(contoso).toContainText("$1,000.00 on 2026-11-05");
         await expect(row(page, "customers/Fabrikam.md").getByTestId("overdue-badge")).toHaveCount(0);
         await expect(row(page, "customers/Fred Smith.md")).toContainText("bills Customer X");
+        // The sidebar counts (J11): six customers; Contoso's 107 overdue.
+        await expect(page.getByTestId("sidebar-customers-count")).toHaveText("6");
+        await expect(page.getByTestId("sidebar-invoices-overdue")).toBeVisible();
+        await expect(page.getByTestId("sidebar-books")).not.toContainText("documents");
     });
 
-    test("opens a customer: its invoices, account and contact card", async ({page}) => {
+    test("opens a customer read-only: its invoices, account, contracts and links", async ({page}) => {
         await openCustomers(page);
         // A click anywhere on the row opens it (F4).
         await row(page, "customers/Customer X.md").locator("td").nth(2).click();
         await expect(page).toHaveURL(/\/app\/customers\/customers\/Customer%20X$/);
         await expect(page.getByTestId("customer-heading")).toHaveText("Customer X");
+        await expect(page.getByTestId("customer-page")).toHaveAttribute("data-mode", "view");
         await expect(page.getByTestId("account-balance")).toHaveText("$8,350.00");
         const invoices = page.getByTestId("customer-invoice-row");
         await expect(invoices).toHaveCount(3);
         await expect(invoices.nth(0)).toHaveAttribute("data-number", "108");
         await expect(page.locator('[data-testid="customer-invoice-row"][data-number="105"]').getByTestId("status-badge")).toHaveText("Open");
         await expect(page.locator('[data-testid="customer-invoice-row"][data-number="104"]').getByTestId("status-badge")).toHaveText("Paid");
-        // The form holds the note's fields.
+        await expect(page.getByTestId("customer-open-invoice-row")).toHaveCount(1);
+        // The view: the note's fields, no form and no MBR frame.
+        await expect(page.getByTestId("view-emails")).toContainText("accounts_receivable@customerx.com");
+        await expect(page.getByTestId("view-phones")).toContainText("+1 (303) 555-0142");
+        await expect(page.getByTestId("view-portal")).toContainText("Coupa");
+        await expect(page.getByTestId("customer-title")).toHaveCount(0);
+        await expect(page.getByTestId("note-frame")).toHaveCount(0);
+        // Contracts by name, never [[…]] (J6).
+        const contracts = page.getByTestId("view-contracts");
+        await expect(contracts).toContainText("Customer X MSA 2026");
+        await expect(contracts).toContainText("Customer X SOW 3 renewal (signed).pdf");
+        await expect(contracts).not.toContainText("[[");
+        // What each linking note is (J9): Fred Smith is a person.
+        const fred = page.getByTestId("customer-backlink").filter({hasText: "Fred Smith"});
+        await expect(fred.getByTestId("backlink-kind")).toHaveText("Person");
+        await expect(page.getByTestId("customer-backlinks")).not.toContainText("company");
+        // An invoice row opens the invoice.
+        await page.locator('[data-testid="customer-invoice-row"][data-number="105"]').getByRole("link", {name: "105"}).click();
+        await expect(page).toHaveURL(/\/app\/invoices\/105$/);
+    });
+
+    test("links stay inside the app: a customer's page, a note's in-app view, and back", async ({page}) => {
+        await open(page);
+        await page.goto("/app/customers/customers/Customer%20X");
+        await expect(page.getByTestId("customer-heading")).toHaveText("Customer X");
+        // A contract note opens in the app's note view, MBR's page framed under the sidebar.
+        await page.getByTestId("view-contracts").getByRole("link", {name: "Customer X MSA 2026"}).click();
+        await expect(page).toHaveURL(/\/app\/notes\/customers\/contracts\/Customer%20X%20MSA%202026$/);
+        await expect(page.getByTestId("note-heading")).toHaveText("Customer X MSA 2026");
+        await expect(page.getByTestId("sidebar")).toBeVisible();
+        await expect(page.getByTestId("note-frame")).toBeVisible();
+        await page.getByTestId("note-back").click();
+        await expect(page).toHaveURL(/\/app\/customers\/customers\/Customer%20X$/);
+        // A linking customer opens its own page in the app, never MBR's.
+        await page.getByTestId("customer-backlinks").getByRole("link", {name: "Fred Smith"}).click();
+        await expect(page).toHaveURL(/\/app\/customers\/customers\/Fred%20Smith$/);
+        await expect(page.getByTestId("customer-heading")).toHaveText("Fred Smith");
+        // Its company by name, linked to the company's page.
+        await expect(page.getByTestId("view-company")).not.toContainText("[[");
+        await page.getByTestId("view-company").getByRole("link", {name: "Customer X"}).click();
+        await expect(page).toHaveURL(/\/app\/customers\/customers\/Customer%20X$/);
+    });
+
+    test("Edit shows the form; Cancel returns to the view", async ({page}) => {
+        await open(page);
+        await page.goto("/app/customers/customers/Customer%20X");
+        await page.getByTestId("edit-customer").click();
+        await expect(page.getByTestId("customer-page")).toHaveAttribute("data-mode", "edit");
         await expect(page.getByTestId("customer-title")).toHaveValue("Customer X");
         await expect(page.getByTestId("labelled-emails").getByLabel("Emails 1", {exact: true})).toHaveValue("accounts_receivable@customerx.com");
         await expect(page.getByTestId("portal-toggle")).toBeChecked();
         await expect(page.getByTestId("save-customer")).toBeDisabled();
-        // MBR's contact card for the saved note, with its phone numbers.
-        const card = page.frameLocator('[data-testid="note-frame"]');
-        await expect(card.getByText("+1 (303) 555-0142")).toBeVisible();
-        // An invoice row opens the invoice.
-        await page.locator('[data-testid="customer-invoice-row"][data-number="105"]').getByRole("link", {name: "105"}).click();
-        await expect(page).toHaveURL(/\/app\/invoices\/105$/);
+        // Contracts by name in the form too.
+        await expect(page.getByTestId("contract-row")).toHaveCount(2);
+        await expect(page.getByTestId("contracts")).not.toContainText("[[");
+        await page.getByTestId("cancel-edit").click();
+        await expect(page.getByTestId("customer-page")).toHaveAttribute("data-mode", "view");
+    });
+
+    test("a narrow window: the organization form's fields don't overlap", async ({page}) => {
+        await page.setViewportSize({width: 420, height: 900});
+        await open(page);
+        await page.goto("/app/customers/customers/Customer%20X");
+        await page.getByTestId("edit-customer").click();
+        const name = await page.getByTestId("customer-title").boundingBox();
+        const kind = await page.getByRole("group", {name: "Kind"}).boundingBox();
+        expect(name).not.toBeNull();
+        expect(kind).not.toBeNull();
+        if (name !== null && kind !== null) {
+            const apart = name.y + name.height <= kind.y || kind.y + kind.height <= name.y || name.x + name.width <= kind.x || kind.x + kind.width <= name.x;
+            expect(apart).toBe(true);
+        }
+        // Nothing wider than the window (tables scroll inside their own box).
+        const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+        expect(overflow).toBeLessThanOrEqual(0);
+        await page.getByTestId("cancel-edit").click();
     });
 
     test("creates a customer note in customers/, tagged customer", async ({page}) => {
@@ -124,6 +196,7 @@ test.describe("customers over the accrual fixture (:5199)", () => {
         await page.goto("/app/customers/customers/Northwind%20Traders");
         await expect(page.getByTestId("customer-heading")).toHaveText("Northwind Traders");
         const before = read(NEW_NOTE);
+        await page.getByTestId("edit-customer").click();
 
         await page.getByRole("spinbutton", {name: "Terms (net days)"}).fill("30");
         const phones = page.getByTestId("labelled-phones");
@@ -131,22 +204,72 @@ test.describe("customers over the accrual fixture (:5199)", () => {
         await phones.getByLabel("Phones 1", {exact: true}).fill("+1 206 555 0100");
         await expect(page.getByTestId("unsaved")).toBeVisible();
         await page.getByTestId("save-customer").click();
-        await expect(page.getByTestId("customer-saved")).toContainText("Saved");
-        await expect(page.getByTestId("save-customer")).toBeDisabled();
+        // Field names, not keys (J10); back to the view.
+        await expect(page.getByTestId("customer-saved")).toHaveText("Saved: Phones, Terms.");
+        await expect(page.getByTestId("customer-page")).toHaveAttribute("data-mode", "view");
 
         const after = read(NEW_NOTE);
         expect(after).toBe(
             before.replace("terms: 15\n", "terms: 30\n").replace("account_manager: Dana\n", "account_manager: Dana\nphones:\n  - billing: +1 206 555 0100\n")
         );
         expect(after.endsWith("\nPays by ACH.\n")).toBe(true);
-        // MBR's card shows the save.
-        await expect(page.frameLocator('[data-testid="note-frame"]').getByText("+1 206 555 0100")).toBeVisible();
+        // The view shows the save.
+        await expect(page.getByTestId("view-phones")).toContainText("+1 206 555 0100");
+        await expect(page.getByTestId("view-terms")).toContainText("Net 30 days");
+    });
+
+    test("adds a contract from the books folder by name", async ({page}) => {
+        await open(page);
+        await page.goto("/app/customers/customers/Northwind%20Traders");
+        await page.getByTestId("edit-customer").click();
+        await page.getByTestId("add-contract").click();
+        const picker = page.getByTestId("contract-picker");
+        await expect(picker).toBeVisible();
+        // A browser has no open dialog: the searchable list.
+        await expect(picker.getByTestId("contract-choose-file")).toHaveCount(0);
+        await picker.getByTestId("contract-search").fill("msa 2026");
+        await picker.getByTestId("contract-candidate").filter({hasText: "Customer X MSA 2026"}).click();
+        await expect(picker).toHaveCount(0);
+        await expect(page.getByTestId("contract-row")).toHaveText(["Customer X MSA 2026"]);
+        await page.getByTestId("save-customer").click();
+        await expect(page.getByTestId("customer-saved")).toHaveText("Saved: Contracts.");
+        expect(read(NEW_NOTE)).toMatch(/contracts:\n {2}- "?\[\[Customer X MSA 2026\]\]"?\n/);
+        await expect(page.getByTestId("view-contracts").getByRole("link", {name: "Customer X MSA 2026"})).toBeVisible();
+    });
+
+    test("leaving with unsaved changes asks: Save, Discard or Cancel", async ({page}) => {
+        await open(page);
+        await page.goto("/app/customers/customers/Northwind%20Traders");
+        await page.getByTestId("edit-customer").click();
+        const before = read(NEW_NOTE);
+        await page.getByRole("spinbutton", {name: "Terms (net days)"}).fill("60");
+        await page.getByTestId("sidebar").getByRole("link", {name: "Customers"}).click();
+        const dialog = page.getByTestId("unsaved-dialog");
+        await expect(dialog).toBeVisible();
+        // Cancel: stay, the edit kept.
+        await dialog.getByTestId("unsaved-cancel").click();
+        await expect(dialog).toHaveCount(0);
+        await expect(page).toHaveURL(/Northwind%20Traders$/);
+        await expect(page.getByRole("spinbutton", {name: "Terms (net days)"})).toHaveValue("60");
+        // Cancel editing asks too; Discard drops the change.
+        await page.getByTestId("cancel-edit").click();
+        await page.getByTestId("unsaved-dialog").getByTestId("unsaved-discard").click();
+        await expect(page.getByTestId("customer-page")).toHaveAttribute("data-mode", "view");
+        expect(read(NEW_NOTE)).toBe(before);
+        // Save, then go.
+        await page.getByTestId("edit-customer").click();
+        await page.getByRole("spinbutton", {name: "Terms (net days)"}).fill("45");
+        await page.getByTestId("sidebar").getByRole("link", {name: "Customers"}).click();
+        await page.getByTestId("unsaved-dialog").getByTestId("unsaved-save").click();
+        await expect(page).toHaveURL(/\/app\/customers$/);
+        expect(read(NEW_NOTE)).toContain("terms: 45\n");
     });
 
     test("never clobbers an outside edit: it says so, and can apply the change over it", async ({page}) => {
         await open(page);
         await page.goto("/app/customers/customers/Northwind%20Traders");
         await expect(page.getByTestId("customer-heading")).toHaveText("Northwind Traders");
+        await page.getByTestId("edit-customer").click();
         await page.getByRole("textbox", {name: /^Revenue account/}).fill("revenue:consulting");
 
         // Meanwhile, the note changes on disk.
@@ -161,7 +284,7 @@ test.describe("customers over the accrual fixture (:5199)", () => {
         expect(read(NEW_NOTE)).toBe(outside);
 
         await page.getByTestId("conflict-apply").click();
-        await expect(page.getByTestId("customer-saved")).toContainText("revenue_account");
+        await expect(page.getByTestId("customer-saved")).toContainText("Revenue account");
         const merged = read(NEW_NOTE);
         expect(merged).toContain("revenue_account: revenue:consulting\n");
         expect(merged).toContain("Pays by wire.");

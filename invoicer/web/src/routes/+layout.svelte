@@ -23,12 +23,36 @@
 
     const links = $derived.by((): SidebarLink[] => {
         const path = page.url.pathname;
+        // Counts beside each section (Phase 4 feedback J11): open invoices,
+        // with the overdue ones in red; customers; catalog items; snippets.
+        const invoices = books?.invoices;
         return [
             {id: "new", href: resolve("/new"), label: "New invoice", active: path === resolve("/new")},
-            {id: "invoices", href: resolve("/invoices"), label: "Invoices", active: path.startsWith(resolve("/invoices"))},
-            {id: "customers", href: resolve("/customers"), label: "Customers", active: path.startsWith(resolve("/customers"))},
-            {id: "catalog", href: resolve("/catalog"), label: "Catalog", active: path.startsWith(resolve("/catalog"))},
-            {id: "snippets", href: resolve("/snippets"), label: "Snippets", active: path.startsWith(resolve("/snippets"))},
+            {
+                id: "invoices",
+                href: resolve("/invoices"),
+                label: "Invoices",
+                active: path.startsWith(resolve("/invoices")),
+                count: invoices?.open ?? null,
+                countLabel: "open",
+                overdue: invoices?.overdue ?? null,
+            },
+            {
+                id: "customers",
+                href: resolve("/customers"),
+                label: "Customers",
+                active: path.startsWith(resolve("/customers")),
+                count: books?.customers ?? null,
+            },
+            {
+                id: "catalog",
+                href: resolve("/catalog"),
+                label: "Catalog",
+                active: path.startsWith(resolve("/catalog")),
+                count: books?.catalog ?? null,
+                countLabel: "items",
+            },
+            {id: "snippets", href: resolve("/snippets"), label: "Snippets", active: path.startsWith(resolve("/snippets")), count: books?.snippets ?? null},
         ];
     });
 
@@ -63,9 +87,9 @@
     <link rel="icon" type="image/svg+xml" href={asset("ledgeline-invoicer-icon-small.svg")} />
 </svelte:head>
 
-<div class="flex h-screen bg-base-100 text-base-content">
+<div class="flex h-screen flex-col bg-base-100 text-base-content md:flex-row">
     <Sidebar {links} {books} />
-    <main class="min-w-0 flex-1 overflow-y-auto p-4 md:p-6">
+    <main class="min-h-0 min-w-0 flex-1 overflow-y-auto p-3 sm:p-4 md:p-6">
         {@render children()}
     </main>
 </div>

@@ -6,11 +6,14 @@ import {
     balanceText,
     changedFields,
     cloneForm,
+    contractName,
     createCustomer,
     customerApiUrl,
     emptyForm,
     isDirty,
+    kindLabel,
     lastPaymentText,
+    linkName,
     newCustomerFields,
     routeParam,
     saveCustomer,
@@ -159,5 +162,24 @@ describe("UNIT customer requests", () => {
         const [url, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
         expect(url).toBe("/api/customers");
         expect(init.method).toBe("POST");
+    });
+});
+
+describe("UNIT names, never syntax", () => {
+    it("shows a link's name and a contract's name", () => {
+        expect(linkName("[[Customer X]]")).toBe("Customer X");
+        expect(linkName(" [[MSA 2026|the MSA]] ")).toBe("MSA 2026");
+        expect(linkName("[[Notes#Terms]]")).toBe("Notes");
+        expect(linkName("Customer X")).toBe("Customer X");
+        expect(contractName("[[Customer X MSA 2026]]")).toBe("Customer X MSA 2026");
+        expect(contractName("/customers/contracts/SOW 3 (signed).pdf")).toBe("SOW 3 (signed).pdf");
+        expect(contractName("SOW.pdf")).toBe("SOW.pdf");
+    });
+
+    it("says what a note is from its type", () => {
+        expect(kindLabel("organization")).toBe("Organization");
+        expect(kindLabel("credit-note")).toBe("Credit note");
+        expect(kindLabel(null)).toBeNull();
+        expect(kindLabel(" ")).toBeNull();
     });
 });

@@ -25,7 +25,7 @@
     import {fetchDeposits, fetchEditorOptions, fetchFieldValues, rebookInvoice, voidInvoice} from "#lib/editorApi.js";
     import {InvoiceEditor} from "#lib/invoiceEditor.svelte.js";
     import {localToday, pageUrl, type TemplateEntry} from "#lib/invoices.js";
-    import {friendlyProblem} from "#lib/labels.js";
+    import {friendlyMessage} from "#lib/labels.js";
     import AddCustomerDialog from "#lib/components/AddCustomerDialog.svelte";
     import BillGrid from "#lib/components/BillGrid.svelte";
     import ConfirmDialog from "#lib/components/ConfirmDialog.svelte";
@@ -34,7 +34,7 @@
     import InvoiceFrame from "#lib/components/InvoiceFrame.svelte";
     import ProseField from "#lib/components/ProseField.svelte";
     import SendSection from "#lib/components/SendSection.svelte";
-    import UnsavedDialog from "#lib/components/UnsavedDialog.svelte";
+    import SaveDiscardDialog from "#lib/components/SaveDiscardDialog.svelte";
     import WouldBookPanel from "#lib/components/WouldBookPanel.svelte";
 
     const editor = new InvoiceEditor();
@@ -319,9 +319,9 @@
                 {/if}
                 {#if editor.computed !== null && (editor.computed.table_error !== null || editor.computed.problems.length > 0)}
                     <ul class="flex flex-col gap-1 text-sm" aria-label="Problems" data-testid="editor-problems">
-                        {#if editor.computed.table_error !== null}<li class="text-error">{friendlyProblem(editor.computed.table_error)}</li>{/if}
+                        {#if editor.computed.table_error !== null}<li class="text-error">{friendlyMessage(editor.computed.table_error)}</li>{/if}
                         {#each editor.computed.problems as problem, p (p)}
-                            <li class={problem.severity === "error" ? "text-error" : "text-warning"}>{friendlyProblem(problem.message)}</li>
+                            <li class={problem.severity === "error" ? "text-error" : "text-warning"}>{friendlyMessage(problem.message)}</li>
                         {/each}
                     </ul>
                 {/if}
@@ -368,9 +368,10 @@
 {/if}
 
 {#if leaving !== null}
-    <UnsavedDialog
+    <SaveDiscardDialog
         title="Leave invoice {editor.number}?"
-        busy={editor.saving}
+        message="Your changes aren't saved. Save them before leaving, or discard them?"
+        saving={editor.saving}
         error={leaveError}
         onSave={() => void leaveWith("save")}
         onDiscard={() => void leaveWith("discard")}

@@ -6,12 +6,15 @@
     import {goto} from "$app/navigation";
     import {resolve} from "$app/paths";
     import {fetchTemplates} from "#lib/api.js";
-    import {createCustomer, emptyForm, newCustomerFields, routeParam} from "#lib/customers.js";
+    import {createCustomer, emptyForm, fetchCustomers, newCustomerFields, routeParam} from "#lib/customers.js";
+    import {friendlyMessage} from "#lib/labels.js";
     import type {TemplateEntry} from "#lib/invoices.js";
     import CustomerForm from "#lib/components/CustomerForm.svelte";
 
     let form = $state(emptyForm());
     let templates = $state<TemplateEntry[]>([]);
+    /** Organizations a new person may work for (suggestions for Company). */
+    let companies = $state<string[]>([]);
     let saving = $state(false);
     let failure = $state<string | null>(null);
 
@@ -19,6 +22,9 @@
         fetchTemplates()
             .then((list) => (templates = list))
             .catch((e: unknown) => console.warn("templates:", e));
+        fetchCustomers()
+            .then((rows) => (companies = rows.filter((r) => r.kind === "organization").map((r) => r.title)))
+            .catch((e: unknown) => console.warn("customers:", e));
     });
 
     async function create(event: SubmitEvent): Promise<void> {
@@ -29,7 +35,7 @@
             const made = await createCustomer(newCustomerFields(form));
             await goto(resolve("/customers/[...path]", {path: routeParam(made.path)}));
         } catch (e: unknown) {
-            failure = e instanceof Error ? e.message : String(e);
+            failure = friendlyMessage(e instanceof Error ? e.message : String(e));
         } finally {
             saving = false;
         }
@@ -41,7 +47,7 @@
 </svelte:head>
 
 <form class="mx-auto flex max-w-3xl flex-col gap-4" onsubmit={create} data-testid="new-customer-form">
-    <div class="flex items-center justify-between gap-2">
+    <div class="flex flex-wrap items-center justify-between gap-2">
         <h1 class="text-2xl font-semibold tracking-tight">New customer</h1>
         <div class="flex gap-2">
             <a class="btn btn-ghost btn-sm" href={resolve("/customers")}>Cancel</a>
@@ -53,5 +59,5 @@
     {#if failure !== null}
         <div role="alert" class="alert alert-soft alert-error" data-testid="customer-error">{failure}</div>
     {/if}
-    <CustomerForm bind:form {templates} creating />
+    <CustomerForm bind:form {templates} {companies} creating />
 </form>
