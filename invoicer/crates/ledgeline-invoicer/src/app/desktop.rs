@@ -260,6 +260,16 @@ pub(crate) fn report(error: &MbrPdfError) -> String {
 /// anchor (CSS pixels from the top left, the page at 100 %) flipped into
 /// AppKit's bottom-left origin unless the view is flipped; with no anchor,
 /// a point at the top centre.
+///
+/// Pure geometry, so it is compiled and unit-tested everywhere; only the
+/// macOS Share… path calls it.
+#[cfg_attr(
+    not(target_os = "macos"),
+    allow(
+        dead_code,
+        reason = "only the macOS share picker calls it; tests run everywhere"
+    )
+)]
 pub(crate) fn picker_rect(
     anchor: Option<Anchor>,
     view_width: f64,
