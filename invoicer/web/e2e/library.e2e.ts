@@ -35,7 +35,7 @@ async function open(page: Page): Promise<void> {
 }
 
 /**
- * Replace a prose field's text: MBR's `<mbr-markdown-field>` (CodeMirror)
+ * Replace a prose field's text: MBR's `<mbr-markdown-field>` (Milkdown/ProseMirror)
  * when it loaded, else the plain textarea. The field reports a change when it
  * loses focus, so focus leaves it after.
  */
@@ -47,7 +47,7 @@ async function writeProse(page: Page, testid: string, text: string): Promise<voi
     const host = page.getByTestId(testid);
     if (rich) {
         await expect(host).toHaveAttribute("data-kind", "mbr");
-        const editor = host.locator(".cm-content");
+        const editor = host.locator('.ProseMirror[contenteditable="true"]');
         await editor.click();
         await page.keyboard.press("ControlOrMeta+a");
         await page.keyboard.type(text);
@@ -113,7 +113,8 @@ test.describe("the catalog and snippets over the accrual fixture (:5199)", () =>
         await page.goto("/app/invoices/108/edit");
         await expect(page.getByTestId("editor-heading")).toHaveText("Invoice 108");
         await page.getByTestId("add-item").click();
-        const description = page.getByLabel("Row 3 description");
+        // `exact`: the open suggestion list is labelled "Row 3 description suggestions".
+        const description = page.getByLabel("Row 3 description", {exact: true});
         await description.fill("Security");
         await page.getByRole("option", {name: /^Security audit/}).click();
         await expect(page.getByLabel("Row 3 code")).toHaveValue("AUDIT");
