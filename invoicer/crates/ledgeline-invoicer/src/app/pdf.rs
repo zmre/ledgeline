@@ -138,7 +138,7 @@ pub(crate) fn books_error(error: &BooksError) -> ApiError {
 }
 
 /// The process's native side, or `503` with why not.
-fn native_for(
+pub(crate) fn native_for(
     state: &AppState,
     wants: fn(&Capabilities) -> bool,
     what: &str,

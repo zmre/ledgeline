@@ -101,6 +101,32 @@ async fn a_customer_shows_its_invoices_account_form_and_backlinks() {
         })
         .unwrap_or_else(|| panic!("105 links Customer X: {backlinks:?}"));
     assert_eq!(from_105["key"], "customer");
+    // What each linking note is (J9), and where the app shows it.
+    assert_eq!(from_105["kind"], "invoice");
+    assert_eq!(from_105["number"], "105");
+    assert_eq!(from_105["customer"], false);
+    let fred = backlinks
+        .iter()
+        .find(|b| b["path"] == "customers/Fred Smith.md")
+        .unwrap_or_else(|| panic!("Fred Smith links Customer X: {backlinks:?}"));
+    assert_eq!(fred["key"], "company");
+    assert_eq!(fred["kind"], "person");
+    assert_eq!(fred["customer"], true);
+    assert_eq!(fred["number"], Value::Null);
+    // Contracts by name, never the raw link or path (J6).
+    let names: Vec<&str> = x["contracts"]
+        .as_array()
+        .expect("contracts")
+        .iter()
+        .filter_map(|c| c["name"].as_str())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "Customer X MSA 2026",
+            "Customer X SOW 3 renewal (signed).pdf"
+        ]
+    );
     assert!(
         from_105["url"]
             .as_str()

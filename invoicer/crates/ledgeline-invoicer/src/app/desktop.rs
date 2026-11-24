@@ -47,6 +47,7 @@ pub(crate) fn capabilities(window: bool) -> Capabilities {
         copy_file: window && cfg!(target_os = "macos"),
         open_url: window,
         open_file: window && cfg!(target_os = "macos"),
+        pick_file: window && cfg!(target_os = "macos"),
     }
 }
 
@@ -102,6 +103,18 @@ impl<E: Send + 'static> Native for LoopNative<E> {
             .spawn()
             .map(drop)
             .map_err(|e| format!("couldn't open {}: {e}", file.display()))
+    }
+
+    fn pick_file(&self, start: &Path, title: &str) -> Result<Option<std::path::PathBuf>, String> {
+        if !self.caps.pick_file {
+            return Err("this process has no window to choose a file from".to_string());
+        }
+        // rfd's dialog runs on the main thread for us (as File → Open's
+        // picker does, from its own thread) and blocks this one.
+        Ok(rfd::FileDialog::new()
+            .set_title(title)
+            .set_directory(start)
+            .pick_file())
     }
 }
 
@@ -421,10 +434,12 @@ mod tests {
                 && !windowless.copy_file
                 && !windowless.open_url
                 && !windowless.open_file
+                && !windowless.pick_file
         );
         let window = capabilities(true);
         assert!(window.pdf && window.open_url);
         assert_eq!(window.share, cfg!(target_os = "macos"));
         assert_eq!(window.open_file, cfg!(target_os = "macos"));
+        assert_eq!(window.pick_file, cfg!(target_os = "macos"));
     }
 }

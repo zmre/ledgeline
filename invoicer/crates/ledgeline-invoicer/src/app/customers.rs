@@ -150,6 +150,14 @@ struct Backlink {
     title: Option<String>,
     /// The frontmatter key that links (`customer`); `None` for a body link.
     key: Option<String>,
+    /// What the note is: its `type:` (`person`, `organization`, `invoice`,
+    /// `contract`, …), from the invoicer's own index; `None` when it has
+    /// none (Phase 4 feedback J9).
+    kind: Option<String>,
+    /// A document's number: the app has a page for it.
+    number: Option<String>,
+    /// Whether it is a customer: the app has a page for it.
+    customer: bool,
 }
 
 /// How long a customer's page waits for MBR's first scan of the folder
@@ -180,9 +188,32 @@ fn backlinks(books: &OpenBooks, path: &VaultPath) -> Vec<Backlink> {
                     mbr_core::link_index::LinkOrigin::Frontmatter { key } => key,
                 }),
                 url: link.from,
+                kind: None,
+                number: None,
+                customer: false,
             }
         })
         .collect()
+}
+
+/// What each backlinking note is, from the invoicer's index: its type, a
+/// document's number, whether it is a customer.
+fn describe(session: &Session, links: &mut [Backlink]) {
+    let index = session.index();
+    let words = &index.settings().words;
+    for link in links {
+        let Some(path) = link.path.as_deref().and_then(|p| VaultPath::new(p).ok()) else {
+            continue;
+        };
+        if let Some(note) = index.site().note(&path) {
+            link.kind.clone_from(&note.note_type);
+            link.customer = is_customer(note, words);
+        }
+        link.number = index
+            .doc(&path)
+            .and_then(|d| d.number())
+            .map(str::to_string);
+    }
 }
 
 /// `GET /api/customers/{key}`: `customers show --json` (its invoices, newest
@@ -215,8 +246,9 @@ async fn detail(
             index.refresh(vault, std::slice::from_ref(&path));
             path
         };
-        let links = backlinks(books, &path);
+        let mut links = backlinks(books, &path);
         let session = books.session();
+        describe(&session, &mut links);
         let note: Note = session
             .index()
             .site()

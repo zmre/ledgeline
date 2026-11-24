@@ -579,6 +579,29 @@ pub struct ContractView {
     pub entry: ContractRef,
     /// The note or file it names; `None` when it doesn't exist.
     pub found: Option<VaultPath>,
+    /// What to call it: the note's title, else the link's target, or the
+    /// file's name. Never the raw `[[…]]` or path.
+    pub name: String,
+}
+
+/// A contract's name from its entry alone: a link's target (`[[MSA|the
+/// MSA]]` → `MSA`), or a path's file name (`/c/SOW 3.pdf` → `SOW 3.pdf`).
+#[must_use]
+pub fn contract_name(contract: &ContractRef) -> String {
+    match contract {
+        ContractRef::Note { link } => crate::notes::wikilink_target(link)
+            .unwrap_or(link.as_str())
+            .to_string(),
+        ContractRef::File { path } => {
+            let trimmed = path.trim().trim_end_matches('/');
+            trimmed
+                .rsplit('/')
+                .next()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(trimmed)
+                .to_string()
+        }
+    }
 }
 
 /// `customers show`.
@@ -633,13 +656,22 @@ pub fn customer_detail<'a>(
     let contracts = customer
         .contracts
         .iter()
-        .map(|c| ContractView {
-            entry: c.clone(),
-            found: customer
-                .resolve_contract(c, index.site(), session.vault())
-                .map(|t| match t {
+        .map(|c| {
+            let target = customer.resolve_contract(c, index.site(), session.vault());
+            let name = match (&target, c) {
+                (Some(customers::ContractTarget::Note(p)), _) => index
+                    .site()
+                    .note(p)
+                    .map_or_else(|| contract_name(c), |n| n.title.clone()),
+                _ => contract_name(c),
+            };
+            ContractView {
+                entry: c.clone(),
+                found: target.map(|t| match t {
                     customers::ContractTarget::Note(p) | customers::ContractTarget::File(p) => p,
                 }),
+                name,
+            }
         })
         .collect();
     let states = Some(session.book_states());

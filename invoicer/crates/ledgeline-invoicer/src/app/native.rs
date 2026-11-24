@@ -94,8 +94,12 @@ pub(crate) struct Capabilities {
     /// Open a URL in the user's browser. Without it the SPA opens it itself
     /// (a browser tab under `--server`).
     pub open_url: bool,
-    /// Open an exported PDF in the default viewer (`open`, macOS).
+    /// Open an exported PDF, or a file in the books folder, in the default
+    /// viewer (`open`, macOS).
     pub open_file: bool,
+    /// Choose a file with the system's open dialog (the window, macOS): the
+    /// contract picker (customers, Phase 4 feedback J5).
+    pub pick_file: bool,
 }
 
 /// The desktop, as the API sees it.
@@ -112,11 +116,20 @@ pub(crate) trait Native: Send + Sync {
     /// When this process can't.
     fn open_url(&self, url: &str) -> Result<(), String>;
 
-    /// Open `file` (already vetted: an exported PDF) in the default viewer.
+    /// Open `file` (already vetted: an exported PDF, or a file in the
+    /// books folder) in the default viewer.
     ///
     /// # Errors
     /// When this process can't.
     fn open_file(&self, file: &std::path::Path) -> Result<(), String>;
+
+    /// Show the system's open dialog at `start`, titled `title`, and wait
+    /// for the choice (`None`: cancelled). Blocks: call it off the async
+    /// runtime.
+    ///
+    /// # Errors
+    /// When this process can't.
+    fn pick_file(&self, start: &std::path::Path, title: &str) -> Result<Option<PathBuf>, String>;
 }
 
 /// Wait for a reply; a dropped sender is the app closing.
@@ -143,6 +156,10 @@ pub(crate) mod mock {
         pub copied: Mutex<Vec<PathBuf>>,
         pub opened: Mutex<Vec<String>>,
         pub opened_files: Mutex<Vec<PathBuf>>,
+        /// What the open dialog "chooses" (`None`: cancelled), and where
+        /// each was asked to start.
+        pub pick: Mutex<Option<PathBuf>>,
+        pub picked_from: Mutex<Vec<PathBuf>>,
         /// Fail every print with this.
         pub fail: Option<String>,
     }
@@ -156,6 +173,7 @@ pub(crate) mod mock {
                     copy_file: true,
                     open_url: true,
                     open_file: true,
+                    pick_file: true,
                 },
                 ..Self::default()
             }
@@ -204,6 +222,15 @@ pub(crate) mod mock {
         fn open_file(&self, file: &std::path::Path) -> Result<(), String> {
             self.opened_files.lock().unwrap().push(file.to_path_buf());
             Ok(())
+        }
+
+        fn pick_file(
+            &self,
+            start: &std::path::Path,
+            _title: &str,
+        ) -> Result<Option<PathBuf>, String> {
+            self.picked_from.lock().unwrap().push(start.to_path_buf());
+            Ok(self.pick.lock().unwrap().clone())
         }
     }
 }
