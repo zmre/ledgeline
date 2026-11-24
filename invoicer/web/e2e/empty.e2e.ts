@@ -41,7 +41,11 @@ async function open(page: Page): Promise<void> {
 }
 
 async function section(page: Page, name: string): Promise<void> {
-    await page.getByTestId("sidebar").getByRole("link", {name, exact: true}).click();
+    // A section link's name ends with its count for screen readers ("Customers 0 customers").
+    await page
+        .getByTestId("sidebar")
+        .getByRole("link", {name: new RegExp(`^${name}(\\s|$)`)})
+        .click();
 }
 
 /** The shared empty state: its heading, and its one button primary and inside the card. */
