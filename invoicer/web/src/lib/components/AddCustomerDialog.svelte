@@ -1,10 +1,11 @@
-<!-- Add a customer, minimally, from the customer combobox (invoicer PLAN 4a):
-     a name, person or organization, a billing email and address, terms. It
-     writes a customer note in `customers-dir` (tagged `customer`) through the
-     server; the customers page (4b) edits everything else. -->
+<!-- Add a customer, minimally, from the customer combobox (invoicer PLAN 4a,
+     E13): a name, person or organization, a billing email and address, terms.
+     It writes a customer note in `customers-dir` (tagged `customer`) through
+     the customers API (`POST /api/customers`, 4b's K3/K4 rules); the
+     customers page edits everything else. -->
 <script lang="ts">
     import {untrack} from "svelte";
-    import {createCustomer, type NewCustomer} from "#lib/editorApi.js";
+    import {createCustomer, emptyForm, newCustomerFields, type ContactKind, type CustomerSaved} from "#lib/customers.js";
 
     let {
         name: initial,
@@ -12,20 +13,18 @@
         onCancel,
     }: {
         name: string;
-        onCreated: (customer: {path: string; title: string; link: string}) => void;
+        onCreated: (customer: CustomerSaved) => void;
         onCancel: () => void;
     } = $props();
 
     // Starts as what was typed in the combobox; the user may change it here.
     let name = $state(untrack(() => initial));
-    let kind = $state<NewCustomer["kind"]>("organization");
+    let kind = $state<ContactKind>("organization");
     let email = $state("");
     let address = $state("");
     let terms = $state<number | null>(null);
     let busy = $state(false);
     let error = $state<string | null>(null);
-
-    const blank = (s: string): string | null => (s.trim() === "" ? null : s.trim());
 
     async function submit(event: SubmitEvent): Promise<void> {
         event.preventDefault();
@@ -33,7 +32,13 @@
         busy = true;
         error = null;
         try {
-            onCreated(await createCustomer({name: name.trim(), kind, email: blank(email), address: blank(address), terms}));
+            // 4b's blank form with these filled in: only what was given is sent.
+            const form = emptyForm(kind);
+            form.title = name;
+            form.emails = [{label: "billing", value: email}];
+            form.addresses = [{label: "billing", value: address}];
+            form.terms = terms;
+            onCreated(await createCustomer(newCustomerFields(form)));
         } catch (e) {
             error = e instanceof Error ? e.message : String(e);
         } finally {

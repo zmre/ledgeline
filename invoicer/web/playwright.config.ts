@@ -59,11 +59,16 @@ export default defineConfig({
     use: {baseURL: "http://localhost:4273", timezoneId: "America/Denver", colorScheme: "dark"},
     testDir: "e2e",
     testMatch: "**/*.e2e.{ts,js}",
-    // Every spec shares one server and one scratch copy of the books. The
-    // editor's spec adds invoice 2005 (and invoices.e2e.ts counts eight), so it
-    // runs after the rest, as its own project.
+    // Every spec shares one server and one scratch copy of the books, so the
+    // specs that change it run in turn, each a project after the last:
+    //   1. customers.e2e.ts reads the fixture's balances (Customer X owes
+    //      $8,350.00, 108 a draft), creates Northwind Traders and removes it;
+    //   2. the rest (invoices.e2e.ts sends 108, so Customer X owes more; it
+    //      counts eight invoices);
+    //   3. editor.e2e.ts adds invoice 2005 and expects 108 sent.
     projects: [
-        {name: "pages", testIgnore: "**/editor.e2e.ts"},
+        {name: "customers", testMatch: "**/customers.e2e.ts"},
+        {name: "pages", testIgnore: ["**/customers.e2e.ts", "**/editor.e2e.ts"], dependencies: ["customers"]},
         {name: "editor", testMatch: "**/editor.e2e.ts", dependencies: ["pages"]},
     ],
 });

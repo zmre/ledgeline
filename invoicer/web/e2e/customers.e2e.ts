@@ -11,6 +11,9 @@
 //
 // The specs run in order (they share the customer they create) and remove
 // it at the end, so the other spec files see the fixture's six customers.
+// This file runs first, as its own project (playwright.config.ts), while the
+// balances are the fixture's: invoices.e2e.ts sends 108 and editor.e2e.ts
+// sends 2005, both Customer X's.
 //
 // Written in 4b and NOT run by the agent that wrote it (agents never run
 // Playwright); the lead runs it.

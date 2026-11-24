@@ -333,27 +333,43 @@ async fn void_rebook_deposits_and_a_new_customer() {
     assert_eq!(deposits["account"], "liabilities:customer-deposits");
     assert!(deposits["deposits"].is_array());
 
+    // The editor's inline Add new is the customers API (E13, 4b's K3).
     let (status, added) = json_of(
         &app,
         post_json(
-            "/api/editor/customer",
-            &json!({"name": "Acme Corp", "kind": "organization", "email": "ap@acme.example", "terms": 45}),
+            "/api/customers",
+            &json!({
+                "title": "Acme Corp",
+                "kind": "organization",
+                "emails": [{"label": "billing", "value": "ap@acme.example"}],
+                "terms": 45,
+            }),
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{added}");
+    assert_eq!(status, StatusCode::CREATED, "{added}");
     assert_eq!(added["link"], "[[Acme Corp]]");
     assert!(root.join("customers/Acme Corp.md").exists());
     let (status, again) = json_of(
         &app,
         post_json(
-            "/api/editor/customer",
-            &json!({"name": "Acme Corp", "kind": "person"}),
+            "/api/customers",
+            &json!({"title": "Acme Corp", "kind": "person"}),
         ),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "{again}");
-    assert_eq!(again["code"], "exists");
+    // The 4a route is gone: one way to create a customer.
+    let (status, _) = json_of(
+        &app,
+        post_json(
+            "/api/editor/customer",
+            &json!({"name": "Other Co", "kind": "organization"}),
+        ),
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+    assert!(!root.join("customers/Other Co.md").exists());
 
     // The new customer can be invoiced at once, with its terms.
     let (status, created) = json_of(
@@ -413,4 +429,52 @@ async fn an_unsaved_preview_is_a_page_behind_the_gate() {
     assert!(html.contains("Unsaved subscription"), "{html}");
     let (status, _, _) = send(&app.router, page("/.ledgeline-invoicer/preview?draft=nope")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// A starter the editor names is copied in with the base it extends (Q1 =
+/// B): on `new` and on a save, never over a base that is there.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_editor_copies_a_starter_with_its_base() {
+    let app = app();
+    let root = books_root(&app);
+    std::fs::remove_file(root.join(super::BASE_FILE)).unwrap();
+    let (status, created) = json_of(
+        &app,
+        post_json(
+            "/api/invoices",
+            &json!({"customer": "[[Customer X]]", "date": "2026-11-17", "template": "/invoices/tpl/classic.html"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(created["copied"], "invoices/tpl/classic.html");
+    assert_eq!(
+        std::fs::read_to_string(root.join(super::BASE_FILE)).unwrap(),
+        crate::starters::BASE.source
+    );
+    let number = created["number"].as_str().unwrap().to_string();
+    let (status, detail) = json_of(&app, authed(&format!("/api/invoices/{number}"))).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    assert!(!detail.to_string().contains("unknown-template"), "{detail}");
+
+    // A save naming another starter: the user's base stays as it is.
+    let mine = "{# the user's base #}\n";
+    std::fs::write(root.join(super::BASE_FILE), mine).unwrap();
+    let state = state_of(&app, "108").await;
+    let mut form = state["form"].clone();
+    form["template"] = json!("/invoices/tpl/modern.html");
+    let (status, saved) = json_of(
+        &app,
+        put_json(
+            "/api/invoices/108/form",
+            &json!({"form": form, "revision": state["revision"]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["copied"], "invoices/tpl/modern.html");
+    assert_eq!(
+        std::fs::read_to_string(root.join(super::BASE_FILE)).unwrap(),
+        mine
+    );
 }

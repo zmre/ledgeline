@@ -5,7 +5,6 @@
 //! | Route                                   | Does                                                      |
 //! |-----------------------------------------|-----------------------------------------------------------|
 //! | `GET /api/editor/options`               | What the editor's pickers offer: customers (with open POs), the catalog, the journal's accounts, custom field keys, the table words. |
-//! | `POST /api/editor/customer`             | Add a minimal customer note (the inline Add new; 4b has the full editor). |
 //! | `GET /api/fields/{key}/values`          | Autocomplete for a custom frontmatter field.              |
 //! | `POST /api/invoices`                    | `new`: a draft for a customer (snapshot, terms, snippets). |
 //! | `GET /api/invoices/{num}/form`          | The document as the editor's form, with its revision and its computed amounts. |
@@ -32,7 +31,6 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use invoicer_core::books::{BooksError, Document, Rebook, Void, retry_once};
-use invoicer_core::customer_note::{self, CustomerNoteError, NewCustomer};
 use invoicer_core::customers::ContactKind;
 use invoicer_core::doc::{DocType, Invoice, Status};
 use invoicer_core::draft::NewInvoice;
@@ -58,7 +56,6 @@ use crate::starters;
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/editor/options", get(options))
-        .route("/api/editor/customer", post(add_customer))
         .route("/api/fields/{key}/values", get(field_values))
         .route("/api/invoices", post(create))
         .route("/api/invoices/{number}/form", get(form).put(save))
@@ -301,35 +298,6 @@ async fn options(State(state): State<AppState>) -> Answer {
     .await
 }
 
-/// `POST /api/editor/customer`: `{path, title, link}`.
-async fn add_customer(
-    State(state): State<AppState>,
-    payload: Result<Json<NewCustomer>, JsonRejection>,
-) -> Answer {
-    let new = body(payload)?;
-    with_books(&state, move |books| {
-        let mut session = books.session();
-        let (index, vault) = session.parts_mut();
-        let (path, customer) = customer_note::create(index, vault, &new).map_err(|e| match e {
-            CustomerNoteError::Invalid(m) => Failure::bad_request(m),
-            CustomerNoteError::Exists(_) => {
-                Failure::new(StatusCode::CONFLICT, "exists", e.to_string())
-            }
-            other => Failure::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "storage",
-                other.to_string(),
-            ),
-        })?;
-        Ok(json!({
-            "path": path.to_string(),
-            "title": customer.contact.title,
-            "link": customer.wikilink(),
-        }))
-    })
-    .await
-}
-
 /// `GET /api/fields/{key}/values`: `[{value, count}]`, most used first.
 async fn field_values(State(state): State<AppState>, Path(key): Path<String>) -> Answer {
     with_books(&state, move |books| {
@@ -419,7 +387,7 @@ async fn create(
                     )
                 })?;
                 let (index, vault) = session.parts_mut();
-                index.refresh(vault, std::slice::from_ref(&installed.path));
+                index.refresh(vault, &installed.written_files());
                 installed.written.then(|| installed.path.to_string())
             }
             None => None,
@@ -610,7 +578,7 @@ async fn save(
                 match starters::install_named(session.vault(), &dir, template) {
                     Ok(Some(done)) if done.written => {
                         let (index, vault) = session.parts_mut();
-                        index.refresh(vault, std::slice::from_ref(&done.path));
+                        index.refresh(vault, &done.written_files());
                         Some(done.path.to_string())
                     }
                     _ => None,

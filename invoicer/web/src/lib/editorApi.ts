@@ -120,20 +120,6 @@ export function fetchDeposits(number: string): Promise<OpenDeposits> {
     return send<OpenDeposits>("GET", `/api/invoices/${num(number)}/deposits`, (b) => isObject(b) && Array.isArray(b.deposits));
 }
 
-/** What the minimal Add customer writes. */
-export interface NewCustomer {
-    name: string;
-    kind: "organization" | "person";
-    email?: string | null;
-    address?: string | null;
-    terms?: number | null;
-}
-
-/** `POST /api/editor/customer`: a new customer note in `customers-dir`. */
-export function createCustomer(customer: NewCustomer): Promise<{path: string; title: string; link: string}> {
-    return send("POST", "/api/editor/customer", (b) => isObject(b) && typeof b.link === "string", customer);
-}
-
 /** `POST /api/preview/draft`: hold unsaved text for the preview page; the URL to frame. */
 export function draftPreview(number: string, source: string, template: string | null = null): Promise<{url: string}> {
     return send("POST", "/api/preview/draft", (b) => isObject(b) && typeof b.url === "string", {number, source, template});

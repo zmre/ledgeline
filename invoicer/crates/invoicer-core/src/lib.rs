@@ -22,7 +22,6 @@
 //! - [`views`]: what the read commands show, for the CLI and the API;
 //! - [`edit`]: the commands that write documents (`new`, `set`, `recalc`);
 //! - [`editor`]: the app editor's form of a document, and saving it (4a);
-//! - [`customer_note`]: a minimal new customer note (the editor's Add new);
 //! - [`books`]: the books bridge — what an invoice books, send, re-book,
 //!   void, deposits, cash-books Apply payment and recognition (§4);
 //! - [`reconcile`]: the books' payment state, the `paid:` mirror, and the
@@ -36,7 +35,6 @@ pub mod booking;
 pub mod books;
 pub mod catalog;
 pub mod customer_edit;
-pub mod customer_note;
 pub mod customers;
 pub mod doc;
 pub mod draft;
