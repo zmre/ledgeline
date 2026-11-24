@@ -242,7 +242,7 @@ pub fn set(
     })
 }
 
-fn check_new_number(
+pub(crate) fn check_new_number(
     index: &DocumentIndex,
     path: &VaultPath,
     header: &crate::doc::Header,
