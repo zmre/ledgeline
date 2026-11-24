@@ -1018,6 +1018,56 @@ changes after an outside edit in an editor that keeps the file open.
 
 **4c. Catalog and snippets** — grid and markdown editors over their notes.
 
+*4c built (2026-11-24).* Core: `invoicer_core::catalog_edit` (`list`,
+`form_of`, `check_grid`, `apply`, `save`, `create`, `empty_catalog`) and
+`invoicer_core::snippet_edit` (`list`, `create`, `update`, `delete`);
+`catalog::catalog_table` is shared with `Catalog::parse`, and
+`customer_edit::link_safe_title` with customers. App: `app/library.rs`
+(routes, merged into `api::routes`) and `app/library_tests.rs`. SPA:
+Catalog and Snippets in the sidebar, `/app/catalog` (`CatalogGrid`, reusing
+the editor's `AccountInput`, `DeferralPopover`, `moveRow`/`removeRow` and
+`ConflictNotice`), `/app/snippets` (`SnippetEditor`, the body in
+`ProseField`, so MBR's M6 field or a textarea); `lib/library.ts`. The
+invoice editor re-reads its options after each change. e2e
+`invoicer/web/e2e/library.e2e.ts`: written, not run; `playwright.config.ts`
+runs it last, as the `library` project after `editor` (that spec picks ARCH
+as the fixture has it); it puts the catalog back and removes its snippet.
+
+| Route                          | Body                                     | Answers                                                                                                                         |
+|--------------------------------|------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------|
+| `GET /api/catalog`             | —                                        | `{catalogs: [{path, title, hash, table: {columns: [{header, role}], rows}, problems}], path}` (`path`: `[invoicer] catalog`)    |
+| `POST /api/catalog`            | —                                        | `201` `{path, hash, written, items}`; `409` `exists`                                                                            |
+| `PUT /api/catalog/{*path}`     | `{hash, table}`                          | `{path, hash, written, items}`; `409` `changed` (+ `revision`); `422` `invalid` (+ `problems: [{row, column, message}]`); `404` |
+| `GET /api/snippets`            | —                                        | `[{path, title, kind, aliases, body, hash, used_by: [{path, title, how: default\|copy, number}]}]`                              |
+| `POST /api/snippets`           | `{title, kind?, body?}`                  | `201` `{path, title, link, kind, hash, written, changed}`; `409` `name-taken`/`exists`; `422`                                   |
+| `PUT /api/snippets/{*path}`    | `{hash, fields: {title?, kind?, body?}}` | as `POST`; `409` `changed` (+ `revision`)                                                                                       |
+| `DELETE /api/snippets/{*path}` | `{hash, force?}`                         | `{deleted}`; `409` `in-use` (+ `customers`) without `force`                                                                     |
+
+Decided while building, open to veto:
+
+| #   | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+|-----|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| G1  | **The catalog is edited as its table, nothing else.** The grid is the note's table as raw cells under its own headers (E2's rule); a save replaces only the table's bytes, so the frontmatter, prose, other tables and line endings stay byte for byte, and an unchanged grid is the file. A changed table is written aligned, keeping its alignments, indent and hand-widened columns while the header is the same. The page edits rows, not columns: add a column by hand.                                                                   |
+| G2  | **Validation is what `check` would report, plus the CLI's grammar**: a row needs a code and a description; codes are unique case-insensitively, one word without `:`, `\|` or a backslash, at most 40 characters (`--from-catalog CODE:QTY` must name them); a rate is money in the books' style; the books cell reads (an account, or a deferral). Wholly blank rows are dropped. The SPA checks codes and descriptions itself (Save waits); the server judges rates and accounts, and its `422` `problems` (`row`, `column`) mark the cells. |
+| G3  | **Conflicts are by content hash** (K2). A refused save shows the conflict notice: Reload theirs, or Keep mine, which saves the grid over their hash (a table has no keys to re-apply, unlike K2's customers). Live reload adopts an outside change when nothing is unsaved and shows the notice otherwise; the page's own save coming back isn't a conflict.                                                                                                                                                                                   |
+| G4  | **Every `type: catalog` note is editable**, with a picker when there are several. With none, the page offers Create: an empty catalog at `[invoicer] catalog` (`title: Catalog`, `type: catalog`, a table headed with the item, description, unit and rate words and `*Account*`), never replacing a file.                                                                                                                                                                                                                                     |
+| G5  | **The invoice editor follows the catalog live**: it re-reads `/api/editor/options` after every change event, so an item saved here (or written by hand) is offered without reopening the invoice. The catalog is read fresh on each request (`edit::catalogs`).                                                                                                                                                                                                                                                                                |
+| G6  | **Snippets are edited by key, the body replaced**: `title` and `snippet_kind` through `frontmatter::edit` (comments, unknown keys and layout stay), the body after the frontmatter replaced (`\r\n` to `\n`, blank lines trimmed, one final newline). A form that reads the same writes nothing. `snippet_kind` is any word (one line, at most 40 characters; payment, terms and note are suggested); `""` removes it.                                                                                                                         |
+| G7  | **A rename keeps the old title as an alias** (`aliases:`), so the customers' `[[Old title]]` still resolve, and the file keeps its name (as K5); taking an old title back drops it from the aliases. Titles follow K4 (`link_safe_title`, shared with customers), and a title another note answers to is refused (`409` `name-taken`).                                                                                                                                                                                                         |
+| G8  | **New snippets go in `<templates-dir>/snippets/<Title>.md`** (K3's file-name rule), with `title`, `type: snippet` and `snippet_kind`, never replacing a file.                                                                                                                                                                                                                                                                                                                                                                                  |
+| G9  | **Where a snippet is used**: the customers whose `snippets:` resolve to it (`default`: their new drafts copy it), and the documents whose text holds its body as it is now (`copy`). Snippets are copied, never linked (§3.7), so a copy made before an edit isn't found; MBR's backlinks aren't used.                                                                                                                                                                                                                                         |
+| G10 | **Delete is refused while customers name the snippet** (`409` `in-use`, with their titles) unless `force`: the dialog names them and says Delete anyway. Invoices keep their copies. The hash is checked first, but the removal itself isn't conditional (the vault has no conditional remove): a narrow race, accepted.                                                                                                                                                                                                                       |
+| G11 | **A path that isn't a catalog (or a snippet) is `404`** whatever the hash: the type is checked before the hash.                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| G12 | **No CLI yet.** `catalog` and `snippets` commands would call `catalog_edit` and `snippet_edit` as the routes do; left for when the CLI wants them (customers' `new`/`set` are in the same state).                                                                                                                                                                                                                                                                                                                                              |
+
+**Pending (the lead):** `just invoicer-e2e` (the library spec: JR to $250
+and AUDIT added and saved, AUDIT offered in 108's editor, a PENTEST row
+written on disk offered there by live reload; Late fee created, its text
+written through the prose field, renamed with its alias, deleted). In the
+window: the M6 field in the snippets page (the spec clicks away after
+typing, for its `change` event), the account popup inside the catalog grid,
+and a pointer drag of a catalog row.
+
 **4d. Templates** — a list, a code editor (CodeMirror, HTML/Tera), and live
 preview against a chosen invoice.
 
