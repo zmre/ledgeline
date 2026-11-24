@@ -247,10 +247,28 @@
       # (incl. the whole wry/tao GUI stack) from a dummy source. Source-only
       # changes reuse this layer verbatim, so rebuilds/retests skip recompiling
       # every dependency. Every output below inherits `cargoArtifacts`.
-      cargoArtifacts = craneLib.buildDepsOnly (commonArgs
-        // {
-          src = craneLib.cleanCargoSource ./.;
-        });
+      #
+      # The layer must compile dependencies with the SAME resolved features as
+      # the outputs that reuse it, or cargo's fingerprints miss and those crates
+      # are rebuilt per commit. `clippy` and `tests` pass
+      # `--features ledgeline-ffi/mobile` (see below), which turns on
+      # ledgeline-ffi's server deps and so changes feature unification across
+      # the workspace; a layer built without it made both of them recompile
+      # every crate whose features moved (on Linux the three mbr crates, about
+      # 3 minutes per run). So `check` (what clippy reuses) and
+      # `test --no-run` (what `tests` reuses) are built WITH the feature. The
+      # plain `build`, and a featureless `test --no-run`, are kept for
+      # `ledgeline`/`ledgelineWithSpa` (`-p ledgeline`) and `spaShellCsp`.
+      depsLayerArgs = {
+        src = craneLib.cleanCargoSource ./.;
+        cargoCheckExtraArgs = "--all-targets ${mobileFeature}";
+        checkPhaseCargoCommand = ''
+          cargoWithProfile test --locked --no-run
+          cargoWithProfile test --locked --no-run ${mobileFeature}
+        '';
+      };
+      mobileFeature = "--features ledgeline-ffi/mobile";
+      cargoArtifacts = craneLib.buildDepsOnly (commonArgs // depsLayerArgs);
 
       # The workspace binary (`ledgeline` = axum server + wry/tao GUI). Tests run
       # in the `tests` check, so skip them here.
@@ -280,13 +298,13 @@
       clippy = craneLib.cargoClippy (commonArgs
         // {
           inherit cargoArtifacts;
-          cargoClippyExtraArgs = "--all-targets --features ledgeline-ffi/mobile -- -D warnings";
+          cargoClippyExtraArgs = "--all-targets ${mobileFeature} -- -D warnings";
         });
 
       tests = craneLib.cargoTest (commonArgs
         // {
           inherit cargoArtifacts;
-          cargoTestExtraArgs = "--features ledgeline-ffi/mobile";
+          cargoTestExtraArgs = mobileFeature;
         });
 
       fmt = craneLib.cargoFmt {
