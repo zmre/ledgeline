@@ -70,7 +70,7 @@ jobs:
           # assets, site.json and Home link at base_url; left at the default "/"
           # it loads nothing (no styles, no "did you mean" suggestions).
           MBR_BASE_URL: /ledgeline/
-        run:./mbr/bin/mbr -b --fail-on-broken-links --output ./docs-build ./docs
+        run: ./mbr/bin/mbr -b --fail-on-broken-links --output ./docs-build ./docs
 
       - name: Create Pages artifact
         if: github.event_name != 'pull_request'
