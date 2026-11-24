@@ -108,13 +108,41 @@ export interface Backlink {
     title: string | null;
     /** The frontmatter key that links (`customer`); null for a body link. */
     key: string | null;
+    /** The linking note's `type:` (`person`, `invoice`, `contract`, …); null when it has none. */
+    kind: string | null;
+    /** A document's number: the app's invoice page shows it. */
+    number: string | null;
+    /** Whether it is a customer: the app's customer page shows it. */
+    customer: boolean;
+}
+
+/** A `contracts:` entry as the server resolves it: `name` is what to show. */
+export type Contract = ({kind: "note"; link: string} | {kind: "file"; path: string}) & {found: string | null; name: string};
+
+/** A note or file a contract may name (`GET /api/files`). */
+export interface FileCandidate {
+    path: string;
+    name: string;
+    /** A note's `type:`; null for a file (or a note without one). */
+    kind: string | null;
+    /** What `contracts:` writes for it: `[[Title]]` or a `/`-rooted path. */
+    entry: string;
+}
+
+/** `GET /api/files`: the candidates, and what this process can do natively. */
+export interface FileList {
+    /** The system's open dialog is available (the window, macOS). */
+    pick: boolean;
+    /** A books file can open in its viewer (the window, macOS). */
+    open: boolean;
+    files: FileCandidate[];
 }
 
 /** `GET /api/customers/{key}`: the parts the customer page reads. */
 export interface CustomerDetail extends CustomerRow {
     revenue_account: string | null;
     invoice_template: string | null;
-    contracts: ({kind: "note"; link: string; found: string | null} | {kind: "file"; path: string; found: string | null})[];
+    contracts: Contract[];
     open_pos: {reference: string; amount: string | null; expires: string | null}[];
     snippets: string[];
     /** Its invoices, newest first. */
@@ -123,6 +151,31 @@ export interface CustomerDetail extends CustomerRow {
     hash: string;
     form: CustomerForm;
     backlinks: Backlink[];
+}
+
+/**
+ * A wikilink's name (`[[Customer X]]` → `Customer X`, `[[MSA|the MSA]]` →
+ * `MSA`); any other text as it is. The pages never show `[[…]]`.
+ */
+export function linkName(text: string): string {
+    const inner = /^\s*\[\[([^\]]*)\]\]\s*$/.exec(text)?.[1];
+    if (inner === undefined) return text.trim();
+    return inner.split("|")[0].split("#")[0].trim();
+}
+
+/** A contract entry's name without the server: a link's target, a path's file name. */
+export function contractName(entry: string): string {
+    const text = entry.trim();
+    if (text.startsWith("[[")) return linkName(text);
+    const parts = text.replace(/\/+$/, "").split("/");
+    return parts[parts.length - 1] || text;
+}
+
+/** What a note is, in words, from its `type:` ("Organization", "Credit note"). */
+export function kindLabel(kind: string | null): string | null {
+    if (kind === null || kind.trim() === "") return null;
+    const words = kind.trim().replace(/[-_]+/g, " ");
+    return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 /** The labels a list offers first: `billing` is what invoices pick. */
@@ -302,4 +355,31 @@ export function createCustomer(fields: CustomerFields): Promise<CustomerSaved> {
  */
 export function saveCustomer(key: string, hash: string, fields: CustomerFields): Promise<CustomerSaved> {
     return request<CustomerSaved>("PUT", customerApiUrl(key), isSaved, {hash, fields});
+}
+
+const isFileList = (body: unknown): boolean => isObject(body) && Array.isArray(body.files);
+
+/** `GET /api/files`: the notes and documents a contract may name (`list: false`: only what the app can do natively). */
+export function fetchFiles(options: {list?: boolean} = {}): Promise<FileList> {
+    return request<FileList>("GET", options.list === false ? "/api/files?list=false" : "/api/files", isFileList);
+}
+
+/**
+ * `POST /api/files/pick`: the system's open dialog at the books folder (the
+ * window). `null` when cancelled; a file outside the books folder is refused
+ * with the reason (`ApiStatusError`, `422`).
+ */
+export async function pickFile(): Promise<FileCandidate | null> {
+    const body = await request<{cancelled: boolean; file?: FileCandidate}>(
+        "POST",
+        "/api/files/pick",
+        (b) => isObject(b) && typeof b.cancelled === "boolean",
+        {}
+    );
+    return body.cancelled || body.file === undefined ? null : body.file;
+}
+
+/** `POST /api/files/open`: a file in the books folder, in its default viewer (the window). */
+export async function openBooksFile(path: string): Promise<void> {
+    await request<unknown>("POST", "/api/files/open", isObject, {path});
 }

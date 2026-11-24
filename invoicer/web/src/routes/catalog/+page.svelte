@@ -235,9 +235,9 @@
         <span class="loading loading-md loading-spinner" aria-label="Loading the catalog"></span>
     {:else if note === null}
         <div class="rounded-box border border-dashed border-base-300 p-6 text-sm" data-testid="catalog-empty">
-            <p>There is no catalog yet: a note with <code>type: catalog</code> whose table lists your products and services.</p>
+            <p>There is no catalog yet: a list of your products and services, with their rates, for invoices to pick from.</p>
             <button type="button" class="btn mt-3 btn-primary btn-sm" disabled={saving} onclick={() => void create()} data-testid="create-catalog"
-                >Create {list.path}</button
+                >Create the catalog</button
             >
         </div>
     {:else}
@@ -266,7 +266,7 @@
             </ul>
         {/if}
         {#if table === null}
-            <p class="text-sm">This note has no table the invoicer reads. Edit it by hand: a table with Code and Description columns.</p>
+            <p class="text-sm">This catalog has no table with Code and Description columns yet. Add one in a text editor, then come back.</p>
         {:else}
             <CatalogGrid {table} {accounts} {problems} onChange={edit} />
         {/if}

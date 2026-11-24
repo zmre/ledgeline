@@ -168,7 +168,7 @@ test.describe("the catalog and snippets over the accrual fixture (:5199)", () =>
         await page.getByTestId("snippet-title").fill("Late payment fee");
         await page.getByTestId("save-snippet").click();
         await expect(page.getByTestId("snippet-heading")).toHaveText("Late payment fee");
-        await expect(page.getByTestId("snippet-aliases")).toContainText("[[Late fee]]");
+        await expect(page.getByTestId("snippet-aliases")).toContainText("Late fee");
         expect(read(LATE_FEE)).toMatch(/^title: Late payment fee$/m);
 
         // Deleted (nobody names it).

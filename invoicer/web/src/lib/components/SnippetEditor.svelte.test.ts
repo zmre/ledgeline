@@ -50,7 +50,7 @@ describe("COMPONENT SnippetEditor", () => {
         expect(kind.value).toBe("payment");
         await fireEvent.input(kind, {target: {value: "terms"}});
         expect(form.kind).toBe("terms");
-        expect(screen.getByTestId("snippet-aliases").textContent).toContain("[[ACH terms]]");
+        expect(screen.getByTestId("snippet-aliases").textContent).toContain("ACH terms");
     });
 
     it("lists the customers naming it and the invoices holding a copy", () => {

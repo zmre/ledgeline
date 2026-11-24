@@ -33,7 +33,7 @@
         <label class="flex flex-col gap-1 text-sm">
             <span class="font-medium">Title</span>
             <input class="input w-full input-sm" bind:value={form.title} data-testid="snippet-title" />
-            <span class="text-xs text-base-content/60">Customers link it as <code>[[{form.title.trim() || "Title"}]]</code>.</span>
+            <span class="text-xs text-base-content/60">Customers and invoices refer to it by this name.</span>
         </label>
         <div class="flex flex-col gap-1 text-sm">
             <span class="font-medium" aria-hidden="true">Kind</span>
@@ -41,7 +41,9 @@
         </div>
     </div>
     {#if entry.aliases.length > 0}
-        <p class="text-xs text-base-content/60" data-testid="snippet-aliases">Also answers to {entry.aliases.map((a) => `[[${a}]]`).join(", ")}.</p>
+        <p class="text-xs text-base-content/60" data-testid="snippet-aliases">
+            Also found by its earlier {entry.aliases.length === 1 ? "name" : "names"}: {entry.aliases.join(", ")}.
+        </p>
     {/if}
 
     <div class="flex flex-col gap-1 text-sm">

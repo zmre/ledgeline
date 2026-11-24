@@ -210,7 +210,7 @@
         <button type="button" class="btn ml-auto btn-outline btn-sm" onclick={startCreate} data-testid="new-snippet">New snippet</button>
     </header>
     <p class="text-sm text-base-content/70">
-        Payment instructions, terms and notes an invoice can copy. A customer's <code>snippets:</code> names the ones its new invoices start with.
+        Payment instructions, terms and notes an invoice can copy. A customer's default snippets start each of its new invoices.
     </p>
 
     {#if creating}
