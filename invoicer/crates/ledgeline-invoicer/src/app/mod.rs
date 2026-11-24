@@ -18,6 +18,7 @@
 
 pub(crate) mod api;
 pub(crate) mod books;
+pub(crate) mod customers;
 #[cfg(feature = "gui")]
 pub(crate) mod desktop;
 pub(crate) mod editor;
@@ -229,5 +230,7 @@ async fn spa_page(uri: Uri) -> Response {
     }
 }
 
+#[cfg(test)]
+mod customers_tests;
 #[cfg(test)]
 mod tests;

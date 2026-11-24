@@ -26,6 +26,7 @@
         return [
             {id: "new", href: resolve("/new"), label: "New invoice", active: path === resolve("/new")},
             {id: "invoices", href: resolve("/invoices"), label: "Invoices", active: path.startsWith(resolve("/invoices"))},
+            {id: "customers", href: resolve("/customers"), label: "Customers", active: path.startsWith(resolve("/customers"))},
         ];
     });
 
