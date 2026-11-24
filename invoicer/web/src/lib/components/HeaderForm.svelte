@@ -11,6 +11,7 @@
      The due date follows date + terms until it is typed by hand (a due date
      that isn't date + terms is the user's and stays). -->
 <script lang="ts">
+    import {untrack} from "svelte";
     import Combobox from "#ui/components/Combobox.svelte";
     import type {ComboOption} from "#ui/ui/comboMatch.js";
     import DateInput from "#ui/components/DateInput.svelte";
@@ -54,6 +55,31 @@
     const linkNotes = $derived(options?.link_notes ?? []);
     const depositOptions = $derived<ComboOption[]>(linkNotes.map((n) => ({value: n.title, label: n.title, detail: n.kind ?? undefined})));
     const showDepositFor = $derived(deposit || (form.deposit_for ?? "") !== "");
+    const noteTitles = $derived(linkNotes.map((n) => n.title));
+
+    // The link fields' text as typed: the form holds `[[Name]]`, so a space
+    // typed at the end isn't trimmed away mid-word. The text follows the form
+    // when it changes from outside (a reload, Add new customer).
+    let customerText = $state("");
+    let depositText = $state("");
+    $effect(() => {
+        const name = linkName(form.customer);
+        if (untrack(() => customerText.trim()) !== name) customerText = name;
+    });
+    $effect(() => {
+        const name = linkName(form.deposit_for);
+        if (untrack(() => depositText.trim()) !== name) depositText = name;
+    });
+
+    function typeCustomer(v: string): void {
+        customerText = v;
+        patch({customer: toLink(v, customerTitles, true)});
+    }
+
+    function typeDepositFor(v: string): void {
+        depositText = v;
+        patch({deposit_for: text(toLink(v, noteTitles))});
+    }
     const referenceOptions = $derived<ComboOption[]>(
         (customer?.open_pos ?? []).map((po) => ({
             value: po.reference,
@@ -135,7 +161,7 @@
         <label class="flex min-w-0 flex-col gap-1 text-sm @lg:col-span-2"
             >Customer
             <Combobox
-                bind:value={() => linkName(form.customer), (v) => patch({customer: toLink(v, customerTitles, true)})}
+                bind:value={() => customerText, typeCustomer}
                 options={customerOptions}
                 label="Customer"
                 placeholder="Who is it for?"
@@ -212,18 +238,7 @@
             <label class="flex min-w-0 flex-col gap-1 text-sm"
                 >{fieldLabel("deposit_for")}
                 <Combobox
-                    bind:value={
-                        () => linkName(form.deposit_for),
-                        (v) =>
-                            patch({
-                                deposit_for: text(
-                                    toLink(
-                                        v,
-                                        linkNotes.map((n) => n.title)
-                                    )
-                                ),
-                            })
-                    }
+                    bind:value={() => depositText, typeDepositFor}
                     options={depositOptions}
                     label={fieldLabel("deposit_for")}
                     placeholder="An estimate, or a few words"
