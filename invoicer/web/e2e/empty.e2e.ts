@@ -185,7 +185,7 @@ test.describe("empty books (:5198)", () => {
         expect(box).not.toBeNull();
         expect(box!.x).toBeGreaterThanOrEqual(0);
         expect(box!.x + box!.width).toBeLessThanOrEqual(480);
-        await expect(menu.getByRole("menuitem")).toHaveCount(4);
+        await expect(menu.getByRole("menuitem")).toHaveCount(5);
         // A click outside closes it.
         await page.getByRole("heading", {name: "Invoices", exact: true}).click();
         await expect(menu).toHaveCount(0);
