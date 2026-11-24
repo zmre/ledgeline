@@ -29,6 +29,7 @@
     } from "#lib/library.js";
     import CatalogGrid from "#lib/components/CatalogGrid.svelte";
     import ConflictNotice from "#lib/components/ConflictNotice.svelte";
+    import {friendlyProblem} from "#lib/labels.js";
 
     const asMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
@@ -262,7 +263,9 @@
         {/if}
         {#if note.problems.length > 0 && !dirty}
             <ul class="alert flex flex-col items-start alert-soft alert-warning" data-testid="catalog-note-problems">
-                {#each note.problems as problem, at (at)}<li>{problem.line === null ? "" : `Line ${problem.line}: `}{problem.message}</li>{/each}
+                {#each note.problems as problem, at (at)}<li>
+                        {problem.line === null ? "" : `Line ${problem.line}: `}{friendlyProblem(problem.message)}
+                    </li>{/each}
             </ul>
         {/if}
         {#if table === null}

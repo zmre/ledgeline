@@ -17,6 +17,7 @@
      little and repeated "paid"). -->
 <script lang="ts">
     import {settlementText, type EntryView, type InvoiceBooks} from "#lib/invoices.js";
+    import {friendlyProblem} from "#lib/labels.js";
 
     let {books}: {books: InvoiceBooks} = $props();
 
@@ -136,7 +137,7 @@
     {#if books.problems.length > 0}
         <ul class="flex flex-col gap-1" data-testid="books-problems">
             {#each books.problems as problem, i (i)}
-                <li class="alert px-3 py-2 text-xs {problem.severity === 'error' ? 'alert-error' : 'alert-warning'}">{problem.message}</li>
+                <li class="alert px-3 py-2 text-xs {problem.severity === 'error' ? 'alert-error' : 'alert-warning'}">{friendlyProblem(problem.message)}</li>
             {/each}
         </ul>
     {/if}
