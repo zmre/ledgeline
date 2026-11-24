@@ -91,8 +91,9 @@ jobs:
   # Full workspace test suite (cargo test). Linux here; the macOS leg runs
   # inside the single `macos` job below.
   #
-  # Also the job that pushes the LINUX deps layer to Cachix (`clippy`, `build`
-  # and `e2e` all reuse the same `cargoArtifacts`, so one of them is enough).
+  # Also the job that pushes the LINUX ci-profile deps layer to Cachix
+  # (`.#cargoArtifactsCi`, which `clippy` reuses too). The release-profile
+  # layer that `build` and `e2e` reuse is pushed by `build`.
   tests:
     name: Tests (ubuntu-latest)
     needs: format-check
@@ -120,6 +121,17 @@ jobs:
       - name: Tests
         run: nix build -L .#tests
 
+      # The shell's CSP against the REAL SvelteKit shell. `.#tests` embeds the
+      # script-less placeholder, so it cannot see a SvelteKit release that emits
+      # a script the policy does not hash (a blank window, nothing red). This
+      # runs tests/spa_shell_csp.rs with `spaBuild` embedded and
+      # LEDGELINE_REQUIRE_REAL_SPA=1, under which a placeholder FAILS. Here, not
+      # in `build`, because it is a `ci`-profile test on `.#cargoArtifactsCi`
+      # like `.#tests`: in `build` it would pull (or rebuild) a second deps
+      # layer. The browser-level twin is the e2e job's csp.same-origin spec.
+      - name: CSP vs. the real SPA shell
+        run: nix build -L --no-link .#spaShellCsp
+
       # The crane dependency layer is the multi-GB, 45+ minute part of every
       # cold build, and the ONLY thing whose cache hit changes how long CI
       # takes. Pushed on PRs too, deliberately: a Cargo.lock bump lands on a PR
@@ -142,7 +154,7 @@ jobs:
             echo "No CACHIX_AUTH_TOKEN (fork or unset) — skipping cache push."
             exit 0
           fi
-          deps=$(nix eval --raw .#cargoArtifacts.outPath)
+          deps=$(nix eval --raw .#cargoArtifactsCi.outPath)
           if ! nix path-info "$deps" >/dev/null 2>&1; then
             echo "Deps layer $deps was not built in this job — nothing to push."
             exit 0
@@ -204,16 +216,27 @@ jobs:
       - name: Build linuxDist (Linux distributable)
         run: nix build -L --no-link .#linuxDist
 
-      # The shell's CSP against the REAL SvelteKit shell. `.#tests` embeds the
-      # script-less placeholder, so it cannot see a SvelteKit release that emits
-      # a script the policy does not hash (a blank window, nothing red). This
-      # runs tests/spa_shell_csp.rs with `spaBuild` embedded and
-      # LEDGELINE_REQUIRE_REAL_SPA=1, under which a placeholder FAILS. Here
-      # rather than in `tests` because the step above has just built `spaBuild`
-      # into this runner's store. The browser-level twin is the e2e job's
-      # csp.same-origin spec.
-      - name: CSP vs. the real SPA shell
-        run: nix build -L --no-link .#spaShellCsp
+      # The Linux release-profile deps layer (`.#cargoArtifacts`, reused by
+      # `.#ledgeline`, `.#ledgelineWithSpa` and so `e2e`). Pushed here because
+      # `tests` now builds only the ci-profile layer. Same rules as the push
+      # in `tests`: PRs too, `!cancelled()`, local-store guard, not pinned.
+      - name: Push deps layer to Cachix
+        if: ${{ !cancelled() }}
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          if [ -z "${CACHIX_AUTH_TOKEN:-}" ]; then
+            echo "No CACHIX_AUTH_TOKEN (fork or unset) — skipping cache push."
+            exit 0
+          fi
+          for attr in cargoArtifacts cargoArtifactsCi; do
+            deps=$(nix eval --raw ".#$attr.outPath")
+            if ! nix path-info "$deps" >/dev/null 2>&1; then
+              echo "Deps layer $deps was not built in this job — nothing to push."
+              continue
+            fi
+            cachix push zmre "$deps"
+          done
 
       # Push the user-facing store paths to our Cachix cache. Only on pushes
       # (not PRs); the in-script guard skips cleanly when the token is absent
@@ -394,19 +417,23 @@ jobs:
       # keeps the one path that makes the next run fast. An indirect root: the
       # out-link lives in the workspace, which survives until the post steps.
       # Same `!cancelled()` + local-store guard as the push below.
-      - name: Root the deps layer (for the store cache)
+      # Both layers: release (`.#cargoArtifacts`, for ledgeline/macDist) and
+      # ci profile (`.#cargoArtifactsCi`, for tests/clippy/spaShellCsp).
+      - name: Root the deps layers (for the store cache)
         if: ${{ !cancelled() }}
         run: |
-          deps=$(nix eval --raw .#cargoArtifacts.outPath)
-          if ! nix path-info "$deps" >/dev/null 2>&1; then
-            echo "Deps layer $deps was not built in this job — nothing to root."
-            exit 0
-          fi
-          nix build --out-link "$GITHUB_WORKSPACE/.ci-gcroots/cargo-deps" .#cargoArtifacts
+          for attr in cargoArtifacts cargoArtifactsCi; do
+            deps=$(nix eval --raw ".#$attr.outPath")
+            if ! nix path-info "$deps" >/dev/null 2>&1; then
+              echo "Deps layer $deps was not built in this job — nothing to root."
+              continue
+            fi
+            nix build --out-link "$GITHUB_WORKSPACE/.ci-gcroots/$attr" ".#$attr"
+          done
 
-      # The darwin deps layer — see the same step in `tests` for why it is
-      # pushed on PRs too, why `!cancelled()`, and why it is not pinned.
-      - name: Push deps layer to Cachix
+      # The darwin deps layers — see the same step in `tests` for why they are
+      # pushed on PRs too, why `!cancelled()`, and why they are not pinned.
+      - name: Push deps layers to Cachix
         if: ${{ !cancelled() }}
         env:
           CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}

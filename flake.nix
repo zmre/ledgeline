@@ -246,29 +246,47 @@
       # THE CACHING WIN: build only the workspace's third-party dependencies
       # (incl. the whole wry/tao GUI stack) from a dummy source. Source-only
       # changes reuse this layer verbatim, so rebuilds/retests skip recompiling
-      # every dependency. Every output below inherits `cargoArtifacts`.
+      # every dependency.
       #
-      # The layer must compile dependencies with the SAME resolved features as
-      # the outputs that reuse it, or cargo's fingerprints miss and those crates
-      # are rebuilt per commit. `clippy` and `tests` pass
-      # `--features ledgeline-ffi/mobile` (see below), which turns on
-      # ledgeline-ffi's server deps and so changes feature unification across
-      # the workspace; a layer built without it made both of them recompile
-      # every crate whose features moved (on Linux the three mbr crates, about
-      # 3 minutes per run). So `check` (what clippy reuses) and
-      # `test --no-run` (what `tests` reuses) are built WITH the feature. The
-      # plain `build`, and a featureless `test --no-run`, are kept for
-      # `ledgeline`/`ledgelineWithSpa` (`-p ledgeline`) and `spaShellCsp`.
-      depsLayerArgs = {
-        src = craneLib.cleanCargoSource ./.;
-        cargoCheckExtraArgs = "--all-targets ${mobileFeature}";
-        checkPhaseCargoCommand = ''
-          cargoWithProfile test --locked --no-run
-          cargoWithProfile test --locked --no-run ${mobileFeature}
-        '';
-      };
+      # There are TWO layers, one per cargo profile, because a layer is only
+      # reused by builds with the same profile:
+      #   * `cargoArtifacts` — `release` (fat LTO), for what ships:
+      #     `ledgeline`, `ledgelineWithSpa` and everything built on them
+      #     (macApp/macDist, linuxDist). Only `cargo build` is needed.
+      #   * `cargoArtifactsCi` — the `ci` profile (release without LTO, see
+      #     Cargo.toml), for the CI checks: `clippy`, `tests`, `spaShellCsp`.
+      #     Testing under `release` LTO-linked each of ~150 test binaries,
+      #     which cost most of an hour on Linux and over two on macOS.
+      #
+      # A layer must also compile dependencies with the SAME resolved features
+      # as the outputs that reuse it, or cargo's fingerprints miss and those
+      # crates are rebuilt per commit. `clippy` and `tests` pass
+      # `--features ledgeline-ffi/mobile`, which turns on ledgeline-ffi's
+      # server deps and so changes feature unification across the workspace
+      # (before this, a featureless layer made them recompile the three mbr
+      # crates on every Linux run). So the ci layer runs `check` (what clippy
+      # reuses) WITH the feature, and `test --no-run` both with it (`tests`)
+      # and without (`spaShellCsp`, `-p ledgeline`).
       mobileFeature = "--features ledgeline-ffi/mobile";
-      cargoArtifacts = craneLib.buildDepsOnly (commonArgs // depsLayerArgs);
+      cargoArtifacts = craneLib.buildDepsOnly (commonArgs
+        // {
+          src = craneLib.cleanCargoSource ./.;
+          doCheck = false;
+          buildPhaseCargoCommand = "cargoWithProfile build --locked";
+        });
+      ciProfile = {CARGO_PROFILE = "ci";};
+      cargoArtifactsCi = craneLib.buildDepsOnly (commonArgs
+        // ciProfile
+        // {
+          src = craneLib.cleanCargoSource ./.;
+          # `ledgeline-ci-deps-<version>`, told apart from the release layer.
+          pname = "ledgeline-ci";
+          buildPhaseCargoCommand = "cargoWithProfile check --locked --all-targets ${mobileFeature}";
+          checkPhaseCargoCommand = ''
+            cargoWithProfile test --locked --no-run
+            cargoWithProfile test --locked --no-run ${mobileFeature}
+          '';
+        });
 
       # The workspace binary (`ledgeline` = axum server + wry/tao GUI). Tests run
       # in the `tests` check, so skip them here.
@@ -296,14 +314,16 @@
       # host too; without it only the crate's storage half compiles. It adds
       # no third-party crate the server does not already pull in.
       clippy = craneLib.cargoClippy (commonArgs
+        // ciProfile
         // {
-          inherit cargoArtifacts;
+          cargoArtifacts = cargoArtifactsCi;
           cargoClippyExtraArgs = "--all-targets ${mobileFeature} -- -D warnings";
         });
 
       tests = craneLib.cargoTest (commonArgs
+        // ciProfile
         // {
-          inherit cargoArtifacts;
+          cargoArtifacts = cargoArtifactsCi;
           cargoTestExtraArgs = mobileFeature;
         });
 
@@ -501,12 +521,13 @@
       #     window) with every check green. Embeds `spaBuild` exactly as
       #     `ledgelineWithSpa` does and runs ONE integration test, which
       #     `LEDGELINE_REQUIRE_REAL_SPA` turns from "placeholder is fine" into
-      #     "placeholder is a failure". Same `cargoArtifacts`, so only the
-      #     workspace crates compile. The browser-level twin is
-      #     web/e2e/csp.same-origin.e2e.ts.
+      #     "placeholder is a failure". On the ci layer like `tests`, so only
+      #     the workspace crates compile, without LTO. The browser-level twin
+      #     is web/e2e/csp.same-origin.e2e.ts.
       spaShellCsp = craneLib.cargoTest (commonArgs
+        // ciProfile
         // {
-          inherit cargoArtifacts;
+          cargoArtifacts = cargoArtifactsCi;
           pname = "ledgeline-spa-shell-csp";
           preBuild = embedRealSpa;
           LEDGELINE_REQUIRE_REAL_SPA = "1";
@@ -1011,7 +1032,8 @@
           # the cachix daemon upload everything a job builds. It is the
           # expensive, rarely-changing part of every cold build — see
           # docs/development/building.md → "What CI pushes".
-          inherit cargoArtifacts;
+          # `cargoArtifactsCi` is the same for the `ci` profile the checks use.
+          inherit cargoArtifacts cargoArtifactsCi;
           default = ledgeline;
         }
         # Linux-only: the wrapped desktop install, plus the SPA-in-Nix pieces it
