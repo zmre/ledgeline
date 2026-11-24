@@ -174,16 +174,10 @@ export function roleColumn(table: GridForm, role: Role): number {
     return table.columns.findIndex((c) => c.role === role);
 }
 
-/** `table` with an empty row after `after` (at the end when null); and where it went. */
-export function addCatalogRow(table: GridForm, after: number | null): {table: GridForm; at: number} {
-    const at = after === null ? table.rows.length : Math.min(after + 1, table.rows.length);
-    const rows = table.rows.map((r) => [...r]);
-    rows.splice(
-        at,
-        0,
-        table.columns.map(() => "")
-    );
-    return {table: {...table, rows}, at};
+/** `table` with an empty row at the bottom (new rows always go last, as in the invoice grid); and where it went. */
+export function addCatalogRow(table: GridForm): {table: GridForm; at: number} {
+    const at = table.rows.length;
+    return {table: {...table, rows: [...table.rows.map((r) => [...r]), table.columns.map(() => "")]}, at};
 }
 
 /** `table` with cell (`row`, `column`) set to `text`. */

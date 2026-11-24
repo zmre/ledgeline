@@ -6,7 +6,7 @@
 // prose above and below. The grid edits raw cells — what the file holds — so
 // nothing a hand edit wrote is lost; the server rebuilds the file from them,
 // recomputing every computed amount (ARCHITECTURE §3.3).
-import {isBlank, isBold, plain, type Role, type RowKind} from "./arithmetic.js";
+import {DEFAULT_TOTAL_WORDS, isBlank, isBold, plain, type Role, type RowKind} from "./arithmetic.js";
 
 export type {Role, RowKind} from "./arithmetic.js";
 
@@ -140,7 +140,31 @@ export interface EditorOptions {
     words: Words;
     next_number: string;
     customers_dir: string;
+    /** Every word a final total row may be labelled with (`[invoicer.words] total`), the default first. */
+    total_words?: string[];
+    /** Every subtotal word (`[invoicer.words] subtotal`). */
+    subtotal_words?: string[];
+    /** Notes `deposit_for` may link to: estimates first. */
+    link_notes?: {title: string; link: string; kind: string | null}[];
 }
+
+/** The labels total rows may carry: the books' words, else the engine's defaults. */
+export interface TotalWords {
+    total: string[];
+    subtotal: string[];
+}
+
+/** The total and subtotal words `options` names (the defaults until they load). */
+export function totalWords(options: EditorOptions | null, words: Words = DEFAULT_WORDS): TotalWords {
+    const total = options?.total_words?.length
+        ? options.total_words
+        : [words.total, ...DEFAULT_TOTAL_WORDS.filter((w) => w !== "Subtotal" && w !== words.total)];
+    const subtotal = options?.subtotal_words?.length ? options.subtotal_words : [words.subtotal];
+    return {total, subtotal};
+}
+
+/** Every label that makes a row a total row (subtotal or final). */
+export const allTotalWords = (w: TotalWords): string[] => [...new Set([...w.subtotal, ...w.total, ...DEFAULT_TOTAL_WORDS])];
 
 /** A catalog item (`GET /api/editor/options`). */
 export interface CatalogItem {
@@ -275,29 +299,60 @@ export function ensureColumn(table: GridForm, role: Role, words: Words = DEFAULT
     return next;
 }
 
-/** Whether row `row` is a total row (a bold total word outside the amount and books columns). */
-export function isTotalRow(table: GridForm, row: number, words: Words = DEFAULT_WORDS): boolean {
-    const known = [words.subtotal, words.total, "Subtotal", "Total", "Total due", "Balance due", "Amount due"].map((w) => w.toLowerCase());
-    return (table.rows[row] ?? []).some((text, at) => {
+const fold = (text: string): string => text.trim().replace(/\s+/g, " ").toLowerCase();
+
+/** The column of row `row`'s total label (a bold total word outside the amount and books columns), or -1. */
+export function totalLabelColumn(table: GridForm, row: number, words: Words = DEFAULT_WORDS, extra: readonly string[] = []): number {
+    const known = [words.subtotal, words.total, ...DEFAULT_TOTAL_WORDS, ...extra].map(fold);
+    return (table.rows[row] ?? []).findIndex((text, at) => {
         const role = table.columns[at]?.role;
-        return role !== "amount" && role !== "books" && isBold(text) && known.includes(plain(text).toLowerCase());
+        return role !== "amount" && role !== "books" && isBold(text) && known.includes(fold(plain(text)));
     });
 }
 
+/** Whether row `row` is a total row (a bold total word outside the amount and books columns). */
+export function isTotalRow(table: GridForm, row: number, words: Words = DEFAULT_WORDS, extra: readonly string[] = []): boolean {
+    return totalLabelColumn(table, row, words, extra) >= 0;
+}
+
+/** Row `row`'s total label, unbolded ("" when it isn't a total row). */
+export function totalLabel(table: GridForm, row: number, words: Words = DEFAULT_WORDS, extra: readonly string[] = []): string {
+    const at = totalLabelColumn(table, row, words, extra);
+    return at < 0 ? "" : plain(table.rows[row][at]);
+}
+
+/** `table` with total row `row` relabelled `label` (bold, in the cell its label is in). Blank labels are refused: the row stays a total. */
+export function setTotalLabel(table: GridForm, row: number, label: string, words: Words = DEFAULT_WORDS, extra: readonly string[] = []): GridForm {
+    const at = totalLabelColumn(table, row, words, extra);
+    const text = label.trim();
+    if (at < 0 || text === "") return table;
+    const next = clone(table);
+    next.rows[row][at] = `**${text}**`;
+    return next;
+}
+
 /** The last total row (the amount due), or -1. */
-export function finalTotal(table: GridForm, words: Words = DEFAULT_WORDS): number {
-    for (let i = table.rows.length - 1; i >= 0; i -= 1) if (isTotalRow(table, i, words)) return i;
+export function finalTotal(table: GridForm, words: Words = DEFAULT_WORDS, extra: readonly string[] = []): number {
+    for (let i = table.rows.length - 1; i >= 0; i -= 1) if (isTotalRow(table, i, words, extra)) return i;
     return -1;
 }
 
-/** Where a new row goes: after `after` when given, else above the final total, else at the end. */
-export function insertionRow(table: GridForm, after: number | null, words: Words = DEFAULT_WORDS): number {
-    if (after !== null && after >= 0 && after < table.rows.length) {
-        const total = finalTotal(table, words);
-        // Never below the final total: rows there can't be booked.
-        return total >= 0 && after >= total ? total : after + 1;
-    }
-    const total = finalTotal(table, words);
+/** Whether row `row` is a spacer: every cell blank. */
+export const isSpacerRow = (table: GridForm, row: number): boolean => (table.rows[row] ?? []).every((text) => isBlank(text));
+
+/**
+ * `table` with a final total row: unchanged when it has one, else a
+ * `**Total due**` row (the first total word) appended, its label in the
+ * rate column (the description when there's none), as `new` writes it.
+ */
+export function ensureTotal(table: GridForm, words: Words = DEFAULT_WORDS, extra: readonly string[] = []): GridForm {
+    if (finalTotal(table, words, extra) >= 0) return table;
+    return insertCells(table, table.rows.length, {rate: `**${words.total}**`});
+}
+
+/** Where a new row goes: at the bottom, just above the final total (rows below it can't be booked), else at the end. */
+export function insertionRow(table: GridForm, words: Words = DEFAULT_WORDS, extra: readonly string[] = []): number {
+    const total = finalTotal(table, words, extra);
     return total >= 0 ? total : table.rows.length;
 }
 
@@ -333,16 +388,17 @@ export function insertCells(table: GridForm, at: number, cells: Partial<Record<R
     return next;
 }
 
-/** `table` with a new `kind` row: after `after`, else above the final total. Returns the table and the new row's index. */
+/** `table` with a new `kind` row at the bottom, above the final total (added when missing). Returns the table and the new row's index. */
 export function insertRow(
     table: GridForm,
     kind: NewRowKind,
-    after: number | null = null,
     words: Words = DEFAULT_WORDS,
-    commodity = "$"
+    commodity = "$",
+    extra: readonly string[] = []
 ): {table: GridForm; at: number} {
-    const at = insertionRow(table, after, words);
-    return {table: insertCells(table, at, newRowCells(kind, words, commodity)), at};
+    const totalled = ensureTotal(table, words, extra);
+    const at = insertionRow(totalled, words, extra);
+    return {table: insertCells(totalled, at, newRowCells(kind, words, commodity)), at};
 }
 
 /** `table` with row `from` moved to `to` (clamped). */
@@ -355,6 +411,9 @@ export function moveRow(table: GridForm, from: number, to: number): GridForm {
     next.rows.splice(target, 0, row);
     return next;
 }
+
+/** Where a row dragged from `from` lands when dropped before row `before` (in the table as it is): the `moveRow` target. */
+export const dropIndex = (from: number, before: number): number => (before > from ? before - 1 : before);
 
 /** `table` without row `row`. */
 export function removeRow(table: GridForm, row: number): GridForm {
@@ -415,6 +474,23 @@ export function addDays(date: string, days: number): string | null {
     const at = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]) + days));
     const pad = (n: number): string => String(n).padStart(2, "0");
     return `${at.getUTCFullYear()}-${pad(at.getUTCMonth() + 1)}-${pad(at.getUTCDate())}`;
+}
+
+/**
+ * Whether `table` is a deposit invoice's (ARCHITECTURE §4.4): a row books a
+ * charge (not a negative "less deposit" row) to the deposit account.
+ */
+export function isDepositTable(table: GridForm | null, depositAccount: string | null | undefined): boolean {
+    if (table === null || !depositAccount) return false;
+    const books = columnOf(table, "books");
+    if (books < 0) return false;
+    const amount = columnOf(table, "amount");
+    const rate = columnOf(table, "rate");
+    return table.rows.some((row) => {
+        const account = (parseBooksCell(row[books] ?? "")?.account ?? "").toLowerCase();
+        const negative = [amount, rate].some((at) => at >= 0 && plain(row[at] ?? "").startsWith("-"));
+        return account === depositAccount.toLowerCase() && !negative;
+    });
 }
 
 /** Whether two forms differ (what saving would change). */

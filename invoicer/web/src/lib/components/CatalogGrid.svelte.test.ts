@@ -1,5 +1,5 @@
 // The catalog grid, mounted: a field per column by role, edits and reorders
-// reported as new tables, Add item after the focused row, and problems
+// reported as new tables, Add item at the bottom, and problems
 // marked on their cells and named below.
 import {fireEvent, render, screen} from "@testing-library/svelte";
 import {describe, expect, it, vi} from "vitest";
@@ -46,11 +46,11 @@ describe("COMPONENT CatalogGrid", () => {
         expect(TABLE.rows[1][3]).toBe("$200");
     });
 
-    it("adds an item after the focused row, moves rows and deletes them", async () => {
+    it("adds an item at the bottom whatever is focused, moves rows and deletes them", async () => {
         const onChange = mount();
         await fireEvent.focusIn(screen.getByLabelText("Row 1 description"));
         await fireEvent.click(screen.getByTestId("add-catalog-item"));
-        expect(lastTable(onChange).rows.map((r) => r[0])).toEqual(["ARCH", "", "JR"]);
+        expect(lastTable(onChange).rows.map((r) => r[0])).toEqual(["ARCH", "JR", ""]);
 
         await fireEvent.keyDown(screen.getByLabelText("Row 2 code"), {key: "ArrowUp", altKey: true});
         expect(lastTable(onChange).rows.map((r) => r[0])).toEqual(["JR", "ARCH"]);

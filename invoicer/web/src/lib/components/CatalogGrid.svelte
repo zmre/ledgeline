@@ -6,13 +6,14 @@
 
      Keyboard: Tab through the cells; Alt+ArrowUp / Alt+ArrowDown moves the
      focused row; each row also has Move up, Move down and Delete. A pointer
-     can drag a row by its handle. Add item goes after the focused row. A
-     cell with a problem is marked and named below the grid. -->
+     can drag a row by its handle; a line shows where it will land. Add item
+     goes at the bottom, as in the invoice grid. A cell with a problem is
+     marked and named below the grid. -->
 <script lang="ts">
     import {tick} from "svelte";
     import AccountInput from "#ui/components/AccountInput.svelte";
     import {plain} from "#lib/arithmetic.js";
-    import {moveRow, removeRow, type GridForm, type Role} from "#lib/editor.js";
+    import {dropIndex, moveRow, removeRow, type GridForm, type Role} from "#lib/editor.js";
     import {addCatalogRow, setCatalogCell, type CellProblem} from "#lib/library.js";
     import DeferralPopover from "./DeferralPopover.svelte";
 
@@ -31,8 +32,9 @@
         onChange: (table: GridForm) => void;
     } = $props();
 
-    let focusedRow = $state<number | null>(null);
     let dragFrom = $state<number | null>(null);
+    /** Where a dragged row would land: before this row index. */
+    let dropBefore = $state<number | null>(null);
     let gridEl = $state<HTMLTableSectionElement | null>(null);
     let announce = $state("");
 
@@ -62,7 +64,6 @@
     function move(from: number, to: number, column = 0): void {
         if (to < 0 || to >= table.rows.length) return;
         onChange(moveRow(table, from, to));
-        focusedRow = to;
         announce = `Row ${from + 1} moved to ${to + 1}`;
         void focusRow(to, column);
     }
@@ -75,10 +76,33 @@
     }
 
     function add(): void {
-        const {table: next, at} = addCatalogRow(table, focusedRow);
+        const {table: next, at} = addCatalogRow(table);
         onChange(next);
-        focusedRow = at;
         void focusRow(at, 0);
+    }
+
+    function onDragOver(event: DragEvent, row: number): void {
+        if (dragFrom === null) return;
+        event.preventDefault();
+        const box = (event.currentTarget as HTMLElement).getBoundingClientRect();
+        dropBefore = event.clientY > box.top + box.height / 2 ? row + 1 : row;
+    }
+
+    function onDrop(event: DragEvent): void {
+        event.preventDefault();
+        if (dragFrom !== null && dropBefore !== null) {
+            const to = dropIndex(dragFrom, dropBefore);
+            if (to !== dragFrom) move(dragFrom, to);
+        }
+        dragFrom = null;
+        dropBefore = null;
+    }
+
+    /** The drop line on row `row`: above it, or below the last row. */
+    function dropMark(row: number): "before" | "after" | undefined {
+        if (dragFrom === null || dropBefore === null || dropIndex(dragFrom, dropBefore) === dragFrom) return undefined;
+        if (dropBefore === row) return "before";
+        return dropBefore === row + 1 && row === table.rows.length - 1 ? "after" : undefined;
     }
 
     const update = (row: number, column: number, text: string): void => onChange(setCatalogCell(table, row, column, text));
@@ -102,16 +126,10 @@
                         data-row={r}
                         data-testid="catalog-row"
                         class={dragFrom === r ? "opacity-50" : ""}
-                        onfocusin={() => (focusedRow = r)}
+                        data-drop={dropMark(r)}
                         onkeydown={(event) => onRowKeydown(event, r)}
-                        ondragover={(event) => {
-                            if (dragFrom !== null) event.preventDefault();
-                        }}
-                        ondrop={(event) => {
-                            event.preventDefault();
-                            if (dragFrom !== null && dragFrom !== r) move(dragFrom, r);
-                            dragFrom = null;
-                        }}
+                        ondragover={(event) => onDragOver(event, r)}
+                        ondrop={onDrop}
                     >
                         <td class="w-8 align-top">
                             {#if !readonly}
@@ -123,8 +141,12 @@
                                     ondragstart={(event) => {
                                         dragFrom = r;
                                         event.dataTransfer?.setData("text/plain", String(r));
+                                        if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
                                     }}
-                                    ondragend={() => (dragFrom = null)}>⠿</span
+                                    ondragend={() => {
+                                        dragFrom = null;
+                                        dropBefore = null;
+                                    }}>⠿</span
                                 >
                             {/if}
                         </td>
@@ -188,10 +210,7 @@
                                     type="button"
                                     class="btn btn-square btn-ghost btn-xs"
                                     aria-label="Delete row {r + 1}"
-                                    onclick={() => {
-                                        onChange(removeRow(table, r));
-                                        focusedRow = null;
-                                    }}>✕</button
+                                    onclick={() => onChange(removeRow(table, r))}>✕</button
                                 >
                             {/if}
                         </td>

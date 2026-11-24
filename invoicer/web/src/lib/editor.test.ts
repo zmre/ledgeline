@@ -5,14 +5,20 @@ import {
     baseText,
     cellOf,
     ensureColumn,
+    ensureTotal,
     fillFromCatalog,
     finalTotal,
     formatBooksCell,
     insertRow,
+    isSpacerRow,
+    isTotalRow,
     moveRow,
     onDiskChange,
     parseBooksCell,
     removeRow,
+    setTotalLabel,
+    totalLabel,
+    totalWords,
     type GridForm,
     type RowView,
 } from "./editor";
@@ -47,15 +53,40 @@ describe("grid operations", () => {
         expect(finalTotal(table)).toBe(6);
     });
 
-    it("inserts after a focused row, never below the final total", () => {
+    it("always inserts at the bottom, never below the final total, and adds a total when there is none", () => {
         let table = insertRow(fresh(), "item").table;
         table = insertRow(table, "item").table;
-        const after = insertRow(table, "discount-percent", 0);
-        expect(after.at).toBe(1);
-        expect(after.table.rows[1][2]).toBe("-10%");
-        const below = insertRow(table, "spacer", 2);
-        expect(below.at).toBe(2);
-        expect(finalTotal(below.table)).toBe(3);
+        const next = insertRow(table, "discount-percent");
+        expect(next.at).toBe(2);
+        expect(next.table.rows[2][2]).toBe("-10%");
+        expect(finalTotal(next.table)).toBe(3);
+
+        const bare: GridForm = {...fresh(), rows: [["Hours", "1", "$100", "", ""]]};
+        const totalled = insertRow(bare, "item");
+        expect(totalled.at).toBe(1);
+        expect(totalled.table.rows[2]).toEqual(["", "", "**Total due**", "", ""]);
+        expect(ensureTotal(totalled.table)).toBe(totalled.table);
+    });
+
+    it("reads and relabels total rows; a blank label keeps the row a total", () => {
+        const table = insertRow(fresh(), "subtotal").table;
+        expect(isTotalRow(table, 0)).toBe(true);
+        expect(totalLabel(table, 1)).toBe("Total due");
+        const renamed = setTotalLabel(table, 1, "Amount due");
+        expect(renamed.rows[1][2]).toBe("**Amount due**");
+        expect(finalTotal(renamed)).toBe(1);
+        expect(setTotalLabel(table, 1, "  ")).toBe(table);
+        // A label the books' words add is a total too.
+        const custom = setTotalLabel(table, 1, "Amount owing");
+        expect(finalTotal(custom)).toBe(0);
+        expect(finalTotal(custom, undefined, ["Amount owing"])).toBe(1);
+        expect(isSpacerRow(insertRow(fresh(), "spacer").table, 0)).toBe(true);
+        expect(isSpacerRow(table, 0)).toBe(false);
+    });
+
+    it("knows the books' total words, with the defaults until the options load", () => {
+        expect(totalWords(null).total[0]).toBe("Total due");
+        expect(totalWords(null).subtotal).toEqual(["Subtotal"]);
     });
 
     it("moves and removes rows", () => {

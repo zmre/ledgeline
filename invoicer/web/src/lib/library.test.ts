@@ -50,17 +50,16 @@ const NET_30: SnippetEntry = {
 };
 
 describe("UNIT catalog grid", () => {
-    it("adds an empty row after the focused one, or at the end", () => {
-        const after = addCatalogRow(CATALOG, 0);
-        expect(after.at).toBe(1);
-        expect(after.table.rows[1]).toEqual(["", "", "", "", ""]);
+    it("adds an empty row at the bottom", () => {
+        const added = addCatalogRow(CATALOG);
+        expect(added.at).toBe(2);
+        expect(added.table.rows[2]).toEqual(["", "", "", "", ""]);
         expect(CATALOG.rows).toHaveLength(2);
-        expect(addCatalogRow(CATALOG, null).at).toBe(2);
         expect(setCatalogCell(CATALOG, 1, 3, "$250").rows[1][3]).toBe("$250");
     });
 
     it("counts a change only when a save would write one", () => {
-        expect(gridsDiffer(CATALOG, addCatalogRow(CATALOG, null).table)).toBe(false);
+        expect(gridsDiffer(CATALOG, addCatalogRow(CATALOG).table)).toBe(false);
         expect(gridsDiffer(CATALOG, setCatalogCell(CATALOG, 0, 3, " $800 "))).toBe(false);
         expect(gridsDiffer(CATALOG, setCatalogCell(CATALOG, 0, 3, "$850"))).toBe(true);
         expect(gridsDiffer(CATALOG, {...CATALOG, rows: [CATALOG.rows[1], CATALOG.rows[0]]})).toBe(true);
