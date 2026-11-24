@@ -6,13 +6,20 @@
 #
 # One-time setup: Settings → Pages → Source must be "GitHub Actions".
 #
-# Modelled on mbr's own docs.yml (github.com/zmre/mbr-markdown-browser). Two
-# things there are load-bearing and copied deliberately:
-#   - mbr is built with Nix. The release binary links into /nix/store and does
-#     not run on a stock ubuntu runner.
-#   - The Pages artifact is tarred by hand with --dereference: mbr symlinks
-#     assets into the output, and upload-pages-artifact drops the `.mbr/`
-#     dot-dir that holds the theme and the search index.
+# Modelled on mbr's own docs.yml (github.com/zmre/mbr-markdown-browser). The
+# Pages artifact is tarred by hand with --dereference, copied deliberately: mbr
+# symlinks assets into the output, and upload-pages-artifact drops the `.mbr/`
+# dot-dir that holds the theme and the search index.
+#
+# mbr comes from its GitHub RELEASE (a pinned version, checked against a
+# pinned sha256), not from a Nix build. Building the flake from source cost
+# 16-27 minutes per run (runs 43982610660, 43974369666, 43561361224); the
+# site itself builds in about a second. mbr's own docs.yml once noted that a
+# Nix-built binary links into /nix/store and does not run on a stock runner,
+# so the "Check the mbr binary" step below refuses any binary that does. If it
+# trips, fall back to building the same version with Nix:
+#   nix build --accept-flake-config github:zmre/mbr-markdown-browser/v0.7.4#mbr
+# (with determinate-nix-action + cachix-action `zmre`, as this file did before).
 name: Docs
 
 on:
@@ -32,12 +39,12 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Pinned so a new mbr release can't change the site between two tags.
-  # A commit rather than a tag: the header/sidebar link partials in docs/.mbr/
-  # need mbr main after v0.7.1, and the build's link check honours
-  # MBR_BASE_URL only from mbr #384 (before it, 404.html's Home link failed
-  # --fail-on-broken-links). Move to the next tag once one exists.
-  MBR_FLAKE: github:zmre/mbr-markdown-browser/98e2263838a2cbdb64eff65bdfd96b52442fb1a7#mbr
+  # Pinned so a new mbr release can't change the site between two tags. To
+  # bump: change both, taking the sha256 from the release's SHA256SUMS (or the
+  # asset digest `gh release view <tag> -R zmre/mbr-markdown-browser --json
+  # assets` prints). Keep the justfile's `mbr` on the same tag.
+  MBR_VERSION: v0.7.4
+  MBR_SHA256: 3499da052f85b02e136ddd014c51ed8786cfa436b552a457ee6075064ef83f2f
 
 jobs:
   build:
@@ -48,20 +55,41 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
+      # Downloaded to the runner's temp dir, never executed before the checksum
+      # matches. curl -f: an HTTP error fails the step instead of saving the
+      # error page.
+      - name: Download mbr
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/mbr"
+          mkdir -p "$dir"
+          asset=mbr-linux-x86_64.tar.gz
+          curl -fsSL --retry 3 -o "$dir/$asset" \
+            "https://github.com/zmre/mbr-markdown-browser/releases/download/$MBR_VERSION/$asset"
+          (cd "$dir" && echo "$MBR_SHA256  $asset" | sha256sum -c -)
+          tar -xzf "$dir/$asset" -C "$dir"
+          bin=$(find "$dir" -type f -name mbr -perm -u+x | head -n 1)
+          if [ -z "$bin" ]; then
+            echo "::error::No executable named mbr in $asset:"
+            find "$dir" -maxdepth 3
+            exit 1
+          fi
+          echo "MBR_BIN=$bin" >> "$GITHUB_ENV"
 
-      # Pull-only: mbr's closure lives in the zmre cache (mbr's own CI pushes
-      # it), and nothing this job builds is worth pushing back.
-      - name: Setup Cachix
-        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
-        with:
-          name: zmre
-          extraPullNames: nix-community
-          skipPush: true
-
-      - name: Build mbr
-        run: nix build --accept-flake-config -L --out-link mbr "$MBR_FLAKE"
+      # The release binary must be self-contained on a stock runner: no ELF
+      # interpreter or library under /nix/store, no unresolved library. Fails
+      # loudly rather than producing a half-working site.
+      - name: Check the mbr binary
+        run: |
+          set -euo pipefail
+          file "$MBR_BIN"
+          libs=$(ldd "$MBR_BIN" 2>&1 || true)
+          echo "$libs"
+          if { file "$MBR_BIN"; echo "$libs"; } | grep -qE '/nix/store|not found'; then
+            echo "::error::mbr $MBR_VERSION's Linux release binary is not self-contained on this runner (see above). Fall back to building it with Nix: nix build --accept-flake-config github:zmre/mbr-markdown-browser/$MBR_VERSION#mbr (see the header of this file)."
+            exit 1
+          fi
+          "$MBR_BIN" --version
 
       - name: Build site
         env:
@@ -70,7 +98,8 @@ jobs:
           # assets, site.json and Home link at base_url; left at the default "/"
           # it loads nothing (no styles, no "did you mean" suggestions).
           MBR_BASE_URL: /ledgeline/
-        run: ./mbr/bin/mbr -b --fail-on-broken-links --output ./docs-build ./docs
+        run: |
+          "$MBR_BIN" -b --fail-on-broken-links --output ./docs-build ./docs
 
       - name: Create Pages artifact
         if: github.event_name != 'pull_request'

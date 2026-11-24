@@ -11,7 +11,7 @@ This manual is the `docs/` folder, built into a static site by [mbr](https://git
 
 ## Previewing and building
 
-Both recipes run mbr (pinned to a main commit after v0.7.1, for the link partials in `docs/.mbr/`) through `nix run`, the same pinned version CI uses, so nothing has to be installed:
+Both recipes run mbr v0.7.4 through `nix run`, the same release CI uses, so nothing has to be installed:
 
 ```sh
 just docs          # live preview server; mbr prints the URL
@@ -70,7 +70,7 @@ A few more rules come from mbr:
 | Run by hand (workflow dispatch) | Build, link-check, deploy |
 | A pull request touches `docs/**` | Build and link-check only |
 
-The job builds mbr with Nix, because the release binary links into `/nix/store` and won't run on a stock runner. It then runs `mbr -b --fail-on-broken-links`. The output is tarred by hand with `--dereference`, because mbr symlinks its assets and `upload-pages-artifact` would drop the `.mbr/` folder that holds the theme and the search index.
+The job downloads mbr's Linux release binary for the version pinned in `MBR_VERSION` and checks it against `MBR_SHA256` before running it; building mbr with Nix took 16 to 27 minutes a run. A guard step fails the job if the binary links into `/nix/store` or is missing a library (mbr's own docs.yml once warned that its binary did); the fix then is to build that version with Nix, as the comment at the top of `docs.yml` shows. It then runs `mbr -b --fail-on-broken-links`. The output is tarred by hand with `--dereference`, because mbr symlinks its assets and `upload-pages-artifact` would drop the `.mbr/` folder that holds the theme and the search index.
 
 ### One-time repository setup
 
