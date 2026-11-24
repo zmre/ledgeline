@@ -1032,3 +1032,80 @@ to `Site` when the dependency arrives.
 
 All five were answered on 2026-11-19 (I1, I10, I11, I12, I17). New
 questions go here as they come up.
+
+### Q1 (2026-11-23): how templates are customised, in the invoicer and in MBR
+
+**Why it's open:**
+
+- **Whole pages today.** An invoice's `template:` names a whole page, and MBR's
+  `index.html` has no `{% block %}`s to extend.
+- **Copied set-up.** The chrome switch (T1–T3: `server_mode`, MBR's partials,
+  the `<noscript>` rule, the Pico pins, the print reset) is copied into every
+  template. A custom template without it looks bare in MBR.
+- **No template.** An invoice note with no `template:` shows only its markdown
+  body in MBR, and the addresses in its frontmatter never appear.
+
+**What MBR 0.7.4 can and can't do** (read in its source):
+
+| Fact                                                                    | Where (mbr 0.7.4)                                            |
+|-------------------------------------------------------------------------|--------------------------------------------------------------|
+| A note's `template:` replaces `index.html` for the whole page           | `mbr-core/src/page_template.rs`, `src/templates.rs`          |
+| `.html` files beside a template can be included or extended by name     | `page_template.rs` (siblings), `templates.rs:128-150`        |
+| MBR's own partials can be included as `/.mbr/<name>`                    | `templates.rs:802-806`                                       |
+| MBR's `index.html` has no blocks, so extending it overrides nothing     | `templates/index.html`                                       |
+| A template can't see the request, only `server_mode`                    | `mbr-server/src/server.rs:8183`, `standalone.rs:321`         |
+| PDF export is marked only on the client (`window.__MBR_EXPORT__`)       | `mbr-markdown-browser/src/pdf_export/mod.rs`                 |
+| The note's `type` becomes a `<body>` class (`invoice`)                  | `templates.rs:687`                                           |
+| A books folder can override MBR's templates and partials with `.mbr/*.html` | `templates.rs:173-180`                                   |
+| There's no default template by type or folder                           | `page_template.rs`; nothing in `config.rs`                   |
+
+**The options:**
+
+| Option                                        | What a user writes                                                                              | In MBR                                                                                     | MBR release? |
+|-----------------------------------------------|-------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------|--------------|
+| A. Whole-page templates (today)               | A whole page, plus the copied chrome switch                                                     | Nothing new                                                                                | No           |
+| **B. A shipped base with blocks**             | `{% extends "_invoice_base.html" %}` and only the blocks they change: `theme`, `header`, `parties`, `details`, `body`, `footer` | Nothing new                                                                                | No           |
+| C. CSS only                                   | Colours and fonts over a fixed structure. Too limited on its own, so it becomes B's `theme` block. | Nothing new                                                                                | No           |
+| D. MBR supplies the page (M11 and M12)        | Only the invoice, `{% block invoice %}`; MBR wraps it in its own page, or a bare one             | M11: blocks in `index.html` plus a bare layout chosen by `?mbr-bare`. M12: a default template by note `type` | Yes          |
+
+**B in detail:**
+
+- **The base file.** The invoicer ships one versioned `_invoice_base.html`. It
+  holds the chrome switch, the structure, the Pico pins, the print reset and
+  the books-column rule.
+- **The children.** Classic, Modern and the fixture's MyCo become children of
+  10–40 lines.
+- **Discovery and the starter copy.** Discovery skips `_*.html`, so the base is
+  never offered in the picker. Copying a starter also copies the base.
+- **Existing templates.** Whole-page templates keep working.
+- **Updates.** The base is versioned (`_invoice_base.v1.html`) because the user
+  owns the copy; a later fix ships as `v2`.
+
+**To check before building B:**
+
+- whether the preview of an unsaved template (M10) finds the base file next to
+  it;
+- how `.mbr/` overrides resolve when MBR is opened at a folder above the books.
+
+**D in detail:**
+
+- **M11.** MBR splits `index.html` into blocks (`head_extra`, `chrome_top`,
+  `content`, `chrome_bottom`) and adds `/.mbr/_layout_bare.html`. It sets
+  `page_layout` to the bare layout for standalone renders, for `?mbr-bare`,
+  and for export, which would need to send that flag.
+- **Templates under M11.** A template becomes `{% extends page_layout %}` plus
+  `{% block content %}`.
+- **M11 defaults.** Today's behaviour stays the default.
+- **M12.** `.mbr/config.toml` gets `[page_templates] invoice =
+  "/invoices/tpl/x.html"`, keyed by note `type`. It applies only when a note
+  has no `template:`, which fixes how an invoice without a template looks in
+  MBR.
+
+**Ruled out:** shipping a `.mbr/index.html` override in the user's books. It
+changes every note, and it depends on which folder MBR is opened at.
+
+**Recommendation:** B now. Propose M11 and M12 for the next MBR release; once
+they land, `_invoice_base.html` shrinks to `{% extends page_layout %}`, and
+invoices without a template look right in MBR.
+
+**Decision:** pending (Patrick).
