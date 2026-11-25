@@ -13,6 +13,8 @@
 //! - [`notes`]: discovery, behind an API shaped like MBR's `Site` (§3.1);
 //! - [`customers`] (§3.4) and [`snippets`] (§3.7);
 //! - [`customer_edit`]: creating and editing customer notes (PLAN 4b);
+//! - [`customer_import`]: customers from columns (`customers new` flags,
+//!   `customers import-csv` rows), through [`customer_edit`];
 //! - [`doc`]: the invoice document and its validation (§3.2);
 //! - [`catalog`] (§3.6) and [`templates`] (§3.5), with [`tera_scan`] (a
 //!   light scan of Tera tags) and [`template_edit`] (the template editor,
@@ -40,6 +42,7 @@ pub mod books;
 pub mod catalog;
 pub mod catalog_edit;
 pub mod customer_edit;
+pub mod customer_import;
 pub mod customers;
 pub mod doc;
 pub mod draft;

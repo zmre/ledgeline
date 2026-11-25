@@ -2739,6 +2739,7 @@ name = "invoicer-core"
 version = "0.2.3"
 dependencies = [
  "criterion",
+ "csv",
  "ledgeline-core",
  "proptest",
  "serde",
