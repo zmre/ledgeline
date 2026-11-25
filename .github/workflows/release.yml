@@ -41,6 +41,13 @@ jobs:
   # gate is cheap when the Cachix layer is warm (it is the same store paths the
   # `main` CI run built) and is the difference between "we ship what main
   # tested" and "we ship whatever was tagged".
+  #
+  # It gates PUBLISHING, not packaging: `release` (and so `publish`) needs it,
+  # but `package` runs alongside it. Cachix drops paths within days, so this
+  # is usually the ~65-minute uncached build; serialised in front of the
+  # ~45-minute Rosetta leg it made every release about two hours long.
+  # Signing and notarizing a build that later fails here publishes nothing:
+  # the DMGs stay workflow artifacts and no GitHub Release is created.
   verify:
     name: Verify (tests + clippy)
     runs-on: macos-latest
@@ -113,7 +120,6 @@ jobs:
   #   dmgPrefix  `<dmgPrefix>-<version>-<arch>.dmg`; no spaces in a download
   package:
     name: ${{ matrix.appName }} DMG (${{ matrix.arch }})
-    needs: verify
     runs-on: macos-latest
     strategy:
       # An Intel failure must NOT cancel a working Apple Silicon build: arm64 is
@@ -542,10 +548,11 @@ jobs:
   # broken Intel or invoicer build therefore blocks the release rather than
   # shipping a partial one under a tag that claims all three — which is the
   # right trade for a signed artifact, and is why the matrix does not set
-  # `continue-on-error`.
+  # `continue-on-error`. `verify` is listed too: it runs in parallel with
+  # `package`, and this is where its tests gate what ships.
   release:
     name: Publish the GitHub Release
-    needs: package
+    needs: [verify, package]
     if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     permissions:
