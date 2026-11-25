@@ -25,7 +25,7 @@ Ledgeline reads the journal itself and reproduces hledger's numbers exactly, wit
 nix run --accept-flake-config github:zmre/ledgeline -- ~/finance/2026.journal
 ```
 
-`--accept-flake-config` lets Nix download prebuilt binaries from the project's cache instead of compiling. On macOS, `nix build github:zmre/ledgeline` produces `result/Applications/Ledgeline.app`, which you can open or copy to Applications.
+`--accept-flake-config` lets Nix download prebuilt binaries from the project's cache instead of compiling. On macOS, `nix build github:zmre/ledgeline` produces `result/Applications/Ledgeline.app`, which you can open or copy to Applications. The Nix package also installs [Ledgeline Invoicer](invoicer/index.md), with its own download for Apple silicon Macs.
 
 **Cargo.** Without Nix, install from crates.io:
 
