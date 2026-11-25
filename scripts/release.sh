@@ -29,6 +29,12 @@
 #     the next plain `bun install` rewrites it, so it is kept in step here.
 #     (scripts/check-spa-hash.sh knows that such a diff changes no node_modules.)
 #
+# NOT listed, on purpose: both apps' Info.plists (`assets/Info.plist.in`,
+# `assets/invoicer/Info.plist.in`) and the release DMG names
+# (`Ledgeline-<v>-<arch>.dmg`, `LedgelineInvoicer-<v>-arm64.dmg`) take the
+# version from `[workspace.package]` at build time, so there is no literal to
+# keep in step. Keep it that way: a hard-coded version there belongs here.
+#
 # `check` is wired into CI so drift cannot land, and into the release workflow so
 # a tag cannot ship against a tree that disagrees with it.
 set -euo pipefail

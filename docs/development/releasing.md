@@ -7,16 +7,28 @@ tags: [development]
 
 # Releasing Ledgeline
 
-Tagging `vX.Y.Z` builds, signs, notarizes and publishes a macOS DMG.
+Tagging `vX.Y.Z` builds, signs, notarizes and publishes the macOS DMGs.
 `.github/workflows/release.yml` is the whole pipeline; this document is the part
 that cannot live in a comment — the one-time Apple setup, and what to do when
 notarization says no.
 
 ## What ships
 
-Two DMGs — `Ledgeline-X.Y.Z-arm64.dmg` and `Ledgeline-X.Y.Z-x86_64.dmg` — built
-by a two-leg matrix and attached to one GitHub Release. Each contains a
-`Ledgeline.app` which is:
+Three DMGs, built by a three-leg matrix and attached to one GitHub Release with
+one `SHA256SUMS.txt` covering all of them:
+
+| DMG                                   | App                       | Built from (`flake.nix`) |
+|---------------------------------------|---------------------------|--------------------------|
+| `Ledgeline-X.Y.Z-arm64.dmg`           | `Ledgeline.app`           | `macApp`                 |
+| `Ledgeline-X.Y.Z-x86_64.dmg`          | `Ledgeline.app`           | `macApp`                 |
+| `LedgelineInvoicer-X.Y.Z-arm64.dmg`   | `Ledgeline Invoicer.app`  | `invoicerMacApp`         |
+
+Ledgeline Invoicer ships for Apple Silicon only (invoicer PLAN I18). Both apps
+are assembled by the same `mkMacApp` and signed with the same Developer ID
+certificate and notary key; nothing about signing is per-app. The release job
+fails unless all three DMGs, and their checksums, are there.
+
+Each app is:
 
 - **Self-contained.** Every load command in both Mach-O files resolves against
   the base OS (`/usr/lib/*` and system frameworks). `flake.nix` asserts this at
@@ -34,20 +46,25 @@ download, but it needs both slices on one runner — and the bundle is per-arch
 anyway, `hledger` included. Two independent matrix legs are simpler, and each
 user downloads only what they need.
 
-The matrix is the only place the architecture is named:
+The matrix is the only place the app and the architecture are named:
 
 ```yaml
-runs-on: macos-latest        # BOTH legs
+runs-on: macos-latest        # EVERY leg
 matrix:
   include:
-    - {arch: arm64,  nixSystem: aarch64-darwin}
-    - {arch: x86_64, nixSystem: x86_64-darwin}
+    - {app: ledgeline, appName: Ledgeline, exe: ledgeline, flakeAttr: macApp,
+       dmgPrefix: Ledgeline, arch: arm64,  nixSystem: aarch64-darwin}
+    - {app: ledgeline, appName: Ledgeline, exe: ledgeline, flakeAttr: macApp,
+       dmgPrefix: Ledgeline, arch: x86_64, nixSystem: x86_64-darwin}
+    - {app: invoicer, appName: Ledgeline Invoicer, exe: ledgeline-invoicer,
+       flakeAttr: invoicerMacApp, dmgPrefix: LedgelineInvoicer,
+       arch: arm64, nixSystem: aarch64-darwin}
 ```
 
-Everything downstream reads `matrix.arch` / `matrix.nixSystem`, so retiring
-Intel is a one-line deletion.
+Everything downstream reads the matrix entry, so retiring Intel is deleting
+one entry (and its name from the release job's list of expected DMGs).
 
-### Both legs run on Apple Silicon; Intel goes through Rosetta
+### Every leg runs on Apple Silicon; Intel goes through Rosetta
 
 There is no Intel runner, and there cannot be one:
 
@@ -133,16 +150,16 @@ job builds `linuxDist` and the release matrix builds both Macs. Every system
 with an entry above is built by something.
 
 **Get the x86_64-darwin one from a dry run, never from a tag.** The `release`
-job needs *both* legs, so a hash mismatch there fails the whole release — after
-the arm64 leg has already signed, notarized and stapled, which spends a
-notarization round trip and leaves a tag with no GitHub Release. A
-`workflow_dispatch` run with **dry_run** checked builds and packages both
-architectures and stops before signing, so it surfaces the hash for free:
+job needs *every* leg, so a hash mismatch there fails the whole release — after
+the arm64 legs have already signed, notarized and stapled, which spends
+notarization round trips and leaves a tag with no GitHub Release. A
+`workflow_dispatch` run with **dry_run** checked builds and packages every leg
+and stops before signing, so it surfaces the hash for free:
 
 1. Actions → Release → Run workflow, `dry_run` checked.
 2. The x86_64 leg fails; copy the `got: sha256-…` value out of its log.
 3. Put it in `spaNodeModulesHashes.x86_64-darwin`, commit, re-run the dry run.
-4. Both legs green → tag for real.
+4. All three legs green → tag for real.
 
 ## Cutting a release
 

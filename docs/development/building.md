@@ -102,7 +102,16 @@ artifacts built with the same profile and the same resolved features:
 | Layer | Profile | Used by |
 | --- | --- | --- |
 | `.#cargoArtifacts` | `release` (fat LTO, `codegen-units = 1`) | what ships: `.#ledgeline`, `.#ledgelineWithSpa`, macApp/macDist, linuxDist |
-| `.#cargoArtifactsCi` | `ci` (release minus LTO, `codegen-units = 16`; see `Cargo.toml`) | the checks: `.#tests`, `.#clippy`, `.#spaShellCsp` |
+| `.#cargoArtifactsCi` | `ci` (release minus LTO, `codegen-units = 16`; see `Cargo.toml`) | the checks: `.#tests`, `.#clippy`, `.#spaShellCsp`, `.#invoicerSpaShellCsp` |
+| `.#cargoArtifactsInvoicer` | `release`, **chained** on `.#cargoArtifacts` | Ledgeline Invoicer: `.#invoicerWithSpa`, `.#invoicerMacApp`, linuxDist's invoicer |
+
+The invoicer's layer starts from Ledgeline's and adds only what `build -p
+ledgeline-invoicer` needs beyond it (MBR and its tree, ~130 crates, and shared
+crates whose features differ). It is a third layer rather than a second pass in
+`.#cargoArtifacts` so that nothing that builds only Ledgeline (the x86_64-darwin
+release leg above all, under Rosetta) compiles the invoicer's dependencies.
+`buildDepsOnly` cannot start from another layer, so it is a `cargoBuild` over
+the same `mkDummySrc` source.
 
 The checks run without LTO because under `release` every one of the ~150
 integration-test binaries did a whole-program LTO link: about 50 of the Linux
@@ -113,8 +122,9 @@ Each layer also runs the same cargo commands, with the same feature flags and
 the same `-p` selection, as the outputs that reuse it, because cargo unifies
 features over the packages a command selects. The ci layer runs
 `--features ledgeline-ffi/mobile` over the workspace (what `tests` and `clippy`
-pass) plus a `test --no-run -p ledgeline` pass for `spaShellCsp`; the release
-layer runs `build -p ledgeline`, like `.#ledgeline` and `.#ledgelineWithSpa`.
+pass) plus `test --no-run -p ledgeline` and `-p ledgeline-invoicer` passes for
+`spaShellCsp` and `invoicerSpaShellCsp`; the release layer runs `build -p
+ledgeline`, like `.#ledgeline` and `.#ledgelineWithSpa`.
 When either one doesn't match, the output recompiles every crate whose features
 differ. CI run 45513409069 hit that: 122 crates for `spaShellCsp`, and ~220
 for each `ledgeline` build when the release layer built the whole workspace.
@@ -134,6 +144,8 @@ faster. Push that layer to Cachix (below) and CI + teammates skip it entirely.
 | `nix build .#tests`       | `cargo test` over the whole workspace (`crates/*` and `invoicer/crates/*`)                                                                               |
 | `nix build .#fmt`         | `cargo fmt --all --check` (crane's `cargoFmt`; `--all` is required — the workspace root has no targets of its own)                                       |
 | `nix build .#macApp`      | **macOS only** — just the `result/Applications/Ledgeline.app` bundle, **real** SPA embedded (see below).                                                 |
+| `nix build .#invoicerMacApp` | **macOS only** — `result/Applications/Ledgeline Invoicer.app`, the invoicer's real SPA embedded, hledger bundled; what the release signs.           |
+| `nix build .#invoicerWithSpa` | The `ledgeline-invoicer` binary with its real SPA (macOS and Linux). On Linux, `linuxDist` (`.#default`) installs it beside Ledgeline.              |
 | `nix build` (bare, macOS) | **macOS only** `.#default` — the combined `result/{bin/ledgeline, Applications/Ledgeline.app}` (CLI on PATH + the app).                                  |
 | `nix flake check`         | Runs all of the checks above                                                                                                                             |
 | `nix run .`               | **Build and run the real app.** On macOS runs `ledgelineWithSpa` (the **real** SPA embedded); on Linux runs the placeholder-SPA `ledgeline` (see below). |
@@ -464,8 +476,10 @@ churn kept evicting the one path that actually saves CI time. Pushes are now exp
 | --- | --- | --- | --- |
 | `.#cargoArtifactsCi` (the ci-profile deps layer) | `tests` (Linux), `macos` | pushes **and** PRs | The 45+ minute part of a cold build; a `Cargo.lock` bump lands on a PR first, and that PR's runs are the cold ones. Not pinned. |
 | `.#cargoArtifacts` (the release-profile deps layer) | `build` (Linux), `macos` | pushes **and** PRs | Same, for the shipped binaries. Not pinned. Two layers per platform is more of the 5 GB LRU than one. |
-| `.#ledgeline`, `.#linuxDist`, `.#ledgelineWithSpa` | `build` (Linux) | pushes to `main` | What a Linux user substitutes. Pinned. |
+| `.#cargoArtifactsInvoicer` (the invoicer's release delta) | `build` (Linux), `macos` | pushes **and** PRs | Same, for the invoicer; holds only what it adds to `.#cargoArtifacts`. Not pinned. |
+| `.#ledgeline`, `.#linuxDist`, `.#ledgelineWithSpa` | `build` (Linux) | pushes to `main` | What a Linux user substitutes (linuxDist holds both apps). Pinned. |
 | `.#ledgeline`, `.#macDist`, `.#ledgelineWithSpa`, `.#bundledHledger` | `macos` | pushes to `main` | What a Mac user substitutes. Pinned. |
+| `.#invoicerMacApp`, `.#invoicerWithSpa` | `macos` | pushes to `main` | `nix build …#invoicerMacApp`. Not pinned. |
 
 Both layers are exposed under `packages` for exactly this purpose. Push them by hand with:
 
@@ -534,9 +548,9 @@ too). Jobs:
 |----------------|-----------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `format-check` | ubuntu    | `nix build -L .#fmt` (runs first)                                                                                                                                                                   |
 | `clippy`       | ubuntu    | `nix build -L .#clippy`                                                                                                                                                                             |
-| `tests`        | ubuntu    | `nix build -L .#tests`, `.#spaShellCsp` (+ pushes the Linux ci-profile deps layer)                                                                                                                  |
-| `build`        | ubuntu    | `nix build -L .#ledgeline`, `.#linuxDist` (+ pushes the Linux release deps layer; pushes and pins release artifacts on `main`)                                                                      |
-| `macos`        | macos-15  | one `nix build -L --no-link --keep-going .#tests .#clippy .#ledgeline .#macDist .#spaShellCsp` (+ pushes both darwin deps layers; pushes and pins release artifacts on `main`)                       |
+| `tests`        | ubuntu    | `nix build -L .#tests`, `.#spaShellCsp`, `.#invoicerSpaShellCsp` (+ pushes the Linux ci-profile deps layer)                                                                                         |
+| `build`        | ubuntu    | `nix build -L .#ledgeline`, `.#linuxDist` (both apps) (+ pushes the Linux release and invoicer deps layers; pushes and pins release artifacts on `main`)                                            |
+| `macos`        | macos-15  | one `nix build -L --no-link --keep-going .#tests .#clippy .#ledgeline .#macDist .#spaShellCsp .#invoicerMacApp .#invoicerSpaShellCsp` (+ pushes the three darwin deps layers; pushes and pins release artifacts on `main`) |
 | `spa`          | ubuntu    | `bun install --frozen-lockfile`, then `bun run build`, `bun run test:unit`, `bun run check` and `bun run lint` in `web/` and `invoicer/web/`, and `test:unit`, `check` and `lint` in `packages/ui/` |
 
 macOS is a single job because GitHub's free macOS runners are slow (an M1 with 3 CPUs and

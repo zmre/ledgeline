@@ -273,9 +273,14 @@
       #     for ledgeline alone — a workspace-wide pass does not cover it
       #     (CI run 45513409069 recompiled 122 crates for it). Hence its own
       #     `test --no-run -p ledgeline` pass.
+      #   * `invoicerSpaShellCsp` runs `test -p ledgeline-invoicer`, likewise
+      #     (113 crates recompiled per run without it, measured locally);
+      #     hence a `test --no-run -p ledgeline-invoicer` pass too.
       #   * `ledgeline`/`ledgelineWithSpa` run `build -p ledgeline`; the
       #     release layer used to build the whole workspace and they rebuilt
-      #     ~160-220 dependency crates (with fat LTO) every time.
+      #     ~160-220 dependency crates (with fat LTO) every time. The
+      #     invoicer's release builds have their own chained layer
+      #     (`cargoArtifactsInvoicer`, below).
       mobileFeature = "--features ledgeline-ffi/mobile";
       cargoArtifacts = craneLib.buildDepsOnly (commonArgs
         // {
@@ -294,6 +299,7 @@
           checkPhaseCargoCommand = ''
             cargoWithProfile test --locked --no-run ${mobileFeature}
             cargoWithProfile test --no-run ${ledgelineOnly}
+            cargoWithProfile test --no-run ${invoicerOnly}
           '';
         });
 
@@ -455,55 +461,78 @@
       # 2. The static SPA (`web/build`). Pure/offline: reuses the pinned
       #    node_modules, runs `svelte-kit sync`, then `vite build`
       #    (adapter-static → a client-only bundle with an index.html fallback).
-      spaBuild = pkgs.stdenv.mkDerivation {
-        pname = "ledgeline-spa";
-        inherit version;
-        # The workspace root, not just web/: web/ imports packages/ui as source
-        # (`#ui/*` -> `@ledgeline/ui`), and the node_modules tree's workspace
-        # links point at both.
-        src = lib.fileset.toSource {
-          root = ./.;
-          fileset = lib.fileset.unions [
-            ./package.json
-            ./bun.lock
-            ./bunfig.toml
-            ./web
-            ./packages
-          ];
+      #    A function of the workspace member, because the invoicer's SPA
+      #    (`invoicer/web`, `invoicerSpaBuild`) is built the same way from the
+      #    same `spaNodeModules`: one FOD hash covers both apps.
+      mkSpaBuild = {
+        pname,
+        # The member's directory, relative to the workspace root.
+        member,
+        # The member's source tree, as a path (`./web`).
+        memberSrc,
+      }:
+        pkgs.stdenv.mkDerivation {
+          inherit pname version;
+          # The workspace root, not just the member: each imports packages/ui
+          # as source (`#ui/*` -> `@ledgeline/ui`), and the node_modules tree's
+          # workspace links point at both.
+          src = lib.fileset.toSource {
+            root = ./.;
+            fileset = lib.fileset.unions [
+              ./package.json
+              ./bun.lock
+              ./bunfig.toml
+              memberSrc
+              ./packages
+            ];
+          };
+          # nodejs is here for `patchShebangs` below, not to run the build (bun
+          # does that) — it is what the rewritten shebangs point AT.
+          nativeBuildInputs = [pkgs.bun pkgs.nodejs_24];
+          dontConfigure = true;
+          buildPhase = ''
+            export HOME="$TMPDIR"
+            cp -R ${spaNodeModules}/. ./
+            chmod -R u+w node_modules
+            for member in web invoicer/web packages/*; do
+              [ ! -d "$member/node_modules" ] || chmod -R u+w "$member/node_modules"
+            done
+            # The `.bin` shims npm/bun generate carry `#!/usr/bin/env node`, and
+            # the LINUX build sandbox has no /usr/bin/env — so `svelte-kit` and
+            # `vite` died with "bad interpreter". The darwin sandbox does have
+            # it, which is the only reason this ever worked there. Repoint them
+            # at the nodejs in this build. Done on the COPY, never on the
+            # fixed-output `spaNodeModules` itself, whose contents must stay
+            # exactly what the pinned hash covers.
+            #
+            # The WHOLE tree, not just `.bin`: the entries there are SYMLINKS
+            # into the packages and `patchShebangs` only rewrites regular files,
+            # so pointing it at `.bin` alone reported success and changed
+            # nothing.
+            patchShebangs node_modules
+            cd ${member}
+            bun run prepare
+            bun run build
+          '';
+          # Still in the member: stdenv runs every phase in one shell.
+          installPhase = ''
+            mkdir -p "$out"
+            cp -R build/. "$out/"
+          '';
         };
-        # nodejs is here for `patchShebangs` below, not to run the build (bun
-        # does that) — it is what the rewritten shebangs point AT.
-        nativeBuildInputs = [pkgs.bun pkgs.nodejs_24];
-        dontConfigure = true;
-        buildPhase = ''
-          export HOME="$TMPDIR"
-          cp -R ${spaNodeModules}/. ./
-          chmod -R u+w node_modules
-          for member in web invoicer/web packages/*; do
-            [ ! -d "$member/node_modules" ] || chmod -R u+w "$member/node_modules"
-          done
-          # The `.bin` shims npm/bun generate carry `#!/usr/bin/env node`, and
-          # the LINUX build sandbox has no /usr/bin/env — so `svelte-kit` and
-          # `vite` died with "bad interpreter". The darwin sandbox does have
-          # it, which is the only reason this ever worked there. Repoint them
-          # at the nodejs in this build. Done on the COPY, never on the
-          # fixed-output `spaNodeModules` itself, whose contents must stay
-          # exactly what the pinned hash covers.
-          #
-          # The WHOLE tree, not just `.bin`: the entries there are SYMLINKS
-          # into the packages and `patchShebangs` only rewrites regular files,
-          # so pointing it at `.bin` alone reported success and changed
-          # nothing.
-          patchShebangs node_modules
-          cd web
-          bun run prepare
-          bun run build
-        '';
-        # Still in web/: stdenv runs every phase in one shell.
-        installPhase = ''
-          mkdir -p "$out"
-          cp -R build/. "$out/"
-        '';
+
+      spaBuild = mkSpaBuild {
+        pname = "ledgeline-spa";
+        member = "web";
+        memberSrc = ./web;
+      };
+
+      # The invoicer's SPA (`invoicer/web/build`, served under `/app`), the
+      # same way from the same `spaNodeModules`.
+      invoicerSpaBuild = mkSpaBuild {
+        pname = "ledgeline-invoicer-spa";
+        member = "invoicer/web";
+        memberSrc = ./invoicer/web;
       };
 
       # 3. The `ledgeline` binary with the REAL SPA baked in (rust-embed reads
@@ -543,6 +572,81 @@
           cargoTestExtraArgs = "-p ledgeline --test spa_shell_csp";
         });
 
+      # 3c. Ledgeline Invoicer (`ledgeline-invoicer`, invoicer/): the same
+      #     three steps for the second app. Its build.rs mirrors
+      #     `invoicer/web/build` into the crate's `spa/`, as the server's does
+      #     with `web/build`. The `--server`/`gui` binary does not depend on
+      #     `ledgeline` (the server crate), so `web/build` is not needed here.
+      embedInvoicerSpa = ''
+        mkdir -p invoicer/web/build
+        cp -R ${invoicerSpaBuild}/. invoicer/web/build/
+      '';
+      invoicerOnly = "--locked -p ledgeline-invoicer";
+
+      # The invoicer's release-profile dependency layer, CHAINED on
+      # `cargoArtifacts` rather than folded into it: `cargo build -p
+      # ledgeline-invoicer` resolves ~130 crates `-p ledgeline` does not (MBR
+      # and its tree) and different features for some shared ones, and only
+      # aarch64-darwin and Linux ship the invoicer (I18). Folding it in would
+      # make the x86_64-darwin release leg, which builds Ledgeline alone under
+      # Rosetta, compile all of that for nothing. Chained, this layer starts
+      # from Ledgeline's and adds only the difference, and Ledgeline's own
+      # builds never see it.
+      #
+      # `cargoBuild` over `mkDummySrc` because `buildDepsOnly` always starts
+      # from nothing (it forces `cargoArtifacts = null`); this is the same
+      # dummy source it builds, so the fingerprints line up the same way.
+      # `cargoVendorDir` is given, as `buildDepsOnly` does internally, because
+      # vendoring from the dummy source would read its Cargo.lock out of a
+      # derivation at evaluation time (import-from-derivation).
+      cargoArtifactsInvoicer = let
+        cargoSrc = craneLib.cleanCargoSource ./.;
+      in
+        craneLib.cargoBuild (commonArgs
+          // {
+            inherit cargoArtifacts;
+            pname = "ledgeline-invoicer-deps";
+            src = craneLib.mkDummySrc {src = cargoSrc;};
+            cargoVendorDir = craneLib.vendorCargoDeps {src = cargoSrc;};
+            cargoExtraArgs = invoicerOnly;
+            doCheck = false;
+          });
+
+      # The `ledgeline-invoicer` binary with the REAL invoicer SPA embedded
+      # (the counterpart of `ledgelineWithSpa`; there is no placeholder-SPA
+      # `invoicer` output, since `.#tests`/`.#clippy` already build the crate).
+      # No `hledgerEnv`: the invoicer runs no hledger, so baking the path in
+      # would only put hledger's closure into this one's.
+      invoicerWithSpa = craneLib.buildPackage (commonArgs
+        // {
+          pname = "ledgeline-invoicer";
+          cargoArtifacts = cargoArtifactsInvoicer;
+          cargoExtraArgs = invoicerOnly;
+          doCheck = false;
+          preBuild = embedInvoicerSpa;
+          meta =
+            ledgeline.meta
+            // {
+              description = "Ledgeline Invoicer — plain-text invoices linked into hledger books (desktop app and CLI)";
+              mainProgram = "ledgeline-invoicer";
+            };
+        });
+
+      # The invoicer's `spaShellCsp`: its SPA under the shell's CSP, against
+      # the REAL `invoicerSpaBuild` (`app::spa_shell_csp_tests`, the same
+      # oracle as Ledgeline's). A unit test of the binary, hence `--bin`; the
+      # name filter picks it out of the crate's other unit tests. On the ci
+      # layer like `spaShellCsp`.
+      invoicerSpaShellCsp = craneLib.cargoTest (commonArgs
+        // ciProfile
+        // {
+          cargoArtifacts = cargoArtifactsCi;
+          pname = "ledgeline-invoicer-spa-shell-csp";
+          preBuild = embedInvoicerSpa;
+          LEDGELINE_REQUIRE_REAL_SPA = "1";
+          cargoTestExtraArgs = "-p ledgeline-invoicer --bin ledgeline-invoicer spa_shell_csp";
+        });
+
       # 4. Icon: assets/ledgeline.png (1024²) → a multi-resolution
       #    ledgeline.icns. imagemagick downsizes to each icns slot; png2icns
       #    (libicns) assembles them — no macOS `iconutil` required, so it builds
@@ -555,19 +659,33 @@
       #    The ≤48px slots come from assets/ledgeline-small.png, a zoomed-in
       #    crop of the same art: at list-view sizes the full design is a blur.
       #    `iconSourceFor` is shared with the Linux hicolor icons below.
-      iconSourceFor = s:
+      #
+      #    The invoicer's icon is the same pair under assets/invoicer/ (its
+      #    "-small" is a copy of the full one; see scripts/gen-icons.sh), and
+      #    its layered icon is assets/invoicer/Assets.car.
+      ledgelineIcon = {
+        big = ./assets/ledgeline.png;
+        small = ./assets/ledgeline-small.png;
+      };
+      invoicerIcon = {
+        big = ./assets/invoicer/ledgeline-invoicer.png;
+        small = ./assets/invoicer/ledgeline-invoicer-small.png;
+      };
+      iconSourceFor = icon: s:
         if s <= 48
-        then ./assets/ledgeline-small.png
-        else ./assets/ledgeline.png;
-      resizeIcon = s: out: ''magick ${iconSourceFor s} -resize ${toString s}x${toString s} "${out}"'';
-      ledgelineIcns =
-        pkgs.runCommand "ledgeline.icns" {
+        then icon.small
+        else icon.big;
+      resizeIcon = icon: s: out: ''magick ${iconSourceFor icon s} -resize ${toString s}x${toString s} "${out}"'';
+      mkIcns = name: icon:
+        pkgs.runCommand name {
           nativeBuildInputs = [pkgs.imagemagick pkgs.libicns];
         } ''
-          ${lib.concatMapStringsSep "\n" (s: resizeIcon s "icon_${toString s}.png") [16 32 48 128 256 512 1024]}
+          ${lib.concatMapStringsSep "\n" (s: resizeIcon icon s "icon_${toString s}.png") [16 32 48 128 256 512 1024]}
           png2icns "$out" icon_16.png icon_32.png icon_48.png icon_128.png \
             icon_256.png icon_512.png icon_1024.png
         '';
+      ledgelineIcns = mkIcns "ledgeline.icns" ledgelineIcon;
+      invoicerIcns = mkIcns "ledgeline-invoicer.icns" invoicerIcon;
 
       # 5. The `hledger` the DMG SHIPS, so a downloaded Ledgeline can import
       #    without the user installing anything.
@@ -683,21 +801,40 @@
       #    Developer ID signing + notarization: a publicly distributed build
       #    needs that separate work, and until it lands Gatekeeper will still
       #    complain about a downloaded copy.
-      macApp =
-        pkgs.runCommand "ledgeline-app" {
+      #
+      #    A function of the app, because Ledgeline Invoicer.app
+      #    (`invoicerMacApp`) is assembled, de-nixed and checked exactly the
+      #    same way; only the names, the binary and the assets differ.
+      mkMacApp = {
+        # The derivation's name.
+        drvName,
+        # The bundle's name: `<appName>.app`.
+        appName,
+        # The executable's name (Info.plist's CFBundleExecutable) and the
+        # package that provides it as `bin/<exe>`.
+        exe,
+        package,
+        # `@version@` is substituted.
+        infoPlist,
+        icns,
+        # Info.plist's CFBundleIconFile, plus `.icns`.
+        icnsFile,
+        assetsCar,
+      }:
+        pkgs.runCommand drvName {
           # A bare darwin `runCommand` has NONE of these: cctools supplies
           # install_name_tool + otool + nm, sigtool supplies codesign.
           nativeBuildInputs = [pkgs.darwin.cctools pkgs.darwin.sigtool];
         } ''
-          app="$out/Applications/Ledgeline.app"
-          bin="$app/Contents/MacOS/ledgeline"
+          app="$out/Applications/${appName}.app"
+          bin="$app/Contents/MacOS/${exe}"
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-          cp ${ledgelineWithSpa}/bin/ledgeline "$bin"
+          cp ${package}/bin/${exe} "$bin"
           chmod u+w "$bin"
-          substitute ${./assets/Info.plist.in} "$app/Contents/Info.plist" \
+          substitute ${infoPlist} "$app/Contents/Info.plist" \
             --subst-var-by version "${version}"
-          cp ${ledgelineIcns} "$app/Contents/Resources/ledgeline.icns"
-          cp ${./assets/Assets.car} "$app/Contents/Resources/Assets.car"
+          cp ${icns} "$app/Contents/Resources/${icnsFile}"
+          cp ${assetsCar} "$app/Contents/Resources/Assets.car"
 
           # The bundled hledger, as a SIBLING of our binary in Contents/MacOS/ —
           # which is precisely where `hledger::sibling_hledger` looks. Not
@@ -742,7 +879,7 @@
                 nm -u "$bin" > "$TMPDIR/undefined-symbols.txt"
                 iconvSyms=$(grep -E '_(lib)?iconv' "$TMPDIR/undefined-symbols.txt" || true)
                 if [ -n "$iconvSyms" ]; then
-                  echo "ERROR: Ledgeline.app imports real iconv symbols:" >&2
+                  echo "ERROR: ${appName}.app imports real iconv symbols:" >&2
                   echo "$iconvSyms" | sed 's/^/         /' >&2
                   echo "  $lib may NOT be retargeted at /usr/lib/libiconv.2.dylib." >&2
                   echo "  That rewrite is only valid while NOTHING imports iconv." >&2
@@ -759,7 +896,7 @@
                 install_name_tool -change "$lib" /usr/lib/libiconv.2.dylib "$bin"
                 ;;
               *)
-                echo "ERROR: Ledgeline.app would ship a Nix-store dependency:" >&2
+                echo "ERROR: ${appName}.app would ship a Nix-store dependency:" >&2
                 echo "         $lib" >&2
                 echo "  Only the phantom libiconv link may be retargeted at a" >&2
                 echo "  system path. This one may be REAL, and a bundle carrying" >&2
@@ -787,6 +924,32 @@
             fi
           done
         '';
+
+      macApp = mkMacApp {
+        drvName = "ledgeline-app";
+        appName = "Ledgeline";
+        exe = "ledgeline";
+        package = ledgelineWithSpa;
+        infoPlist = ./assets/Info.plist.in;
+        icns = ledgelineIcns;
+        icnsFile = "ledgeline.icns";
+        assetsCar = ./assets/Assets.car;
+      };
+
+      # `Ledgeline Invoicer.app` (invoicer ARCHITECTURE §6.1, bundle id
+      # `com.zmre.ledgeline.invoicer`), Apple Silicon only in releases (I18).
+      # It bundles hledger beside its binary like Ledgeline.app (invoicer PLAN
+      # 6a), though the invoicer itself runs none today.
+      invoicerMacApp = mkMacApp {
+        drvName = "ledgeline-invoicer-app";
+        appName = "Ledgeline Invoicer";
+        exe = "ledgeline-invoicer";
+        package = invoicerWithSpa;
+        infoPlist = ./assets/invoicer/Info.plist.in;
+        icns = invoicerIcns;
+        icnsFile = "ledgeline-invoicer.icns";
+        assetsCar = ./assets/invoicer/Assets.car;
+      };
 
       # 7. Combined darwin install: the `Applications/Ledgeline.app` bundle PLUS
       #    a `bin/ledgeline` that is a SYMLINK INTO the bundle
@@ -870,6 +1033,26 @@
         Keywords=hledger;ledger;accounting;journal;finance;bookkeeping;
       '';
 
+      # The invoicer's entry, the same way. `StartupWMClass` is the binary's
+      # name, which tao makes the app_id, as it does Ledgeline's. No
+      # `MimeType`: journals open in Ledgeline, and claiming them here would
+      # list a second app for them (the macOS bundle claims none either); a
+      # launcher still passes a file on the command line through `%f`.
+      invoicerDesktopItem = pkgs.writeText "ledgeline-invoicer.desktop.in" ''
+        [Desktop Entry]
+        Type=Application
+        Version=1.0
+        Name=Ledgeline Invoicer
+        GenericName=Invoicing
+        Comment=Plain-text invoices linked into hledger books
+        Exec=@out@/bin/ledgeline-invoicer %f
+        Icon=ledgeline-invoicer
+        Terminal=false
+        StartupWMClass=ledgeline-invoicer
+        Categories=Office;Finance;
+        Keywords=hledger;invoice;invoicing;billing;accounting;receivables;
+      '';
+
       # --- Linux desktop install (`.#linuxDist`, and `default` on Linux) ------
       # The runnable Linux artefact, and the counterpart of `macDist`: it wraps
       # `ledgelineWithSpa` — the binary with the REAL SvelteKit UI embedded —
@@ -892,6 +1075,31 @@
       #
       # runCommand, not symlinkJoin: the wrapper must REPLACE `bin/ledgeline`,
       # and a symlinkJoin of the unwrapped package would collide with it.
+      #
+      # It installs Ledgeline Invoicer beside Ledgeline (invoicer PLAN 6a):
+      # `bin/ledgeline-invoicer` (from `invoicerWithSpa`, wrapped the same
+      # way: the same WebKitGTK, the same EGL abort), its hicolor icons and
+      # its desktop entry. One package, so `nix profile install` gives both
+      # apps; `default` and `nix run .` stay Ledgeline.
+      wrapWithMesa = binary: wrapper: ''
+        makeBinaryWrapper ${binary} "${wrapper}" \
+          --set-default __EGL_VENDOR_LIBRARY_DIRS "${glvndVendorDefaults}" \
+          --suffix      __EGL_VENDOR_LIBRARY_DIRS : "${mesaEglVendorDir}" \
+          --suffix      LIBGL_DRIVERS_PATH        : "${mesaDriDir}" \
+          --set-default GBM_BACKENDS_PATH         "${gbmBackendsDefault}" \
+          --suffix      GBM_BACKENDS_PATH         : "${mesaGbmDir}"
+      '';
+      # The 1024² sources are downsized into each hicolor slot rather than
+      # dropped into one claiming a size they are not; 48x48 is the slot
+      # menus actually require. ≤48px uses the small variant, as the icns
+      # does (`iconSourceFor`).
+      hicolorIcons = icon: name:
+        lib.concatMapStringsSep "\n" (s: let
+          dir = "$out/share/icons/hicolor/${toString s}x${toString s}/apps";
+        in ''
+          mkdir -p "${dir}"
+          ${resizeIcon icon s "${dir}/${name}.png"}
+        '') [32 48 64 128 256 512];
       linuxDist =
         pkgs.runCommand "ledgeline-${version}"
         {
@@ -903,23 +1111,11 @@
           meta = ledgeline.meta;
         } ''
           mkdir -p "$out/bin"
-          makeBinaryWrapper ${ledgelineWithSpa}/bin/ledgeline "$out/bin/ledgeline" \
-            --set-default __EGL_VENDOR_LIBRARY_DIRS "${glvndVendorDefaults}" \
-            --suffix      __EGL_VENDOR_LIBRARY_DIRS : "${mesaEglVendorDir}" \
-            --suffix      LIBGL_DRIVERS_PATH        : "${mesaDriDir}" \
-            --set-default GBM_BACKENDS_PATH         "${gbmBackendsDefault}" \
-            --suffix      GBM_BACKENDS_PATH         : "${mesaGbmDir}"
+          ${wrapWithMesa "${ledgelineWithSpa}/bin/ledgeline" "$out/bin/ledgeline"}
+          ${wrapWithMesa "${invoicerWithSpa}/bin/ledgeline-invoicer" "$out/bin/ledgeline-invoicer"}
 
-          # The 1024² sources are downsized into each hicolor slot rather than
-          # dropped into one claiming a size they are not; 48x48 is the slot
-          # menus actually require. ≤48px uses the zoomed-in small variant, as
-          # the icns does (`iconSourceFor`).
-          ${lib.concatMapStringsSep "\n" (s: let
-            dir = "$out/share/icons/hicolor/${toString s}x${toString s}/apps";
-          in ''
-            mkdir -p "${dir}"
-            ${resizeIcon s "${dir}/ledgeline.png"}
-          '') [32 48 64 128 256 512]}
+          ${hicolorIcons ledgelineIcon "ledgeline"}
+          ${hicolorIcons invoicerIcon "ledgeline-invoicer"}
 
           mkdir -p "$out/share/mime/packages"
           cp ${ledgelineMimeXml} "$out/share/mime/packages/ledgeline.xml"
@@ -927,11 +1123,14 @@
           mkdir -p "$out/share/applications"
           substitute ${ledgelineDesktopItem} "$out/share/applications/ledgeline.desktop" \
             --subst-var out
+          substitute ${invoicerDesktopItem} "$out/share/applications/ledgeline-invoicer.desktop" \
+            --subst-var out
 
           # Catches a bad Categories= list, a missing trailing semicolon and the
           # rest of the entry's sharp edges at BUILD time rather than as an app
           # that silently never appears in a menu.
           desktop-file-validate "$out/share/applications/ledgeline.desktop"
+          desktop-file-validate "$out/share/applications/ledgeline-invoicer.desktop"
         '';
       # --- Push gate: formatters + `just pre-push` ----------------------------
       # Both formatters CI cares about, then everything else a laptop can check
@@ -1027,7 +1226,7 @@
       # `spaNodeModulesHashes`. Elsewhere (aarch64-linux) forcing it throws, so
       # the check is simply absent there rather than breaking evaluation.
       realSpaChecks = lib.optionalAttrs (spaNodeModulesHashes ? ${system}) {
-        inherit spaShellCsp;
+        inherit spaShellCsp invoicerSpaShellCsp;
       };
     in {
       # Buildable outputs. `nix build .#ledgeline` proves the GUI deps resolve
@@ -1041,8 +1240,10 @@
           # the cachix daemon upload everything a job builds. It is the
           # expensive, rarely-changing part of every cold build — see
           # docs/development/building.md → "What CI pushes".
-          # `cargoArtifactsCi` is the same for the `ci` profile the checks use.
-          inherit cargoArtifacts cargoArtifactsCi;
+          # `cargoArtifactsCi` is the same for the `ci` profile the checks use;
+          # `cargoArtifactsInvoicer` is the invoicer's release-profile layer,
+          # chained on `cargoArtifacts`.
+          inherit cargoArtifacts cargoArtifactsCi cargoArtifactsInvoicer;
           default = ledgeline;
         }
         # Linux-only: the wrapped desktop install, plus the SPA-in-Nix pieces it
@@ -1053,6 +1254,7 @@
         # placeholder-SPA binary on every system (CI + releases).
         // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           inherit linuxDist spaNodeModules spaBuild ledgelineWithSpa;
+          inherit invoicerSpaBuild invoicerWithSpa;
           default = linuxDist;
         }
         # macOS-only: the app bundle, the combined `macDist` install, and the
@@ -1067,12 +1269,15 @@
         # system (CI); `apps.default` / `nix run .` run it.
         // lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
           inherit macApp macDist spaNodeModules spaBuild ledgelineWithSpa ledgelineIcns bundledHledger;
+          # Ledgeline Invoicer.app (`result/Applications/Ledgeline Invoicer.app`)
+          # and what it is assembled from. Not part of `macDist`/`default`.
+          inherit invoicerMacApp invoicerWithSpa invoicerSpaBuild invoicerIcns;
           default = macDist;
         }
         // realSpaChecks;
 
       # `nix flake check` runs all of these; CI invokes them individually
-      # (`nix build .#{fmt,clippy,tests,ledgeline,spaShellCsp}`) — the bare attr
+      # (`nix build .#{fmt,clippy,tests,ledgeline,spaShellCsp,invoicerSpaShellCsp}`) — the bare attr
       # resolves to the current system automatically.
       checks =
         {

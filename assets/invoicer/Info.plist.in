@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Ledgeline Invoicer.app (flake.nix `invoicerMacApp`; invoicer
+     ARCHITECTURE §6.1). @version@ is the workspace version, substituted at
+     build time, so scripts/release.sh has nothing here to keep in step.
+     The bundle id is also `APP.bundle_id` in
+     invoicer/crates/ledgeline-invoicer/src/app/mod.rs. -->
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleName</key>
+  <string>Ledgeline Invoicer</string>
+  <key>CFBundleDisplayName</key>
+  <string>Ledgeline Invoicer</string>
+  <key>CFBundleExecutable</key>
+  <string>ledgeline-invoicer</string>
+  <!-- CFBundleIconName names the layered icon compiled into Assets.car
+       (assets/LedgelineInvoicer.icon, via scripts/gen-icons.sh); macOS 26+
+       uses it. Older macOS falls back to CFBundleIconFile, the flat
+       ledgeline-invoicer.icns. -->
+  <key>CFBundleIconName</key>
+  <string>LedgelineInvoicer</string>
+  <key>CFBundleIconFile</key>
+  <string>ledgeline-invoicer</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.zmre.ledgeline.invoicer</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>@version@</string>
+  <key>CFBundleVersion</key>
+  <string>@version@</string>
+  <key>CFBundleSupportedPlatforms</key>
+  <array>
+    <string>MacOSX</string>
+  </array>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.finance</string>
+  <!-- Apple Silicon only (invoicer PLAN I18), and every Apple Silicon Mac
+       runs macOS 11 or later. -->
+  <key>LSMinimumSystemVersion</key>
+  <string>11.0</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSHumanReadableCopyright</key>
+  <string>Copyright © 2026 Patrick Walsh. All rights reserved.</string>
+  <!-- No CFBundleDocumentTypes: journals belong to Ledgeline.app, and the
+       invoicer claiming them (even at Alternate rank) would put a second app
+       in every journal's Open With menu. `open -a "Ledgeline Invoicer" books.journal`
+       still delivers the file (the app handles the open-document event). -->
+</dict>
+</plist>

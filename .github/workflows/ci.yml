@@ -132,6 +132,12 @@ jobs:
       - name: CSP vs. the real SPA shell
         run: nix build -L --no-link .#spaShellCsp
 
+      # The same for Ledgeline Invoicer's shell (`app::spa_shell_csp_tests`,
+      # the same oracle) with `invoicerSpaBuild` embedded. Same ci layer, so it
+      # adds the invoicer SPA's vite build and one test binary, not a deps build.
+      - name: CSP vs. the real invoicer SPA shell
+        run: nix build -L --no-link .#invoicerSpaShellCsp
+
       # The crane dependency layer is the multi-GB, 45+ minute part of every
       # cold build, and the ONLY thing whose cache hit changes how long CI
       # takes. Pushed on PRs too, deliberately: a Cargo.lock bump lands on a PR
@@ -207,19 +213,23 @@ jobs:
       # hash in the log instead of a broken `nix profile install` for a user.
       #
       # It also covers `desktop-file-validate`, the MIME XML and the six icon
-      # sizes, none of which any other job touches.
+      # sizes, none of which any other job touches. linuxDist also installs
+      # Ledgeline Invoicer (`invoicerWithSpa`, its icons and desktop entry), so
+      # this is also the Linux build of the invoicer.
       #
       # NOT free: this is a second full Rust compile (ledgelineWithSpa shares no
-      # artifacts with the placeholder-SPA `.#ledgeline`), a bun install + vite
-      # build, and pkgs.mesa's ~1 GiB closure. All cached after the first green
-      # run — see the Cachix pin below, which is what keeps it that way.
+      # artifacts with the placeholder-SPA `.#ledgeline`), plus the invoicer's
+      # (on `.#cargoArtifactsInvoicer`, chained on the release layer), two
+      # vite builds, and pkgs.mesa's ~1 GiB closure. All cached after the first
+      # green run — see the Cachix pin below, which is what keeps it that way.
       - name: Build linuxDist (Linux distributable)
         run: nix build -L --no-link .#linuxDist
 
       # The Linux release-profile deps layer (`.#cargoArtifacts`, reused by
-      # `.#ledgeline`, `.#ledgelineWithSpa` and so `e2e`). Pushed here because
-      # `tests` now builds only the ci-profile layer. Same rules as the push
-      # in `tests`: PRs too, `!cancelled()`, local-store guard, not pinned.
+      # `.#ledgeline`, `.#ledgelineWithSpa` and so `e2e`), and the invoicer's
+      # (`.#cargoArtifactsInvoicer`, for linuxDist's invoicer). Pushed here
+      # because `tests` now builds only the ci-profile layer. Same rules as the
+      # push in `tests`: PRs too, `!cancelled()`, local-store guard, not pinned.
       - name: Push deps layer to Cachix
         if: ${{ !cancelled() }}
         env:
@@ -229,7 +239,7 @@ jobs:
             echo "No CACHIX_AUTH_TOKEN (fork or unset) — skipping cache push."
             exit 0
           fi
-          for attr in cargoArtifacts cargoArtifactsCi; do
+          for attr in cargoArtifacts cargoArtifactsCi cargoArtifactsInvoicer; do
             deps=$(nix eval --raw ".#$attr.outPath")
             if ! nix path-info "$deps" >/dev/null 2>&1; then
               echo "Deps layer $deps was not built in this job — nothing to push."
@@ -415,23 +425,33 @@ jobs:
       #   * `.#spaShellCsp` — the shell's CSP against the REAL SvelteKit shell
       #     (see the same step in `build` for why); `spaBuild` is already in
       #     the store from `macDist`.
+      #   * `.#invoicerMacApp` — Ledgeline Invoicer.app, what the release's
+      #     invoicer leg signs (invoicer PLAN 6a): the invoicer SPA, the
+      #     `invoicerWithSpa` binary on `.#cargoArtifactsInvoicer` (chained on
+      #     the release layer, so only the invoicer's extra crates compile),
+      #     the icns and the de-nixing checks. Without it the first build of
+      #     the bundle would be a release tag.
+      #   * `.#invoicerSpaShellCsp` — the invoicer's shell CSP, on the ci layer
+      #     like `.#spaShellCsp`; `invoicerSpaBuild` is shared with the app.
       #
       # `--keep-going` so one red check does not hide another: as three jobs, a
       # failing test still let clippy report; without it Nix stops scheduling
       # new builds at the first failure.
       - name: Tests, clippy, build (one nix build)
-        run: nix build -L --no-link --keep-going .#tests .#clippy .#ledgeline .#macDist .#spaShellCsp
+        run: nix build -L --no-link --keep-going .#tests .#clippy .#ledgeline .#macDist .#spaShellCsp .#invoicerMacApp .#invoicerSpaShellCsp
 
       # GC root for the deps layer, so cache-nix-action's pre-save GC (above)
       # keeps the one path that makes the next run fast. An indirect root: the
       # out-link lives in the workspace, which survives until the post steps.
       # Same `!cancelled()` + local-store guard as the push below.
-      # Both layers: release (`.#cargoArtifacts`, for ledgeline/macDist) and
-      # ci profile (`.#cargoArtifactsCi`, for tests/clippy/spaShellCsp).
+      # All three layers: release (`.#cargoArtifacts`, for ledgeline/macDist),
+      # ci profile (`.#cargoArtifactsCi`, for tests/clippy/spaShellCsp and
+      # invoicerSpaShellCsp) and the invoicer's release delta
+      # (`.#cargoArtifactsInvoicer`, for invoicerMacApp).
       - name: Root the deps layers (for the store cache)
         if: ${{ !cancelled() }}
         run: |
-          for attr in cargoArtifacts cargoArtifactsCi; do
+          for attr in cargoArtifacts cargoArtifactsCi cargoArtifactsInvoicer; do
             deps=$(nix eval --raw ".#$attr.outPath")
             if ! nix path-info "$deps" >/dev/null 2>&1; then
               echo "Deps layer $deps was not built in this job — nothing to root."
@@ -451,10 +471,10 @@ jobs:
             echo "No CACHIX_AUTH_TOKEN (fork or unset) — skipping cache push."
             exit 0
           fi
-          # Both layers, like `build`. Pushing only the release one left the
+          # Every layer, like `build`. Pushing only the release one left the
           # darwin ci layer (what tests/clippy/spaShellCsp reuse) off Cachix,
           # so every macOS run rebuilt it.
-          for attr in cargoArtifacts cargoArtifactsCi; do
+          for attr in cargoArtifacts cargoArtifactsCi cargoArtifactsInvoicer; do
             deps=$(nix eval --raw ".#$attr.outPath")
             if ! nix path-info "$deps" >/dev/null 2>&1; then
               echo "Deps layer $deps was not built in this job — nothing to push."
@@ -483,7 +503,10 @@ jobs:
           # is additionally what `nix run` resolves to on darwin;
           # `bundledHledger` is a 53 MiB download from github.com that we would
           # otherwise re-fetch on every build that cannot substitute macApp.
-          attrs=(.#ledgeline .#macDist .#ledgelineWithSpa .#bundledHledger)
+          # `invoicerMacApp` and `invoicerWithSpa` likewise (the bundle copies
+          # the binary), so `nix build github:zmre/ledgeline#invoicerMacApp`
+          # substitutes too; neither is pinned.
+          attrs=(.#ledgeline .#macDist .#ledgelineWithSpa .#bundledHledger .#invoicerMacApp .#invoicerWithSpa)
           nix build --json "${attrs[@]}" | jq -r '.[].outputs | to_entries[].value' | cachix push zmre
 
       # The darwin twin of `build`'s pin step — see there for why pins exist
