@@ -250,7 +250,12 @@ test.describe("keyboard-first over the accrual fixture (:5199)", () => {
         expect(read("books.journal")).toContain(`invoice: ${number}, document: ${file}`);
 
         // Shift+P: the PDF (a sent, unchanged invoice exports at once).
+        // Wait for the panel's delivery to be the sent one (it re-fetches after
+        // Send): a draft's export would ask "Mark as sent?" instead, as a click
+        // would. A sent invoice's button reads "Export PDF", a draft's "Export PDF…".
         const panel = page.getByTestId("send-panel");
+        await expect(panel.getByTestId("send-sent")).toBeVisible();
+        await expect(panel.getByTestId("send-export")).toHaveText("Export PDF");
         await expect(panel.getByTestId("send-export")).toBeEnabled();
         await page.keyboard.press("P");
         const pdfName = `invoices/pdf/2026-11-17 Fabrikam Invoice ${number}.pdf`;
