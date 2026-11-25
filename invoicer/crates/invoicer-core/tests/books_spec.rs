@@ -201,7 +201,10 @@ fn a_payee_or_number_with_a_comment_mark_still_books() {
 ";
     let text = invoice("108", "Ann Lee", "", table)
         .replace("invoice_num: 108", "invoice_num: \"#108\"")
-        .replace("invoicee_name: Ann Lee", "invoicee_name: \"Studio #9; LLC\"");
+        .replace(
+            "invoicee_name: Ann Lee",
+            "invoicee_name: \"Studio #9; LLC\"",
+        );
     let (books, index) = books(&[("invoices/Studio 108.md", &text)], JOURNAL);
     let preview = books.preview(&index, "#108").expect("previews");
     assert_eq!(preview.booking.description, "Studio 9 LLC | Invoice 108");

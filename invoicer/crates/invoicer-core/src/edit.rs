@@ -697,7 +697,10 @@ mod tests {
     /// command sets `due_date` itself.
     #[test]
     fn setting_terms_recomputes_the_due_date() {
-        let draft = DRAFT.replace("date: 2026-11-01\n", "date: 2026-11-01\nterms: 30\ndue_date: 2026-12-01\n");
+        let draft = DRAFT.replace(
+            "date: 2026-11-01\n",
+            "date: 2026-11-01\nterms: 30\ndue_date: 2026-12-01\n",
+        );
         let (vault, mut index) = open(&[("a.md", &draft)]);
         let a = path("a.md");
         let done = set(

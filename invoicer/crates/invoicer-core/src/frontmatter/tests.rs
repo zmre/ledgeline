@@ -507,13 +507,16 @@ fn alias_bombs_are_refused_and_ordinary_aliases_read() {
     let mut yaml = String::from("a0: &a0 [x,x,x,x,x,x,x,x,x,x]\n");
     for level in 1..6 {
         let prev = format!("*a{}", level - 1);
-        let items = vec![prev.as_str(); 10].join(",");
+        let items = [prev.as_str(); 10].join(",");
         yaml.push_str(&format!("a{level}: &a{level} [{items}]\n"));
     }
     let source = format!("---\ntitle: t\n{yaml}---\nbody\n");
     assert!(source.len() < 1024);
     let err = Frontmatter::parse(&source).expect_err("refused");
-    assert!(matches!(err, FrontmatterError::Yaml { line: 7, .. }), "{err}");
+    assert!(
+        matches!(err, FrontmatterError::Yaml { line: 7, .. }),
+        "{err}"
+    );
     assert!(err.to_string().contains("aliases expand"), "{err}");
 
     let fine = fields("---\nbase: &b {rate: 150}\ncopy: *b\nlist: [*b, *b]\n---\n");

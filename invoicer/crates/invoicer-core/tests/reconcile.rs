@@ -655,7 +655,10 @@ fn a_sent_invoice_whose_table_disagrees_still_voids() {
     assert!(voided.journal_written && voided.markdown_written);
     let after = read(&dir, INV_106);
     assert!(after.contains("status: void\n"), "{after}");
-    assert!(after.contains("| $1,300.00 | revenue"), "the table is untouched");
+    assert!(
+        after.contains("| $1,300.00 | revenue"),
+        "the table is untouched"
+    );
     assert!(findings(&books, &index).is_empty());
 }
 

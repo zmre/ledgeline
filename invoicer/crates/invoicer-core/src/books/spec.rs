@@ -506,7 +506,13 @@ pub fn tag_text(text: &str) -> Option<String> {
 /// read back), runs of whitespace one space.
 fn description_text(text: &str) -> String {
     text.chars()
-        .map(|c| if matches!(c, ';' | '#') || c.is_control() { ' ' } else { c })
+        .map(|c| {
+            if matches!(c, ';' | '#') || c.is_control() {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()

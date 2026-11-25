@@ -1481,8 +1481,10 @@ mod tests {
     fn overdue_counts_from_terms_when_there_is_no_due_date() {
         let doc = |head: &str| {
             crate::doc::Invoice::parse(
-                format!("---\ntype: invoice\nstatus: sent\ndate: 2026-11-01\n{head}paid: no\n---\n")
-                    .as_str(),
+                format!(
+                    "---\ntype: invoice\nstatus: sent\ndate: 2026-11-01\n{head}paid: no\n---\n"
+                )
+                .as_str(),
                 &crate::table::words::Words::default(),
             )
             .header()

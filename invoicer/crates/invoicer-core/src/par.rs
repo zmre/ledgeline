@@ -72,6 +72,10 @@ mod tests {
         let used: std::collections::HashSet<_> = par_map(&items, |_| std::thread::current().id())
             .into_iter()
             .collect();
-        assert!(used.len() <= threads, "{} threads for {threads} cores", used.len());
+        assert!(
+            used.len() <= threads,
+            "{} threads for {threads} cores",
+            used.len()
+        );
     }
 }
