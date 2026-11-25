@@ -31,6 +31,12 @@ describe("COMPONENT dismissible", () => {
         expect(document.activeElement).toBe(screen.getByText("first"));
     });
 
+    it("focuses the `initial` element instead when given one", () => {
+        render(DismissibleProbe, {props: {optionsOf: () => ({onDismiss: () => {}, trap: true, initial: "button:last-child"})}});
+
+        expect(document.activeElement).toBe(screen.getByText("last"));
+    });
+
     it("restores focus to whatever opened it", () => {
         // The single highest-value line in the action. Today, closing the column
         // menu leaves focus on <body>, so the next keystroke goes nowhere useful.
