@@ -344,3 +344,133 @@ async fn a_new_customer_can_be_edited_on_cash_books_too() {
     assert_eq!(status, StatusCode::OK, "{saved}");
     assert_eq!(saved["changed"], json!(["emails"]));
 }
+
+fn titles(list: &Value) -> Vec<String> {
+    list.as_array()
+        .expect("array")
+        .iter()
+        .filter_map(|c| c["title"].as_str().map(str::to_string))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_list_filters_and_sorts_by_its_url() {
+    let app = app();
+    let get = |query: &str| {
+        let app = &app;
+        let url = format!("/api/customers?today=2026-11-22&{query}");
+        async move {
+            let (status, body) = json_of(app, authed(&url)).await;
+            (status, body)
+        }
+    };
+    let (status, body) = get("owes=true&sort=owed&dir=desc").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        titles(&body),
+        ["Customer X", "Tailspin", "Wingtip", "Contoso"]
+    );
+    let (_, body) = get("overdue=true&kind=organization&q=tail").await;
+    assert_eq!(titles(&body), ["Tailspin"]);
+    let (_, body) = get("kind=person").await;
+    assert_eq!(titles(&body), ["Fred Smith"]);
+    let (_, body) = get("sort=last-payment&dir=desc").await;
+    assert_eq!(titles(&body)[0], "Contoso");
+    // Blank values are no filter: the SPA passes its URL through.
+    let (_, body) = get("q=&kind=&sort=&dir=").await;
+    assert_eq!(titles(&body).len(), 6);
+    for bad in ["kind=robot", "sort=age", "dir=up"] {
+        let (status, body) = get(bad).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {body}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn open_pos_are_edited_by_key_and_show_their_use() {
+    let app = app();
+    let path = "customers/Customer X.md";
+    let shown = detail(&app, path).await;
+    let po = &shown["po_usage"][0];
+    assert_eq!(po["reference"], "PO #PY75334");
+    assert_eq!(po["invoices"], json!(["104"]));
+    assert!(po["remaining"].is_string(), "{po}");
+    assert_eq!(shown["form"]["open_pos"][0]["was"], "PO #PY75334");
+    let before = std::fs::read_to_string(books_root(&app).join(path)).expect("reads");
+
+    // Add one: only `open_pos` changes in the file.
+    let (status, saved) = json_of(
+        &app,
+        put_json(
+            &customer_url(path),
+            &json!({"hash": shown["hash"], "fields": {"open_pos": [
+                {"reference": "PO #PY75334", "amount": "$40,000", "expires": "2027-06-30", "was": "PO #PY75334"},
+                {"reference": "PO #900", "amount": "$2,500", "expires": "2027-03-31"}
+            ]}}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["changed"], json!(["open_pos"]));
+    let after = std::fs::read_to_string(books_root(&app).join(path)).expect("reads");
+    let outside = |t: &str| {
+        let start = t.find("open_pos:").expect("open_pos");
+        let end = t.find("billing_portal:").expect("portal");
+        format!("{}{}", &t[..start], &t[end..])
+    };
+    assert_eq!(outside(&after), outside(&before));
+    assert!(after.contains("PO #900"), "{after}");
+    // The editor's reference suggestions follow at once.
+    let (status, options) = json_of(&app, authed("/api/editor/options")).await;
+    assert_eq!(status, StatusCode::OK, "{options}");
+    let x = options["customers"]
+        .as_array()
+        .expect("customers")
+        .iter()
+        .find(|c| c["title"] == "Customer X")
+        .expect("Customer X");
+    let refs: Vec<&str> = x["open_pos"]
+        .as_array()
+        .expect("open_pos")
+        .iter()
+        .filter_map(|po| po["reference"].as_str())
+        .collect();
+    assert_eq!(refs, ["PO #PY75334", "PO #900"]);
+
+    // A stale hash is a conflict; a bad amount is refused; nothing written.
+    let (status, _) = json_of(
+        &app,
+        put_json(
+            &customer_url(path),
+            &json!({"hash": shown["hash"], "fields": {"open_pos": []}}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, body) = json_of(
+        &app,
+        put_json(
+            &customer_url(path),
+            &json!({"hash": saved["hash"], "fields": {"open_pos": [{"reference": "PO #1", "amount": "lots"}]}}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(
+        std::fs::read_to_string(books_root(&app).join(path)).expect("reads"),
+        after
+    );
+
+    // Close both: the key goes.
+    let (status, saved) = json_of(
+        &app,
+        put_json(
+            &customer_url(path),
+            &json!({"hash": saved["hash"], "fields": {"open_pos": []}}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let closed = std::fs::read_to_string(books_root(&app).join(path)).expect("reads");
+    assert!(!closed.contains("open_pos:"), "{closed}");
+    assert_eq!(detail(&app, path).await["po_usage"], json!([]));
+}

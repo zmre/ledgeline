@@ -520,3 +520,192 @@ fn the_fixture_customer_saves_unchanged() {
     };
     assert_eq!(outside(&text), outside(CUSTOMER_X));
 }
+
+/// A customer with hand-written open POs: a quoted reference, an amount as
+/// a number, a key the form doesn't know, a comment after the list.
+const WITH_POS: &str = "---
+title: Contoso
+type: organization
+tags: [customer]
+open_pos:
+  - reference: \"PO #105\"
+    amount: 40000
+    expires: 2027-06-30
+    buyer: Lee        # who signed it
+  - reference: \"PO #200\"
+terms: 30   # net
+---
+
+Body stays.
+";
+
+fn pos(value: serde_json::Value) -> CustomerFields {
+    fields(json!({ "open_pos": value }))
+}
+
+#[test]
+fn open_pos_save_unchanged_and_keep_unknown_keys() {
+    let (vault, mut index) = open(&[("customers/Contoso.md", WITH_POS)]);
+    let p = path("customers/Contoso.md");
+    let note = index.site().note(&p).expect("note").clone();
+    let customer = Customer::from_note(&note).expect("customer");
+    let form = fields_of(&customer, &note);
+    let listed = form.open_pos.clone().expect("open_pos");
+    assert_eq!(listed[0].reference, "PO #105");
+    assert_eq!(listed[0].amount.as_deref(), Some("40000"));
+    assert_eq!(listed[0].was.as_deref(), Some("PO #105"));
+    // The form as read writes nothing: `amount: 40000` stays a number.
+    let done = update(&mut index, &vault, &p, &hash_of(&vault, &p), &form).expect("saves");
+    assert!(!done.written, "{:?}", done.changed);
+    assert_eq!(vault.read_to_string(&p).expect("reads"), WITH_POS);
+
+    // Edit the first PO's expiry: its `buyer` stays, the second PO stays, and
+    // every other key, comment and the body stay byte for byte.
+    let done = update(
+        &mut index,
+        &vault,
+        &p,
+        &done.hash,
+        &pos(json!([
+            {"reference": "PO #105", "amount": "40000", "expires": "2027-12-31", "was": "PO #105"},
+            {"reference": "PO #200", "was": "PO #200"}
+        ])),
+    )
+    .expect("saves");
+    assert_eq!(done.changed, ["open_pos"]);
+    let text = vault.read_to_string(&p).expect("reads");
+    assert!(text.contains("expires: 2027-12-31"), "{text}");
+    assert!(text.contains("buyer: Lee"), "{text}");
+    assert!(text.contains("PO #200"), "{text}");
+    assert!(
+        text.ends_with("terms: 30   # net\n---\n\nBody stays.\n"),
+        "{text}"
+    );
+    let reread = index.site().note(&p).cloned().expect("indexed");
+    let po = &Customer::from_note(&reread).expect("customer").open_pos;
+    assert_eq!(po.len(), 2);
+    assert_eq!(po[0].expires.as_deref(), Some("2027-12-31"));
+    assert_eq!(po[0].amount.as_deref(), Some("40000"));
+}
+
+#[test]
+fn open_pos_add_rename_and_close() {
+    let (vault, mut index) = open(&[("customers/Contoso.md", WITH_POS)]);
+    let p = path("customers/Contoso.md");
+    // Rename PO #105 (its `buyer` follows by `was`), close PO #200, add one.
+    let done = update(
+        &mut index,
+        &vault,
+        &p,
+        &hash_of(&vault, &p),
+        &pos(json!([
+            {"reference": "PO #105-A", "amount": "$40,000", "expires": "2027-06-30", "was": "PO #105"},
+            {"reference": "PO #300", "amount": "$5,000.50", "expires": ""}
+        ])),
+    )
+    .expect("saves");
+    assert_eq!(done.changed, ["open_pos"]);
+    let note = index.site().note(&p).cloned().expect("indexed");
+    let customer = Customer::from_note(&note).expect("customer");
+    let refs: Vec<&str> = customer
+        .open_pos
+        .iter()
+        .map(|po| po.reference.as_str())
+        .collect();
+    assert_eq!(refs, ["PO #105-A", "PO #300"]);
+    assert_eq!(customer.open_pos[1].amount.as_deref(), Some("$5,000.50"));
+    assert_eq!(customer.open_pos[1].expires, None);
+    assert_eq!(
+        note.frontmatter["open_pos"][0]["buyer"],
+        json!("Lee"),
+        "the renamed PO keeps its other keys"
+    );
+    // Closing the last ones removes the key; nothing else moves.
+    let done = update(&mut index, &vault, &p, &done.hash, &pos(json!([]))).expect("saves");
+    assert_eq!(done.changed, ["open_pos"]);
+    let text = vault.read_to_string(&p).expect("reads");
+    assert_eq!(
+        text,
+        "---\ntitle: Contoso\ntype: organization\ntags: [customer]\nterms: 30   # net\n---\n\nBody stays.\n"
+    );
+}
+
+#[test]
+fn open_pos_refuse_what_doesnt_read() {
+    let (vault, mut index) = open(&[("customers/Contoso.md", WITH_POS)]);
+    let p = path("customers/Contoso.md");
+    let hash = hash_of(&vault, &p);
+    for (bad, says) in [
+        (
+            json!([{"reference": "", "amount": "$5"}]),
+            "needs its reference",
+        ),
+        (
+            json!([{"reference": "PO 1"}, {"reference": "po 1"}]),
+            "both",
+        ),
+        (
+            json!([{"reference": "PO 1", "amount": "lots"}]),
+            "isn't money",
+        ),
+        (
+            json!([{"reference": "PO 1", "expires": "June"}]),
+            "isn't a date",
+        ),
+        (json!([{"reference": "PO\n1"}]), "one line"),
+    ] {
+        let refused = update(&mut index, &vault, &p, &hash, &pos(bad.clone()));
+        let Err(CustomerError::Invalid(message)) = refused else {
+            panic!("{bad}: {refused:?}");
+        };
+        assert!(message.contains(says), "{bad}: {message}");
+    }
+    assert_eq!(vault.read_to_string(&p).expect("reads"), WITH_POS);
+    // A blank row (no reference, amount or date) is dropped, not refused.
+    let done = update(
+        &mut index,
+        &vault,
+        &p,
+        &hash,
+        &pos(json!([{"reference": "PO #105", "amount": "40000", "expires": "2027-06-30", "was": "PO #105"}, {"reference": " "}])),
+    )
+    .expect("saves");
+    assert!(!vault.read_to_string(&p).expect("reads").contains("PO #200"));
+    assert!(done.written);
+}
+
+#[test]
+fn open_pos_conflict_on_an_outside_edit() {
+    let (vault, mut index) = open(&[("customers/Contoso.md", WITH_POS)]);
+    let p = path("customers/Contoso.md");
+    let shown = hash_of(&vault, &p);
+    let outside = WITH_POS.replace("Body stays.", "Edited elsewhere.");
+    vault.write_atomic(&p, outside.as_bytes()).expect("edits");
+    let refused = update(&mut index, &vault, &p, &shown, &pos(json!([])));
+    assert!(
+        matches!(refused, Err(CustomerError::Changed { .. })),
+        "{refused:?}"
+    );
+    assert_eq!(vault.read_to_string(&p).expect("reads"), outside);
+}
+
+#[test]
+fn a_new_customer_can_have_open_pos() {
+    let (vault, mut index) = open(&[]);
+    let made = create(
+        &mut index,
+        &vault,
+        &fields(json!({
+            "title": "Northwind",
+            "kind": "organization",
+            "open_pos": [{"reference": "PO #1", "amount": "$1,000", "expires": "2027-01-31"}]
+        })),
+    )
+    .expect("creates");
+    let note = index.site().note(&made.path).cloned().expect("indexed");
+    let customer = Customer::from_note(&note).expect("customer");
+    assert_eq!(customer.open_pos.len(), 1);
+    assert_eq!(customer.open_pos[0].reference, "PO #1");
+    assert_eq!(customer.open_pos[0].amount.as_deref(), Some("$1,000"));
+    assert_eq!(customer.open_pos[0].expires.as_deref(), Some("2027-01-31"));
+}

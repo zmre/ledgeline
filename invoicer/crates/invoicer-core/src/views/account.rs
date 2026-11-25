@@ -9,7 +9,8 @@
 //! credit) the books link to one of its invoices; payments on the same day
 //! are added up.
 
-use super::{CustomerEntry, billed_to, customer_entry};
+use super::query::{contains_text, missing_last, search_text};
+use super::{CustomerEntry, CustomerQuery, CustomerSort, SortDir, billed_to, customer_entry};
 use crate::customers::Customer;
 use crate::receivables::{self, OpenItem};
 use crate::session::Session;
@@ -28,6 +29,9 @@ pub struct Balance {
     pub commodity: String,
     /// What is owed, in the journal's style (`$8,350.00`).
     pub amount: String,
+    /// The same, as a number (sorting by what is owed).
+    #[serde(skip)]
+    pub value: Dec,
 }
 
 /// A payment, in one commodity.
@@ -104,6 +108,7 @@ pub fn customer_account(
         .map(|(commodity, amount)| Balance {
             commodity: commodity.to_string(),
             amount: money.style(Some(commodity)).format(amount),
+            value: amount,
         })
         .collect();
 
@@ -172,6 +177,69 @@ pub fn customer_accounts(session: &Session, today: &str) -> Vec<CustomerAccountE
             .then_with(|| a.entry.path.cmp(&b.entry.path))
     });
     all
+}
+
+/// `rows` ([`customer_accounts`]) narrowed and ordered by `query` (PLAN
+/// 5b, S2). Ties, and the default, are by name.
+#[must_use]
+pub fn query_customers(
+    rows: Vec<CustomerAccountEntry>,
+    query: &CustomerQuery,
+) -> Vec<CustomerAccountEntry> {
+    let text = search_text(query.text.as_deref());
+    let mut out: Vec<CustomerAccountEntry> = rows
+        .into_iter()
+        .filter(|r| !query.owes || !r.account.balance.is_empty())
+        .filter(|r| !query.overdue || r.account.overdue > 0)
+        .filter(|r| query.kind.is_none_or(|k| r.entry.kind == k))
+        .filter(|r| {
+            text.as_deref().is_none_or(|t| {
+                [
+                    Some(r.entry.title.as_str()),
+                    Some(r.entry.ledger_customer.as_str()),
+                    Some(r.entry.billing.name.as_str()),
+                    r.entry.billing.email.as_deref(),
+                ]
+                .into_iter()
+                .any(|f| contains_text(f, t))
+            })
+        })
+        .collect();
+    let dir = query.dir;
+    let owed = |r: &CustomerAccountEntry| {
+        r.account
+            .balance
+            .first()
+            .map_or_else(Dec::zero, |b| b.value)
+    };
+    match query.sort.unwrap_or(CustomerSort::Name) {
+        // Already by name: only the direction can change it.
+        CustomerSort::Name => {
+            if dir == SortDir::Desc {
+                out.reverse();
+            }
+        }
+        CustomerSort::Owed => out.sort_by(|a, b| dir.apply(owed(a).cmp(&owed(b)))),
+        CustomerSort::Overdue => out.sort_by(|a, b| {
+            // More overdue invoices, then an older oldest one, is "more overdue".
+            let older = match (&a.account.oldest_overdue, &b.account.oldest_overdue) {
+                (Some(x), Some(y)) => y.cmp(x),
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                (None, Some(_)) => std::cmp::Ordering::Less,
+                (None, None) => std::cmp::Ordering::Equal,
+            };
+            dir.apply(a.account.overdue.cmp(&b.account.overdue).then(older))
+        }),
+        CustomerSort::LastPayment => out.sort_by(|a, b| {
+            missing_last(
+                a.account.last_payment.as_ref().map(|p| p.date.as_str()),
+                b.account.last_payment.as_ref().map(|p| p.date.as_str()),
+                dir,
+                Ord::cmp,
+            )
+        }),
+    }
+    out
 }
 
 #[cfg(test)]
@@ -249,6 +317,104 @@ mod tests {
                 oldest_overdue: None,
                 last_payment: None
             }
+        );
+    }
+
+    #[test]
+    fn customers_filter_and_sort() {
+        let session = session("accrual");
+        let titles = |query: CustomerQuery| -> Vec<String> {
+            query_customers(customer_accounts(&session, "2026-11-22"), &query)
+                .into_iter()
+                .map(|r| r.entry.title)
+                .collect()
+        };
+        assert_eq!(
+            titles(CustomerQuery {
+                owes: true,
+                ..CustomerQuery::default()
+            }),
+            ["Contoso", "Customer X", "Tailspin", "Wingtip"]
+        );
+        assert_eq!(
+            titles(CustomerQuery {
+                overdue: true,
+                ..CustomerQuery::default()
+            }),
+            ["Contoso", "Tailspin", "Wingtip"]
+        );
+        assert_eq!(
+            titles(CustomerQuery {
+                kind: Some(crate::customers::ContactKind::Person),
+                ..CustomerQuery::default()
+            }),
+            ["Fred Smith"]
+        );
+        // Title, books name, billing name or email, any case.
+        assert_eq!(
+            titles(CustomerQuery {
+                text: Some("FRED".into()),
+                ..CustomerQuery::default()
+            }),
+            ["Fred Smith"]
+        );
+        let sorted = |sort: CustomerSort, dir: SortDir| {
+            titles(CustomerQuery {
+                sort: Some(sort),
+                dir,
+                ..CustomerQuery::default()
+            })
+        };
+        assert_eq!(
+            sorted(CustomerSort::Name, SortDir::Desc),
+            [
+                "Wingtip",
+                "Tailspin",
+                "Fred Smith",
+                "Fabrikam",
+                "Customer X",
+                "Contoso"
+            ]
+        );
+        // Most owed first; nothing owed is zero, by name.
+        assert_eq!(
+            sorted(CustomerSort::Owed, SortDir::Desc),
+            [
+                "Customer X",
+                "Tailspin",
+                "Wingtip",
+                "Contoso",
+                "Fabrikam",
+                "Fred Smith"
+            ]
+        );
+        // Wingtip has two overdue; Tailspin's one is older than Contoso's.
+        assert_eq!(
+            sorted(CustomerSort::Overdue, SortDir::Desc)[..3],
+            ["Wingtip", "Tailspin", "Contoso"]
+        );
+        // Latest payment first; none last, either way round.
+        assert_eq!(
+            sorted(CustomerSort::LastPayment, SortDir::Desc),
+            [
+                "Contoso",
+                "Fabrikam",
+                "Customer X",
+                "Fred Smith",
+                "Tailspin",
+                "Wingtip"
+            ]
+        );
+        assert_eq!(
+            sorted(CustomerSort::LastPayment, SortDir::Asc),
+            [
+                "Customer X",
+                "Fabrikam",
+                "Contoso",
+                "Fred Smith",
+                "Tailspin",
+                "Wingtip"
+            ]
         );
     }
 

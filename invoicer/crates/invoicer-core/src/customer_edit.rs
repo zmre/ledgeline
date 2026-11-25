@@ -21,6 +21,7 @@
 //! meaning "leave it". An empty string or list, or `null`, removes the key.
 
 use crate::customers::{BillingPortal, ContactKind, ContractRef, Customer, Labelled, is_customer};
+use crate::doc::Money;
 use crate::frontmatter::{self, EditError, FieldEdit};
 use crate::index::DocumentIndex;
 use crate::notes::{Note, Stamp};
@@ -96,6 +97,27 @@ pub struct CustomerFields {
     /// `billing_portal:`. Its keys the form doesn't know are kept.
     #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
     pub billing_portal: Option<Option<BillingPortal>>,
+    /// `open_pos:`, the whole list in order (PLAN 5b, S5). A PO left out is
+    /// closed: removed from the list. Each entry's keys the form doesn't
+    /// know are kept.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open_pos: Option<Vec<PoFields>>,
+}
+
+/// One `open_pos:` entry as the form edits it: the keys the core reads
+/// ([`crate::customers::OpenPo`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PoFields {
+    /// What the customer quotes back (`PO #PY75334`). Required, one per PO.
+    pub reference: String,
+    /// The PO's amount, as money (`$40,000`); empty for none.
+    pub amount: Option<String>,
+    /// When it expires (YYYY-MM-DD); empty for never.
+    pub expires: Option<String>,
+    /// The reference it had when the form was filled (`None`: a new PO).
+    /// The note's entry with that reference keeps its other keys.
+    pub was: Option<String>,
 }
 
 /// What a create or an update wrote.
@@ -207,6 +229,18 @@ pub fn fields_of(customer: &Customer, note: &Note) -> CustomerFields {
                 .collect(),
         ),
         billing_portal: Some(customer.billing_portal.clone()),
+        open_pos: Some(
+            customer
+                .open_pos
+                .iter()
+                .map(|po| PoFields {
+                    reference: po.reference.clone(),
+                    amount: po.amount.clone(),
+                    expires: po.expires.clone(),
+                    was: Some(po.reference.clone()),
+                })
+                .collect(),
+        ),
     }
 }
 
@@ -416,6 +450,98 @@ fn portal_value(
     Ok((!map.is_empty()).then_some(Value::Object(map)))
 }
 
+/// The text a PO entry's `key` reads as (as [`Customer::from_note`] reads it).
+fn entry_text(map: &Map<String, Value>, key: &str) -> Option<String> {
+    match map.get(key) {
+        Some(Value::String(s)) => Some(s.trim().to_string()).filter(|s| !s.is_empty()),
+        Some(Value::Number(n)) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// `open_pos:` as written: each PO over the note's own entry with its old
+/// reference (`was`), keeping keys the form doesn't know and values that read
+/// the same as they are written (`amount: 40000` stays a number). `None`
+/// removes the key: no POs left.
+fn open_pos_value(
+    pos: &[PoFields],
+    existing: Option<&Value>,
+    money: &Money,
+) -> Result<Option<Value>, CustomerError> {
+    let entries: Vec<&Map<String, Value>> = match existing {
+        Some(Value::Array(items)) => items.iter().filter_map(Value::as_object).collect(),
+        _ => Vec::new(),
+    };
+    let mut seen: Vec<String> = Vec::new();
+    let mut out = Vec::new();
+    for po in pos {
+        let Some(reference) = one_line("a PO's reference", &po.reference)? else {
+            if po.amount.as_deref().is_some_and(|a| !a.trim().is_empty())
+                || po.expires.as_deref().is_some_and(|e| !e.trim().is_empty())
+            {
+                return Err(invalid("every open PO needs its reference (PO #105)"));
+            }
+            continue;
+        };
+        let key = reference.to_lowercase();
+        if seen.contains(&key) {
+            return Err(invalid(format!(
+                "two open POs are both {reference:?}; give each its own reference"
+            )));
+        }
+        seen.push(key);
+        let amount = match &po.amount {
+            Some(a) => one_line("a PO's amount", a)?,
+            None => None,
+        };
+        if let Some(a) = &amount
+            && money.read(a).is_none()
+        {
+            return Err(invalid(format!(
+                "{reference}: the amount {a:?} isn't money; write it like $40,000"
+            )));
+        }
+        let expires = match &po.expires {
+            Some(e) => one_line("a PO's expiry date", e)?,
+            None => None,
+        };
+        if let Some(e) = &expires
+            && !crate::table::books::is_iso_date(e)
+        {
+            return Err(invalid(format!(
+                "{reference}: the expiry date {e:?} isn't a date (YYYY-MM-DD)"
+            )));
+        }
+        let was = po
+            .was
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or(reference.as_str());
+        let mut map = entries
+            .iter()
+            .find(|m| entry_text(m, "reference").as_deref() == Some(was))
+            .map(|m| (*m).clone())
+            .unwrap_or_default();
+        for (k, v) in [
+            ("reference", Some(reference.clone())),
+            ("amount", amount),
+            ("expires", expires),
+        ] {
+            match v {
+                Some(v) if entry_text(&map, k).as_deref() == Some(v.as_str()) => {}
+                Some(v) => {
+                    map.insert(k.to_string(), Value::String(v));
+                }
+                None => {
+                    map.remove(k);
+                }
+            }
+        }
+        out.push(Value::Object(map));
+    }
+    Ok((!out.is_empty()).then_some(Value::Array(out)))
+}
+
 /// Set `key` to `value` (remove it for `None`), leaving a value that only
 /// differs in trailing white space as written (a `|` block stays one).
 fn set_text(map: &mut Map<String, Value>, key: &str, value: Option<String>) {
@@ -449,8 +575,10 @@ impl Wanted {
 
 fn wanted(
     fields: &CustomerFields,
-    existing_portal: Option<&Value>,
+    existing: Option<&crate::frontmatter::Fields>,
+    money: &Money,
 ) -> Result<Wanted, CustomerError> {
+    let existing_portal = existing.and_then(|f| f.get("billing_portal"));
     let mut out = Wanted { keys: Vec::new() };
     let text = |s: String| Some(Value::String(s));
     if let Some(title) = &fields.title {
@@ -510,6 +638,12 @@ fn wanted(
         out.put(
             "contracts",
             (!list.is_empty()).then_some(Value::Array(list)),
+        );
+    }
+    if let Some(pos) = &fields.open_pos {
+        out.put(
+            "open_pos",
+            open_pos_value(pos, existing.and_then(|f| f.get("open_pos")), money)?,
         );
     }
     if let Some(portal) = &fields.billing_portal {
@@ -625,7 +759,7 @@ pub fn create(
     let path = VaultPath::new(&name)
         .map_err(|e| invalid(format!("{name:?} can't be a file in the books: {e}")))?;
     let tag = settings.words.customer_tag.clone();
-    let wanted = wanted(fields, None)?;
+    let wanted = wanted(fields, None, index.money())?;
     let mut block: Vec<(&str, Value)> = Vec::new();
     for (key, value) in wanted.keys {
         if let Some(value) = value {
@@ -723,7 +857,7 @@ pub fn update(
             });
         }
     }
-    let mut wanted = wanted(fields, note.frontmatter.get("billing_portal"))?;
+    let mut wanted = wanted(fields, Some(&note.frontmatter), index.money())?;
     let renamed = wanted.keys.iter().any(|(k, v)| {
         *k == "title" && v.as_ref().and_then(Value::as_str) != Some(customer.contact.title.as_str())
     });

@@ -9,7 +9,7 @@
 //! |-----------------------------|------------------------------------------------|
 //! | `GET /api/version`          | The app and its version.                       |
 //! | `GET /api/books`            | The open books: journal, basis, counts.        |
-//! | `GET /api/invoices`         | `list --json` (`status`, `customer`, `type`, `open`, `overdue`, `today`). |
+//! | `GET /api/invoices`         | `list --json` (`status`, `customer`, `type`, `open`, `overdue`, `from`, `to`, `aged`, `q`, `sort`, `dir`, `today`; PLAN 5b S1). |
 //! | `GET /api/invoices/{num}`   | `show --json` (`today`).                       |
 //! | `GET /api/invoices/{num}/books` | The Books panel: what the journal holds (3b). |
 //! | `POST /api/preview`         | An invoice rendered from unsaved text (3b).    |
@@ -227,9 +227,15 @@ async fn books(State(state): State<AppState>, Query(params): Query<BooksParams>)
     .await
 }
 
+/// `GET /api/invoices`' query: the invoice list's URL contract (PLAN 5b,
+/// S1), plus `type`, `open`, `overdue` and `today`. A blank value is no
+/// filter, so the SPA can pass its URL through as it is.
 #[derive(Debug, Default, Deserialize)]
 struct ListParams {
+    /// `draft`, `sent`, `paid`, `void`, `open` or `overdue` (or any other
+    /// `status:` value, `estimate-open`).
     status: Option<String>,
+    /// A customer's name, title or `[[link]]`.
     customer: Option<String>,
     #[serde(rename = "type")]
     doc_type: Option<String>,
@@ -237,29 +243,90 @@ struct ListParams {
     open: bool,
     #[serde(default)]
     overdue: bool,
+    /// Dated on or after (YYYY-MM-DD).
+    from: Option<String>,
+    /// Dated on or before.
+    to: Option<String>,
+    /// Open and this many days past due: `current`, `31-60`, `91+`.
+    aged: Option<String>,
+    /// Number, customer, reference or total holding this text.
+    q: Option<String>,
+    /// `number`, `customer`, `date`, `due`, `total` or `status`.
+    sort: Option<String>,
+    /// `asc` (the default) or `desc`.
+    dir: Option<String>,
     today: Option<String>,
 }
 
-/// `GET /api/invoices`: `list --json`.
+/// A query value, `None` when absent or blank.
+pub(crate) fn given(value: Option<&String>) -> Option<&str> {
+    value.map(|v| v.trim()).filter(|v| !v.is_empty())
+}
+
+/// `?dir=`: `asc` (the default) or `desc`.
+pub(crate) fn sort_dir(value: Option<&String>) -> Result<views::SortDir, ApiError> {
+    given(value).map_or(Ok(views::SortDir::Asc), |d| {
+        views::SortDir::parse(d).ok_or_else(|| bad("dir", d))
+    })
+}
+
+impl ListParams {
+    /// The query these parameters ask for, or why they don't read.
+    fn query(&self) -> Result<ListQuery, ApiError> {
+        let date = |name: &str, value: Option<&String>| -> Result<Option<String>, ApiError> {
+            given(value)
+                .map(|d| {
+                    if is_iso_date(d) {
+                        Ok(d.to_string())
+                    } else {
+                        Err(ApiError::bad_request(format!(
+                            "{name}={d}: not a date (YYYY-MM-DD)"
+                        )))
+                    }
+                })
+                .transpose()
+        };
+        let mut query = ListQuery {
+            filter: ListFilter {
+                doc_type: given(self.doc_type.as_ref())
+                    .map(|t| DocType::parse(t).ok_or_else(|| bad("type", t)))
+                    .transpose()?,
+                status: None,
+                customer: given(self.customer.as_ref()).map(str::to_string),
+            },
+            open: self.open,
+            overdue: self.overdue,
+            from: date("from", self.from.as_ref())?,
+            to: date("to", self.to.as_ref())?,
+            aged: given(self.aged.as_ref())
+                .map(|a| views::Aged::parse(a).ok_or_else(|| bad("aged", a)))
+                .transpose()?,
+            text: given(self.q.as_ref()).map(str::to_string),
+            sort: given(self.sort.as_ref())
+                .map(|s| views::InvoiceSort::parse(s).ok_or_else(|| bad("sort", s)))
+                .transpose()?,
+            dir: sort_dir(self.dir.as_ref())?,
+            ..ListQuery::default()
+        };
+        if let Some(status) = given(self.status.as_ref()) {
+            query = match views::ListStatus::parse(status) {
+                Some(wanted) => query.with_status(wanted),
+                None => {
+                    query.filter.status =
+                        Some(Status::parse(status).ok_or_else(|| bad("status", status))?);
+                    query
+                }
+            };
+        }
+        Ok(query)
+    }
+}
+
+/// `GET /api/invoices`: `list --json`, filtered and sorted by the query
+/// ([`ListParams`]).
 async fn invoices(State(state): State<AppState>, Query(params): Query<ListParams>) -> ApiResult {
     let today = today(params.today.as_deref())?;
-    let query = ListQuery {
-        filter: ListFilter {
-            doc_type: params
-                .doc_type
-                .as_deref()
-                .map(|t| DocType::parse(t).ok_or_else(|| bad("type", t)))
-                .transpose()?,
-            status: params
-                .status
-                .as_deref()
-                .map(|s| Status::parse(s).ok_or_else(|| bad("status", s)))
-                .transpose()?,
-            customer: params.customer,
-        },
-        open: params.open,
-        overdue: params.overdue,
-    };
+    let query = params.query()?;
     with_books(&state, move |books| {
         let session = books.session();
         let problems = views::document_problems(&session);
@@ -274,7 +341,7 @@ async fn invoices(State(state): State<AppState>, Query(params): Query<ListParams
     .await
 }
 
-fn bad(what: &str, value: &str) -> ApiError {
+pub(crate) fn bad(what: &str, value: &str) -> ApiError {
     ApiError::bad_request(format!("{what}={value}: not a {what}"))
 }
 

@@ -673,6 +673,7 @@ fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
                 },
                 open: args.open,
                 overdue: args.overdue,
+                ..ListQuery::default()
             };
             let problems = views::document_problems(&session);
             let entries = views::list(
