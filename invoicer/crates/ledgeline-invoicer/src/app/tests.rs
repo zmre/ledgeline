@@ -191,6 +191,23 @@ async fn ui_prefs_are_the_shared_theme_and_scale() {
         .unwrap();
     let (status, _, _) = send(&app.router, patch).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // A file that won't be overwritten says so without naming the other
+    // app (RA-13).
+    let app_dirs = AppDirs::under(books_root(&app).parent().unwrap().join("config"));
+    let file = app_dirs.config_file("ui-prefs.toml").unwrap();
+    std::fs::write(&file, "theme = [\n").unwrap();
+    let patch = Request::patch("/api/ui-prefs")
+        .header(header::HOST, HOST)
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(r#"{"theme":"gruvbox"}"#))
+        .unwrap();
+    let (status, _, body) = send(&app.router, patch).await;
+    assert!(status.is_client_error(), "{status} {body}");
+    assert!(body.contains("not overwritten"), "{body}");
+    assert!(!body.contains("Ledgeline"), "{body}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "theme = [\n");
 }
 
 #[tokio::test(flavor = "multi_thread")]
