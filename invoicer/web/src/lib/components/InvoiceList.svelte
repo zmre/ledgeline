@@ -9,6 +9,7 @@
      reads one link per row. The row click is the pointer's shortcut to it. -->
 <script lang="ts">
     import {kindLabel, type InvoiceEntry} from "#lib/invoices.js";
+    import {rowClick} from "#lib/rows.js";
     import EmptyState from "./EmptyState.svelte";
     import StatusBadge from "./StatusBadge.svelte";
 
@@ -18,19 +19,6 @@
         onOpen,
         newHref = "new",
     }: {invoices: InvoiceEntry[]; href: (doc: InvoiceEntry) => string; onOpen?: (doc: InvoiceEntry) => void; newHref?: string} = $props();
-
-    /** Open `doc` from a click on its row, unless the click was on a control, or selected text. */
-    function rowClick(event: MouseEvent, doc: InvoiceEntry): void {
-        const target = event.target as Element | null;
-        if (target?.closest("a, button, input, select, textarea, label, summary") ?? false) return;
-        if ((window.getSelection?.()?.toString() ?? "") !== "") return;
-        if (onOpen !== undefined) {
-            onOpen(doc);
-            return;
-        }
-        // Without a handler: follow the number's own link (same tab rules).
-        (event.currentTarget as HTMLElement).querySelector<HTMLAnchorElement>("a[data-row-link]")?.click();
-    }
 </script>
 
 {#if invoices.length === 0}
@@ -59,7 +47,12 @@
                 {#each invoices as doc (doc.path)}
                     {@const kind = kindLabel(doc.doc_type)}
                     <!-- The pointer's shortcut; the number's link is the keyboard's way in (see the top). -->
-                    <tr class="cursor-pointer hover:bg-base-200" data-testid="invoice-row" data-number={doc.number} onclick={(event) => rowClick(event, doc)}>
+                    <tr
+                        class="cursor-pointer hover:bg-base-200"
+                        data-testid="invoice-row"
+                        data-number={doc.number}
+                        onclick={(event) => rowClick(event, onOpen === undefined ? undefined : () => onOpen(doc))}
+                    >
                         <td class="font-medium whitespace-nowrap">
                             <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- the page passes `href` built with resolve() -->
                             <a class="link link-hover" href={href(doc)} data-row-link>{doc.number ?? doc.title}</a>

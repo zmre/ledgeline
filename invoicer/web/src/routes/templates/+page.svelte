@@ -147,7 +147,7 @@
         {/if}
         {#if list.length > 0}
             {#if own.length === 0}<h2 class="text-lg font-semibold">Starters</h2>{/if}
-            <TemplateList entries={list} href={editorHref} />
+            <TemplateList entries={list} href={editorHref} onOpen={(entry) => void goto(resolve("/templates/[...path]", {path: templateParam(entry.path)}))} />
         {/if}
     {/if}
 </div>

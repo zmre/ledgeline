@@ -6,6 +6,7 @@
      row's one link, for the keyboard and screen readers. -->
 <script lang="ts">
     import {balanceText, lastPaymentText, type CustomerRow} from "#lib/customers.js";
+    import {rowClick} from "#lib/rows.js";
     import EmptyState from "./EmptyState.svelte";
 
     let {
@@ -20,17 +21,6 @@
         newHref: string;
         onOpen?: (row: CustomerRow) => void;
     } = $props();
-
-    function rowClick(event: MouseEvent, row: CustomerRow): void {
-        const target = event.target as Element | null;
-        if (target?.closest("a, button, input, select, textarea, label, summary") ?? false) return;
-        if ((window.getSelection?.()?.toString() ?? "") !== "") return;
-        if (onOpen !== undefined) {
-            onOpen(row);
-            return;
-        }
-        (event.currentTarget as HTMLElement).querySelector<HTMLAnchorElement>("a[data-row-link]")?.click();
-    }
 </script>
 
 {#if customers.length === 0}
@@ -56,7 +46,12 @@
             </thead>
             <tbody>
                 {#each customers as row (row.path)}
-                    <tr class="cursor-pointer hover:bg-base-200" data-testid="customer-row" data-path={row.path} onclick={(event) => rowClick(event, row)}>
+                    <tr
+                        class="cursor-pointer hover:bg-base-200"
+                        data-testid="customer-row"
+                        data-path={row.path}
+                        onclick={(event) => rowClick(event, onOpen === undefined ? undefined : () => onOpen(row))}
+                    >
                         <td class="font-medium">
                             <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- the page passes `href` built with resolve() -->
                             <a class="link link-hover" href={href(row)} data-row-link>{row.title}</a>
