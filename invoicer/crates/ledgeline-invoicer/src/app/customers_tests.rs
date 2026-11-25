@@ -460,17 +460,41 @@ async fn open_pos_are_edited_by_key_and_show_their_use() {
         after
     );
 
-    // Close both: the key goes.
+    // Close both: the key goes, and each is noted at the end of the body,
+    // in the same write (S5).
     let (status, saved) = json_of(
         &app,
         put_json(
             &customer_url(path),
-            &json!({"hash": saved["hash"], "fields": {"open_pos": []}}),
+            &json!({"hash": saved["hash"], "fields": {"open_pos": []}, "today": "2026-11-24"}),
         ),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{saved}");
+    assert_eq!(saved["noted"], json!(["PO #PY75334", "PO #900"]));
     let closed = std::fs::read_to_string(books_root(&app).join(path)).expect("reads");
     assert!(!closed.contains("open_pos:"), "{closed}");
+    assert!(
+        closed.ends_with(
+            "## Closed POs\n\n- PO #PY75334 — $40,000, expires 2027-06-30; invoiced $8,350.00; closed 2026-11-24.\n- PO #900 — $2,500, expires 2027-03-31; nothing invoiced; closed 2026-11-24.\n"
+        ),
+        "{closed}"
+    );
+    assert_eq!(
+        saved["hash"],
+        invoicer_core::customer_edit::content_hash(closed.as_bytes())
+    );
+    // Everything before the note is the file as it was, but `open_pos`.
+    let body_at = after.find("\n---\n").expect("frontmatter end");
+    assert!(closed.contains(&after[after.find("billing_portal:").expect("portal")..body_at]));
+    let (status, _) = json_of(
+        &app,
+        put_json(
+            &customer_url(path),
+            &json!({"hash": saved["hash"], "fields": {}, "today": "soon"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(detail(&app, path).await["po_usage"], json!([]));
 }

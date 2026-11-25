@@ -98,6 +98,8 @@ export interface CustomerSaved {
     hash: string;
     written: boolean;
     changed: string[];
+    /** Open POs this save closed, each noted under "Closed POs" in the note's body (PLAN 5b, S5). */
+    noted?: string[];
 }
 
 /** An amount owed in one commodity, in the journal's style. */
@@ -400,10 +402,19 @@ export function createCustomer(fields: CustomerFields): Promise<CustomerSaved> {
 
 /**
  * `PUT /api/customers/{key}`: write `fields` (only those) into the note, if
- * it is still the bytes `hash` names; `409` otherwise.
+ * it is still the bytes `hash` names; `409` otherwise. A PO closed by the
+ * save is noted in the note's body, dated `today`.
  */
-export function saveCustomer(key: string, hash: string, fields: CustomerFields): Promise<CustomerSaved> {
-    return request<CustomerSaved>("PUT", customerApiUrl(key), isSaved, {hash, fields});
+export function saveCustomer(key: string, hash: string, fields: CustomerFields, today: string = localToday()): Promise<CustomerSaved> {
+    return request<CustomerSaved>("PUT", customerApiUrl(key), isSaved, {hash, fields, today});
+}
+
+/** What a save says it did: "Saved: Open POs." plus, when POs were closed, where they were noted. */
+export function savedText(saved: Pick<CustomerSaved, "written" | "changed" | "noted">, labels: (keys: readonly string[]) => string): string {
+    if (!saved.written) return "Nothing to save.";
+    const noted = saved.noted ?? [];
+    const closed = noted.length === 0 ? "" : ` ${noted.join(", ")} ${noted.length === 1 ? "is" : "are"} noted under Closed POs in the customer's note.`;
+    return `Saved: ${labels(saved.changed)}.${closed}`;
 }
 
 const isFileList = (body: unknown): boolean => isObject(body) && Array.isArray(body.files);

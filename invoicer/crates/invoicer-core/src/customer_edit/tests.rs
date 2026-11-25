@@ -620,13 +620,14 @@ fn open_pos_add_rename_and_close() {
         json!("Lee"),
         "the renamed PO keeps its other keys"
     );
-    // Closing the last ones removes the key; nothing else moves.
+    // Closing the last ones removes the key; nothing else moves but the
+    // body's note of them (S5; `update` has no date to give).
     let done = update(&mut index, &vault, &p, &done.hash, &pos(json!([]))).expect("saves");
     assert_eq!(done.changed, ["open_pos"]);
     let text = vault.read_to_string(&p).expect("reads");
     assert_eq!(
         text,
-        "---\ntitle: Contoso\ntype: organization\ntags: [customer]\nterms: 30   # net\n---\n\nBody stays.\n"
+        "---\ntitle: Contoso\ntype: organization\ntags: [customer]\nterms: 30   # net\n---\n\nBody stays.\n\n## Closed POs\n\n- PO #200; nothing invoiced; closed.\n- PO #105-A — $40,000, expires 2027-06-30; nothing invoiced; closed.\n- PO #300 — $5,000.50; nothing invoiced; closed.\n"
     );
 }
 
@@ -670,7 +671,10 @@ fn open_pos_refuse_what_doesnt_read() {
         &pos(json!([{"reference": "PO #105", "amount": "40000", "expires": "2027-06-30", "was": "PO #105"}, {"reference": " "}])),
     )
     .expect("saves");
-    assert!(!vault.read_to_string(&p).expect("reads").contains("PO #200"));
+    let note = index.site().note(&p).cloned().expect("indexed");
+    let left = Customer::from_note(&note).expect("customer").open_pos;
+    assert_eq!(left.len(), 1, "{left:?}");
+    assert_eq!(done.noted, ["PO #200"]);
     assert!(done.written);
 }
 
@@ -708,4 +712,114 @@ fn a_new_customer_can_have_open_pos() {
     assert_eq!(customer.open_pos[0].reference, "PO #1");
     assert_eq!(customer.open_pos[0].amount.as_deref(), Some("$1,000"));
     assert_eq!(customer.open_pos[0].expires.as_deref(), Some("2027-01-31"));
+}
+
+#[test]
+fn closed_pos_are_noted_in_a_new_section_and_the_body_stays() {
+    let (vault, mut index) = open(&[("customers/Contoso.md", WITH_POS)]);
+    let p = path("customers/Contoso.md");
+    let done = update_on(
+        &mut index,
+        &vault,
+        &p,
+        &hash_of(&vault, &p),
+        &pos(json!([{"reference": "PO #200", "was": "PO #200"}])),
+        Some("2026-11-24"),
+    )
+    .expect("saves");
+    assert_eq!(done.noted, ["PO #105"]);
+    let text = vault.read_to_string(&p).expect("reads");
+    assert!(
+        text.ends_with(
+            "---\n\nBody stays.\n\n## Closed POs\n\n- PO #105 — 40000, expires 2027-06-30; nothing invoiced; closed 2026-11-24.\n"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("buyer: Lee"), "{text}");
+
+    // A second close appends to the section, after its last line.
+    let done = update_on(
+        &mut index,
+        &vault,
+        &p,
+        &done.hash,
+        &pos(json!([])),
+        Some("2026-11-25"),
+    )
+    .expect("saves");
+    assert_eq!(done.noted, ["PO #200"]);
+    let text = vault.read_to_string(&p).expect("reads");
+    assert!(
+        text.ends_with(
+            "Body stays.\n\n## Closed POs\n\n- PO #105 — 40000, expires 2027-06-30; nothing invoiced; closed 2026-11-24.\n- PO #200; nothing invoiced; closed 2026-11-25.\n"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("open_pos:"), "{text}");
+}
+
+#[test]
+fn a_rename_or_an_edit_is_not_a_close() {
+    let (vault, mut index) = open(&[("customers/Contoso.md", WITH_POS)]);
+    let p = path("customers/Contoso.md");
+    let done = update_on(
+        &mut index,
+        &vault,
+        &p,
+        &hash_of(&vault, &p),
+        &pos(json!([
+            {"reference": "PO #105-A", "amount": "40000", "was": "PO #105"},
+            {"reference": "PO #200", "was": "PO #200"}
+        ])),
+        Some("2026-11-24"),
+    )
+    .expect("saves");
+    assert!(done.noted.is_empty());
+    assert!(
+        !vault
+            .read_to_string(&p)
+            .expect("reads")
+            .contains("Closed POs")
+    );
+}
+
+#[test]
+fn the_closed_section_is_found_mid_body_and_the_rest_stays() {
+    let body = "\nIntro.\n\n## Closed POs\n\n- PO #1 — $5; nothing invoiced; closed 2026-01-01.\n\n## Contacts\n\nLee.\n";
+    let text = format!("---\ntitle: X\n---\n{body}");
+    let out = note_closed_pos(
+        &text,
+        &["- PO #2; nothing invoiced; closed 2026-11-24.".to_string()],
+    );
+    assert_eq!(
+        out,
+        "---\ntitle: X\n---\n\nIntro.\n\n## Closed POs\n\n- PO #1 — $5; nothing invoiced; closed 2026-01-01.\n- PO #2; nothing invoiced; closed 2026-11-24.\n\n## Contacts\n\nLee.\n"
+    );
+    // An empty section, and a body without a final newline.
+    let out = note_closed_pos(
+        "---\ntitle: X\n---\nText\n## Closed POs",
+        &["- A.".to_string()],
+    );
+    assert_eq!(out, "---\ntitle: X\n---\nText\n## Closed POs\n\n- A.\n");
+    let out = note_closed_pos("---\ntitle: X\n---\nText", &["- A.".to_string()]);
+    assert_eq!(out, "---\ntitle: X\n---\nText\n\n## Closed POs\n\n- A.\n");
+    let out = note_closed_pos("---\ntitle: X\n---\n", &["- A.".to_string()]);
+    assert_eq!(out, "---\ntitle: X\n---\n\n## Closed POs\n\n- A.\n");
+}
+
+#[test]
+fn a_closed_po_line_reads_its_figures() {
+    let usage = crate::views::PoUsage {
+        reference: "PO #PY75334".into(),
+        amount: Some("$40,000".into()),
+        expires: Some("2027-06-30".into()),
+        expired: false,
+        invoices: vec!["104".into()],
+        invoiced: Some("$16,700.00".into()),
+        remaining: Some("$23,300.00".into()),
+    };
+    assert_eq!(
+        closed_po_line(&usage, Some("2026-11-24")),
+        "- PO #PY75334 — $40,000, expires 2027-06-30; invoiced $16,700.00; closed 2026-11-24."
+    );
 }

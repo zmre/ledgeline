@@ -3,7 +3,8 @@
      to and what is left; Add PO, Edit and Close save at once (the page writes
      `open_pos` by key, with the note's hash, so nothing else in the note
      moves). Closing takes the PO off the list (S5): new invoices stop
-     suggesting it, and invoices that quote it keep their reference.
+     suggesting it, invoices that quote it keep their reference, and the
+     server notes it under `## Closed POs` in the note's body.
 
      The edit row is part of the page's form element, so its buttons are
      `type="button"` and Enter in a field saves the row, not the page. -->
@@ -194,6 +195,9 @@
         onCancel={() => (closing = null)}
         testid="po-close-dialog"
     >
-        <p>It comes off this customer's open POs, so new invoices stop suggesting it. Invoices that quote it keep their reference.</p>
+        <p>
+            It comes off this customer's open POs, so new invoices stop suggesting it, and is noted under “Closed POs” in the customer's note with what was
+            invoiced against it. Invoices that quote it keep their reference.
+        </p>
     </ConfirmDialog>
 {/if}

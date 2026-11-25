@@ -702,7 +702,7 @@ pub struct CustomerEntry {
     pub open: usize,
 }
 
-fn billed_to<'a>(index: &'a DocumentIndex, customer: &Customer) -> Vec<&'a IndexedDoc> {
+pub(crate) fn billed_to<'a>(index: &'a DocumentIndex, customer: &Customer) -> Vec<&'a IndexedDoc> {
     let site = index.site();
     index
         .list(&ListFilter::default())
@@ -844,7 +844,7 @@ pub struct PoUsage {
 
 /// What has been invoiced against each of `customer`'s open POs, by
 /// `docs` (the customer's documents) on `today`.
-fn po_usage(
+pub(crate) fn po_usage(
     index: &DocumentIndex,
     customer: &Customer,
     docs: &[&IndexedDoc],

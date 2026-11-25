@@ -14,13 +14,13 @@
 //     not yet due, so neither is paid, overdue nor void;
 //   - Contoso, Tailspin and Wingtip have something overdue; Customer X owes
 //     the most; Fred Smith (a person) owes nothing.
-// The PO test puts Customer X's `open_pos` back as it found it (the
-// fixture's one PO), and checks the rest of the note never moved.
+// The PO tests check the rest of the note never moved, that a closed PO is
+// noted at the end of its body, then write Customer X back byte for byte.
 //
 // Written in 5b and NOT run by the agent that wrote it (agents never run
 // Playwright); the lead runs it.
 
-import {readFileSync} from "node:fs";
+import {readFileSync, writeFileSync} from "node:fs";
 import {resolve} from "node:path";
 import {expect, test, type Page} from "@playwright/test";
 import {API_TOKEN, COPY} from "../playwright.config";
@@ -30,6 +30,9 @@ const BOOKS = resolve(import.meta.dirname, "..", COPY);
 const CUSTOMER_X = "customers/Customer X.md";
 
 const read = (file: string): string => readFileSync(resolve(BOOKS, file), "utf8");
+
+/** The section a closed PO is noted in at the end of the customer note's body (S5), on the clock's date. */
+const closedNote = (line: string): string => `\n## Closed POs\n\n${line}\n`;
 
 /** Open the app on the invoice list with the launch token (`/app/` is the dashboard, R1), then go to `path`. */
 async function open(page: Page, path = "/app/invoices"): Promise<void> {
@@ -238,16 +241,26 @@ test.describe("a customer's open POs (:5199)", () => {
         await expect(listbox.getByRole("option").filter({hasText: "PO #PY75334"})).toBeVisible();
         await page.keyboard.press("Escape");
 
-        // Close it: asked first, then it comes off the note.
+        // Close it: asked first, then it comes off `open_pos` and is noted
+        // at the end of the body (S5), in the same write.
         await page.goto("/app/customers/customers/Customer%20X");
         await page.getByTestId("customer-open-pos").getByRole("button", {name: "Close PO #E2E-1", exact: true}).click();
         await expect(page.getByTestId("po-close-dialog")).toContainText("keep their reference");
+        await expect(page.getByTestId("po-close-dialog")).toContainText("noted under “Closed POs” in the customer's note");
         await page.getByTestId("po-close-dialog-confirm").click();
         await expect(page.locator('[data-testid="po-row"][data-reference="PO #E2E-1"]')).toHaveCount(0);
+        await expect(page.getByTestId("customer-saved")).toContainText("PO #E2E-1 is noted under Closed POs");
+        const note = closedNote("- PO #E2E-1 — $6,000; nothing invoiced; closed 2026-11-17.");
         const after = read(CUSTOMER_X);
-        expect(after).not.toContain("E2E-1");
-        expect(after).toContain("PO #PY75334");
-        expect(outside(after)).toBe(outside(before));
+        expect(after.endsWith(note)).toBe(true);
+        const kept = after.slice(0, after.length - note.length);
+        expect(kept).not.toContain("E2E-1");
+        expect(kept).toContain("PO #PY75334");
+        expect(outside(kept)).toBe(outside(before));
+
+        // Put Customer X back exactly as it was (the note is the user's to keep or delete).
+        writeFileSync(resolve(BOOKS, CUSTOMER_X), before);
+        expect(read(CUSTOMER_X)).toBe(before);
     });
 
     test("the form edits POs too, saved with the rest", async ({page}) => {
@@ -266,6 +279,13 @@ test.describe("a customer's open POs (:5199)", () => {
         await page.getByTestId("save-customer").click();
         await expect(page.getByTestId("customer-page")).toHaveAttribute("data-mode", "view");
         await expect(page.locator('[data-testid="po-row"][data-reference="PO #E2E-2"]')).toHaveCount(0);
-        expect(read(CUSTOMER_X).replace(/^open_pos:\n(?:[ ]+.*\n)+/m, "")).toBe(before.replace(/^open_pos:\n(?:[ ]+.*\n)+/m, ""));
+        const note = closedNote("- PO #E2E-2; nothing invoiced; closed 2026-11-17.");
+        const after = read(CUSTOMER_X);
+        expect(after.endsWith(note)).toBe(true);
+        const strip = (t: string): string => t.replace(/^open_pos:\n(?:[ ]+.*\n)+/m, "");
+        expect(strip(after.slice(0, after.length - note.length))).toBe(strip(before));
+
+        writeFileSync(resolve(BOOKS, CUSTOMER_X), before);
+        expect(read(CUSTOMER_X)).toBe(before);
     });
 });

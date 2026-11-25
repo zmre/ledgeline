@@ -200,6 +200,8 @@
         </div>
         {#if (form.open_pos ?? []).length === 0}
             <p class="text-sm text-base-content/60">None. Invoices for this customer suggest its open POs as their reference.</p>
+        {:else}
+            <p class="text-sm text-base-content/60">A PO closed here is noted under “Closed POs” in the customer's note when you save.</p>
         {/if}
         <ul class="flex flex-col gap-3">
             {#each form.open_pos ?? [] as po, at (at)}

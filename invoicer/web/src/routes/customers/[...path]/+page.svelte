@@ -35,6 +35,7 @@
         openBooksFile,
         routeParam,
         saveCustomer,
+        savedText,
         type CustomerDetail,
         type CustomerFields,
         type CustomerForm,
@@ -146,7 +147,7 @@
             const saved = await saveCustomer(target, hash, fields);
             apply(await fetchCustomer(target));
             editing = false;
-            savedNote = saved.written ? `Saved: ${fieldList(saved.changed)}.` : "Nothing to save.";
+            savedNote = savedText(saved, fieldList);
             return true;
         } catch (e: unknown) {
             conflict = e instanceof ApiStatusError && e.status === 409;

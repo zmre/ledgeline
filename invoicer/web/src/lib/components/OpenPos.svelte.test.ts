@@ -66,6 +66,7 @@ describe("COMPONENT OpenPos", () => {
         render(OpenPos, {usage: USAGE, onSave, invoiceHref});
         await fireEvent.click(screen.getByRole("button", {name: "Close PO #PY75334"}));
         expect(screen.getByTestId("po-close-dialog").textContent).toContain("keep their reference");
+        expect(screen.getByTestId("po-close-dialog").textContent).toContain("noted under “Closed POs” in the customer's note");
         await fireEvent.click(screen.getByTestId("po-close-dialog-confirm"));
         expect(onSave).toHaveBeenCalledExactlyOnceWith([{reference: "PO #9", amount: null, expires: "2026-01-31", was: "PO #9"}]);
     });

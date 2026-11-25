@@ -7,7 +7,7 @@
 //! | `GET /api/customers`           | `customers list --json`, each row with its `account` (`today`); `owes`, `overdue`, `kind`, `q`, `sort`, `dir` (PLAN 5b S2). |
 //! | `POST /api/customers`          | Create one: `CustomerFields` → `201` [`CustomerSaved`].     |
 //! | `GET /api/customers/{*key}`    | `customers show --json` plus `account`, `hash`, `form`, `backlinks` (`today`). |
-//! | `PUT /api/customers/{*key}`    | `{hash, fields}`: edit by key → [`CustomerSaved`].          |
+//! | `PUT /api/customers/{*key}`    | `{hash, fields, today?}`: edit by key → [`CustomerSaved`]; a closed PO is noted in the body (5b S5). |
 //!
 //! `key` is the note's path in the books folder (`customers/Fabrikam.md`,
 //! the `.md` optional) or a name `customers show` takes (title, alias, file
@@ -333,6 +333,10 @@ struct UpdateBody {
     hash: String,
     /// The fields to write; absent ones are left as they are.
     fields: CustomerFields,
+    /// The date a closed PO is noted with (YYYY-MM-DD); the local date by
+    /// default (PLAN 5b, S5).
+    #[serde(default)]
+    today: Option<String>,
 }
 
 /// `PUT /api/customers/{key}`: edit the note by key ([`CustomerSaved`]).
@@ -343,13 +347,15 @@ async fn update(
     body: Result<Json<UpdateBody>, JsonRejection>,
 ) -> ApiResult {
     let Json(body) = body.map_err(|e| ApiError::bad_request(e.body_text()))?;
+    let day = today(body.today.as_deref())?;
     let books = state.books().ok_or_else(no_books)?;
     blocking(move || {
         let mut session = books.session();
         let path = find(&session, &key)?;
         let (index, vault) = session.parts_mut();
-        let saved = customer_edit::update(index, vault, &path, &body.hash, &body.fields)
-            .map_err(|e| customer_error(&e))?;
+        let saved =
+            customer_edit::update_on(index, vault, &path, &body.hash, &body.fields, Some(&day))
+                .map_err(|e| customer_error(&e))?;
         to_value(saved)
     })
     .await

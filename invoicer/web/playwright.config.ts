@@ -89,7 +89,8 @@ export default defineConfig({
     //      back after;
     //   5. lists.e2e.ts (PLAN 5b) filters and sorts both lists over what the
     //      others leave (it relies only on facts they don't change), and adds,
-    //      edits and closes an open PO on Customer X, putting `open_pos` back.
+    //      edits and closes an open PO on Customer X (a close notes it in the
+    //      body), then writes Customer X back byte for byte.
     // empty.e2e.ts has its own server and books (5198), so it runs alongside.
     projects: [
         {name: "dashboard", testMatch: "**/dashboard.e2e.ts"},
