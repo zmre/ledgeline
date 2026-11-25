@@ -3,6 +3,7 @@
      daisyUI modal drawn open (a div, so it mounts in jsdom), focus on
      Cancel, the safe choice; Tab and Shift+Tab stay inside; Escape cancels. -->
 <script lang="ts">
+    import {modalKeys} from "#lib/keys/modalKeys.svelte.js";
     let {
         title = "Save your changes?",
         message,
@@ -20,6 +21,9 @@
         onDiscard: () => void;
         onCancel: () => void;
     } = $props();
+
+    // While open, the page beneath has no keys (PLAN 5k, Y8).
+    modalKeys("save-discard-dialog");
 
     const uid = $props.id();
     let box = $state<HTMLDivElement | null>(null);

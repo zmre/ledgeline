@@ -38,8 +38,8 @@
     import type {AmountStyle} from "#lib/domain/types.js";
     import {styleOf} from "#lib/format/amounts.js";
     import {formatChartValue, formatCompactChartValue} from "#lib/insights/series.js";
-    import {registerKeys} from "#lib/keys/keymap.svelte.js";
-    import {PRIORITY} from "#lib/keys/types.js";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
+    import {PRIORITY} from "#ui/keys/types.js";
     import BalanceSheetView from "#lib/reports/ui/BalanceSheetView.svelte";
     import CashFlowStatementView from "#lib/reports/ui/CashFlowStatementView.svelte";
     import IncomeStatementView from "#lib/reports/ui/IncomeStatementView.svelte";

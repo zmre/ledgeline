@@ -21,7 +21,7 @@ import {afterEach, describe, expect, it} from "vitest";
 import {dec} from "#lib/domain/money.js";
 import type {AmountStyle} from "#lib/domain/types.js";
 import {DEFAULT_AMOUNT_STYLE} from "#lib/format/amounts.js";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import {accountsFixture, compareFixture, journalFixture, projectionFixture, usd} from "#lib/testing/projectionFixture.js";
 import {expectSharedGrid} from "#lib/testing/statementGrid.js";
 import type {ProjectionTab} from "../params";

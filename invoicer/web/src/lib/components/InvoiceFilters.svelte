@@ -9,9 +9,12 @@
      invoice whose number was typed, or the only one the search leaves.
 
      Narrow windows: the controls wrap, the search taking a whole row below
-     `sm` (container queries follow the UI scale, plan 39). -->
+     `sm` (container queries follow the UI scale, plan 39).
+     Keyboard (PLAN 5k): `/` focuses the search; Escape in it clears it, a
+     second Escape leaves it for the list's `j`/`k`. -->
 <script lang="ts">
     import {untrack} from "svelte";
+    import {searchKeys} from "#lib/keys/pageSearch.svelte.js";
     import {SearchBox} from "#lib/searchBox.svelte.js";
     import Combobox from "#ui/components/Combobox.svelte";
     import DateInput from "#ui/components/DateInput.svelte";
@@ -107,6 +110,7 @@
             onkeydown={searchKey}
             onblur={() => search.flush()}
             aria-describedby="invoice-search-hint"
+            use:searchKeys={{clear: () => search.clear()}}
             data-testid="invoice-search"
         />
         <span id="invoice-search-hint" class="sr-only">Enter opens the invoice with that number, or the only one found.</span>

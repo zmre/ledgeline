@@ -3,8 +3,8 @@
      stays the same thing to look at and to operate. -->
 <script lang="ts">
     import HScroll from "#ui/components/HScroll.svelte";
-    import {registerKeys} from "#lib/keys/keymap.svelte.js";
-    import {PRIORITY} from "#lib/keys/types.js";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
+    import {PRIORITY} from "#ui/keys/types.js";
     import {accrual} from "#lib/accrual/store.svelte.js";
     import {isNative} from "#ui/native/detect.js";
     import {TAB_LABELS, TAB_ORDER, type SettingsTab} from "#lib/settings/params.js";

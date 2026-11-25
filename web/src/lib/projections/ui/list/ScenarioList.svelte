@@ -37,8 +37,8 @@
     import AccountInput from "#ui/components/AccountInput.svelte";
     import DateInput from "#ui/components/DateInput.svelte";
     import type {RenderProjectionBody} from "#lib/api/native.js";
-    import {registerKeys} from "#lib/keys/keymap.svelte.js";
-    import {PRIORITY} from "#lib/keys/types.js";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
+    import {PRIORITY} from "#ui/keys/types.js";
     import {listCursor} from "#ui/ui/listCursor.svelte.js";
     import {
         canDisable,

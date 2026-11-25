@@ -31,6 +31,7 @@
         disabled = false,
         onCommit,
         onCancel,
+        passAltArrows = false,
     }: {
         value?: string;
         accountNames: string[];
@@ -42,6 +43,12 @@
         disabled?: boolean;
         onCommit?: () => void;
         onCancel?: () => void;
+        /**
+         * Leave Alt+↑ / Alt+↓ to the page, untouched (the invoicer's grids
+         * move the row with them, H16). Otherwise Alt+↓ opens the list, as
+         * an ARIA combobox's does.
+         */
+        passAltArrows?: boolean;
     } = $props();
 
     /** Rows to show at once before the list scrolls. */
@@ -134,6 +141,7 @@
         // Mid-composition every keystroke is provisional; committing or
         // navigating on one would eat a half-typed character.
         if (event.isComposing) return;
+        if (passAltArrows && event.altKey && (event.key === "ArrowDown" || event.key === "ArrowUp")) return;
 
         if (event.key === "Escape") {
             // Claim Escape ONLY when this component actually consumes it —

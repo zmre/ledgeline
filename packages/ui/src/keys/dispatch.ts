@@ -10,7 +10,7 @@
 // decisions.
 
 import {canonical, formatKeys, isPrefixOf, type KeyEventLike, type KeyToken, chordToken} from "./chord";
-import {GROUP_ORDER, PRIORITY, type KeyGroup, type RegisteredLayer, type ResolvedBinding} from "./types";
+import {PRIORITY, type KeyGroup, type RegisteredLayer, type ResolvedBinding} from "./types";
 
 /**
  * Every binding that can fire right now, best candidate first.
@@ -46,6 +46,26 @@ export function resolveBindings(layers: readonly RegisteredLayer[]): ResolvedBin
         if (layer.modal === true) blinded = true;
     }
     return resolved;
+}
+
+/**
+ * The bindings that may answer a key aimed at `target`: those without a
+ * `within`, and those whose element contains it. Applied at dispatch only,
+ * after `resolveBindings`, so a scoped binding still shadows a lower layer's
+ * spelling of the same key everywhere (the shadowing rule stays total) and
+ * the `?` sheet lists it.
+ */
+export function inScope(active: readonly ResolvedBinding[], target: unknown): ResolvedBinding[] {
+    return active.filter((binding) => {
+        if (binding.within === undefined) return true;
+        const scope = binding.within();
+        return scope !== null && target !== null && target !== undefined && scope.contains(target);
+    });
+}
+
+/** The bindings that fire while focus is in a field: `always` (zoom) and `fields` (an editor's own chords). */
+export function fieldBindings(active: readonly ResolvedBinding[]): ResolvedBinding[] {
+    return active.filter((binding) => binding.always === true || binding.fields === true);
 }
 
 export type Dispatch =
@@ -95,11 +115,14 @@ export interface HelpSection {
  * The help sheet's content, from the same resolved list the dispatcher searches.
  *
  * Rows keep resolution order within a group (so the winning binding for a
- * shadowed key is the one shown, exactly once) and groups follow `GROUP_ORDER`.
- * An empty group is omitted rather than rendered as a bare heading, and a
- * binding marked `help: false` (an alternate spelling) is not listed.
+ * shadowed key is the one shown, exactly once) and groups follow `order`, the
+ * app's section order. A group the order does not name still shows, after
+ * the named ones, in the order its first binding resolved: a forgotten
+ * section is misplaced, never hidden. An empty group is omitted rather than
+ * rendered as a bare heading, and a binding marked `help: false` (an
+ * alternate spelling) is not listed.
  */
-export function helpSections(active: readonly ResolvedBinding[]): HelpSection[] {
+export function helpSections(active: readonly ResolvedBinding[], order: readonly KeyGroup[] = []): HelpSection[] {
     const byGroup = new Map<KeyGroup, HelpRow[]>();
     for (const binding of active) {
         if (binding.help === false) continue;
@@ -107,5 +130,7 @@ export function helpSections(active: readonly ResolvedBinding[]): HelpSection[] 
         rows.push({keys: binding.keys, label: binding.label, tokens: formatKeys(binding.keys)});
         byGroup.set(binding.group, rows);
     }
-    return GROUP_ORDER.filter((group) => byGroup.has(group)).map((group) => ({group, rows: byGroup.get(group) ?? []}));
+    const named = order.filter((group) => byGroup.has(group));
+    const rest = [...byGroup.keys()].filter((group) => !order.includes(group));
+    return [...named, ...rest].map((group) => ({group, rows: byGroup.get(group) ?? []}));
 }

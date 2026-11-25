@@ -7,9 +7,14 @@
 
      PLAN 5b (S2): with `onSort`, Name, Owed, Overdue and Last payment sort
      (SortHeader); rows with something overdue are tinted; with `filtered`, an
-     empty list says nothing matches and offers Clear filters. -->
+     empty list says nothing matches and offers Clear filters.
+     Keyboard (PLAN 5k): `j`/`k` move a row cursor, Enter or `o` opens the
+     customer, `g g`/`G` jump to the ends, Escape drops it; `s` sorts by the
+     next sortable column and `S` flips the order. -->
 <script lang="ts">
     import {balanceText, lastPaymentText, type CustomerRow} from "#lib/customers.js";
+    import {CURSOR_ROW, rowKeys} from "#lib/keys/rowKeys.svelte.js";
+    import {sortKeys} from "#lib/keys/sortKeys.js";
     import type {SortDir} from "#lib/listQuery.js";
     import {rowClick} from "#lib/rows.js";
     import EmptyState from "./EmptyState.svelte";
@@ -37,6 +42,18 @@
         filtered?: boolean;
         onClear?: () => void;
     } = $props();
+
+    let tableEl = $state<HTMLTableElement | null>(null);
+    const cursor = rowKeys<CustomerRow>({
+        id: "customer-list",
+        group: "Customers",
+        noun: "customer",
+        items: () => customers,
+        keyOf: (row) => row.path,
+        root: () => tableEl,
+        open: () => onOpen,
+        extra: sortKeys({group: "Customers", columns: ["name", "owed", "overdue", "last-payment"], shown: () => shown, onSort: () => onSort}),
+    });
 </script>
 
 {#snippet header(column: string, label: string, align?: "right")}
@@ -65,7 +82,7 @@
     />
 {:else}
     <div class="overflow-x-auto rounded-box border border-base-300">
-        <table class="table table-sm" data-testid="customer-list">
+        <table class="table table-sm" bind:this={tableEl} data-testid="customer-list">
             <thead>
                 <tr>
                     {@render header("name", "Name")}
@@ -77,9 +94,12 @@
                 </tr>
             </thead>
             <tbody>
-                {#each customers as row (row.path)}
+                {#each customers as row, at (row.path)}
                     <tr
-                        class="cursor-pointer {row.account.overdue > 0 ? 'bg-error/8 hover:bg-error/15' : 'hover:bg-base-200'}"
+                        class="cursor-pointer {row.account.overdue > 0 ? 'bg-error/8 hover:bg-error/15' : 'hover:bg-base-200'} {cursor.index === at
+                            ? CURSOR_ROW
+                            : ''}"
+                        data-cursor={cursor.index === at ? "" : undefined}
                         data-testid="customer-row"
                         data-path={row.path}
                         onclick={(event) => rowClick(event, onOpen === undefined ? undefined : () => onOpen(row))}

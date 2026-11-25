@@ -6,6 +6,7 @@ import {fireEvent, render, screen} from "@testing-library/svelte";
 import {describe, expect, it, vi} from "vitest";
 import {computeTable} from "#lib/arithmetic.js";
 import {DEFAULT_WORDS, type GridForm, type RowView, type TableView} from "#lib/editor.js";
+import {listenForKeys, press} from "#lib/testing/keys.js";
 import BillGrid from "./BillGrid.svelte";
 
 const COLUMNS: GridForm["columns"] = [
@@ -75,6 +76,9 @@ function mount(over: Record<string, unknown> = {}) {
 const lastTable = (onChange: ReturnType<typeof vi.fn>): GridForm => onChange.mock.calls.at(-1)?.[0] as GridForm;
 
 describe("COMPONENT BillGrid", () => {
+    // Alt+Arrow and the row-type keys are keymap bindings (PLAN 5k).
+    listenForKeys();
+
     it("shows the server's amounts and each adjustment's base", () => {
         mount();
         const amounts = screen.getAllByTestId("grid-amount").map((a) => a.textContent?.trim());
@@ -116,14 +120,14 @@ describe("COMPONENT BillGrid", () => {
     it("moves the focused row with Alt+Arrow, and with the buttons", async () => {
         const onChange = mount();
         const discount = screen.getByLabelText("Row 2 description");
-        await fireEvent.keyDown(discount, {key: "ArrowUp", altKey: true});
+        await press("ArrowUp", discount, {altKey: true});
         expect(lastTable(onChange).rows.map((r) => r[0])).toEqual(["Discount", "Senior architect hours", ""]);
 
         await fireEvent.click(screen.getByRole("button", {name: "Move row 1 down"}));
         expect(lastTable(onChange).rows.map((r) => r[0])).toEqual(["Discount", "Senior architect hours", ""]);
         // A plain arrow key is the field's own.
         const calls = onChange.mock.calls.length;
-        await fireEvent.keyDown(discount, {key: "ArrowUp"});
+        await press("ArrowUp", discount);
         expect(onChange.mock.calls.length).toBe(calls);
     });
 
@@ -241,7 +245,69 @@ describe("COMPONENT BillGrid", () => {
     it("never moves a row below the final total", async () => {
         const onChange = mount();
         expect((screen.getByRole("button", {name: "Move row 2 down"}) as HTMLButtonElement).disabled).toBe(true);
-        await fireEvent.keyDown(screen.getByLabelText("Row 2 description"), {key: "ArrowDown", altKey: true});
+        await press("ArrowDown", screen.getByLabelText("Row 2 description"), {altKey: true});
+        expect(onChange).not.toHaveBeenCalled();
+    });
+});
+
+describe("COMPONENT BillGrid keys (PLAN 5k)", () => {
+    listenForKeys();
+
+    it("adds each row type with Alt+Shift and its letter, from a cell, and focuses the new row", async () => {
+        const cases: [string, string[]][] = [
+            ["I", ["", "1", "", "", ""]],
+            ["D", ["Discount", "", "-10%", "", ""]],
+            ["F", ["Discount", "", "", "-$0.00", ""]],
+            ["S", ["", "", "**Subtotal**", "", ""]],
+            ["T", ["Sales tax", "", "0%", "", ""]],
+            ["B", ["", "", "", "", ""]],
+        ];
+        for (const [letter, cells] of cases) {
+            const onChange = mount();
+            const cell = screen.getAllByLabelText("Row 1 description").at(-1)!;
+            const handled = !(await press(letter, cell, {altKey: true, shiftKey: true, code: `Key${letter}`}));
+            expect(handled).toBe(true);
+            expect(lastTable(onChange).rows[2]).toEqual(cells);
+        }
+    });
+
+    it("reads a Mac's Option+Shift character as its letter", async () => {
+        const onChange = mount();
+        // Option+Shift+S types "Í" on a US Mac.
+        await press("Í", screen.getByLabelText("Row 1 description"), {altKey: true, shiftKey: true, code: "KeyS"});
+        expect(lastTable(onChange).rows[2]).toEqual(["", "", "**Subtotal**", "", ""]);
+    });
+
+    it("leaves Option+S without Shift to the field (it types ß)", async () => {
+        const onChange = mount();
+        const notHandled = await press("ß", screen.getByLabelText("Row 1 description"), {altKey: true, code: "KeyS"});
+        expect(notHandled).toBe(true);
+        expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it("has no row keys on a void invoice", async () => {
+        const onChange = mount({readonly: true});
+        await press("I", document.body, {altKey: true, shiftKey: true, code: "KeyI"});
+        await press("ArrowUp", screen.getByLabelText("Row 2 description"), {altKey: true});
+        expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it("moves a row with Alt+Arrow from a catalog cell, whose list keeps plain arrows", async () => {
+        const onChange = mount({
+            table: {columns: COLUMNS, rows: [TABLE.rows[0], ["Design review", "2", "$400", "", ""], TABLE.rows[2]]},
+            catalog: [{code: "ARCH", description: "Senior architect hours", unit: "h", rate: "$800", books: "revenue:consulting"}],
+        });
+        await press("ArrowUp", screen.getByLabelText("Row 2 description"), {altKey: true});
+        expect(lastTable(onChange).rows.map((r) => r[0])).toEqual(["Design review", "Senior architect hours", ""]);
+    });
+
+    it("moves a row only from inside the grid", async () => {
+        const onChange = mount();
+        const outside = document.createElement("textarea");
+        document.body.append(outside);
+        const notHandled = await press("ArrowUp", outside, {altKey: true});
+        outside.remove();
+        expect(notHandled).toBe(true);
         expect(onChange).not.toHaveBeenCalled();
     });
 });

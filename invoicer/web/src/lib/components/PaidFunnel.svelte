@@ -12,8 +12,12 @@
 
      Hover and keyboard focus lift a card (a shadow, a 2px rise; no rise
      under prefers-reduced-motion). Narrow widths: the cards stack and the
-     chevrons point down (container queries). -->
+     chevrons point down (container queries).
+
+     Keyboard (PLAN 5k): `1`, `2`, `3` open Drafts, Outstanding and Paid;
+     `w` and `W` step the paid window longer and shorter. -->
 <script lang="ts">
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
     import {count, listHref, paidWindowLabel, paidWindows, type AmountView, type Dashboard} from "#lib/dashboard.js";
 
     let {
@@ -41,6 +45,27 @@
     const overdue = $derived(owed.filter((c) => c.overdue.count > 0));
     const paidCount = $derived(paid.commodities.reduce((n, c) => n + c.count, 0));
     const paidUnfiled = $derived(paid.commodities.reduce((n, c) => n + c.unfiled, 0));
+
+    // The funnel's keys: a card each (its link, so the router and the list's
+    // URL are the click's), and the window, a step along the selector's list.
+    const cards: Record<string, HTMLAnchorElement | null> = $state({drafts: null, outstanding: null, paid: null});
+    const openCard = (name: string) => (): void => cards[name]?.click();
+    function stepWindow(delta: number): void {
+        const at = choices.indexOf(paid.days);
+        const next = choices[at + delta];
+        if (next !== undefined) onPaidDays?.(next);
+    }
+    const canStep = (delta: number) => (): boolean => onPaidDays !== undefined && choices[choices.indexOf(paid.days) + delta] !== undefined;
+    registerKeys({
+        id: "dashboard-funnel",
+        bindings: [
+            {keys: "1", label: "Open the drafts", group: "Dashboard", run: openCard("drafts")},
+            {keys: "2", label: "Open what's outstanding", group: "Dashboard", run: openCard("outstanding")},
+            {keys: "3", label: "Open what was paid", group: "Dashboard", run: openCard("paid")},
+            {keys: "w", label: "A longer paid window", group: "Dashboard", enabled: canStep(1), run: () => stepWindow(1)},
+            {keys: "W", label: "A shorter paid window", group: "Dashboard", enabled: canStep(-1), run: () => stepWindow(-1)},
+        ],
+    });
 
     const card =
         "group flex h-full min-w-0 flex-col overflow-hidden rounded-box border border-base-300 bg-base-100 transition-[translate,box-shadow,opacity] motion-reduce:transition-none motion-reduce:hover:translate-none motion-reduce:focus-visible:translate-none hover:-translate-y-0.5 hover:border-base-content/30 hover:shadow-md focus-visible:-translate-y-0.5 focus-visible:shadow-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-content";
@@ -94,7 +119,7 @@
     </div>
     <ol class="grid grid-cols-1 gap-2 @2xl:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto_minmax(0,1fr)] @2xl:gap-3">
         <li class="min-w-0">
-            <a class={card} href={listHref(listBase, {status: "draft"})} data-testid="funnel-drafts">
+            <a class={card} href={listHref(listBase, {status: "draft"})} bind:this={cards.drafts} data-testid="funnel-drafts">
                 <span class="h-1 bg-base-content/25" aria-hidden="true"></span>
                 <span class="flex flex-col gap-1 p-4">
                     <span class="text-sm text-base-content/70">Drafts</span>
@@ -112,7 +137,7 @@
         </li>
         {@render chevron()}
         <li class="min-w-0">
-            <a class={card} href={listHref(listBase, {status: "open"})} data-testid="funnel-outstanding">
+            <a class={card} href={listHref(listBase, {status: "open"})} bind:this={cards.outstanding} data-testid="funnel-outstanding">
                 <span class="h-1 bg-warning" aria-hidden="true"></span>
                 <span class="flex flex-col gap-1 p-4">
                     <span class="text-sm text-base-content/70">Outstanding</span>
@@ -139,6 +164,7 @@
                 class="{card} {loadingPaid ? 'opacity-60' : ''}"
                 href={listHref(listBase, {paid_from: paid.from, paid_to: paid.to})}
                 aria-busy={loadingPaid}
+                bind:this={cards.paid}
                 data-testid="funnel-paid"
             >
                 <span class="h-1 bg-success" aria-hidden="true"></span>

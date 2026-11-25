@@ -19,7 +19,7 @@ import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {decodeOtherHoldingsReport} from "#lib/api/nativeDecode.js";
 import {formatDec, type Dec} from "#lib/domain/money.js";
 import type {AmountStyle} from "#lib/domain/types.js";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import {formatUnitsWith} from "./view";
 import OtherHoldingsTable from "./OtherHoldingsTable.svelte";
 

@@ -32,7 +32,7 @@
     import AmountCell from "#lib/journal/AmountCell.svelte";
     import AccountInput from "#ui/components/AccountInput.svelte";
     import {generatedPostings} from "#lib/journal/rowModel.js";
-    import {formatKeys} from "#lib/keys/chord.js";
+    import {formatKeys} from "#ui/keys/chord.js";
     import {balancingHint, isUncategorized, percent, recurringLabel, shortAccount, type Chips} from "../card";
     import type {Suggestion} from "../types";
     import {assertionLabel} from "#lib/api/editMapping.js";

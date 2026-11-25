@@ -2,9 +2,12 @@
      money" and "Overdue" toggles, and person or organization. Like the
      invoice list's (InvoiceFilters): it shows the URL's state and asks for a
      new one; the search is debounced and replaces the history step, the rest
-     add one. Enter in the search opens the customer when only one is left. -->
+     add one. Enter in the search opens the customer when only one is left.
+     Keyboard (PLAN 5k): `/` focuses the search; Escape in it clears it, a
+     second Escape leaves it for the list's `j`/`k`. -->
 <script lang="ts">
     import {untrack} from "svelte";
+    import {searchKeys} from "#lib/keys/pageSearch.svelte.js";
     import {SearchBox} from "#lib/searchBox.svelte.js";
     import {customerFiltered, type CustomerKind, type CustomerQuery} from "#lib/listQuery.js";
 
@@ -57,6 +60,7 @@
             oninput={(event) => search.type(event.currentTarget.value)}
             onkeydown={searchKey}
             onblur={() => search.flush()}
+            use:searchKeys={{clear: () => search.clear()}}
             data-testid="customer-search"
         />
     </label>

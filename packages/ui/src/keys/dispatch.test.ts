@@ -3,11 +3,11 @@
 // written to take plain data rather than read the store directly.
 
 import {describe, expect, it} from "vitest";
-import {handleKey, helpSections, resolveBindings, type Dispatch} from "./dispatch";
-import {PRIORITY, type Binding, type KeyGroup, type Layer, type RegisteredLayer} from "./types";
+import {fieldBindings, handleKey, helpSections, inScope, resolveBindings, type Dispatch} from "./dispatch";
+import {PRIORITY, type Binding, type Layer, type RegisteredLayer} from "./types";
 
 function binding(keys: string, label = keys, extra: Partial<Binding> = {}): Binding {
-    return {keys, label, group: "Journal" as KeyGroup, run: () => {}, ...extra};
+    return {keys, label, group: "Journal", run: () => {}, ...extra};
 }
 
 /** Register in the order given, stamping the `seq` the store would. */
@@ -137,7 +137,24 @@ describe("UNIT helpSections", () => {
             })
         );
 
-        expect(helpSections(active).map((s) => s.group)).toEqual(["Global", "Journal"]);
+        expect(helpSections(active, ["Global", "Journal"]).map((s) => s.group)).toEqual(["Global", "Journal"]);
+    });
+
+    it("puts a section the app's order leaves out after the named ones, never hiding it", () => {
+        const active = resolveBindings(
+            stack({
+                id: "test",
+                bindings: [
+                    {...binding("x", "Stray"), group: "Unlisted"},
+                    {...binding("j", "Move down"), group: "Journal"},
+                    {...binding("?", "Show shortcuts"), group: "Global"},
+                ],
+            })
+        );
+
+        expect(helpSections(active, ["Global", "Journal"]).map((s) => s.group)).toEqual(["Global", "Journal", "Unlisted"]);
+        // No order at all: first-resolved first.
+        expect(helpSections(active).map((s) => s.group)).toEqual(["Unlisted", "Journal", "Global"]);
     });
 
     it("REGRESSION: the sheet and the dispatcher agree on every shadowed key", () => {
@@ -188,5 +205,48 @@ describe("UNIT always bindings (zoom, plan 39)", () => {
 
         expect(helpSections(active).flatMap((s) => s.rows.map((r) => r.keys))).toEqual(["ctrl++"]);
         expect(handleKey(active, "", press("=", {ctrlKey: true})).kind).toBe("run");
+    });
+});
+
+describe("UNIT scoped and field bindings (invoicer Phase 5k)", () => {
+    const inside = {id: "cell"};
+    const outside = {id: "elsewhere"};
+    const grid = {contains: (node: unknown) => node === inside};
+
+    it("lets a `within` binding answer only keys aimed inside its element", () => {
+        const active = resolveBindings(stack({id: "grid", bindings: [binding("alt+ArrowUp", "Move up", {within: () => grid}), binding("j")]}));
+
+        expect(inScope(active, inside).map((b) => b.label)).toEqual(["Move up", "j"]);
+        expect(inScope(active, outside).map((b) => b.label)).toEqual(["j"]);
+        expect(inScope(active, null).map((b) => b.label)).toEqual(["j"]);
+    });
+
+    it("treats an unmounted scope as nowhere", () => {
+        const active = resolveBindings(stack({id: "grid", bindings: [binding("alt+ArrowUp", "Move up", {within: () => null})]}));
+
+        expect(inScope(active, inside)).toEqual([]);
+    });
+
+    it("still lists a scoped binding on the sheet, which has focus when open", () => {
+        const active = resolveBindings(stack({id: "grid", bindings: [binding("alt+ArrowUp", "Move up", {within: () => grid})]}));
+
+        expect(helpSections(active).flatMap((s) => s.rows.map((r) => r.label))).toEqual(["Move up"]);
+    });
+
+    it("keeps `fields` and `always` bindings for a field, and nothing else", () => {
+        const active = resolveBindings(
+            stack({id: "page", bindings: [binding("j"), binding("mod+s", "Save", {always: true}), binding("alt+I", "Add an item", {fields: true})]})
+        );
+
+        expect(fieldBindings(active).map((b) => b.label)).toEqual(["Save", "Add an item"]);
+    });
+
+    it("blinds a `fields` binding under a modal layer, where an `always` one still reaches", () => {
+        const layers = stack(
+            {id: "editor", bindings: [binding("mod+s", "Save", {always: true}), binding("alt+I", "Add an item", {fields: true})]},
+            {id: "dialog", priority: PRIORITY.overlay, modal: true, bindings: []}
+        );
+
+        expect(resolveBindings(layers).map((b) => b.label)).toEqual(["Save"]);
     });
 });

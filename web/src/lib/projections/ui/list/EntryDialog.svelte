@@ -18,12 +18,12 @@
      disabled button would swallow the very click that ended the edit. -->
 <script lang="ts">
     import {untrack} from "svelte";
-    import {hint} from "#lib/keys/hint.svelte.js";
+    import {hint} from "#ui/keys/hint.svelte.js";
     import {LedgelineApi, type RenderProjectionBody} from "#lib/api/native.js";
     import {decodeRenderedEntry} from "#lib/api/nativeDecode.js";
     import type {AccountClasses} from "#lib/domain/accountClass.js";
     import type {AmountStyle} from "#lib/domain/types.js";
-    import {dismissible} from "#lib/keys/dismissible.js";
+    import {dismissible} from "#ui/keys/dismissible.js";
     import {settings} from "#lib/stores/settings.svelte.js";
     import {canDisable, entriesOf, plainCopy} from "../../entries";
     import {applyDraft, draftProblems, draftRenderBody, EntryPreview, type Draft} from "../../entryDraft.svelte";

@@ -130,3 +130,28 @@ describe("COMPONENT Combobox", () => {
         expect(screen.queryByRole("button", {name: "Show all"})).toBeNull();
     });
 });
+
+describe("COMPONENT Combobox passAltArrows", () => {
+    function altKey(field: HTMLElement, k: string): boolean {
+        const event = new KeyboardEvent("keydown", {key: k, altKey: true, bubbles: true, cancelable: true});
+        field.dispatchEvent(event);
+        return event.defaultPrevented;
+    }
+
+    it("opens the list on Alt+ArrowDown by default, as an ARIA combobox does", async () => {
+        const {field} = mount();
+        expect(altKey(field, "ArrowDown")).toBe(true);
+        await tick();
+        expect(screen.queryByRole("listbox")).not.toBeNull();
+    });
+
+    it("leaves Alt+ArrowUp and Alt+ArrowDown to the page with passAltArrows (a grid moves rows)", async () => {
+        const {field} = mount({passAltArrows: true});
+        expect(altKey(field, "ArrowDown")).toBe(false);
+        expect(altKey(field, "ArrowUp")).toBe(false);
+        await tick();
+        expect(screen.queryByRole("listbox")).toBeNull();
+        // Plain arrows are still the list's.
+        expect(key(field, "ArrowDown")).toBe(true);
+    });
+});

@@ -6,7 +6,8 @@
      Space on the arrow, opens the menu on its first item (ArrowUp on its
      last); in the menu ArrowUp/ArrowDown move (wrapping), Home/End jump,
      Enter follows the item, Escape closes it and puts focus back on the
-     arrow, Tab closes it and moves on. A click outside closes it too. -->
+     arrow, Tab closes it and moves on. A click outside closes it too.
+     Shift+N, anywhere (PLAN 5k), opens it on its first item. -->
 <script lang="ts" module>
     /** One thing the menu can make, its link already resolved. */
     export interface NewChoice {
@@ -18,6 +19,7 @@
 
 <script lang="ts">
     import {tick} from "svelte";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
 
     let {choices, label = "New"}: {choices: NewChoice[]; label?: string} = $props();
 
@@ -37,6 +39,11 @@
         const all = items();
         (at === "first" ? all[0] : all[all.length - 1])?.focus();
     }
+
+    registerKeys({
+        id: "new-menu",
+        bindings: [{keys: "N", label: "Open the New menu", group: "Global", enabled: () => main !== null, run: () => void show("first")}],
+    });
 
     function close(refocus: boolean): void {
         open = false;

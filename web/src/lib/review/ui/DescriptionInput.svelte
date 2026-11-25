@@ -8,7 +8,7 @@
     // recency), pure and unit-tested. The popup is fixed and portalled, because
     // `.modal-box` makes itself the containing block for fixed children.
     import {tick} from "svelte";
-    import {TYPING_ATTRIBUTE} from "#lib/keys/target.js";
+    import {TYPING_ATTRIBUTE} from "#ui/keys/target.js";
     import {remToPx} from "#ui/theme/scale.js";
     import {popupPosition, portal, liveViewport} from "#ui/ui/anchoredPopup.js";
     import {rankPayees} from "../complete";

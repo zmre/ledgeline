@@ -3,6 +3,7 @@ import {fireEvent, render, screen, within} from "@testing-library/svelte";
 import {describe, expect, it, vi} from "vitest";
 import type {TemplateListEntry} from "#lib/templates.js";
 import TemplateList from "./TemplateList.svelte";
+import {listenForKeys, press} from "#lib/testing/keys.js";
 
 const entries: TemplateListEntry[] = [
     {
@@ -83,5 +84,20 @@ describe("COMPONENT TemplateList", () => {
         link.addEventListener("click", followed);
         await fireEvent.click(within(screen.getAllByTestId("template-row")[2]).getByText("Nothing yet"));
         expect(followed).toHaveBeenCalledOnce();
+    });
+});
+
+describe("COMPONENT TemplateList keys (PLAN 5k)", () => {
+    listenForKeys();
+
+    it("opens the cursored template, by its link when the page passes no onOpen", async () => {
+        render(TemplateList, {entries, href: (e: TemplateListEntry) => `/app/templates${e.path}`});
+        const clicked = vi.fn((event: Event) => event.preventDefault());
+        const link = screen.getAllByTestId("template-link")[1];
+        link.addEventListener("click", clicked);
+        await press("j");
+        await press("j");
+        await press("o");
+        expect(clicked).toHaveBeenCalledTimes(1);
     });
 });

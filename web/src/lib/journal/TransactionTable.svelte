@@ -26,13 +26,13 @@
     // viewport, so a phone has ONE scroll, not a list nested inside a page.
     // From `md` up the list scrolls inside its own box under a fixed page.
     import {untrack} from "svelte";
-    import {hint} from "#lib/keys/hint.svelte.js";
+    import {hint} from "#ui/keys/hint.svelte.js";
     import {statusPatch} from "#lib/api/editMapping.js";
     import type {Transaction} from "#lib/domain/types.js";
     import type {JournalRow} from "#lib/journalView/types.js";
-    import {dismissible} from "#lib/keys/dismissible.js";
-    import {registerKeys} from "#lib/keys/keymap.svelte.js";
-    import {PRIORITY, type Binding} from "#lib/keys/types.js";
+    import {dismissible} from "#ui/keys/dismissible.js";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
+    import {PRIORITY, type Binding} from "#ui/keys/types.js";
     import {registerNativeActions, type NativeAction} from "#ui/native/bridge.svelte.js";
     import {rowMarker, type RowMarker} from "#lib/review/card.js";
     import {REVIEW_BUTTON} from "#lib/review/ui/buttons.js";

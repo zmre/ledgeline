@@ -4,12 +4,16 @@
      (`/.ledgeline-invoicer/preview`), which writes nothing, until "Use this
      template" makes it the invoice's own. When the bill table's written
      amounts disagree with its rows, a notice says so, with Recalculate
-     (Phase 3 feedback F9, F10). -->
+     (Phase 3 feedback F9, F10).
+
+     Keyboard (PLAN 5k): `e` edits it; Shift+P exports its PDF (SendPanel). -->
 <script lang="ts">
     import {onMount, untrack} from "svelte";
+    import {goto} from "$app/navigation";
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
     import AsyncSection from "#ui/components/AsyncSection.svelte";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
     import type {DataView} from "#ui/ui/dataView.js";
     import {ensureSession, fetchInvoice, fetchInvoiceBooks, fetchTemplates, chooseTemplate, recalculate} from "#lib/api.js";
     import {kindLabel, mismatches, pageUrl, previewUrl, type InvoiceBooks, type InvoiceDetail, type TemplateEntry} from "#lib/invoices.js";
@@ -24,6 +28,19 @@
     const number = $derived(page.params.number ?? "");
 
     const asError = (e: unknown): Error => (e instanceof Error ? e : new Error(String(e)));
+
+    registerKeys({
+        id: "invoice-page",
+        bindings: [
+            {
+                keys: "e",
+                label: "Edit the invoice",
+                group: "Invoice",
+                enabled: () => detail !== null,
+                run: () => void goto(resolve("/invoices/[number]/edit", {number})),
+            },
+        ],
+    });
 
     let detail = $state<InvoiceDetail | null>(null);
     let detailError = $state<Error | null>(null);

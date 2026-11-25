@@ -2,7 +2,10 @@
      customer, a template and a date, then the CLI's `new` writes the draft
      (the customer's and your company's contact snapshot, terms and due date,
      default snippets, a bill table with its total row) and the editor opens
-     on it. Drafts never touch the books (I2). -->
+     on it. Drafts never touch the books (I2).
+
+     The customer field has focus on arrival (`n` brings you here, PLAN 5k):
+     type, Enter to choose, Tab on, Enter on Create draft. -->
 <script lang="ts">
     import {onMount} from "svelte";
     import {goto} from "$app/navigation";
@@ -33,7 +36,10 @@
             .catch((e: unknown) => (error = e instanceof Error ? e.message : String(e)));
     }
 
+    let formEl = $state<HTMLFormElement | null>(null);
+
     onMount(() => {
+        formEl?.querySelector<HTMLInputElement>('[data-testid="new-customer"]')?.focus();
         loadOptions();
         fetchTemplates()
             .then((t) => (templates = t.filter((entry) => entry.kinds.includes("invoice"))))
@@ -73,7 +79,7 @@
 
 <div class="mx-auto flex max-w-xl flex-col gap-4">
     <h1 class="text-2xl font-semibold tracking-tight">New invoice</h1>
-    <form class="flex flex-col gap-3 rounded-box border border-base-300 p-4" onsubmit={submit} data-testid="new-invoice">
+    <form class="flex flex-col gap-3 rounded-box border border-base-300 p-4" onsubmit={submit} bind:this={formEl} data-testid="new-invoice">
         <label class="flex flex-col gap-1 text-sm"
             >Customer
             <Combobox

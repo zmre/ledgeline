@@ -81,7 +81,7 @@ The iOS app shows the same SPA bundle with its own navigation bar in place of th
 - **Layout.** `html.ll-native` collapses the header to zero height (not `display: none`: fixed popups anchored inside it must still render) and pads the body by the safe-area insets (`viewport-fit=cover` is in `app.html`). Imports and the new-ledger wizard need a desktop host, so in native mode they are not rendered and redirect to the journal.
 - **Exports.** `downloadWorkbook` sends the bytes to the share sheet instead of an `<a download>`.
 
-Two related changes key off the device, not off native mode, so they apply in any browser too. Keyboard hints (`<kbd>` and "(v)" suffixes in tooltips, through `hint()` in `lib/keys/hint.svelte.ts`) hide when there is no fine pointer (`any-pointer: fine`), and the journal's calendar is not offered below the `md` breakpoint: no toggle, no `v`, and a `cal=1` link shows its month as the list.
+Two related changes key off the device, not off native mode, so they apply in any browser too. Keyboard hints (`<kbd>` and "(v)" suffixes in tooltips, through `hint()` in `packages/ui/src/keys/hint.svelte.ts`) hide when there is no fine pointer (`any-pointer: fine`), and the journal's calendar is not offered below the `md` breakpoint: no toggle, no `v`, and a `cal=1` link shows its month as the list.
 
 ## The invoicer: `invoicer/`
 

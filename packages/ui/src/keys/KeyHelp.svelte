@@ -12,6 +12,9 @@
     import {dismissible} from "./dismissible";
     import {keymap} from "./keymap.svelte";
 
+    /** The sheet's footnote: what an app's field carve-outs are (zoom, save). */
+    let {note = "Shortcuts are off while you're typing in a field, except zoom."}: {note?: string} = $props();
+
     // Structure copied from TransactionModal: `role="dialog" aria-modal="true"`
     // on a div plus the `<button class="modal-backdrop">` trick is already known
     // clean under svelte-check, and this is not the place to discover which
@@ -49,7 +52,7 @@
                     </section>
                 {/each}
             </div>
-            <p class="mt-4 text-xs text-base-content/60">Shortcuts are off while you're typing in a field, except zoom.</p>
+            <p class="mt-4 text-xs text-base-content/60">{note}</p>
         </div>
         <button type="button" class="modal-backdrop" aria-label="Close" onclick={() => keymap.closeHelp()}>close</button>
     </div>

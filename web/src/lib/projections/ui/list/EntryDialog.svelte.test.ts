@@ -11,7 +11,7 @@ import {fireEvent, render, screen, within} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {ValidationError, type RenderProjectionBody} from "#lib/api/native.js";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import ScenarioListHarness from "#lib/testing/ScenarioListHarness.svelte";
 import {ACCOUNT_NAMES, DECLARED, FILE, STYLES, TYPES, TYPES_DECLARED} from "#lib/testing/scenarioListFixture.js";
 import {scenarioStore} from "../../scenarioStore.svelte";

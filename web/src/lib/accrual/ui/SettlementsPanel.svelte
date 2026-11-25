@@ -11,8 +11,8 @@
     // transactions — "Details" on either side, or `d` on the focused card —
     // and each open-list row on its own; "Show details" expands everything.
     // Fetched lazily per generation.
-    import {registerKeys} from "#lib/keys/keymap.svelte.js";
-    import {PRIORITY} from "#lib/keys/types.js";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
+    import {PRIORITY} from "#ui/keys/types.js";
     import {fmt} from "#lib/format/amounts.js";
     import {shortDate} from "#lib/review/card.js";
     import ReviewIcon from "#lib/review/ui/ReviewIcon.svelte";

@@ -5,6 +5,7 @@ import {render, screen, within} from "@testing-library/svelte";
 import {describe, expect, it} from "vitest";
 import RecentInvoices from "./RecentInvoices.svelte";
 import {golden} from "../dashboardGolden.js";
+import {listenForKeys, press} from "#lib/testing/keys.js";
 
 const invoiceHref = (number: string) => `/app/invoices/${number}`;
 
@@ -43,5 +44,21 @@ describe("COMPONENT RecentInvoices", () => {
         const card = screen.getByTestId("recent-card");
         expect(within(card).queryByRole("link")).toBeNull();
         expect(card.textContent).toContain("No number");
+    });
+});
+
+describe("COMPONENT RecentInvoices keys (PLAN 5k)", () => {
+    listenForKeys();
+
+    it("steps focus through the cards with j and k", async () => {
+        render(RecentInvoices, {recent: golden("accrual").recent, invoiceHref});
+        const links = screen.getAllByRole("link");
+        await press("j");
+        expect(document.activeElement).toBe(links[0]);
+        await press("j");
+        expect(document.activeElement).toBe(links[1]);
+        await press("k");
+        await press("k");
+        expect(document.activeElement).toBe(links[0]);
     });
 });

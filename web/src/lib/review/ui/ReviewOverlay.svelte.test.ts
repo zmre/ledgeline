@@ -6,12 +6,12 @@
 
 import {fireEvent, render, screen} from "@testing-library/svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import {connectFakeEngine} from "#lib/testing/fakeEngine.js";
 import {queueItemWire, queuePageWire, reviewTxnWire, serveReview, similarWire, txnFixture} from "#lib/testing/reviewFixture.js";
 import {accountField, card, footer, MOD, mountOverlay, press, primaryButton, settle, suggestionWire} from "#lib/testing/reviewOverlay.js";
 import {resetReview, review} from "#lib/stores/review.svelte.js";
-import KeysProbe from "#lib/testing/fixtures/KeysProbe.svelte";
+import KeysProbe from "#ui/testing/fixtures/KeysProbe.svelte";
 import {reviewLaunch, resetReviewLaunch} from "./launch.svelte";
 
 const blue = (index: number, account = "expenses:unknown") => txnFixture(index, `SQ *BLUE BOTTLE ${index} OAKLAND`, account, "2026-10-12");

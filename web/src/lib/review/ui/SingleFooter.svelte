@@ -9,7 +9,7 @@
     // It is disabled while a posting is unknown, as the queue card's Reviewed
     // button is. Save waits for a change; on an add card it reads "Add".
     // Revert shows once there is something to revert.
-    import {formatKeys} from "#lib/keys/chord.js";
+    import {formatKeys} from "#ui/keys/chord.js";
     import ReviewIcon from "./ReviewIcon.svelte";
 
     let {

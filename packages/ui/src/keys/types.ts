@@ -1,35 +1,16 @@
 // The keymap's vocabulary: the shape of a binding, the shape of a layer, and
-// the two ordering conventions everything else reads. Pure types and constants
+// the ordering conventions everything else reads. Pure types and constants
 // — no runes, no DOM — so `dispatch.ts` and its tests stay in the fast `unit`
 // vitest project rather than needing jsdom.
 
 /**
- * Help-sheet sections, rendered in this order. A binding with no home here has
- * no home in the app.
- *
- * The middle groups mirror the nav bar's own order (Journal, Holdings,
- * Projections, Reports, Imports, Settings), so a reader scanning `?` finds the section where they
- * expect the page to be. "Holdings" arrived with plans/14: the holdings
- * table's row cursor had been borrowing "Journal" while it was the page's
- * only keyboard surface, and once the tab strip added a second one, that
- * would have filed one feature under two headings.
+ * A help-sheet section. Each app names its own ("Journal", "Invoices") and
+ * hands the keymap their order with `keymap.setGroupOrder` (see
+ * `helpSections`): the engine is shared by Ledgeline and the invoicer
+ * (invoicer PLAN J13), and their sections are not. A plain string, so neither
+ * app's vocabulary leaks into the other's.
  */
-export type KeyGroup = "Global" | "Navigation" | "Journal" | "Review" | "Matches" | "Holdings" | "Projections" | "Reports" | "Imports" | "Settings" | "Filters";
-
-/** "Review" (plan 32 D16) and "Matches" (plan 35) sit right after "Journal", the page their overlays open from. */
-export const GROUP_ORDER: readonly KeyGroup[] = [
-    "Global",
-    "Navigation",
-    "Journal",
-    "Review",
-    "Matches",
-    "Holdings",
-    "Projections",
-    "Reports",
-    "Imports",
-    "Settings",
-    "Filters",
-];
+export type KeyGroup = string;
 
 /**
  * Layer priorities. Higher wins; registration order breaks ties (later beats
@@ -78,10 +59,29 @@ export interface Binding {
      */
     always?: boolean;
     /**
+     * Fires while focus is in a field too, but, unlike `always`, a `modal`
+     * layer above still blinds it: an editor's Cmd/Alt chord that must work
+     * from the cell being typed in (the invoicer's bill-grid row keys), yet
+     * not from inside a dialog over the editor. Never a chord sequence.
+     */
+    fields?: boolean;
+    /**
+     * Only when the key's target is inside this element (Alt+↑ moves a row
+     * only from within the grid that owns it). Read at dispatch alone: the
+     * `?` sheet lists the binding whatever has focus, since the sheet itself
+     * takes focus when it opens. Null (not mounted) means nowhere.
+     */
+    within?: () => Scope | null;
+    /**
      * `false` keeps an alternate spelling off the `?` sheet (Cmd+= beside the
      * listed Cmd++). It still fires. Default: listed.
      */
     help?: boolean;
+}
+
+/** What `Binding.within` returns. An `Element` satisfies it; so does a test's object literal. */
+export interface Scope {
+    contains(node: unknown): boolean;
 }
 
 export interface Layer {

@@ -7,6 +7,7 @@ import {describe, expect, it, vi} from "vitest";
 import {DEFAULT_WORDS, emptyForm, type EditorForm, type EditorOptions} from "#lib/editor.js";
 import type {TemplateEntry} from "#lib/invoices.js";
 import HeaderForm from "./HeaderForm.svelte";
+import {listenForKeys, press} from "#lib/testing/keys.js";
 
 const OPTIONS: EditorOptions = {
     customers: [
@@ -113,5 +114,21 @@ describe("COMPONENT HeaderForm reference suggestions (PLAN 5b)", () => {
         expect(shown[0]).toContain("expires 2027-06-30");
         expect(shown[1]).toContain("PO #OLD");
         expect(shown[1]).toContain("expired 2026-01-31");
+    });
+});
+
+describe("COMPONENT HeaderForm keys (PLAN 5k)", () => {
+    listenForKeys();
+
+    it("goes to the customer with c and the template with t", async () => {
+        mount();
+        await press("c");
+        expect(document.activeElement).toBe(screen.getByTestId("header-customer"));
+        // Typing in the field is the field's: `t` types, it doesn't jump.
+        await press("t", screen.getByTestId("header-customer"));
+        expect(document.activeElement).toBe(screen.getByTestId("header-customer"));
+        (document.activeElement as HTMLElement).blur();
+        await press("t");
+        expect(document.activeElement).toBe(screen.getByTestId("header-template"));
     });
 });

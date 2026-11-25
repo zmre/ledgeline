@@ -13,7 +13,8 @@
      state's button; `?new=1` (the sidebar's New menu, H20) opens the form
      on arrival and drops the parameter.
 
-     Keyboard: Cmd/Ctrl+S saves. -->
+     Keyboard (PLAN 5k): Cmd/Ctrl+S saves; in the list, `j`/`k` move a
+     cursor and Enter or `o` opens the snippet. -->
 <script lang="ts">
     import {onMount, untrack} from "svelte";
     import {beforeNavigate, goto} from "$app/navigation";
@@ -21,6 +22,8 @@
     import {page} from "$app/state";
     import {changes} from "#lib/changes.svelte.js";
     import {routeParam} from "#lib/customers.js";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
+    import {CURSOR_ROW, rowKeys} from "#lib/keys/rowKeys.svelte.js";
     import {EditorApiError} from "#lib/editorApi.js";
     import {
         SNIPPET_KINDS,
@@ -184,12 +187,33 @@
         }
     }
 
-    function onKeydown(event: KeyboardEvent): void {
-        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
-            event.preventDefault();
-            if (dirty && !saving) void save();
-        }
-    }
+    // Cmd/Ctrl+S saves, from a field too; with nothing to save it still
+    // keeps the browser's Save Page dialog away.
+    registerKeys({
+        id: "snippet-page",
+        bindings: [
+            {
+                keys: "mod+s",
+                label: "Save the snippet",
+                group: "Snippets",
+                always: true,
+                run: () => {
+                    if (dirty && !saving) void save();
+                },
+            },
+        ],
+    });
+
+    let listEl = $state<HTMLUListElement | null>(null);
+    const cursor = rowKeys<SnippetEntry>({
+        id: "snippet-list",
+        group: "Snippets",
+        noun: "snippet",
+        items: () => list ?? [],
+        keyOf: (snippet) => snippet.path,
+        root: () => listEl,
+        open: () => (snippet) => choose(snippet.path),
+    });
 
     beforeNavigate(({cancel, to}) => {
         // The same page with another query (the New menu's `?new=1`) isn't leaving.
@@ -221,8 +245,6 @@
 <svelte:head>
     <title>Snippets · Ledgeline Invoicer</title>
 </svelte:head>
-
-<svelte:window onkeydown={onKeydown} />
 
 <div class="mx-auto flex max-w-7xl flex-col gap-4" data-testid="snippets-page">
     <header class="flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -277,12 +299,12 @@
     {:else}
         <div class="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,3fr)]">
             <nav aria-label="Snippets">
-                <ul class="menu w-full gap-0.5 rounded-box border border-base-300 p-1" data-testid="snippet-list">
-                    {#each list as snippet (snippet.path)}
-                        <li>
+                <ul class="menu w-full gap-0.5 rounded-box border border-base-300 p-1" bind:this={listEl} data-testid="snippet-list">
+                    {#each list as snippet, at (snippet.path)}
+                        <li data-cursor={cursor.index === at ? "" : undefined}>
                             <button
                                 type="button"
-                                class={snippet.path === chosen ? "menu-active" : ""}
+                                class="{snippet.path === chosen ? 'menu-active' : ''} {cursor.index === at ? CURSOR_ROW : ''}"
                                 aria-current={snippet.path === chosen ? "true" : undefined}
                                 onclick={() => choose(snippet.path)}
                                 data-testid="snippet-item"

@@ -17,13 +17,20 @@
 
      Keyboard: Tab through the cells; in a description or code cell, ArrowDown
      (or a click) opens the catalog; Alt+ArrowUp / Alt+ArrowDown moves the
-     focused row; each row also has Move up, Move down and Delete buttons. A
+     focused row; each row also has Move up, Move down and Delete buttons.
+     Alt+Shift+I, D, F, S, T and B add an item, a % discount, a fixed
+     discount, a subtotal, a tax and a spacer, from any field on the page,
+     and focus the new row (keymap bindings, PLAN 5k Y7). A
      pointer can drag a row by its handle; a line shows where it will land.
      New rows always go at the bottom, above the total (H9). -->
 <script lang="ts">
     import {tick} from "svelte";
     import AccountInput from "#ui/components/AccountInput.svelte";
     import Combobox from "#ui/components/Combobox.svelte";
+    import {formatKeys} from "#ui/keys/chord.js";
+    import {hint} from "#ui/keys/hint.svelte.js";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
+    import {PRIORITY} from "#ui/keys/types.js";
     import type {ComboOption} from "#ui/ui/comboMatch.js";
     import {formatMoney, plain, type LocalTable} from "#lib/arithmetic.js";
     import {
@@ -52,6 +59,7 @@
         type TotalWords,
         type Words,
     } from "#lib/editor.js";
+    import {moveRowKeys} from "#lib/keys/gridKeys.js";
     import DeferralPopover from "./DeferralPopover.svelte";
 
     let {
@@ -210,13 +218,6 @@
         void focusRow(to, column);
     }
 
-    function onRowKeydown(event: KeyboardEvent, row: number): void {
-        if (readonly || !event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
-        event.preventDefault();
-        const cell = (event.target as HTMLElement | null)?.closest<HTMLElement>("[data-col]");
-        move(row, event.key === "ArrowUp" ? row - 1 : row + 1, Number(cell?.dataset.col ?? 0));
-    }
-
     function onDragOver(event: DragEvent, row: number): void {
         if (dragFrom === null) return;
         event.preventDefault();
@@ -280,14 +281,31 @@
         if (item !== undefined) onChange(fillFromCatalog(table, row, item, words));
     }
 
-    const ROW_BUTTONS: {kind: NewRowKind; label: string}[] = [
-        {kind: "item", label: "Item"},
-        {kind: "discount-percent", label: "Discount %"},
-        {kind: "discount-fixed", label: "Discount $"},
-        {kind: "subtotal", label: "Subtotal"},
-        {kind: "tax", label: "Tax"},
-        {kind: "spacer", label: "Spacer"},
+    /** The row-type buttons, and their keys (Alt+Shift+letter: Option+letter alone types ß and accents on a Mac). */
+    const ROW_BUTTONS: {kind: NewRowKind; label: string; keys: string; help: string}[] = [
+        {kind: "item", label: "Item", keys: "alt+I", help: "Add an item row"},
+        {kind: "discount-percent", label: "Discount %", keys: "alt+D", help: "Add a % discount row"},
+        {kind: "discount-fixed", label: "Discount $", keys: "alt+F", help: "Add a fixed discount row"},
+        {kind: "subtotal", label: "Subtotal", keys: "alt+S", help: "Add a subtotal row"},
+        {kind: "tax", label: "Tax", keys: "alt+T", help: "Add a tax row"},
+        {kind: "spacer", label: "Spacer", keys: "alt+B", help: "Add a spacer (blank) row"},
     ];
+
+    registerKeys({
+        id: "bill-grid",
+        priority: PRIORITY.widget,
+        bindings: [
+            ...ROW_BUTTONS.map((b) => ({
+                keys: b.keys,
+                label: b.help,
+                group: "Bill table",
+                fields: true,
+                enabled: () => !readonly,
+                run: () => add(b.kind),
+            })),
+            ...moveRowKeys({group: "Bill table", grid: () => gridEl, readonly: () => readonly, move}),
+        ],
+    });
 
     const numeric = (role: Role): boolean => role === "quantity" || role === "rate" || role === "amount";
     /** The cells before the amount column, merged for a subtotal's label (all of them when there's no amount column). */
@@ -378,7 +396,6 @@
                         data-drop={dropMark(r)}
                         data-testid="grid-row"
                         class="{kind === 'total' ? 'bg-base-200/60 font-semibold' : ''} {dragFrom === r ? 'opacity-50' : ''}"
-                        onkeydown={(event) => onRowKeydown(event, r)}
                         ondragover={(event) => onDragOver(event, r)}
                         ondrop={onDrop}
                     >
@@ -436,6 +453,7 @@
                                             {label}
                                             size="xs"
                                             chevron={false}
+                                            passAltArrows
                                             onChoose={(option) =>
                                                 chooseCatalog(
                                                     r,
@@ -449,6 +467,7 @@
                                             {label}
                                             size="xs"
                                             chevron={false}
+                                            passAltArrows
                                             onChoose={(option) =>
                                                 chooseCatalog(
                                                     r,
@@ -459,6 +478,7 @@
                                         <div class="flex items-start gap-1">
                                             <div class="min-w-0 flex-1" title={cells[c] === "" ? "The default account" : cells[c]}>
                                                 <AccountInput
+                                                    passAltArrows
                                                     bind:value={() => cells[c], (v) => update(r, "books", v)}
                                                     accountNames={accounts}
                                                     {label}
@@ -543,7 +563,13 @@
         <div class="flex flex-wrap items-center gap-1" role="toolbar" aria-label="Add a row">
             <span class="mr-1 text-xs text-base-content/60">Add</span>
             {#each ROW_BUTTONS as button (button.kind)}
-                <button type="button" class="btn btn-outline btn-xs" onclick={() => add(button.kind)} data-testid="add-{button.kind}">{button.label}</button>
+                <button
+                    type="button"
+                    class="btn btn-outline btn-xs"
+                    title={hint(button.help, formatKeys(button.keys)[0].text)}
+                    onclick={() => add(button.kind)}
+                    data-testid="add-{button.kind}">{button.label}</button
+                >
             {/each}
             {#if loadDeposits !== undefined}
                 <button type="button" class="btn btn-outline btn-xs" onclick={openDeposits} data-testid="add-deposit">Apply deposit</button>

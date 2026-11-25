@@ -7,8 +7,8 @@
     // would need the keymap to know which pages have a search box, which is a
     // second list to keep in sync. Registering locally makes "Reports and
     // Imports have no `/`" automatic: no binding, no help row, nothing fires.
-    import {registerKeys} from "#lib/keys/keymap.svelte.js";
-    import {PRIORITY} from "#lib/keys/types.js";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
+    import {PRIORITY} from "#ui/keys/types.js";
     import {filters} from "#lib/stores/filters.svelte.js";
 
     /**

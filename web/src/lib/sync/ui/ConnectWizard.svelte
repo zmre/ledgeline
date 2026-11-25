@@ -13,7 +13,7 @@
     import {resolve} from "$app/paths";
     import {tick, untrack} from "svelte";
     import {importStore} from "#lib/imports/importStore.svelte.js";
-    import {dismissible} from "#lib/keys/dismissible.js";
+    import {dismissible} from "#ui/keys/dismissible.js";
     import {reviewLaunch} from "#lib/review/ui/launch.svelte.js";
     import {localToday} from "#lib/stores/filters.svelte.js";
     import {journal} from "#lib/stores/journal.svelte.js";
