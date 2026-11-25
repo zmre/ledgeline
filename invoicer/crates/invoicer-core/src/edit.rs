@@ -225,13 +225,7 @@ pub fn set(
         });
     let written = text != source;
     if written {
-        let settings = index.settings();
-        if draft::verify(&source, settings, index.money()).is_ok() {
-            draft::save(index, vault, path, &text, &revision)?;
-        } else {
-            vault.replace(path, text.as_bytes(), &revision)?;
-            index.refresh(vault, std::slice::from_ref(path));
-        }
+        draft::save_fields(index, vault, path, &source, &text, &revision)?;
     }
     let doc = index.doc(path);
     Ok(SetOutcome {

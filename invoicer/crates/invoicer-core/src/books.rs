@@ -469,18 +469,21 @@ impl InvoiceBooks {
     }
 
     /// Write `edits` to `document`'s frontmatter, conditional on the
-    /// revision it was read at, and re-index it.
+    /// revision it was read at, and re-index it. A table that already
+    /// didn't verify doesn't block a field edit ([`draft::save_fields`]).
     pub(crate) fn write_fields(
         &self,
         index: &mut DocumentIndex,
         document: &Document,
         edits: &[FieldEdit],
     ) -> Result<Revision, BooksError> {
-        let text = frontmatter::edit(document.invoice.source(), edits)?;
-        Ok(draft::save(
+        let source = document.invoice.source();
+        let text = frontmatter::edit(source, edits)?;
+        Ok(draft::save_fields(
             index,
             &*self.vault,
             &document.path,
+            source,
             &text,
             &document.revision,
         )?)

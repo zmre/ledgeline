@@ -533,5 +533,30 @@ pub fn save(
     Ok(written)
 }
 
+/// Save a frontmatter-only edit of `source`: as [`save`], except that a
+/// document whose body already failed verification (a hand-edited table)
+/// is written without it. The edit makes nothing worse, and
+/// [`frontmatter::edit`](crate::frontmatter::edit) has checked it key by
+/// key with the body byte-identical. `set`, lifecycle steps and the `paid:`
+/// mirror all write this way.
+///
+/// # Errors
+/// As [`save`].
+pub fn save_fields(
+    index: &mut DocumentIndex,
+    vault: &dyn Vault,
+    path: &VaultPath,
+    source: &str,
+    text: &str,
+    expected: &Revision,
+) -> Result<Revision, DraftError> {
+    if verify(source, index.settings(), index.money()).is_ok() {
+        return save(index, vault, path, text, expected);
+    }
+    let written = vault.replace(path, text.as_bytes(), expected)?;
+    index.refresh(vault, std::slice::from_ref(path));
+    Ok(written)
+}
+
 #[cfg(test)]
 mod tests;

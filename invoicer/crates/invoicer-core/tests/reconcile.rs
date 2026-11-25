@@ -629,6 +629,36 @@ fn a_void_stopped_after_the_journal_is_finished_by_void() {
     assert!(findings(&books, &index).is_empty());
 }
 
+fn void_of(number: &str) -> Void {
+    Void {
+        number: number.into(),
+        date: TODAY.into(),
+        today: TODAY.into(),
+        expected: None,
+    }
+}
+
+/// RC-1: a sent invoice whose table was hand-edited (it no longer adds up)
+/// still voids: a field-only write doesn't re-verify a body it doesn't
+/// change.
+#[test]
+fn a_sent_invoice_whose_table_disagrees_still_voids() {
+    let dir = scratch("accrual", "void-bad-table");
+    let md = read(&dir, INV_106);
+    write(
+        &dir,
+        INV_106,
+        &replace_once(&md, "| $1,200.00 | revenue", "| $1,300.00 | revenue"),
+    );
+    let (books, mut index) = open(&dir);
+    let voided = books.void(&mut index, &void_of("106")).expect("voids");
+    assert!(voided.journal_written && voided.markdown_written);
+    let after = read(&dir, INV_106);
+    assert!(after.contains("status: void\n"), "{after}");
+    assert!(after.contains("| $1,300.00 | revenue"), "the table is untouched");
+    assert!(findings(&books, &index).is_empty());
+}
+
 #[test]
 fn a_concurrent_journal_write_is_refused_whole_and_retried_once() {
     let dir = scratch("accrual", "concurrent");
