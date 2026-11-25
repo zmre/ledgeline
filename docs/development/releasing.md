@@ -49,7 +49,7 @@ user downloads only what they need.
 The matrix is the only place the app and the architecture are named:
 
 ```yaml
-runs-on: macos-latest        # EVERY leg
+runs-on: macos-15            # EVERY leg; pinned, as in ci.yml
 matrix:
   include:
     - {app: ledgeline, appName: Ledgeline, exe: ledgeline, flakeAttr: macApp,
@@ -76,7 +76,7 @@ to build for Intel.
 
 `macos-15-intel` still exists as a GitHub runner, but nothing can install Nix
 on it, and this pipeline is `nix build` end to end. So the x86_64 leg runs on
-`macos-latest` with `extra-platforms = x86_64-darwin` in `nix.conf` and Rosetta
+`macos-15` with `extra-platforms = x86_64-darwin` in `nix.conf` and Rosetta
 2 installed, and builds `.#packages.x86_64-darwin.macApp` explicitly.
 
 Two consequences worth internalising:

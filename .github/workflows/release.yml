@@ -48,9 +48,13 @@ jobs:
   # ~45-minute Rosetta leg it made every release about two hours long.
   # Signing and notarizing a build that later fails here publishes nothing:
   # the DMGs stay workflow artifacts and no GitHub Release is created.
+  #
+  # Every macOS job here is on `macos-15`, not `macos-latest`, for the reason
+  # ci.yml gives: an image bump (new Xcode, codesign, notarytool, hdiutil) is
+  # a deliberate edit to both workflows, not something a real release finds.
   verify:
     name: Verify (tests + clippy)
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -123,7 +127,7 @@ jobs:
   #   dmgPrefix  `<dmgPrefix>-<version>-<arch>.dmg`; no spaces in a download
   package:
     name: ${{ matrix.appName }} DMG (${{ matrix.arch }})
-    runs-on: macos-latest
+    runs-on: macos-15
     strategy:
       # An Intel failure must NOT cancel a working Apple Silicon build: arm64 is
       # the release the overwhelming majority of users download, and holding it
@@ -551,7 +555,7 @@ jobs:
   # needs it. No token: a dry run uploads nothing.
   crates-dry-run:
     name: crates.io dry run
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -729,7 +733,7 @@ jobs:
     name: Publish to crates.io
     needs: release
     if: ${{ github.event_name == 'push' }}
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
