@@ -1,8 +1,11 @@
 //! What the API asks of the desktop (invoicer PLAN 3c): print a page to
 //! PDF, show Share…, put a file on the pasteboard, open a URL in the
-//! browser or an exported PDF in its viewer. All but the last two need the app's main thread and its tao event
+//! browser or a file in its viewer, choose a file, open the books in
+//! Ledgeline. Printing, Share… and the pasteboard ([`NativeRequest`],
+//! through [`Native::submit`]) need the app's main thread and its tao event
 //! loop, which the API (on tokio's pool) doesn't have; a [`Native`] carries
-//! each request there and its answer back.
+//! each request there and its answer back. Each other method says on which
+//! thread it may be called.
 //!
 //! Implementations:
 //!
@@ -94,8 +97,8 @@ pub(crate) struct Capabilities {
     /// Open a URL in the user's browser. Without it the SPA opens it itself
     /// (a browser tab under `--server`).
     pub open_url: bool,
-    /// Open an exported PDF, or a file in the books folder, in the default
-    /// viewer (`open`, macOS).
+    /// Open an exported PDF, or a document in the books folder, in the
+    /// default viewer, or show any other file in Finder (`open`, macOS).
     pub open_file: bool,
     /// Choose a file with the system's open dialog (the window, macOS): the
     /// contract picker (customers, Phase 4 feedback J5).
@@ -114,17 +117,28 @@ pub(crate) trait Native: Send + Sync {
     fn submit(&self, request: NativeRequest);
 
     /// Open `url` (already vetted: plain `https`) in the user's browser.
+    /// Any thread: it starts `open` and returns.
     ///
     /// # Errors
     /// When this process can't.
     fn open_url(&self, url: &str) -> Result<(), String>;
 
-    /// Open `file` (already vetted: an exported PDF, or a file in the
-    /// books folder) in the default viewer.
+    /// Open `file` (already vetted: an exported PDF, or a document in the
+    /// books folder) in the default viewer. Any thread: it starts `open`
+    /// and returns.
     ///
     /// # Errors
     /// When this process can't.
     fn open_file(&self, file: &std::path::Path) -> Result<(), String>;
+
+    /// Show `file` (already vetted: in the books folder) in the file
+    /// manager, selected, without opening it: for a file that isn't a
+    /// document, which `open` could run (`.command`, `.app`). Any thread:
+    /// it starts `open -R` and returns.
+    ///
+    /// # Errors
+    /// When this process can't.
+    fn reveal_file(&self, file: &std::path::Path) -> Result<(), String>;
 
     /// Show the system's open dialog at `start`, titled `title`, and wait
     /// for the choice (`None`: cancelled). Blocks: call it off the async
@@ -135,7 +149,8 @@ pub(crate) trait Native: Send + Sync {
     fn pick_file(&self, start: &std::path::Path, title: &str) -> Result<Option<PathBuf>, String>;
 
     /// Open the main journal `journal` (already vetted: the open books') in
-    /// Ledgeline.
+    /// Ledgeline. Blocks until Launch Services answers: call it off the
+    /// async runtime.
     ///
     /// # Errors
     /// When this process can't, or Ledgeline isn't installed.
@@ -166,6 +181,7 @@ pub(crate) mod mock {
         pub copied: Mutex<Vec<PathBuf>>,
         pub opened: Mutex<Vec<String>>,
         pub opened_files: Mutex<Vec<PathBuf>>,
+        pub revealed_files: Mutex<Vec<PathBuf>>,
         /// What the open dialog "chooses" (`None`: cancelled), and where
         /// each was asked to start.
         pub pick: Mutex<Option<PathBuf>>,
@@ -234,6 +250,11 @@ pub(crate) mod mock {
 
         fn open_file(&self, file: &std::path::Path) -> Result<(), String> {
             self.opened_files.lock().unwrap().push(file.to_path_buf());
+            Ok(())
+        }
+
+        fn reveal_file(&self, file: &std::path::Path) -> Result<(), String> {
+            self.revealed_files.lock().unwrap().push(file.to_path_buf());
             Ok(())
         }
 

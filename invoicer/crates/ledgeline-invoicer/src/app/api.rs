@@ -31,9 +31,12 @@
 //! | `POST /api/session`         | The cookie MBR's pages need ([`super::mbr`]).  |
 //! | the invoice editor's routes | Form, compute, save, new, void, rebook… (4a): [`super::editor`]. |
 //!
-//! Errors are `{"error": "…"}` with a status: `400` for a bad parameter,
-//! `404` for an unknown invoice, `409` when no books are open, `422` for a
-//! page template that can't render (a fixable problem in the files).
+//! The routes here answer errors as `{"error": "…"}` with a status: `400`
+//! for a bad parameter, `404` for an unknown invoice, `409` when no books
+//! are open, `422` for a page template that can't render (a fixable
+//! problem in the files). The editor's, library's and templates' routes
+//! ([`super::editor`], [`super::library`], [`super::templates`]) add a
+//! `"code"` naming the case; see their module docs.
 
 use std::sync::Arc;
 

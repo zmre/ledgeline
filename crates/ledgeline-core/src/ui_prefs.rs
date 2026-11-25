@@ -912,7 +912,7 @@ fn patch_table(
                 });
                 let members = item.as_table_like_mut().ok_or_else(|| {
                     UiPrefsError::Conflict(format!(
-                        "{prefix}{group} in {file} is not a table, so Ledgeline will not overwrite it"
+                        "{prefix}{group} in {file} is not a table, so it is not overwritten"
                     ))
                 })?;
                 set_value(members, leaf, value);
@@ -956,7 +956,7 @@ fn with_retries<T>(
         }
     }
     Err(UiPrefsError::Conflict(format!(
-        "{file} kept changing while Ledgeline saved to it; nothing was written"
+        "{file} kept changing while it was being saved; nothing was written"
     )))
 }
 
@@ -1039,7 +1039,7 @@ fn patch_global(
     };
     let not_a_table = |name: &str| {
         UiPrefsError::Conflict(format!(
-            "{name} in {GLOBAL_FILE} is not a table, so Ledgeline will not overwrite it"
+            "{name} in {GLOBAL_FILE} is not a table, so it is not overwritten"
         ))
     };
     let ledgers = document
@@ -1084,9 +1084,7 @@ fn write_global(
         return Ok(GlobalSave::Kept(KEPT_NO_CONFIG_DIR));
     };
     let refuse = |reason: &str| {
-        UiPrefsError::Conflict(format!(
-            "{GLOBAL_FILE} {reason}, so Ledgeline will not overwrite it"
-        ))
+        UiPrefsError::Conflict(format!("{GLOBAL_FILE} {reason}, so it is not overwritten"))
     };
     with_retries(GLOBAL_FILE, || {
         if is_symlink(path) {

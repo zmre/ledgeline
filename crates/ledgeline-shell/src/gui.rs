@@ -706,19 +706,7 @@ pub fn navigation_allowed(base: &str, candidate: &str) -> bool {
     candidate == base.trim_end_matches('/') || candidate.starts_with(base)
 }
 
-/// `raw` re-serialized when it is a plain https URL: no port, no credentials.
-/// The first test an app's "open this in the system browser" allowlist
-/// applies, before its own hosts.
-#[must_use]
-pub fn plain_https(raw: &str) -> Option<Url> {
-    let url = Url::parse(raw.trim()).ok()?;
-    let plain = url.scheme() == "https"
-        && url.host_str().is_some()
-        && url.port().is_none()
-        && url.username().is_empty()
-        && url.password().is_none();
-    plain.then_some(url)
-}
+pub use crate::security::plain_https;
 
 /// Open a page (already vetted by the app's allowlist) in the user's
 /// browser. The URL is one argument to a fixed program — no shell.
@@ -736,9 +724,30 @@ pub fn open_in_browser(app: &AppIdentity, url: &str) {
         return;
     }
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    if let Err(error) = std::process::Command::new(program).arg(url).spawn() {
+    if let Err(error) = spawn_reaped(std::process::Command::new(program).arg(url)) {
         eprintln!("{}: could not open {url}: {error}", app.log_prefix);
     }
+}
+
+/// Start `command` without waiting for it, and reap it when it exits (on a
+/// thread of its own), so a helper such as `open` never lingers as a
+/// zombie for the rest of the app's life. `xdg-open` may run as long as the
+/// program it opened, which is why nothing here waits.
+///
+/// Answers the child's process id.
+///
+/// # Errors
+/// When the program can't be started.
+pub fn spawn_reaped(command: &mut std::process::Command) -> std::io::Result<u32> {
+    let mut child = command.spawn()?;
+    let id = child.id();
+    // The program runs either way; only the reaping needs the thread.
+    let _ = std::thread::Builder::new()
+        .name("reap-child".to_string())
+        .spawn(move || {
+            let _ = child.wait();
+        });
+    Ok(id)
 }
 
 /// Pick the one document to open from the URLs macOS delivered with a document
@@ -1177,6 +1186,38 @@ mod tests {
     };
     use std::path::PathBuf;
     use url::Url;
+
+    #[cfg(unix)]
+    #[test]
+    fn spawn_reaped_leaves_no_zombie() {
+        // Whether process `id` still exists (a zombie counts until it is
+        // reaped), or `None` when this platform can't tell. No `PATH` lookup:
+        // the Nix build sandbox has no `ps` on Linux, so Linux reads `/proc`.
+        fn still_there(id: u32) -> Option<bool> {
+            if cfg!(target_os = "linux") {
+                return Some(std::path::Path::new(&format!("/proc/{id}")).exists());
+            }
+            let found = std::process::Command::new("/bin/ps")
+                .args(["-o", "stat=", "-p", &id.to_string()])
+                .output()
+                .ok()?;
+            Some(!String::from_utf8_lossy(&found.stdout).trim().is_empty())
+        }
+
+        let id = super::spawn_reaped(&mut std::process::Command::new("true")).expect("spawns");
+        if still_there(std::process::id()) != Some(true) {
+            eprintln!("skipped: this platform can't list processes");
+            return;
+        }
+        let gone = (0..200).any(|_| {
+            if still_there(id) == Some(false) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            false
+        });
+        assert!(gone, "process {id} was never reaped");
+    }
 
     #[test]
     fn appearance_script_seeds_the_boot_cache_once_on_our_origin() {

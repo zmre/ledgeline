@@ -191,6 +191,23 @@ async fn ui_prefs_are_the_shared_theme_and_scale() {
         .unwrap();
     let (status, _, _) = send(&app.router, patch).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // A file that won't be overwritten says so without naming the other
+    // app (RA-13).
+    let app_dirs = AppDirs::under(books_root(&app).parent().unwrap().join("config"));
+    let file = app_dirs.config_file("ui-prefs.toml").unwrap();
+    std::fs::write(&file, "theme = [\n").unwrap();
+    let patch = Request::patch("/api/ui-prefs")
+        .header(header::HOST, HOST)
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(r#"{"theme":"gruvbox"}"#))
+        .unwrap();
+    let (status, _, body) = send(&app.router, patch).await;
+    assert!(status.is_client_error(), "{status} {body}");
+    assert!(body.contains("not overwritten"), "{body}");
+    assert!(!body.contains("Ledgeline"), "{body}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "theme = [\n");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1140,6 +1157,33 @@ async fn a_draft_goes_to_a_temporary_file_and_writes_nothing() {
         .unwrap()
         .join("2026-11-17 Customer X Invoice 108.pdf");
     assert!(temp.is_file());
+    // RA-12: each temporary export prints into its own staging file, then
+    // is renamed into place.
+    let (status, body) = json_of(
+        &app,
+        post_json("/api/invoices/108/pdf", &serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let outputs: Vec<_> = native
+        .printed
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|job| job.output.clone())
+        .collect();
+    assert_eq!(outputs.len(), 2);
+    assert_ne!(outputs[0], outputs[1]);
+    for output in &outputs {
+        assert_ne!(output, &temp);
+        assert_eq!(output.parent(), temp.parent());
+        assert!(
+            !output.exists(),
+            "{} was renamed into place",
+            output.display()
+        );
+    }
+    assert!(temp.is_file());
 
     // Share… and Copy file name the PDF by destination and file name.
     let share = serde_json::json!({
@@ -1311,6 +1355,43 @@ async fn send_marks_a_draft_sent_by_portal_and_the_portal_opens() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// RA-2: an export copies in the starter its invoice names when the books
+/// don't have it, as opening the app does (the CLI's `pdf` opens no app).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_export_copies_in_the_starter_its_invoice_names() {
+    let (app, native) = mocked();
+    let root = books_root(&app);
+    let file = root.join(INVOICE_108);
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(
+        &file,
+        text.replace(
+            "template: /invoices/tpl/myco-default.html",
+            "template: /invoices/tpl/modern.html",
+        ),
+    )
+    .unwrap();
+    {
+        let mut session = app.books.session();
+        let (index, vault) = session.parts_mut();
+        let note = vault.vault_path(&file).unwrap();
+        index.refresh(vault, &[note]);
+    }
+    let starter = root.join("invoices/tpl/modern.html");
+    assert!(!starter.exists());
+    let (status, body) = json_of(
+        &app,
+        post_json("/api/invoices/108/pdf", &serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        starter.is_file(),
+        "the starter was copied in before printing"
+    );
+    assert_eq!(native.printed.lock().unwrap().len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]

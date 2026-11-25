@@ -220,6 +220,22 @@ impl AccessToken {
     }
 }
 
+/// `raw` re-serialized when it is a plain https URL: no port, no credentials.
+/// The first test an app's "open this in the system browser" allowlist
+/// applies, before its own hosts. The one judge of such URLs, for the
+/// window's navigation and an app's links alike (not `gui`-only, so a
+/// server-only build vets them the same way).
+#[must_use]
+pub fn plain_https(raw: &str) -> Option<url::Url> {
+    let url = url::Url::parse(raw.trim()).ok()?;
+    let plain = url.scheme() == "https"
+        && url.host_str().is_some()
+        && url.port().is_none()
+        && url.username().is_empty()
+        && url.password().is_none();
+    plain.then_some(url)
+}
+
 /// The process's token together with where it came from. `from_env` is what
 /// SEC-9 keys on: a non-loopback bind is only allowed when the operator chose
 /// the token deliberately.

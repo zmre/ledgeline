@@ -145,13 +145,17 @@ pub(crate) fn plan(
         None if status == Some(Status::Sent) && !temp => (Destination::Kept, pdf_dir.join(&name)),
         None => (Destination::Temp, temp_dir()?.join(&name)),
     };
+    // Kept and temporary exports print into a staging file of their own and
+    // are renamed into place, so two exports of one invoice at once (Share…
+    // then Copy file, two windows) never print into the same file (RA-12).
     let staging = match destination {
         Destination::Kept => {
             std::fs::create_dir_all(&pdf_dir)
                 .map_err(|e| PdfError::Failed(format!("making {}: {e}", pdf_dir.display())))?;
             staging_path(&path)
         }
-        Destination::Temp | Destination::Copy => path.clone(),
+        Destination::Temp => staging_path(&path),
+        Destination::Copy => path.clone(),
     };
     let ready_on_load = invoice
         .header()
@@ -263,8 +267,30 @@ fn encode_component(segment: &str) -> String {
 
 /// The temporary folder (made, private to the user on Unix).
 ///
+/// macOS's (and Windows') temporary folder is the user's own, so the
+/// folder there has a fixed name. Elsewhere it is usually a shared `/tmp`,
+/// where a fixed name could be taken first by another user (SEC-7): each
+/// process makes its own there, with an unpredictable name, private from
+/// the moment it exists.
+///
 /// # Errors
 /// When it can't be made.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) fn temp_dir() -> Result<PathBuf, PdfError> {
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    if let Some(dir) = DIR.get() {
+        return Ok(dir.clone());
+    }
+    let made = private_temp_dir(&std::env::temp_dir())?;
+    Ok(DIR.get_or_init(|| made).clone())
+}
+
+/// [`temp_dir`] where the temporary folder is the user's own:
+/// `<it>/ledgeline-invoicer`.
+///
+/// # Errors
+/// When it can't be made.
+#[cfg(not(all(unix, not(target_os = "macos"))))]
 pub(crate) fn temp_dir() -> Result<PathBuf, PdfError> {
     let dir = std::env::temp_dir().join(TEMP_FOLDER);
     let made = std::fs::create_dir_all(&dir);
@@ -275,6 +301,23 @@ pub(crate) fn temp_dir() -> Result<PathBuf, PdfError> {
     });
     made.map_err(|e| PdfError::Failed(format!("making {}: {e}", dir.display())))?;
     Ok(dir)
+}
+
+/// A new folder under `base`, named `ledgeline-invoicer-<random>` and made
+/// `0700` by the one `mkdir` that creates it (never an existing folder or a
+/// link), kept after the process ends like any temporary file.
+///
+/// # Errors
+/// When it can't be made.
+#[cfg(all(unix, any(test, not(target_os = "macos"))))]
+fn private_temp_dir(base: &Path) -> Result<PathBuf, PdfError> {
+    use std::os::unix::fs::PermissionsExt as _;
+    tempfile::Builder::new()
+        .prefix(&format!("{TEMP_FOLDER}-"))
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir_in(base)
+        .map(tempfile::TempDir::keep)
+        .map_err(|e| PdfError::Failed(format!("making a folder in {}: {e}", base.display())))
 }
 
 /// Distinguishes staging files made in one process.
@@ -389,6 +432,18 @@ pub(crate) fn file_kept(
     Ok(earlier)
 }
 
+/// Move a printed temporary PDF from `staging` to `path`, replacing any
+/// earlier one in one rename.
+///
+/// # Errors
+/// The rename (the staging file is removed).
+fn file_temp(staging: &Path, path: &Path) -> Result<(), PdfError> {
+    std::fs::rename(staging, path).map_err(|error| {
+        let _ = std::fs::remove_file(staging);
+        PdfError::Failed(format!("moving the PDF to {}: {error}", path.display()))
+    })
+}
+
 /// A finished export, as the CLI's `--json` and the API answer it.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct Exported {
@@ -436,6 +491,9 @@ pub(crate) fn complete(
     let mut earlier = None;
     let mut recorded = None;
     let mut kept_at = None;
+    if plan.destination == Destination::Temp {
+        file_temp(&plan.staging, &plan.path)?;
+    }
     if plan.destination == Destination::Kept {
         earlier = file_kept(&plan.staging, &plan.path, today)?;
         kept_at = session.vault().vault_path(&plan.path).ok();
@@ -622,6 +680,30 @@ mod tests {
         std::fs::write(&staging, b"%PDF-1").unwrap();
         assert_eq!(file_kept(&staging, &fresh, "2026-11-23").unwrap(), None);
         assert!(fresh.exists());
+    }
+
+    /// SEC-7: a folder someone else made first under the fixed name is
+    /// never used; each private folder is new, unguessable and `0700`.
+    #[cfg(unix)]
+    #[test]
+    fn the_private_temporary_folder_is_new_and_the_users_alone() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let base = tempfile::tempdir().expect("tempdir");
+        let squatted = base.path().join(TEMP_FOLDER);
+        std::fs::create_dir(&squatted).unwrap();
+        std::fs::set_permissions(&squatted, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let one = private_temp_dir(base.path()).expect("made");
+        let two = private_temp_dir(base.path()).expect("made");
+        assert_ne!(one, two);
+        for dir in [&one, &two] {
+            assert_ne!(dir, &squatted);
+            assert_eq!(dir.parent(), Some(base.path()));
+            let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(name.starts_with("ledgeline-invoicer-"), "{name}");
+            let meta = std::fs::symlink_metadata(dir).unwrap();
+            assert!(meta.is_dir());
+            assert_eq!(meta.permissions().mode() & 0o777, 0o700);
+        }
     }
 
     #[test]

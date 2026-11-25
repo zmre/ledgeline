@@ -233,6 +233,55 @@ fn list_filters() {
     assert!(bad["error"].as_str().expect("message").contains("--status"));
 }
 
+/// `--today` alone (no filter) still decides each row's `overdue`, in both
+/// argument orders (P4).
+#[test]
+fn list_json_honours_today_without_other_flags() {
+    let overdue = |books: &Books, args: &[&str]| -> Vec<String> {
+        let out = books
+            .bare()
+            .arg("-f")
+            .arg(books.journal())
+            .args(args)
+            .output()
+            .expect("runs");
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let value: Value = serde_json::from_slice(&out.stdout).expect("json");
+        value
+            .as_array()
+            .expect("array")
+            .iter()
+            .filter(|d| d["overdue"] == Value::Bool(true))
+            .map(|d| d["number"].as_str().unwrap_or("").to_string())
+            .collect()
+    };
+    let accrual = Books::of("accrual");
+    assert_eq!(
+        overdue(&accrual, &["--today", TODAY, "list", "--json"]),
+        ["107", "106"]
+    );
+    for args in [
+        ["--today", "2030-01-01", "list", "--json"],
+        ["list", "--json", "--today", "2030-01-01"],
+        ["--json", "list", "--today", "2030-01-01"],
+    ] {
+        assert_eq!(overdue(&accrual, &args), ["105", "107", "106"], "{args:?}");
+    }
+    let cash = Books::of("cash");
+    assert_eq!(
+        overdue(&cash, &["--today", TODAY, "list", "--json"]),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        overdue(&cash, &["list", "--json", "--today", "2030-01-01"]),
+        ["207", "203", "202"]
+    );
+}
+
 #[test]
 fn human_output_is_aligned() {
     let books = Books::of("accrual");
@@ -833,6 +882,15 @@ fn accrual_books_end_to_end() {
     assert_eq!(preview["status"], "draft");
     assert_eq!(preview["basis"], "accrual");
     assert!(preview["booked"].is_null());
+    // The text shows money as the books do: `commodity $1,000.00` (P3).
+    let text = books.text(&["send", "108", "--dry-run"]);
+    for amount in [
+        "receivable    $13,600.00  ;",
+        "deferred-revenue  $-12,000.00  ;",
+        "consulting            $-1,600.00  ;",
+    ] {
+        assert!(text.contains(amount), "{amount}: {text}");
+    }
     assert_eq!(books.read("books.journal"), journal);
 
     // 2. Send: the journal gains 108's transaction; the file is marked sent.

@@ -66,6 +66,9 @@ clap = { version = "4", features = ["derive"] }
 toml = "0.9"
 # Aligned human output by display width. Already in Cargo.lock.
 unicode-width = "0.2"
+# The temporary PDF folder on a shared `/tmp` (SEC-7): a private, randomly
+# named folder. Already in Cargo.lock (a dev-dependency here, and MBR's).
+tempfile = "3"
 # Today's local date, the default for `new --date` and "overdue". The same
 # features as ledgeline-server's, so no crate is added.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

@@ -6,7 +6,7 @@
 //! |-------------------------|---------------------------------------------------------------|
 //! | `GET /api/files[?list=false]` | `{pick, open, files}`: the notes and documents a contract may name (`ContractCandidate`), and whether this process can show the open dialog (`pick`) and open a file (`open`). |
 //! | `POST /api/files/pick`  | The system's open dialog at the books folder (the window, macOS): `{cancelled: true}`, or `{cancelled: false, file: ContractCandidate}`; `422` for a file outside the books folder. |
-//! | `POST /api/files/open`  | `{path}`: open a file in the books folder in its default viewer (the window, macOS). |
+//! | `POST /api/files/open`  | `{path}`: open a document in the books folder in its default viewer, or show any other file in Finder (the window, macOS). |
 //!
 //! A contract is stored relative to the books folder (`/customers/contracts/SOW.pdf`)
 //! or as a `[[Title]]` link for a note, never as a path outside it: the
@@ -149,7 +149,8 @@ struct OpenBody {
     path: String,
 }
 
-/// `POST /api/files/open`: a file in the books folder, in its viewer.
+/// `POST /api/files/open`: a document in the books folder, in its viewer;
+/// any other file shown in Finder (`revealed`).
 async fn open(
     State(state): State<AppState>,
     body: Result<Json<OpenBody>, JsonRejection>,
@@ -170,10 +171,34 @@ async fn open(
         let file = root.join(path.as_str());
         // A link out of the folder is refused like a path out of it.
         in_books(&root, &file).map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e))?;
-        native
-            .open_file(&file)
-            .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        Ok(json!({ "done": true }))
+        // SEC-5: only a document opens; anything else (`.command`,
+        // `.terminal`, `.app`, a script) is shown in Finder, never run.
+        let revealed = !is_document(&file);
+        if revealed {
+            native.reveal_file(&file)
+        } else {
+            native.open_file(&file)
+        }
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        Ok(json!({ "done": true, "revealed": revealed }))
     })
     .await
+}
+
+/// Extensions `POST /api/files/open` opens in their viewer: documents,
+/// images and office or iWork files. Not `.html` or `.svg`, which a
+/// browser would run scripts in.
+const DOCUMENT_EXTENSIONS: [&str; 31] = [
+    "pdf", "txt", "md", "markdown", "csv", "tsv", "rtf", "png", "jpg", "jpeg", "gif", "heic",
+    "heif", "tif", "tiff", "webp", "bmp", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt",
+    "ods", "odp", "pages", "numbers", "key", "eml", "json",
+];
+
+/// Whether `file` is a document by its extension (any case).
+fn is_document(file: &std::path::Path) -> bool {
+    file.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        DOCUMENT_EXTENSIONS
+            .iter()
+            .any(|d| d.eq_ignore_ascii_case(e))
+    })
 }

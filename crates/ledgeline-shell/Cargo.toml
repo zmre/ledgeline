@@ -22,7 +22,6 @@ gui = [
     "dep:tao",
     "dep:muda",
     "dep:rfd",
-    "dep:url",
     "dep:tokio",
     "dep:gtk",
     "dep:webkit2gtk",
@@ -32,6 +31,8 @@ gui = [
 
 [dependencies]
 ledgeline-core = { workspace = true }
+# `security::plain_https`. Already in the graph through ledgeline-core.
+url = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -59,7 +60,6 @@ wry = { version = "0.57", optional = true }
 tao = { version = "0.37", optional = true }
 muda = { version = "0.21", optional = true }
 rfd = { version = "0.17", optional = true }
-url = { version = "2", optional = true }
 # The GUI boot binds the in-process server on the app's runtime.
 tokio = { version = "1", features = ["net", "sync"], optional = true }
 

@@ -78,6 +78,10 @@ pub(crate) async fn export_invoice(
     } = request;
     let planning = Arc::clone(&books);
     let (plan, pdf) = run_blocking(move || {
+        // A starter an invoice names but the books don't have yet would
+        // print MBR's "not found" page (RA-2). The app copies them in on
+        // open; the CLI's `pdf` opens no app, so copy them here too.
+        planning.install_starters();
         let plan = {
             let session = planning.session();
             filing::plan(&session, &target, output.as_deref(), temp)?
@@ -268,14 +272,10 @@ pub(crate) struct Delivery {
     pub capabilities: Capabilities,
 }
 
+/// A portal link the app offers: a plain `https` URL, by the shell's one
+/// rule (the window's navigation policy uses it too), re-serialized.
 fn plain_https(url: &str) -> Option<String> {
-    let url = url.trim();
-    let rest = url.strip_prefix("https://")?;
-    let host = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let plain = !host.is_empty()
-        && !host.contains(['@', ':'])
-        && !url.chars().any(|c| c.is_whitespace() || c.is_control());
-    plain.then(|| url.to_string())
+    ledgeline_shell::security::plain_https(url).map(String::from)
 }
 
 fn delivery_of(books: &OpenBooks, number: &str, caps: Capabilities) -> Result<Delivery, ApiError> {
@@ -714,10 +714,19 @@ mod tests {
             "https://user@evil.example/",
             "https://host:8443/",
             "javascript:alert(1)",
-            "https:///nohost",
             "https://a b/",
         ] {
             assert_eq!(plain_https(refused), None, "{refused}");
         }
+        // Offered as the browser reads it (RA-10): the shell's parser, not
+        // the text as written.
+        assert_eq!(
+            plain_https("https://evil.example\\@good.example/").as_deref(),
+            Some("https://evil.example/@good.example/")
+        );
+        assert_eq!(
+            plain_https("https://Portal.Example.com").as_deref(),
+            Some("https://portal.example.com/")
+        );
     }
 }

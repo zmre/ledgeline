@@ -316,6 +316,53 @@ async fn a_sent_invoice_saves_only_with_its_rebook_and_never_in_a_closed_period(
     assert_eq!(void["code"], "void");
 }
 
+/// RA-6: an invoice sent outside the app (the CLI's `send`) before the
+/// watcher refreshed the index is still saved as sent: re-booked, and
+/// through the closed-period check.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_save_reads_sent_from_the_file_not_a_stale_index() {
+    let app = app();
+    let root = books_root(&app);
+    let journal = || std::fs::read_to_string(root.join("books.journal")).unwrap();
+    {
+        // Another process sends 108; this app's index still says draft.
+        let mut cli = invoicer_core::session::Session::open_local(&root.join("books.journal"))
+            .expect("opens");
+        let books = cli.invoice_books();
+        let (index, _) = cli.parts_mut();
+        books
+            .send(
+                index,
+                &invoicer_core::books::Send {
+                    number: "108".to_string(),
+                    today: "2026-11-17".to_string(),
+                    sent_via: None,
+                    expected: None,
+                },
+            )
+            .expect("sent");
+    }
+    let state = state_of(&app, "108").await;
+    assert_eq!(state["status"], "sent");
+    let mut form = state["form"].clone();
+    form["reference"] = json!("PO #PY75334 rev. 2");
+    let (status, saved) = json_of(
+        &app,
+        put_json(
+            "/api/invoices/108/form",
+            &json!({"form": form, "revision": state["revision"], "rebook": true, "today": "2026-11-17"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    assert!(saved["rebooked"].is_object(), "{saved}");
+    assert!(
+        journal().contains("reference: PO #PY75334 rev. 2"),
+        "{}",
+        journal()
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn void_rebook_deposits_and_a_new_customer() {
     let app = app();
@@ -445,6 +492,41 @@ async fn an_unsaved_preview_is_a_page_behind_the_gate() {
     assert!(html.contains("Unsaved subscription"), "{html}");
     let (status, _, _) = send(&app.router, page("/.ledgeline-invoicer/preview?draft=nope")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// RA-7: a starter that can't be copied in doesn't fail the create: the
+/// draft is written and numbered, so the answer says so, with a warning
+/// (a 500 invited a retry, and a second draft).
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_starter_not_copied_is_a_warning_on_create() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let app = app();
+    let tpl = books_root(&app).join("invoices/tpl");
+    let mode = |m: u32| std::fs::set_permissions(&tpl, std::fs::Permissions::from_mode(m));
+    mode(0o555).unwrap();
+    let (status, created) = json_of(
+        &app,
+        post_json(
+            "/api/invoices",
+            &json!({"customer": "[[Customer X]]", "date": "2026-11-17", "template": "/invoices/tpl/classic.html"}),
+        ),
+    )
+    .await;
+    mode(0o755).unwrap();
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert!(created["number"].is_string(), "{created}");
+    assert_eq!(created["copied"], Value::Null);
+    let warnings = created["warnings"].as_array().expect("warnings");
+    assert_eq!(warnings.len(), 1, "{created}");
+    assert!(
+        warnings[0]
+            .as_str()
+            .is_some_and(|w| w.contains("wasn't copied in")),
+        "{created}"
+    );
+    let path = created["path"].as_str().expect("path");
+    assert!(books_root(&app).join(path).is_file());
 }
 
 /// A starter the editor names is copied in with the base it extends (Q1 =

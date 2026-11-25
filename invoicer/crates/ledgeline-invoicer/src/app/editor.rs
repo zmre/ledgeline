@@ -365,7 +365,7 @@ fn text(value: Option<String>) -> Option<String> {
 }
 
 /// `POST /api/invoices`: `new` (a draft), `{path, number, total, written,
-/// copied}`.
+/// copied, warnings}`.
 async fn create(
     State(state): State<AppState>,
     payload: Result<Json<CreateBody>, JsonRejection>,
@@ -393,28 +393,34 @@ async fn create(
             let ApiError(status, message) = write_error(&e);
             Failure::new(status, "invalid", message)
         })?;
-        // The starter it uses is copied in now it is written (B1).
+        // The starter it uses is copied in now it is written (B1). The draft
+        // exists (and has its number) either way, so a failed copy is a
+        // warning, not an error a retry would answer with a second draft
+        // (RA-7).
+        let mut warnings: Vec<String> = Vec::new();
         let copied = match starter {
             Some(starter) => {
                 let dir = session.settings().templates_dir.clone();
-                let installed = starters::install(session.vault(), &dir, starter).map_err(|e| {
-                    Failure::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "storage",
-                        format!(
+                match starters::install(session.vault(), &dir, starter) {
+                    Ok(installed) => {
+                        let (index, vault) = session.parts_mut();
+                        index.refresh(vault, &installed.written_files());
+                        installed.written.then(|| installed.path.to_string())
+                    }
+                    Err(e) => {
+                        warnings.push(format!(
                             "the draft is written, but the {} template wasn't copied in: {e}",
                             starter.name
-                        ),
-                    )
-                })?;
-                let (index, vault) = session.parts_mut();
-                index.refresh(vault, &installed.written_files());
-                installed.written.then(|| installed.path.to_string())
+                        ));
+                        None
+                    }
+                }
             }
             None => None,
         };
         let mut out = value(&created)?;
         out["copied"] = json!(copied);
+        out["warnings"] = json!(warnings);
         Ok(out)
     })
     .await
@@ -572,6 +578,12 @@ async fn save(
     with_books(&state, move |books| {
         let mut session = books.session();
         let path = find(&session, &number)?;
+        // Read it, and the books, afresh: sent outside the app (the CLI, a
+        // hand edit) since the watcher's last refresh, it must still be
+        // checked and re-booked as sent (RA-6).
+        reload_after_write(&mut session);
+        let (index, vault) = session.parts_mut();
+        index.refresh(vault, std::slice::from_ref(&path));
         let doc = session.index().doc(&path);
         let sent = doc.is_some_and(|d| d.header.status == Some(Status::Sent));
         let doc_number = doc.and_then(|d| d.number()).map(str::to_string);
