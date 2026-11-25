@@ -290,6 +290,12 @@ export function standing(doc: Pick<InvoiceEntry, "status" | "paid" | "open" | "o
     }
 }
 
+/** A document's `status:` as a word ("Draft", "Sent", "Void"), where the books' standing isn't known (the editor). */
+export function statusLabel(status: string | null): string {
+    if (status === null || status === "") return "No status";
+    return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
 /** The `paid:` mirror in words: "No", "Paid 2026-10-05", "Partly: 2026-11-05 $1,000". */
 export function paidText(paid: Paid | null): string {
     if (paid === null) return "—";

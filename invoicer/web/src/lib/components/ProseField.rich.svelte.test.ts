@@ -4,7 +4,7 @@
 // text it had (a live reload re-selecting the same snippet) must not push
 // it back over typing the field hasn't reported yet (the library e2e's lost
 // snippet text).
-import {render, waitFor} from "@testing-library/svelte";
+import {fireEvent, render, waitFor} from "@testing-library/svelte";
 import {flushSync} from "svelte";
 import {describe, expect, it, vi} from "vitest";
 import ProseFieldHarness from "./ProseFieldHarness.svelte";
@@ -76,5 +76,29 @@ describe("COMPONENT ProseField over MBR's field", () => {
         component.set("");
         flushSync();
         expect(field.value).toBe("");
+    });
+
+    it("reports unreported typing on Cmd/Ctrl+S, before the page's save runs", async () => {
+        const {onChange, field} = await mounted();
+        let seenBySave: unknown = null;
+        const save = (): void => {
+            seenBySave = onChange.mock.lastCall?.[0];
+        };
+        window.addEventListener("keydown", save);
+        try {
+            field.type("Thanks!");
+            await fireEvent.keyDown(field, {key: "s", metaKey: true});
+            expect(seenBySave).toBe("Thanks!");
+            onChange.mockClear();
+            // Nothing new: no second report.
+            await fireEvent.keyDown(field, {key: "s", ctrlKey: true});
+            expect(onChange).not.toHaveBeenCalled();
+            // Another key doesn't report.
+            field.type(" more");
+            await fireEvent.keyDown(field, {key: "a", metaKey: true});
+            expect(onChange).not.toHaveBeenCalled();
+        } finally {
+            window.removeEventListener("keydown", save);
+        }
     });
 });

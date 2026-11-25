@@ -1,6 +1,6 @@
 // Friendly field names (Phase 4 feedback H1, J10).
 import {describe, expect, it} from "vitest";
-import {fieldLabel, fieldList, friendlyMessage} from "./labels.js";
+import {errorText, fieldLabel, fieldList, friendlyMessage, snippetFieldList} from "./labels.js";
 
 describe("UNIT labels", () => {
     it("names a field by its label, else its key in words", () => {
@@ -9,6 +9,16 @@ describe("UNIT labels", () => {
         expect(fieldLabel("deposit_for")).toBe("Deposit for note");
         expect(fieldLabel("po_number")).toBe("Po number");
         expect(fieldList(["terms", "phones", "ledger_customer"])).toBe("Terms, Phones, Name in the books");
+    });
+
+    it("names a snippet's changed fields as its form does", () => {
+        expect(snippetFieldList(["snippet_kind"])).toBe("Kind");
+        expect(snippetFieldList(["title", "aliases", "body"])).toBe("Title, Aliases, Text");
+    });
+
+    it("reads a caught error through friendlyMessage", () => {
+        expect(errorText(new Error("`invoice_num` can't change once 1042 is sent"))).toBe("Number can't change once 1042 is sent");
+        expect(errorText("remove it from their `snippets:` first")).toBe("Remove it from their default snippets first");
     });
 
     it("rewrites keys in a server message, leaving other words", () => {

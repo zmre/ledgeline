@@ -14,6 +14,7 @@
     import {tick} from "svelte";
     import {matchOptions, type ComboOption} from "#ui/ui/comboMatch.js";
     import {TYPING_ATTRIBUTE} from "#ui/ui/typing.js";
+    import {pressGuard} from "#ui/ui/pressGuard.js";
     import {remToPx} from "#ui/theme/scale.js";
     import {popupPosition, portal, liveViewport} from "#ui/ui/anchoredPopup.js";
 
@@ -68,7 +69,11 @@
     let field = $state<HTMLInputElement | null>(null);
     let popup = $state<HTMLUListElement | null>(null);
     let placement = $state({top: 0, left: 0, width: 0, maxHeight: 0, below: true});
-    let choosing = false;
+    // A press on the list or chevron holds the field's blur; one that ends
+    // without a click does the skipped blur's work (see pressGuard).
+    const choosing = pressGuard(() => {
+        if (field !== null && document.activeElement !== field) onBlur();
+    });
 
     type Entry = {kind: "option"; option: ComboOption} | {kind: "add"; text: string};
 
@@ -172,7 +177,7 @@
     }
 
     function onBlur(): void {
-        if (choosing) return;
+        if (choosing.pressing) return;
         if (open) hide();
         onCommit?.();
     }
@@ -216,10 +221,10 @@
             onpointerdown={(event) => {
                 // Keep the field's focus: its blur would close the list this reopens.
                 event.preventDefault();
-                choosing = true;
+                choosing.press();
             }}
             onclick={() => {
-                choosing = false;
+                choosing.release();
                 toggle();
             }}
             data-testid={testid === undefined ? undefined : `${testid}-chevron`}
@@ -242,7 +247,7 @@
         style="top: {placement.top}px; left: {placement.left}px; width: {placement.width}px; max-height: {placement.maxHeight}px"
         {...{[TYPING_ATTRIBUTE]: ""}}
     >
-        {#each entries as entry, at (entry.kind === "add" ? "\u0000add" : entry.option.value)}
+        {#each entries as entry, at (at)}
             <li>
                 <button
                     type="button"
@@ -254,9 +259,9 @@
                         ? 'font-medium text-primary'
                         : ''}"
                     tabindex="-1"
-                    onpointerdown={() => (choosing = true)}
+                    onpointerdown={() => choosing.press()}
                     onclick={() => {
-                        choosing = false;
+                        choosing.release();
                         choose(entry);
                     }}
                 >

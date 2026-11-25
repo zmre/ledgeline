@@ -245,7 +245,7 @@ test.describe("keyboard-first over the accrual fixture (:5199)", () => {
         await tabTo(page, page.getByTestId("confirm-send-confirm"));
         await page.keyboard.press("Enter");
         await expect(page.getByTestId("editor-notice")).toContainText(`Invoice ${number} is sent.`);
-        await expect(page.getByTestId("editor-status")).toHaveText("sent");
+        await expect(page.getByTestId("editor-status")).toHaveText("Sent");
         expect(read(file)).toMatch(/^status: sent$/m);
         expect(read("books.journal")).toContain(`invoice: ${number}, document: ${file}`);
 

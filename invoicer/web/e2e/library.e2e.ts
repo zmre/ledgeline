@@ -159,7 +159,7 @@ test.describe("the catalog and snippets over the accrual fixture (:5199)", () =>
         await writeProse(page, "snippet-body", "A late fee of 1.5% a month applies after the due date.");
         await expect(page.getByTestId("unsaved")).toBeVisible();
         await page.getByTestId("save-snippet").click();
-        await expect(page.getByTestId("snippet-saved")).toHaveText("Saved body.");
+        await expect(page.getByTestId("snippet-saved")).toHaveText("Saved: Text.");
         expect(read(LATE_FEE)).toBe(
             "---\ntitle: Late fee\ntype: snippet\nsnippet_kind: terms\n---\n\nA late fee of 1.5% a month applies after the due date.\n"
         );

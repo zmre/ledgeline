@@ -17,6 +17,7 @@
     // discarding the whole half-typed transaction.
     import {tick} from "svelte";
     import {TYPING_ATTRIBUTE} from "#ui/ui/typing.js";
+    import {pressGuard} from "#ui/ui/pressGuard.js";
     import {remToPx} from "#ui/theme/scale.js";
     import {popupPosition, portal, liveViewport} from "#ui/ui/anchoredPopup.js";
     import {matchAccounts, tabCompletion} from "#ui/ui/accountMatch.js";
@@ -74,8 +75,11 @@
     // Guards the blur-vs-click race: a pointerdown on an option blurs the input,
     // and without this the blur would commit the OLD text and unmount the popup
     // before the click ever landed. Same shape as `commitDesc`'s `editingDesc`
-    // guard in TransactionRow, for the same reason.
-    let choosing = false;
+    // guard in TransactionRow, for the same reason. A press that ends without
+    // a click does the skipped blur's work (see pressGuard).
+    const choosing = pressGuard(() => {
+        if (field !== null && document.activeElement !== field) onBlur();
+    });
 
     const matches = $derived(open ? matchAccounts(stem, accountNames) : []);
     // Stable across renders, unlike the `Math.random()` id the old <datalist>
@@ -230,7 +234,7 @@
     }
 
     function onBlur(): void {
-        if (choosing) return;
+        if (choosing.pressing) return;
         hide();
         onCommit?.();
     }
@@ -296,9 +300,9 @@
                     aria-selected={at === highlighted}
                     class="block w-full truncate px-2 py-1 text-left text-sm {at === highlighted ? 'bg-primary/25' : ''}"
                     tabindex="-1"
-                    onpointerdown={() => (choosing = true)}
+                    onpointerdown={() => choosing.press()}
                     onclick={() => {
-                        choosing = false;
+                        choosing.release();
                         choose(match.name);
                     }}
                 >

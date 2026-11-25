@@ -4,13 +4,23 @@
 // vitest project rather than needing jsdom.
 
 /**
+ * An app's help-sheet sections, by name, for the type checker: an app adds
+ * them by augmenting this interface (Ledgeline's `#lib/keys/groups.ts`), and
+ * a binding's `group` must then be one of them, so a typo'd group is a type
+ * error rather than a stray section at the bottom of the `?` sheet. Left
+ * empty (the invoicer, this package's own tests), a group is any string.
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type -- filled by declaration merging
+export interface KeyGroupNames {}
+
+/**
  * A help-sheet section. Each app names its own ("Journal", "Invoices") and
  * hands the keymap their order with `keymap.setGroupOrder` (see
  * `helpSections`): the engine is shared by Ledgeline and the invoicer
- * (invoicer PLAN J13), and their sections are not. A plain string, so neither
- * app's vocabulary leaks into the other's.
+ * (invoicer PLAN J13), and their sections are not, so neither app's
+ * vocabulary leaks into the other's (see `KeyGroupNames`).
  */
-export type KeyGroup = string;
+export type KeyGroup = keyof KeyGroupNames extends never ? string : keyof KeyGroupNames & string;
 
 /**
  * Layer priorities. Higher wins; registration order breaks ties (later beats

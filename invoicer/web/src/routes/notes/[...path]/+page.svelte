@@ -10,6 +10,7 @@
     import {page} from "$app/state";
     import {ensureSession} from "#lib/api.js";
     import {pageUrl} from "#lib/invoices.js";
+    import {errorText} from "#lib/labels.js";
     import NoteFrame from "#lib/components/NoteFrame.svelte";
 
     const path = $derived(page.params.path ?? "");
@@ -20,7 +21,7 @@
     onMount(() => {
         ensureSession()
             .then(() => (sessionReady = true))
-            .catch((e: unknown) => (sessionError = e instanceof Error ? e.message : String(e)));
+            .catch((e: unknown) => (sessionError = errorText(e)));
     });
 
     function back(event: MouseEvent): void {
