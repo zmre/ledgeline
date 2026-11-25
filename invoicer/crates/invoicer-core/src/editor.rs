@@ -40,7 +40,7 @@ use thiserror::Error;
 
 /// The frontmatter keys the invoicer owns (the header, the snapshots and the
 /// mirrors). Every other key is a custom field ([`Form::fields`]).
-pub const KNOWN_KEYS: [&str; 25] = [
+pub const KNOWN_KEYS: [&str; 26] = [
     "title",
     "type",
     "template",
@@ -60,6 +60,7 @@ pub const KNOWN_KEYS: [&str; 25] = [
     "invoicer_email",
     "invoicer_phone",
     "invoicer_address",
+    "invoicer_logo",
     "paid",
     "sent_date",
     "sent_via",

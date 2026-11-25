@@ -136,6 +136,42 @@ Pay by ACH within 30 days.
 }
 
 #[test]
+fn a_draft_snapshots_the_company_logo_when_it_has_one() {
+    // Without `logo:` (the vault above): no key at all.
+    let vault = vault();
+    let idx = index(&vault);
+    let new = NewInvoice::new("[[Customer X]]", "2026-11-17");
+    let draft = render(&idx, &vault, &new, &[]).expect("renders");
+    assert!(!draft.text.contains("invoicer_logo"), "{}", draft.text);
+
+    // With one beside the note: its path from the books folder, rooted.
+    let vault = vault
+        .with_file(
+            "orgs/My Company.md",
+            "---\ntype: organization\naddresses:\n  - work: 1 Background Blvd.\nlogo: \"[[My Logo.png]]\"\n---\n",
+        )
+        .with_file("orgs/My Logo.png", "PNG");
+    let idx = index(&vault);
+    let draft = render(&idx, &vault, &new, &[]).expect("renders");
+    assert!(
+        draft.text.contains(
+            "invoicer_address: 1 Background Blvd.\ninvoicer_logo: /orgs/My Logo.png\n---"
+        ),
+        "{}",
+        draft.text
+    );
+
+    // Named but missing: no key (nothing to show).
+    let vault = vault.with_file(
+        "orgs/My Company.md",
+        "---\ntype: organization\nlogo: gone.png\n---\n",
+    );
+    let idx = index(&vault);
+    let draft = render(&idx, &vault, &new, &[]).expect("renders");
+    assert!(!draft.text.contains("invoicer_logo"), "{}", draft.text);
+}
+
+#[test]
 fn a_person_at_a_company_is_billed_as_the_company() {
     let vault = vault();
     let index = index(&vault);

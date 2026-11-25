@@ -14,7 +14,7 @@
 //! | `GET /api/invoices/{num}`   | `show --json` (`today`).                       |
 //! | `GET /api/invoices/{num}/books` | The Books panel: what the journal holds (3b). |
 //! | `POST /api/preview`         | An invoice rendered from unsaved text (3b).    |
-//! | `GET /api/templates`        | The templates, and starters not copied in (3b). |
+//! | `/api/templates…`           | The templates, and starters not copied in (3b); the template editor (4d): [`super::templates`]. |
 //! | `GET /api/invoices/{num}/pdf` | Sending it: where a PDF goes, kept PDFs, the portal, `sent_hash` (3c). |
 //! | `POST /api/invoices/{num}/pdf` | Export its PDF ([`super::pdf`], 3c).         |
 //! | `POST /api/invoices/{num}/send` | Mark it sent (book it), `sent_via` (3c).    |
@@ -68,7 +68,6 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/invoices/{number}", get(invoice))
         .route("/api/invoices/{number}/books", get(invoice_books))
         .route("/api/preview", post(preview))
-        .route("/api/templates", get(templates))
         .route(
             "/api/invoices/{number}/pdf",
             get(pdf::delivery).post(pdf::export),
@@ -84,6 +83,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .merge(super::customers::routes())
         .merge(super::dashboard::routes())
         .merge(super::library::routes())
+        .merge(super::templates::routes())
         .merge(super::files::routes())
         .route("/api/ui-prefs", get(ui_prefs).patch(patch_ui_prefs))
         .route("/api/session", post(session))
@@ -186,7 +186,7 @@ struct BooksParams {
 /// books' name as Ledgeline shows it (`ledgeline_core::title`: the main
 /// file's leading comment, else its folder's name), the basis, and the
 /// counts the sidebar shows: invoices (all, drafts, open, overdue on
-/// `today`), customers, catalog items and snippets; and the next number
+/// `today`), customers, catalog items, snippets and templates; and the next number
 /// with what it follows (`nextNumberAfter`, `nextNumberSource`).
 async fn books(State(state): State<AppState>, Query(params): Query<BooksParams>) -> ApiResult {
     let today = today(params.today.as_deref())?;
@@ -219,6 +219,9 @@ async fn books(State(state): State<AppState>, Query(params): Query<BooksParams>)
             "customers": index.customers().len(),
             "catalog": catalog_items,
             "snippets": invoicer_core::snippets::snippets(index.site()).len(),
+            // What the templates page lists: the books' own, and the
+            // starters not copied in (4d).
+            "templates": super::templates::count_in(&session),
             "nextNumber": next.number.to_string(),
             // What it follows, and where that is (H19): `document`, `books`
             // (booked in the journal, no file) or `start`.
@@ -426,12 +429,6 @@ async fn preview(
         response.headers_mut().insert("server-timing", timing);
     }
     Ok(response)
-}
-
-/// `GET /api/templates`: the books' templates, then the starters not
-/// copied in yet.
-async fn templates(State(state): State<AppState>) -> ApiResult {
-    with_books(&state, |books| to_value(preview::templates(books))).await
 }
 
 /// `GET /api/events`: a stream of server-sent events, so the SPA shows a

@@ -839,6 +839,7 @@ async fn preview_draft(
                 path: Some(path.to_string()),
                 source: Some(request.source),
                 template: text(request.template),
+                template_source: None,
             })
             .ok_or_else(|| {
                 Failure::new(

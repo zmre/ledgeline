@@ -469,10 +469,11 @@ perf-probe size="200000":
     ./scripts/perf/run-probe.sh "$journal"
 
 # The user manual in docs/ is an mbr site (see docs/development/docs-site.md and
-# .github/workflows/docs.yml). Same pinned mbr as CI, run through nix so nothing
-# is installed. `--accept-flake-config` lets nix use mbr's binary cache instead
-# of compiling ffmpeg and pdfium.
-mbr := "nix run --accept-flake-config github:zmre/mbr-markdown-browser/841d7790939d8f679760f7c5119070c3b4f8322d#mbr --"
+# .github/workflows/docs.yml). The same mbr release as CI (docs.yml's
+# MBR_VERSION; keep the two in step), run through nix so nothing is installed.
+# `--accept-flake-config` lets nix use mbr's binary cache instead of compiling
+# ffmpeg and pdfium.
+mbr := "nix run --accept-flake-config github:zmre/mbr-markdown-browser/v0.7.4#mbr --"
 
 # Preview the docs site locally (mbr prints the URL)
 docs:

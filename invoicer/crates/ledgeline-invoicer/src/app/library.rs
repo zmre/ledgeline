@@ -54,26 +54,27 @@ pub(crate) fn routes() -> Router<AppState> {
 
 /// A refusal: a status, a stable code, a sentence and any detail
 /// (`revision`, `problems`, `customers`) merged into the body.
+/// Shared with the template editor ([`super::templates`]).
 #[derive(Debug)]
-struct Failure {
+pub(crate) struct Failure {
     status: StatusCode,
     code: &'static str,
     message: String,
-    detail: Option<Box<(&'static str, Value)>>,
+    detail: Vec<(&'static str, Value)>,
 }
 
 impl Failure {
-    fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
         Self {
             status,
             code,
             message: message.into(),
-            detail: None,
+            detail: Vec::new(),
         }
     }
 
-    fn with(mut self, key: &'static str, value: Value) -> Self {
-        self.detail = Some(Box::new((key, value)));
+    pub(crate) fn with(mut self, key: &'static str, value: Value) -> Self {
+        self.detail.push((key, value));
         self
     }
 }
@@ -81,8 +82,7 @@ impl Failure {
 impl IntoResponse for Failure {
     fn into_response(self) -> Response {
         let mut body = json!({ "error": self.message, "code": self.code });
-        if let Some(detail) = self.detail {
-            let (key, value) = *detail;
+        for (key, value) in self.detail {
             body[key] = value;
         }
         let mut response = no_store_json(body);
@@ -156,11 +156,11 @@ impl From<SnippetError> for Failure {
     }
 }
 
-type Answer = Result<Response, Failure>;
+pub(crate) type Answer = Result<Response, Failure>;
 
 /// Run `f` over the open books on the blocking pool, answering its JSON
 /// with `status`.
-async fn run<F>(state: &AppState, status: StatusCode, f: F) -> Answer
+pub(crate) async fn run<F>(state: &AppState, status: StatusCode, f: F) -> Answer
 where
     F: FnOnce(&OpenBooks) -> Result<Value, Failure> + Send + 'static,
 {
@@ -179,13 +179,13 @@ where
     }
 }
 
-fn body<T>(payload: Result<Json<T>, JsonRejection>) -> Result<T, Failure> {
+pub(crate) fn body<T>(payload: Result<Json<T>, JsonRejection>) -> Result<T, Failure> {
     payload
         .map(|Json(body)| body)
         .map_err(|e| Failure::new(StatusCode::BAD_REQUEST, "bad-request", e.body_text()))
 }
 
-fn to_json(value: impl serde::Serialize) -> Result<Value, Failure> {
+pub(crate) fn to_json(value: impl serde::Serialize) -> Result<Value, Failure> {
     serde_json::to_value(value)
         .map_err(|e| Failure::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))
 }
