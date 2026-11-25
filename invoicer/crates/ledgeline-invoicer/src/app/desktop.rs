@@ -98,12 +98,25 @@ impl<E: Send + 'static> Native for LoopNative<E> {
             return Err("this process has no window to open a PDF from".to_string());
         }
         // An absolute path (never an option), vetted by the caller: an
-        // exported PDF in `pdf-dir` or the temporary folder.
-        std::process::Command::new("/usr/bin/open")
-            .arg(file)
-            .spawn()
+        // exported PDF in `pdf-dir` or the temporary folder, or a document
+        // in the books folder.
+        shell::spawn_reaped(std::process::Command::new("/usr/bin/open").arg(file))
             .map(drop)
             .map_err(|e| format!("couldn't open {}: {e}", file.display()))
+    }
+
+    fn reveal_file(&self, file: &std::path::Path) -> Result<(), String> {
+        if !self.caps.open_file {
+            return Err("this process has no window to show a file from".to_string());
+        }
+        // `open -R`: selected in a Finder window, never launched.
+        shell::spawn_reaped(
+            std::process::Command::new("/usr/bin/open")
+                .arg("-R")
+                .arg(file),
+        )
+        .map(drop)
+        .map_err(|e| format!("couldn't show {}: {e}", file.display()))
     }
 
     fn pick_file(&self, start: &Path, title: &str) -> Result<Option<std::path::PathBuf>, String> {

@@ -126,6 +126,14 @@ pub(crate) trait Native: Send + Sync {
     /// When this process can't.
     fn open_file(&self, file: &std::path::Path) -> Result<(), String>;
 
+    /// Show `file` (already vetted: in the books folder) in the file
+    /// manager, selected, without opening it: for a file that isn't a
+    /// document, which `open` could run (`.command`, `.app`).
+    ///
+    /// # Errors
+    /// When this process can't.
+    fn reveal_file(&self, file: &std::path::Path) -> Result<(), String>;
+
     /// Show the system's open dialog at `start`, titled `title`, and wait
     /// for the choice (`None`: cancelled). Blocks: call it off the async
     /// runtime.
@@ -166,6 +174,7 @@ pub(crate) mod mock {
         pub copied: Mutex<Vec<PathBuf>>,
         pub opened: Mutex<Vec<String>>,
         pub opened_files: Mutex<Vec<PathBuf>>,
+        pub revealed_files: Mutex<Vec<PathBuf>>,
         /// What the open dialog "chooses" (`None`: cancelled), and where
         /// each was asked to start.
         pub pick: Mutex<Option<PathBuf>>,
@@ -234,6 +243,11 @@ pub(crate) mod mock {
 
         fn open_file(&self, file: &std::path::Path) -> Result<(), String> {
             self.opened_files.lock().unwrap().push(file.to_path_buf());
+            Ok(())
+        }
+
+        fn reveal_file(&self, file: &std::path::Path) -> Result<(), String> {
+            self.revealed_files.lock().unwrap().push(file.to_path_buf());
             Ok(())
         }
 

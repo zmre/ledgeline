@@ -736,9 +736,30 @@ pub fn open_in_browser(app: &AppIdentity, url: &str) {
         return;
     }
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    if let Err(error) = std::process::Command::new(program).arg(url).spawn() {
+    if let Err(error) = spawn_reaped(std::process::Command::new(program).arg(url)) {
         eprintln!("{}: could not open {url}: {error}", app.log_prefix);
     }
+}
+
+/// Start `command` without waiting for it, and reap it when it exits (on a
+/// thread of its own), so a helper such as `open` never lingers as a
+/// zombie for the rest of the app's life. `xdg-open` may run as long as the
+/// program it opened, which is why nothing here waits.
+///
+/// Answers the child's process id.
+///
+/// # Errors
+/// When the program can't be started.
+pub fn spawn_reaped(command: &mut std::process::Command) -> std::io::Result<u32> {
+    let mut child = command.spawn()?;
+    let id = child.id();
+    // The program runs either way; only the reaping needs the thread.
+    let _ = std::thread::Builder::new()
+        .name("reap-child".to_string())
+        .spawn(move || {
+            let _ = child.wait();
+        });
+    Ok(id)
 }
 
 /// Pick the one document to open from the URLs macOS delivered with a document
@@ -1177,6 +1198,26 @@ mod tests {
     };
     use std::path::PathBuf;
     use url::Url;
+
+    #[cfg(unix)]
+    #[test]
+    fn spawn_reaped_leaves_no_zombie() {
+        let id = super::spawn_reaped(&mut std::process::Command::new("true")).expect("spawns");
+        // `ps` finds a zombie (`Z`) until the child is reaped, then nothing.
+        let gone = (0..200).any(|_| {
+            let found = std::process::Command::new("ps")
+                .args(["-o", "stat=", "-p", &id.to_string()])
+                .output()
+                .expect("ps runs");
+            let stat = String::from_utf8_lossy(&found.stdout).trim().to_string();
+            if stat.is_empty() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            false
+        });
+        assert!(gone, "process {id} was never reaped");
+    }
 
     #[test]
     fn appearance_script_seeds_the_boot_cache_once_on_our_origin() {

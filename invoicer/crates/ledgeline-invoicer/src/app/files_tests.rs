@@ -183,6 +183,44 @@ async fn open_shows_a_books_file_in_its_viewer_and_nothing_else() {
         native.opened_files.lock().unwrap()[0],
         root.join("customers/contracts/Customer X MSA 2026.md")
     );
+    assert_eq!(body["revealed"], false);
+    // SEC-5: a file that isn't a document is shown in Finder, never run.
+    let contracts = books_root(&app).join("customers/contracts");
+    for name in [
+        "MSA.command",
+        "Setup.terminal",
+        "run.sh",
+        "noextension",
+        "page.html",
+    ] {
+        std::fs::write(contracts.join(name), "echo hi\n").expect("writes");
+        let (status, body) = json_of(
+            &app,
+            post_json(
+                "/api/files/open",
+                &json!({"path": format!("customers/contracts/{name}")}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{name}: {body}");
+        assert_eq!(body["revealed"], true, "{name}");
+        assert_eq!(
+            native.revealed_files.lock().unwrap().last(),
+            Some(&root.join("customers/contracts").join(name))
+        );
+    }
+    std::fs::write(contracts.join("Scan.PDF"), "%PDF-1.7\n").expect("writes");
+    let (_, body) = json_of(
+        &app,
+        post_json(
+            "/api/files/open",
+            &json!({"path": "customers/contracts/Scan.PDF"}),
+        ),
+    )
+    .await;
+    assert_eq!(body["revealed"], false, "{body}");
+    assert_eq!(native.opened_files.lock().unwrap().len(), 2);
+    assert_eq!(native.revealed_files.lock().unwrap().len(), 5);
     for (path, wanted) in [
         ("customers/contracts/nope.pdf", StatusCode::NOT_FOUND),
         ("../outside.pdf", StatusCode::BAD_REQUEST),
