@@ -28,3 +28,12 @@ export const LEDGELINE_KEY_GROUPS = [
 ] as const;
 
 export type LedgelineKeyGroup = (typeof LEDGELINE_KEY_GROUPS)[number];
+
+// The shared keymap types a binding's `group` by these names (`KeyGroupNames`
+// in packages/ui): a group not listed above is a type error in web/, not a
+// stray section at the end of the `?` sheet.
+type LedgelineKeyGroupNames = {[G in LedgelineKeyGroup]: true};
+declare module "#ui/keys/types.js" {
+    // eslint-disable-next-line @typescript-eslint/no-empty-object-type -- declaration merging
+    interface KeyGroupNames extends LedgelineKeyGroupNames {}
+}
