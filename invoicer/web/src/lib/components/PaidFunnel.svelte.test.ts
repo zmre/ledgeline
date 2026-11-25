@@ -59,8 +59,11 @@ describe("COMPONENT PaidFunnel", () => {
     it("lifts a card on hover and on keyboard focus, but not under reduced motion", () => {
         render(PaidFunnel, {dashboard: golden("accrual"), listBase});
         const card = screen.getByTestId("funnel-outstanding");
-        for (const cls of ["hover:-translate-y-0.5", "focus-visible:-translate-y-0.5", "motion-reduce:transform-none", "focus-visible:outline-2"]) {
+        for (const cls of ["hover:-translate-y-0.5", "focus-visible:-translate-y-0.5", "motion-reduce:hover:translate-none", "focus-visible:outline-2"]) {
             expect(card.className).toContain(cls);
         }
+        // Only movement and shadow animate: colours follow a theme switch at once (no half-switched card).
+        expect(card.className).toContain("transition-[translate,box-shadow,opacity]");
+        expect(card.className).not.toMatch(/(^|\s)transition(\s|$)|transition-colors|transition-all/);
     });
 });

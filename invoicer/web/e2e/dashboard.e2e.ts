@@ -27,13 +27,16 @@
 //   - the bar's axis: 0, 5k … 25k.
 //
 // Screenshots for review (and, in Phase 6, the docs) go to
-// target/e2e-invoicer-shots/ (gitignored): wide and narrow, dark and light.
+// target/e2e-invoicer-shots/ (gitignored): wide and narrow, dark and light,
+// in the app's own theme (`openThemed`: the prefs answer the variant, a full
+// reload, transitions settled), with the OS scheme emulated to match. A
+// contrast check runs each theme against the opposite OS scheme.
 //
 // Written with 5a, reworked with R13–R18; NOT run by the agent that wrote
 // it (agents never run Playwright); the lead runs it.
 
 import {resolve} from "node:path";
-import {expect, test, type Page} from "@playwright/test";
+import {expect, test, type Locator, type Page} from "@playwright/test";
 import {API_TOKEN} from "../playwright.config";
 
 const FIXED_NOW = new Date(2026, 10, 17, 12, 0, 0);
@@ -46,6 +49,72 @@ async function open(page: Page): Promise<void> {
     // Still the dashboard (no redirect); a repeat visit may keep the `#token=` fragment.
     await expect(page).toHaveURL(/\/app\/(#.*)?$/);
     await expect(page.getByTestId("dashboard")).toBeVisible();
+}
+
+/** The two variants the screenshots and the contrast check use. */
+const THEMES = ["default-dark", "default-light"] as const;
+
+/**
+ * Open the dashboard in the app's own theme `variant`, set the way the app
+ * sets it: the saved prefs (`GET /api/ui-prefs`, answered here with
+ * `theme: variant`, since this server keeps prefs in the browser and always
+ * answers the default), applied to `<html data-theme>` by the layout. A full
+ * reload, not a hash-only navigation, so nothing switches theme live; then
+ * wait until the theme is on and no transition is running.
+ */
+async function openThemed(page: Page, variant: (typeof THEMES)[number]): Promise<void> {
+    await page.unroute("**/api/ui-prefs");
+    await page.route("**/api/ui-prefs", async (route) => {
+        if (route.request().method() !== "GET") return route.continue();
+        const response = await route.fetch();
+        const body = (await response.json()) as {prefs?: Record<string, unknown>};
+        await route.fulfill({response, json: {...body, prefs: {...body.prefs, theme: variant}}});
+    });
+    await open(page);
+    await page.reload();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", variant);
+    await expect(page.getByTestId("dashboard")).toBeVisible();
+    await page.waitForFunction(() => document.getAnimations().length === 0);
+}
+
+/**
+ * WCAG contrast of `locator`'s text against what is behind it: every
+ * ancestor's background composited from the root down (on white), the text
+ * colour over that, each resolved through a canvas so any CSS colour
+ * (oklch, with alpha) reads.
+ */
+async function contrastOf(locator: Locator): Promise<number> {
+    return locator.evaluate((el) => {
+        const canvas = document.createElement("canvas");
+        canvas.width = canvas.height = 1;
+        const ctx = canvas.getContext("2d", {willReadFrequently: true})!;
+        const paint = (layers: string[]): number[] => {
+            ctx.globalCompositeOperation = "source-over";
+            ctx.fillStyle = "#fff";
+            ctx.fillRect(0, 0, 1, 1);
+            for (const layer of layers) {
+                ctx.fillStyle = layer;
+                ctx.fillRect(0, 0, 1, 1);
+            }
+            return [...ctx.getImageData(0, 0, 1, 1).data.slice(0, 3)];
+        };
+        const layers: string[] = [];
+        for (let node: Element | null = el; node !== null; node = node.parentElement) {
+            const bg = getComputedStyle(node).backgroundColor;
+            if (bg !== "" && bg !== "transparent" && bg !== "rgba(0, 0, 0, 0)") layers.unshift(bg);
+        }
+        const back = paint(layers);
+        const fore = paint([...layers, getComputedStyle(el).color]);
+        const luminance = (rgb: number[]): number => {
+            const [r, g, b] = rgb.map((c) => {
+                const v = c / 255;
+                return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+            });
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        };
+        const [hi, lo] = [luminance(fore), luminance(back)].sort((a, b) => b - a);
+        return (hi + 0.05) / (lo + 0.05);
+    });
 }
 
 /** The invoice list's rows, by number. */
@@ -275,29 +344,56 @@ test.describe("the dashboard over the accrual fixture (:5199)", () => {
         await expect(page.getByTestId("dashboard-total")).toBeVisible();
     });
 
+    test("reads in both themes: the app's theme, not the OS scheme, colours every card", async ({page}) => {
+        for (const variant of THEMES) {
+            // The OS says the opposite: a style keyed to prefers-color-scheme would show here.
+            await page.emulateMedia({colorScheme: variant === "default-light" ? "dark" : "light"});
+            await page.setViewportSize({width: 1280, height: 1000});
+            await openThemed(page, variant);
+            const checks: [string, Locator][] = [
+                ["the Drafts label", page.getByTestId("funnel-drafts").getByText("Drafts", {exact: true})],
+                ["the drafts amount", page.getByTestId("funnel-drafts-amount")],
+                ["the paid card's label", page.getByTestId("funnel-paid").getByText(/^Paid · last/)],
+                ["a recent card's customer", page.getByTestId("recent-card").first().getByText("Customer X")],
+                ["a recent card's status band", page.getByTestId("recent-status").first()],
+                ["an aging row", page.getByTestId("aging-row").first()],
+                ["the hero total", page.getByTestId("dashboard-total")],
+            ];
+            for (const [what, locator] of checks) {
+                expect(await contrastOf(locator), `${what} in ${variant}`).toBeGreaterThanOrEqual(4.5);
+            }
+            // A card's surface is the theme's own surface, the panel's too.
+            const surface = (l: Locator) => l.evaluate((el) => getComputedStyle(el).backgroundColor);
+            expect(await surface(page.getByTestId("funnel-drafts"))).toBe(await surface(page.getByTestId("receivables-panel")));
+        }
+    });
+
     test("screenshots for review: wide and narrow, dark and light", async ({page}) => {
-        for (const scheme of ["dark", "light"] as const) {
+        for (const variant of THEMES) {
+            const scheme = variant === "default-light" ? "light" : "dark";
             await page.emulateMedia({colorScheme: scheme});
             for (const [name, width] of [
                 ["wide", 1280],
                 ["narrow", 420],
             ] as const) {
                 await page.setViewportSize({width, height: 1000});
-                await open(page);
+                await openThemed(page, variant);
                 await expect(page.getByTestId("dashboard-total")).toHaveText("$22,850.00");
-                await page.screenshot({path: `${SHOTS}/dashboard-${name}-${scheme}.png`, fullPage: true});
+                // The narrow cards are as they are wide: nothing dimmed, nothing loading.
+                await expect(page.getByTestId("funnel-paid")).not.toHaveAttribute("aria-busy", "true");
+                await page.screenshot({path: `${SHOTS}/dashboard-${name}-${scheme}.png`, fullPage: true, animations: "disabled"});
             }
             // The tooltip, wide.
             await page.setViewportSize({width: 1280, height: 1000});
-            await open(page);
+            await openThemed(page, variant);
             await page.getByTestId("bar-overdue").hover();
             await expect(page.getByRole("tooltip")).toBeVisible();
-            await page.screenshot({path: `${SHOTS}/dashboard-tooltip-${scheme}.png`});
+            await page.screenshot({path: `${SHOTS}/dashboard-tooltip-${scheme}.png`, animations: "disabled"});
         }
         // At 150–200 % scale the container queries see a narrower page: emulate with a mid width.
         await page.emulateMedia({colorScheme: "light"});
         await page.setViewportSize({width: 760, height: 1000});
-        await open(page);
-        await page.screenshot({path: `${SHOTS}/dashboard-medium-light.png`, fullPage: true});
+        await openThemed(page, "default-light");
+        await page.screenshot({path: `${SHOTS}/dashboard-medium-light.png`, fullPage: true, animations: "disabled"});
     });
 });

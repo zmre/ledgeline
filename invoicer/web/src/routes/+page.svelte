@@ -37,8 +37,9 @@
     let latest = 0;
     function load(days: number | null): void {
         const mine = ++latest;
-        // Keep the figures on screen while the next window loads (dimmed).
-        loadingPaid = dashboard !== null;
+        // Keep the figures on screen while another window loads, the paid card
+        // dimmed; a live reload of the same window dims nothing.
+        loadingPaid = dashboard !== null && (days ?? dashboard.paid_window_days) !== dashboard.paid.days;
         fetchDashboard(undefined, days)
             .then((d) => {
                 if (mine !== latest) return;

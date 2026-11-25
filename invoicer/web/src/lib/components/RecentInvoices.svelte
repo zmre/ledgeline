@@ -30,7 +30,7 @@
         success: "border-success bg-success/10",
     };
     const card =
-        "flex h-full min-w-0 flex-col overflow-hidden rounded-box border border-base-300 bg-base-100 transition motion-reduce:transition-none motion-reduce:transform-none";
+        "flex h-full min-w-0 flex-col overflow-hidden rounded-box border border-base-300 bg-base-100 transition-[translate,box-shadow,opacity] motion-reduce:transition-none motion-reduce:hover:translate-none motion-reduce:focus-visible:translate-none";
     const lift =
         "hover:-translate-y-0.5 hover:border-base-content/30 hover:shadow-md focus-visible:-translate-y-0.5 focus-visible:shadow-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-content";
 </script>

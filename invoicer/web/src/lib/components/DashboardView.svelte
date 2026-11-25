@@ -71,7 +71,7 @@
     );
 
     const tile = "flex min-w-0 flex-col gap-1 rounded-box border border-base-300 bg-base-100 p-4";
-    const tileLink = `${tile} transition motion-reduce:transition-none motion-reduce:transform-none hover:-translate-y-0.5 hover:border-base-content/30 hover:shadow-md focus-visible:-translate-y-0.5 focus-visible:shadow-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-content`;
+    const tileLink = `${tile} transition-[translate,box-shadow] motion-reduce:transition-none motion-reduce:hover:translate-none motion-reduce:focus-visible:translate-none hover:-translate-y-0.5 hover:border-base-content/30 hover:shadow-md focus-visible:-translate-y-0.5 focus-visible:shadow-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-content`;
 </script>
 
 <!-- eslint-disable svelte/no-navigation-without-resolve -- every href is built on listBase or invoiceHref, which the page resolves -->

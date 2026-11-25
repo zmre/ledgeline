@@ -71,7 +71,7 @@
                             {/snippet}
                             {#if bucket.count > 0}
                                 <a
-                                    class="-mx-2 flex items-center gap-2 rounded px-2 py-1 text-sm transition-colors hover:bg-base-200 focus-visible:outline-2 focus-visible:outline-base-content motion-reduce:transition-none"
+                                    class="-mx-2 flex items-center gap-2 rounded px-2 py-1 text-sm hover:bg-base-200 focus-visible:outline-2 focus-visible:outline-base-content motion-reduce:transition-none"
                                     href={listHref(listBase, {aged: bucket.key})}
                                     aria-label="{bucketName(bucket)}: {bucket.text}, {count(bucket.count, 'item')}"
                                     title="{bucketName(bucket)}: {bucket.text}, {count(bucket.count, 'item')}"
