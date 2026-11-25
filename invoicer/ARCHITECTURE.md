@@ -233,7 +233,7 @@ frontmatter.
 | `template`                       | yes      | MBR's per-file template path (`/`-rooted, `.html`). MBR itself renders the styled invoice.                                    |
 | `customer`                       | yes      | Wikilink to the customer note. This is the stable link. The `invoicee_*` fields are a snapshot of what was sent.              |
 | `invoicee_name`, `_email`, `_phone`, `_address` | yes  | A snapshot copied from the customer at creation. Edits to the customer later don't change sent invoices. Use `\|` (literal) for addresses, never `>`, which folds lines. `_phone` is optional (copied when the customer has `phones:`). |
-| `invoicer`, `invoicer_*`         | yes      | The same pattern for your own company.                                                                                        |
+| `invoicer`, `invoicer_*`         | yes      | The same pattern for your own company; `invoicer_logo` (optional) is its note's `logo:`, `/`-rooted (PLAN D16).               |
 | `terms`                          | no       | Net days (integer). The customer's default is copied in.                                                                      |
 | `due_date`                       | no       | Written for grep and templates: `date + terms` unless set by hand. Overdue is always derived from it, never stored.          |
 | `reference`                      | no       | Free text the customer quotes back: `PO #PY75334`. (This was `po_num` in the first sketch.)                                   |
