@@ -65,7 +65,18 @@ fn app_with(native: Option<Arc<dyn super::native::Native>>) -> App {
 
 /// [`app_with`] over the fixture `name` (`accrual`, `cash`).
 pub(super) fn app_on(name: &str, native: Option<Arc<dyn super::native::Native>>) -> App {
+    app_on_prepared(name, native, |_| {})
+}
+
+/// [`app_on`], with `prepare` run on the copied books folder before the
+/// books open (to set file times, say).
+pub(super) fn app_on_prepared(
+    name: &str,
+    native: Option<Arc<dyn super::native::Native>>,
+    prepare: impl FnOnce(&Path),
+) -> App {
     let (dir, journal) = fixture_named(name);
+    prepare(&dir.path().join("books"));
     let books = Arc::new(OpenBooks::open(&journal, false).expect("opens"));
     let app_dirs = AppDirs::under(dir.path().join("config"));
     let state = AppState::with_native(Some(Arc::clone(&books)), app_dirs, native);
@@ -932,7 +943,7 @@ async fn pdf_routes_say_when_this_process_cannot_print() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
         body["capabilities"],
-        serde_json::json!({"pdf": false, "share": false, "copy_file": false, "open_url": false, "open_file": false, "pick_file": false})
+        serde_json::json!({"pdf": false, "share": false, "copy_file": false, "open_url": false, "open_file": false, "pick_file": false, "open_ledgeline": false})
     );
     // The token, as everywhere under /api.
     let anonymous = Request::post("/api/invoices/105/pdf")
@@ -2318,6 +2329,61 @@ async fn a_theme_only_child_gets_the_bases_layout() {
 /// The invoice editor's routes (4a), with these helpers.
 #[path = "editor_tests.rs"]
 mod editor_tests;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_invoice_list_filters_and_sorts_by_its_url() {
+    let app = app();
+    let numbers = |query: &'static str| {
+        let router = app.router.clone();
+        async move {
+            let url = format!("/api/invoices?today=2026-11-17&{query}");
+            let (status, _, body) = send(&router, authed(&url)).await;
+            assert_eq!(status, StatusCode::OK, "{query}: {body}");
+            let list: serde_json::Value = serde_json::from_str(&body).expect("json");
+            list.as_array()
+                .expect("array")
+                .iter()
+                .filter_map(|d| d["number"].as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(numbers("status=paid").await, ["104", "102", "101"]);
+    assert_eq!(numbers("status=overdue").await, ["107", "106"]);
+    assert_eq!(
+        numbers("status=open&sort=due&dir=asc").await,
+        ["106", "107", "105"]
+    );
+    assert_eq!(numbers("aged=61-90").await, ["106"]);
+    assert_eq!(
+        numbers("from=2026-10-01&to=2026-10-31").await,
+        ["107", "104", "103"]
+    );
+    assert_eq!(numbers("customer=Contoso&q=107").await, ["107"]);
+    assert_eq!(
+        numbers("q=py75334&sort=number&dir=desc").await,
+        ["108", "105", "104"]
+    );
+    assert_eq!(
+        numbers("sort=number").await,
+        ["101", "102", "103", "104", "105", "106", "107", "108"]
+    );
+    // Blank values are no filter: the SPA passes its URL through.
+    assert_eq!(
+        numbers("status=&q=&from=&to=&aged=&sort=&dir=").await.len(),
+        8
+    );
+    for bad in [
+        "from=last-week",
+        "to=2026-13",
+        "aged=old",
+        "sort=amount",
+        "dir=up",
+        "status=unpaid",
+    ] {
+        let (status, _, body) = send(&app.router, authed(&format!("/api/invoices?{bad}"))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {body}");
+    }
+}
 
 #[path = "templates_tests.rs"]
 mod templates_tests;

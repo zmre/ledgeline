@@ -17,14 +17,15 @@
 
 use crate::books::{Basis, dec_text};
 use crate::doc::Status;
-use crate::index::{DocumentIndex, IndexedDoc, ListFilter};
+use crate::index::{DocumentIndex, ListFilter};
 use crate::reconcile::BookStates;
 use ledgeline_core::Dec;
 use ledgeline_core::accrual::AccrualRole;
 use ledgeline_core::accrual::receivables::{AgingBucket, DocumentStatus};
 use ledgeline_core::reports::periods::{add_days, days_between};
+use ledgeline_core::vault::VaultPath;
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Where an open row comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -238,22 +239,34 @@ fn ratio(a: Dec, b: Dec) -> Option<String> {
     Some(dec_label(Dec::new(q, 1)))
 }
 
-fn single<'a>(index: &'a DocumentIndex, number: &str) -> Option<&'a IndexedDoc> {
-    match index.by_number(number).as_slice() {
-        [one] => Some(one),
-        _ => None,
+/// Each number filed by exactly one document, and its file: one pass over
+/// the index, so finding an open item's file is a lookup, not a scan.
+pub(crate) fn files_by_number(index: &DocumentIndex) -> HashMap<&str, Option<&VaultPath>> {
+    let mut out: HashMap<&str, Option<&VaultPath>> = HashMap::new();
+    for doc in index.docs() {
+        if let Some(number) = doc.number() {
+            out.entry(number)
+                // A second document with the number: no single file.
+                .and_modify(|path| *path = None)
+                .or_insert(Some(&doc.path));
+        }
     }
+    out
 }
 
-fn from_books(index: &DocumentIndex, d: &DocumentStatus, today: &str) -> OpenItem {
+fn from_books(
+    files: &HashMap<&str, Option<&VaultPath>>,
+    d: &DocumentStatus,
+    today: &str,
+) -> OpenItem {
     let days = days_between(&d.due, today);
     OpenItem {
         number: d.number.clone(),
         path: d
             .number
             .as_deref()
-            .and_then(|n| single(index, n))
-            .map(|doc| doc.path.clone()),
+            .and_then(|n| files.get(n.trim()).copied().flatten())
+            .cloned(),
         customer: d.party.as_ref().map(|p| p.name.clone()),
         account: Some(d.account.clone()),
         commodity: d.commodity.clone(),
@@ -305,9 +318,10 @@ pub fn receivables(
     match basis {
         Basis::Accrual => {
             let books = states.receivables();
+            let files = files_by_number(index);
             view.open = books
                 .open(AccrualRole::Receivable)
-                .map(|d| from_books(index, d, today))
+                .map(|d| from_books(&files, d, today))
                 .collect();
             view.aging = books
                 .aging(AccrualRole::Receivable, today)

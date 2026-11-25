@@ -33,7 +33,7 @@ describe("COMPONENT CustomerList", () => {
         const contoso = within(rows[0]);
         expect(contoso.getByRole("link", {name: "Contoso"}).getAttribute("href")).toBe("/app/customers/customers/Contoso");
         expect(contoso.getByText("$2,000.00")).toBeDefined();
-        expect(contoso.getByTestId("overdue-badge").getAttribute("title")).toBe("Due 2026-11-14");
+        expect(contoso.getByTestId("overdue-badge").getAttribute("title")).toBe("The oldest was due 2026-11-14");
         expect(contoso.getByText("$1,000.00 on 2026-11-05")).toBeDefined();
         const fabrikam = within(rows[1]);
         expect(fabrikam.queryByTestId("overdue-badge")).toBeNull();
@@ -63,5 +63,27 @@ describe("COMPONENT CustomerList", () => {
         const button = within(empty).getByRole("link", {name: "New customer"});
         expect(button.getAttribute("href")).toBe("/app/customers/new");
         expect(button.className).toContain("btn-primary");
+    });
+});
+
+describe("COMPONENT CustomerList sorting and filters (PLAN 5b)", () => {
+    it("sorts by name, owed, overdue and last payment, with aria-sort", async () => {
+        const onSort = vi.fn();
+        render(CustomerList, {href, newHref: "/app/customers/new", customers: [row({})], shown: {sort: "owed", dir: "desc"}, onSort});
+        const sortable = screen.getAllByRole("columnheader").filter((h) => h.querySelector("button") !== null);
+        expect(sortable.map((h) => [h.textContent?.replace(/[↑↓↕]/g, "").trim(), h.getAttribute("aria-sort")])).toEqual([
+            ["Name", "none"],
+            ["Owed", "descending"],
+            ["Overdue", "none"],
+            ["Last payment", "none"],
+        ]);
+        await fireEvent.click(screen.getByRole("button", {name: "Last payment"}));
+        expect(onSort).toHaveBeenCalledExactlyOnceWith("last-payment");
+    });
+
+    it("says nothing matches when filtered", () => {
+        render(CustomerList, {href, newHref: "/app/customers/new", customers: [], filtered: true, onClear: vi.fn()});
+        expect(screen.queryByTestId("customer-list-empty")).toBeNull();
+        expect(screen.getByTestId("customer-list-no-match")).toBeDefined();
     });
 });

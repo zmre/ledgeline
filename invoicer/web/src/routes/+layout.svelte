@@ -39,7 +39,15 @@
                   ].filter((c) => c.value > 0);
         const total = (id: string, value: number | undefined, one: string, many: string): SidebarCount[] =>
             value === undefined ? [] : [{id, value, label: plural(value, one, many)}];
+        // The dashboard is home (PLAN 5a, R1): active only on the root itself.
+        const home = resolve("/");
         return [
+            {
+                id: "dashboard",
+                href: home,
+                label: "Dashboard",
+                active: path.replace(/\/$/, "") === home.replace(/\/$/, ""),
+            },
             {
                 id: "invoices",
                 href: resolve("/invoices"),

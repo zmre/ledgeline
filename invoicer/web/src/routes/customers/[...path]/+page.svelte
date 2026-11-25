@@ -35,15 +35,18 @@
         openBooksFile,
         routeParam,
         saveCustomer,
+        savedText,
         type CustomerDetail,
         type CustomerFields,
         type CustomerForm,
+        type PoForm,
     } from "#lib/customers.js";
     import {pageUrl, type InvoiceEntry, type TemplateEntry} from "#lib/invoices.js";
     import {fieldList, friendlyMessage} from "#lib/labels.js";
     import CustomerAccount from "#lib/components/CustomerAccount.svelte";
     import CustomerFormView from "#lib/components/CustomerForm.svelte";
     import CustomerView from "#lib/components/CustomerView.svelte";
+    import OpenPos from "#lib/components/OpenPos.svelte";
     import SaveDiscardDialog from "#lib/components/SaveDiscardDialog.svelte";
 
     const key = $derived(page.params.path ?? "");
@@ -130,9 +133,13 @@
             .catch((e: unknown) => console.warn("customer:", e));
     }
 
+    /** What the last save sent: "Apply my changes to the new version" sends it again. */
+    let lastFields: CustomerFields | null = null;
+
     /** Write `fields` over `hash`; true when saved (the page is back in the view). */
     async function save(fields: CustomerFields, hash: string): Promise<boolean> {
         const target = key;
+        lastFields = fields;
         saving = true;
         saveError = null;
         savedNote = null;
@@ -140,7 +147,7 @@
             const saved = await saveCustomer(target, hash, fields);
             apply(await fetchCustomer(target));
             editing = false;
-            savedNote = saved.written ? `Saved: ${fieldList(saved.changed)}.` : "Nothing to save.";
+            savedNote = savedText(saved, fieldList);
             return true;
         } catch (e: unknown) {
             conflict = e instanceof ApiStatusError && e.status === 409;
@@ -159,13 +166,19 @@
 
     /** The note changed: write this page's changes over the new version (only the keys changed here). */
     async function applyOverNew(): Promise<void> {
-        const fields = changedFields(original, form);
+        const fields = editing ? changedFields(original, form) : (lastFields ?? {});
         try {
             const fresh = await fetchCustomer(key);
             await save(fields, fresh.hash);
         } catch (e: unknown) {
             saveError = messageOf(e);
         }
+    }
+
+    /** The view's open POs (S5): the whole list, written by key at once. */
+    function savePos(pos: PoForm[]): Promise<boolean> {
+        if (detail === null) return Promise.resolve(false);
+        return save({open_pos: pos}, detail.hash);
     }
 
     function discard(): void {
@@ -344,21 +357,9 @@
                     <div class="flex min-w-0 flex-col gap-4">
                         {#if editing}
                             <CustomerFormView bind:form {templates} {companies} {contractNames} />
-                            {#if customer.open_pos.length > 0}
-                                <section class="rounded-box border border-base-300 p-4 text-sm" data-testid="customer-open-pos">
-                                    <h2 class="mb-2 text-sm font-semibold tracking-wide text-base-content/70 uppercase">Open POs</h2>
-                                    <ul>
-                                        {#each customer.open_pos as po (po.reference)}
-                                            <li>
-                                                {po.reference}{po.amount === null ? "" : `, ${po.amount}`}{po.expires === null ? "" : `, expires ${po.expires}`}
-                                            </li>
-                                        {/each}
-                                    </ul>
-                                    <p class="mt-1 text-xs text-base-content/60">Open POs are edited in the customer's note for now.</p>
-                                </section>
-                            {/if}
                         {:else}
                             <CustomerView {customer} {templates} {companyHref} {noteHref} {fileHref} onOpenFile={canOpenFiles ? openFile : undefined} />
+                            <OpenPos usage={customer.po_usage} busy={saving} onSave={savePos} {invoiceHref} />
                         {/if}
                     </div>
                     <div class="flex min-w-0 flex-col gap-4">

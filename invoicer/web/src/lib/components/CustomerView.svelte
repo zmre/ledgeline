@@ -145,19 +145,6 @@
         {/if}
     </section>
 
-    {#if customer.open_pos.length > 0}
-        <section class="rounded-box border border-base-300 p-4 text-sm" data-testid="customer-open-pos">
-            <h2 class="mb-2 text-sm font-semibold tracking-wide text-base-content/70 uppercase">Open POs</h2>
-            <ul>
-                {#each customer.open_pos as po (po.reference)}
-                    <li>
-                        {po.reference}{po.amount === null ? "" : `, ${po.amount}`}{po.expires === null ? "" : `, expires ${po.expires}`}
-                    </li>
-                {/each}
-            </ul>
-        </section>
-    {/if}
-
     {#if customer.snippets.length > 0}
         <section class="rounded-box border border-base-300 p-4 text-sm" data-testid="view-snippets">
             <h2 class="mb-2 text-sm font-semibold tracking-wide text-base-content/70 uppercase">Default snippets</h2>

@@ -17,6 +17,7 @@ import {
     newCustomerFields,
     routeParam,
     saveCustomer,
+    savedText,
     type CustomerForm,
 } from "./customers.js";
 
@@ -35,6 +36,7 @@ function fabrikam(): CustomerForm {
         ledger_customer: "",
         contracts: [],
         billing_portal: null,
+        open_pos: [],
     };
 }
 
@@ -137,12 +139,12 @@ describe("UNIT customer requests", () => {
             return new Response(JSON.stringify({path: "customers/Fabrikam.md", hash: "new", written: true, changed: ["terms"]}), {status: 200});
         });
         vi.stubGlobal("fetch", fetch);
-        const saved = await saveCustomer("customers/Fabrikam", "abc", {terms: 45});
+        const saved = await saveCustomer("customers/Fabrikam", "abc", {terms: 45}, "2026-11-24");
         expect(saved.hash).toBe("new");
         const [url, init] = fetch.mock.calls[0];
         expect(url).toBe("/api/customers/customers/Fabrikam");
         expect(init?.method).toBe("PUT");
-        expect(JSON.parse(String(init?.body))).toEqual({hash: "abc", fields: {terms: 45}});
+        expect(JSON.parse(String(init?.body))).toEqual({hash: "abc", fields: {terms: 45}, today: "2026-11-24"});
 
         const refused = saveCustomer("customers/Fabrikam", "stale", {terms: 45});
         await expect(refused).rejects.toBeInstanceOf(ApiStatusError);
@@ -181,5 +183,17 @@ describe("UNIT names, never syntax", () => {
         expect(kindLabel("credit-note")).toBe("Credit note");
         expect(kindLabel(null)).toBeNull();
         expect(kindLabel(" ")).toBeNull();
+    });
+});
+
+describe("UNIT saved text (PLAN 5b, S5)", () => {
+    const labels = (keys: readonly string[]) => keys.join(", ");
+    it("says what was saved, and where closed POs were noted", () => {
+        expect(savedText({written: false, changed: []}, labels)).toBe("Nothing to save.");
+        expect(savedText({written: true, changed: ["Open POs"]}, labels)).toBe("Saved: Open POs.");
+        expect(savedText({written: true, changed: ["Open POs"], noted: ["PO #1"]}, labels)).toBe(
+            "Saved: Open POs. PO #1 is noted under Closed POs in the customer's note."
+        );
+        expect(savedText({written: true, changed: ["Open POs"], noted: ["PO #1", "PO #2"]}, labels)).toContain("PO #1, PO #2 are noted");
     });
 });

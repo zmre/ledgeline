@@ -36,7 +36,7 @@ async function open(page: Page): Promise<void> {
         test.skip(true, why);
     }
     await page.clock.setFixedTime(FIXED_NOW);
-    await page.goto(`/app/#token=${API_TOKEN}`);
+    await page.goto(`/app/invoices#token=${API_TOKEN}`);
     await expect(page).toHaveURL(/\/app\/invoices$/);
 }
 
@@ -190,5 +190,21 @@ test.describe("empty books (:5198)", () => {
         await page.getByRole("heading", {name: "Invoices", exact: true}).click();
         await expect(menu).toHaveCount(0);
         await expectEmpty(page, "invoice-list-empty", "No invoices yet", "New invoice");
+    });
+
+    test("the dashboard is home, and empty books get its empty state (5a)", async ({page}) => {
+        await open(page);
+        // The token is this tab's now (sessionStorage): the root is the dashboard.
+        await page.goto("/app/");
+        await expect(page).toHaveURL(/\/app\/$/);
+        await expect(page.getByTestId("sidebar").getByRole("link", {name: "Dashboard", exact: true})).toHaveAttribute("aria-current", "page");
+        // No button of its own (R13): the text points at the sidebar's New, the one way to start.
+        const card = page.getByTestId("dashboard-empty");
+        await expect(card.getByRole("heading", {name: "No invoices yet", exact: true})).toBeVisible();
+        await expect(card).toContainText("New at the top of the sidebar");
+        await expect(card.getByRole("link")).toHaveCount(0);
+        await expect(card.getByRole("button")).toHaveCount(0);
+        await expect(page.getByTestId("dashboard-new")).toHaveCount(0);
+        await expect(page.getByTestId("dashboard-empty-new")).toHaveCount(0);
     });
 });

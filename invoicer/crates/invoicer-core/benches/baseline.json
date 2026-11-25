@@ -1,6 +1,7 @@
 {
   "benches": {
     "invoicer/books_check/5000": 276110000.0,
+    "invoicer/dashboard/5000": 11840000.0,
     "invoicer/check/5000": 3794955.0,
     "invoicer/list_json/5000": 3230379.0,
     "invoicer/next_number/5000": 170071.0,

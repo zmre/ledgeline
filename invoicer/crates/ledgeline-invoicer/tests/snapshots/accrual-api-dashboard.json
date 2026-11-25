@@ -1,0 +1,198 @@
+{
+  "basis": "accrual",
+  "today": "2026-11-22",
+  "invoices": 8,
+  "commodities": [
+    {
+      "commodity": "$",
+      "outstanding": {
+        "amount": "22850.00",
+        "text": "$22,850.00",
+        "count": 7
+      },
+      "overdue": {
+        "amount": "12700.00",
+        "text": "$12,700.00",
+        "count": 5
+      },
+      "not_due": {
+        "amount": "10150.00",
+        "text": "$10,150.00",
+        "count": 2
+      },
+      "unfiled": {
+        "amount": "11300.00",
+        "text": "$11,300.00",
+        "count": 4
+      },
+      "scale": {
+        "amount": "22850.00",
+        "text": "$22,850"
+      },
+      "buckets": [
+        {
+          "key": "current",
+          "label": "Current",
+          "from": null,
+          "to": null,
+          "amount": "10150.00",
+          "text": "$10,150.00",
+          "count": 2
+        },
+        {
+          "key": "1-30",
+          "label": "1–30",
+          "from": 1,
+          "to": 30,
+          "amount": "7000.00",
+          "text": "$7,000.00",
+          "count": 2
+        },
+        {
+          "key": "31-60",
+          "label": "31–60",
+          "from": 31,
+          "to": 60,
+          "amount": "1500.00",
+          "text": "$1,500.00",
+          "count": 1
+        },
+        {
+          "key": "61-90",
+          "label": "61–90",
+          "from": 61,
+          "to": 90,
+          "amount": "1200.00",
+          "text": "$1,200.00",
+          "count": 1
+        },
+        {
+          "key": "91+",
+          "label": "91+",
+          "from": 91,
+          "to": null,
+          "amount": "3000.00",
+          "text": "$3,000.00",
+          "count": 1
+        }
+      ],
+      "oldest_overdue": {
+        "number": "2001",
+        "path": null,
+        "customer": "Tailspin",
+        "due": "2026-07-15",
+        "days_past_due": 130,
+        "outstanding": "$3,000.00"
+      },
+      "dso": {
+        "value": "58.9",
+        "days": 90,
+        "outstanding": "$22,850.00",
+        "billed": "$34,900.00"
+      }
+    }
+  ],
+  "average_days_to_pay": {
+    "invoices": 3,
+    "average": "25.3"
+  },
+  "drafts": {
+    "count": 1,
+    "totals": [
+      {
+        "amount": "13600.00",
+        "text": "$13,600.00"
+      }
+    ],
+    "oldest": "2026-11-17"
+  },
+  "paid": {
+    "days": 30,
+    "from": "2026-10-24",
+    "to": "2026-11-22",
+    "commodities": [
+      {
+        "commodity": "$",
+        "amount": "1000.00",
+        "text": "$1,000.00",
+        "count": 1,
+        "unfiled": 0
+      }
+    ]
+  },
+  "recent": [
+    {
+      "number": "106",
+      "path": "invoices/2026-08-01 Wingtip Invoice 106.md",
+      "customer": "Wingtip",
+      "date": "2026-08-01",
+      "updated": "2026-11-21",
+      "event": "edited",
+      "status": "overdue",
+      "total": "$1,200.00"
+    },
+    {
+      "number": "108",
+      "path": "invoices/2026-11-17 Customer X Invoice 108.md",
+      "customer": "Customer X",
+      "date": "2026-11-17",
+      "updated": "2026-11-17",
+      "event": "dated",
+      "status": "draft",
+      "total": "$13,600.00"
+    },
+    {
+      "number": "105",
+      "path": "invoices/2026-11-10 Customer X Invoice 105.md",
+      "customer": "Customer X",
+      "date": "2026-11-10",
+      "updated": "2026-11-10",
+      "event": "sent",
+      "status": "open",
+      "total": "$8,350.00"
+    },
+    {
+      "number": "107",
+      "path": "invoices/2026-10-15 Contoso Invoice 107.md",
+      "customer": "Contoso",
+      "date": "2026-10-15",
+      "updated": "2026-11-05",
+      "event": "paid",
+      "status": "overdue",
+      "total": "$3,000.00"
+    },
+    {
+      "number": "102",
+      "path": "invoices/2026-09-15 Fabrikam Invoice 102.md",
+      "customer": "Fabrikam",
+      "date": "2026-09-15",
+      "updated": "2026-10-20",
+      "event": "paid",
+      "status": "paid",
+      "total": "$2,900.00"
+    },
+    {
+      "number": "103",
+      "path": "invoices/2026-10-01 Tailspin Invoice 103.md",
+      "customer": "Tailspin",
+      "date": "2026-10-01",
+      "updated": "2026-10-10",
+      "event": "voided",
+      "status": "void",
+      "total": "$800.00"
+    }
+  ],
+  "recognition": {
+    "due": 10,
+    "closed": 1,
+    "earliest": "2026-11-01"
+  },
+  "aging_buckets": [
+    30,
+    60,
+    90
+  ],
+  "dso_days": 90,
+  "paid_window_days": 30,
+  "open_ledgeline": false
+}

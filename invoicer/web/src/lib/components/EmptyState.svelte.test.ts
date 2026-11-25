@@ -28,4 +28,12 @@ describe("COMPONENT EmptyState", () => {
         await rerender({...base, onAction, busy: true});
         expect((screen.getByTestId("empty-new") as HTMLButtonElement).disabled).toBe(true);
     });
+
+    it("has no button without an action (the dashboard's, R13)", () => {
+        render(EmptyState, {title: "No invoices yet", text: "Start one with New at the top of the sidebar.", testid: "empty"});
+        const card = screen.getByTestId("empty");
+        expect(card.textContent).toContain("New at the top of the sidebar");
+        expect(within(card).queryByRole("link")).toBeNull();
+        expect(within(card).queryByRole("button")).toBeNull();
+    });
 });

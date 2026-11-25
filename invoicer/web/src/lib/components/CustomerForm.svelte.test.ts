@@ -113,3 +113,31 @@ describe("COMPONENT CustomerForm", () => {
         vi.restoreAllMocks();
     });
 });
+
+describe("COMPONENT CustomerForm open POs (PLAN 5b)", () => {
+    it("adds, edits and closes POs in the form", async () => {
+        const original = customerX().form;
+        original.open_pos = [{reference: "PO #1", amount: "$1,000", expires: null, was: "PO #1"}];
+        const form = $state(cloneForm(original));
+        render(CustomerForm, {form, templates});
+        expect((screen.getByTestId("form-po-reference") as HTMLInputElement).value).toBe("PO #1");
+        await fireEvent.click(screen.getByTestId("form-po-add"));
+        const refs = screen.getAllByTestId("form-po-reference");
+        await fireEvent.input(refs[1], {target: {value: "PO #2"}});
+        await fireEvent.input(screen.getAllByTestId("form-po-amount")[1], {target: {value: "$500"}});
+        expect(changedFields(original, form).open_pos).toEqual([
+            {reference: "PO #1", amount: "$1,000", expires: null, was: "PO #1"},
+            {reference: "PO #2", amount: "$500", expires: null, was: null},
+        ]);
+        await fireEvent.click(screen.getByRole("button", {name: "Close PO #1"}));
+        expect(changedFields(original, form).open_pos).toEqual([{reference: "PO #2", amount: "$500", expires: null, was: null}]);
+    });
+
+    it("leaves open_pos out of a save when only a blank row was added", async () => {
+        const original = customerX().form;
+        const form = $state(cloneForm(original));
+        render(CustomerForm, {form, templates});
+        await fireEvent.click(screen.getByTestId("form-po-add"));
+        expect(changedFields(original, form)).toEqual({});
+    });
+});

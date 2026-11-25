@@ -72,3 +72,36 @@ describe("COMPONENT InvoiceList", () => {
         expect(screen.queryByTestId("invoice-list")).toBeNull();
     });
 });
+
+describe("COMPONENT InvoiceList sorting and filters (PLAN 5b)", () => {
+    it("sorts from its headers: a button each, aria-sort on the column", async () => {
+        const onSort = vi.fn();
+        render(InvoiceList, {href, invoices: [entry({})], shown: {sort: "total", dir: "desc"}, onSort});
+        const headers = screen.getAllByRole("columnheader");
+        expect(headers.map((h) => h.getAttribute("aria-sort"))).toEqual(["none", "none", "none", "none", "descending", "none"]);
+        await fireEvent.click(screen.getByRole("button", {name: "Due"}));
+        expect(onSort).toHaveBeenCalledExactlyOnceWith("due");
+    });
+
+    it("keeps plain headers without onSort", () => {
+        render(InvoiceList, {href, invoices: [entry({})]});
+        expect(screen.queryAllByRole("button", {name: "Number"})).toHaveLength(0);
+    });
+
+    it("tints overdue rows", () => {
+        render(InvoiceList, {href, invoices: [entry({}), entry({path: "b.md", number: "106", overdue: true})]});
+        const rows = screen.getAllByTestId("invoice-row");
+        expect(rows[0].dataset.overdue).toBeUndefined();
+        expect(rows[1].dataset.overdue).toBe("true");
+        expect(rows[1].className).toContain("bg-error");
+    });
+
+    it("says nothing matches when filtered, with Clear filters, not the first-invoice card", async () => {
+        const onClear = vi.fn();
+        render(InvoiceList, {href, invoices: [], filtered: true, onClear});
+        expect(screen.queryByTestId("invoice-list-empty")).toBeNull();
+        expect(screen.getByTestId("invoice-list-no-match").textContent).toContain("No invoices match");
+        await fireEvent.click(screen.getByTestId("invoice-list-clear"));
+        expect(onClear).toHaveBeenCalledOnce();
+    });
+});

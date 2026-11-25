@@ -346,6 +346,21 @@ impl Money {
             .unwrap_or_else(|| MoneyStyle::fallback(commodity))
     }
 
+    /// An amount written outside a table (a PO's `amount: $40,000`): its
+    /// commodity and value, read in the default commodity's style first, then
+    /// each declared one's. `None` when none reads it.
+    #[must_use]
+    pub fn read(&self, text: &str) -> Option<(String, ledgeline_core::Dec)> {
+        std::iter::once(self.style(None))
+            .chain(self.declared.iter().cloned())
+            .find_map(|style| {
+                style
+                    .parse(text)
+                    .ok()
+                    .map(|m| (style.commodity().to_string(), m.value))
+            })
+    }
+
     /// The style a bill table is written in: its own symbol's.
     #[must_use]
     pub fn for_table(&self, table: &BillTable) -> MoneyStyle {

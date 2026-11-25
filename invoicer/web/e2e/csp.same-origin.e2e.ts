@@ -57,7 +57,7 @@ test("the embedded SPA and an invoice's frame load with no CSP violations", asyn
     const violations = await watchViolations(page);
     await page.clock.setFixedTime(FIXED_NOW);
 
-    await page.goto(`/app/#token=${API_TOKEN}`);
+    await page.goto(`/app/invoices#token=${API_TOKEN}`);
     await expect(page.getByTestId("invoice-row")).toHaveCount(8);
     await page.goto("/app/invoices/105");
     const invoice = page.frameLocator('[data-testid="invoice-frame"]');
@@ -89,7 +89,8 @@ test("the template editor's code field is coloured under the shell's CSP, with n
     const violations = await watchViolations(page);
     await page.clock.setFixedTime(FIXED_NOW);
 
-    await page.goto(`/app/#token=${API_TOKEN}`);
+    // `/app/` is the dashboard (5a, R1): start on the list.
+    await page.goto(`/app/invoices#token=${API_TOKEN}`);
     await expect(page.getByTestId("invoice-row")).toHaveCount(8);
     await page.goto("/app/templates/invoices/tpl/classic");
     const code = page.getByRole("textbox", {name: "Template code", exact: true});

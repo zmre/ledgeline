@@ -56,7 +56,8 @@ const tokenColour = (page: Page, token: string): Promise<string> =>
 
 async function open(page: Page): Promise<void> {
     await page.clock.setFixedTime(FIXED_NOW);
-    await page.goto(`/app/#token=${API_TOKEN}`);
+    // `/app/` is the dashboard (5a, R1): start on the list.
+    await page.goto(`/app/invoices#token=${API_TOKEN}`);
     await expect(page).toHaveURL(/\/app\/invoices$/);
 }
 

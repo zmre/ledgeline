@@ -1,5 +1,8 @@
 <!-- The invoice list, read-only (invoicer PLAN 3b): `GET /api/invoices` as
-     the server sorts it. Filters and sorting are Phase 5.
+     the server filters and sorts it (PLAN 5b). With `onSort`, the headers sort
+     (SortHeader: a button each, `aria-sort` on the `<th>`); overdue rows are
+     tinted, not only their badge. With `filtered`, an empty list says nothing
+     matches and offers Clear filters, instead of the first-invoice card.
 
      A click anywhere on a row opens its invoice (Patrick, 2026-11-23), except
      on a link or button inside it, which do their own thing. The row itself
@@ -9,8 +12,10 @@
      reads one link per row. The row click is the pointer's shortcut to it. -->
 <script lang="ts">
     import {kindLabel, type InvoiceEntry} from "#lib/invoices.js";
+    import type {SortDir} from "#lib/listQuery.js";
     import {rowClick} from "#lib/rows.js";
     import EmptyState from "./EmptyState.svelte";
+    import SortHeader from "./SortHeader.svelte";
     import StatusBadge from "./StatusBadge.svelte";
 
     let {
@@ -18,10 +23,42 @@
         href,
         onOpen,
         newHref = "new",
-    }: {invoices: InvoiceEntry[]; href: (doc: InvoiceEntry) => string; onOpen?: (doc: InvoiceEntry) => void; newHref?: string} = $props();
+        shown = {sort: "date", dir: "desc"},
+        onSort,
+        filtered = false,
+        onClear,
+    }: {
+        invoices: InvoiceEntry[];
+        href: (doc: InvoiceEntry) => string;
+        onOpen?: (doc: InvoiceEntry) => void;
+        newHref?: string;
+        /** The column the rows are sorted by (the server's order is Date, newest first). */
+        shown?: {sort: string; dir: SortDir};
+        /** Sort by a column; without it the headers are plain text. */
+        onSort?: (column: string) => void;
+        /** A filter narrows the list: empty means "nothing matches", not "no invoices yet". */
+        filtered?: boolean;
+        onClear?: () => void;
+    } = $props();
+
+    const COLUMNS: {column: string; label: string; align?: "right"}[] = [
+        {column: "number", label: "Number"},
+        {column: "customer", label: "Customer"},
+        {column: "date", label: "Date"},
+        {column: "due", label: "Due"},
+        {column: "total", label: "Total", align: "right"},
+        {column: "status", label: "Status"},
+    ];
 </script>
 
-{#if invoices.length === 0}
+{#if invoices.length === 0 && filtered}
+    <div class="rounded-box border border-base-300 px-4 py-8 text-center" data-testid="invoice-list-no-match">
+        <p class="text-base-content/70">No invoices match these filters.</p>
+        {#if onClear !== undefined}
+            <button type="button" class="btn mt-3 btn-outline btn-sm" onclick={onClear} data-testid="invoice-list-clear">Clear filters</button>
+        {/if}
+    </div>
+{:else if invoices.length === 0}
     <EmptyState
         title="No invoices yet"
         text="Invoices you write here are drafts until you send them; sending books them in your journal."
@@ -35,12 +72,13 @@
         <table class="table table-sm" data-testid="invoice-list">
             <thead>
                 <tr>
-                    <th>Number</th>
-                    <th>Customer</th>
-                    <th>Date</th>
-                    <th>Due</th>
-                    <th class="text-right">Total</th>
-                    <th>Status</th>
+                    {#each COLUMNS as c (c.column)}
+                        {#if onSort !== undefined}
+                            <SortHeader column={c.column} label={c.label} {shown} {onSort} align={c.align} />
+                        {:else}
+                            <th class={c.align === "right" ? "text-right" : ""}>{c.label}</th>
+                        {/if}
+                    {/each}
                 </tr>
             </thead>
             <tbody>
@@ -48,9 +86,10 @@
                     {@const kind = kindLabel(doc.doc_type)}
                     <!-- The pointer's shortcut; the number's link is the keyboard's way in (see the top). -->
                     <tr
-                        class="cursor-pointer hover:bg-base-200"
+                        class="cursor-pointer {doc.overdue ? 'bg-error/8 hover:bg-error/15' : 'hover:bg-base-200'}"
                         data-testid="invoice-row"
                         data-number={doc.number}
+                        data-overdue={doc.overdue ? "true" : undefined}
                         onclick={(event) => rowClick(event, onOpen === undefined ? undefined : () => onOpen(doc))}
                     >
                         <td class="font-medium whitespace-nowrap">

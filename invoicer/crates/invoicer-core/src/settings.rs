@@ -60,9 +60,37 @@ pub struct Settings {
     /// What the app does when an invoice's file is saved outside it and its
     /// written amounts no longer match its rows.
     pub recalc_on_save: RecalcOnSave,
+    /// The dashboard's aging buckets: the last day of each bucket after
+    /// Current, in days past due (`[30, 60, 90]`: Current, 1–30, 31–60,
+    /// 61–90, 91+, Ledgeline's). Strictly increasing, at least one, at most
+    /// eight.
+    pub aging_buckets: Vec<u32>,
+    /// The dashboard's days sales outstanding window, in days (90; `receivables
+    /// --dso-days` overrides it on the command line).
+    pub dso_days: u32,
+    /// The dashboard's "paid in the last N days" window, in days (30): the
+    /// period selector's default (PLAN R13).
+    pub paid_window_days: u32,
     /// `[invoicer.words]`.
     pub words: Words,
 }
+
+/// The default aging bucket edges: Ledgeline's Current, 1–30, 31–60, 61–90
+/// and 91+ days past due.
+pub const DEFAULT_AGING_BUCKETS: [u32; 3] = [30, 60, 90];
+
+/// The default days sales outstanding window.
+pub const DEFAULT_DSO_DAYS: u32 = 90;
+
+/// The default "paid in the last N days" window.
+pub const DEFAULT_PAID_WINDOW_DAYS: u32 = 30;
+
+/// The longest window `paid-window-days` (and the dashboard's `paid_days`)
+/// may ask for: ten years.
+pub const MAX_PAID_WINDOW_DAYS: u32 = 3660;
+
+/// The most aging bucket edges `aging-buckets` may list.
+pub const MAX_AGING_BUCKETS: usize = 8;
 
 /// `cash-deposits`: how cash books book a deposit (accounting policy; there
 /// is more than one valid way, so it is a setting).
@@ -136,6 +164,9 @@ impl Default for Settings {
             cash_deposits: CashDeposits::default(),
             payment_allocation: PaymentAllocation::default(),
             recalc_on_save: RecalcOnSave::default(),
+            aging_buckets: DEFAULT_AGING_BUCKETS.to_vec(),
+            dso_days: DEFAULT_DSO_DAYS,
+            paid_window_days: DEFAULT_PAID_WINDOW_DAYS,
             words: Words::default(),
         }
     }
@@ -158,7 +189,9 @@ impl Settings {
     /// # Errors
     /// [`SettingsError::Invalid`] for TOML that doesn't parse, an unknown
     /// key, an empty word list, a blank `customer-tag`, or a filename
-    /// pattern without `{invoice_num}`.
+    /// pattern without `{invoice_num}`, `aging-buckets` that aren't one to
+    /// eight strictly increasing positive day counts, a zero `dso-days`, or
+    /// a `paid-window-days` outside 1 to [`MAX_PAID_WINDOW_DAYS`].
     pub fn from_ledgeline_toml(text: &str) -> Result<Self, SettingsError> {
         let invalid = |e: &dyn std::fmt::Display| SettingsError::Invalid(e.to_string());
         let doc: toml::Table = toml::from_str(text).map_err(|e| invalid(&e))?;
@@ -173,6 +206,24 @@ impl Settings {
             return Err(invalid(
                 &"filename must contain {invoice_num}, or two invoices could share a file",
             ));
+        }
+        let edges = &settings.aging_buckets;
+        if edges.is_empty()
+            || edges.len() > MAX_AGING_BUCKETS
+            || edges[0] == 0
+            || edges.windows(2).any(|w| w[0] >= w[1])
+        {
+            return Err(invalid(&format!(
+                "aging-buckets = {edges:?}: give 1 to {MAX_AGING_BUCKETS} increasing day counts above zero, like [30, 60, 90]"
+            )));
+        }
+        if settings.dso_days == 0 {
+            return Err(invalid(&"dso-days must be at least 1"));
+        }
+        if !(1..=MAX_PAID_WINDOW_DAYS).contains(&settings.paid_window_days) {
+            return Err(invalid(&format!(
+                "paid-window-days must be 1 to {MAX_PAID_WINDOW_DAYS}"
+            )));
         }
         for (key, dir) in [
             ("invoices-dir", &settings.invoices_dir),
@@ -274,9 +325,33 @@ mod tests {
             "[invoicer]\ninvoices-dir = \"../outside\"\n",
             "[invoicer.words]\ncustomer-tag = \"\"\n",
             "not = = toml",
+            "[invoicer]\naging-buckets = []\n",
+            "[invoicer]\naging-buckets = [0, 30]\n",
+            "[invoicer]\naging-buckets = [30, 30]\n",
+            "[invoicer]\naging-buckets = [60, 30]\n",
+            "[invoicer]\naging-buckets = [1, 2, 3, 4, 5, 6, 7, 8, 9]\n",
+            "[invoicer]\ndso-days = 0\n",
+            "[invoicer]\npaid-window-days = 0\n",
+            "[invoicer]\npaid-window-days = 5000\n",
         ] {
             assert!(Settings::from_ledgeline_toml(text).is_err(), "{text}");
         }
+    }
+
+    #[test]
+    fn aging_buckets_and_the_dso_window_are_settings() {
+        let settings = Settings::default();
+        assert_eq!(settings.aging_buckets, vec![30, 60, 90]);
+        assert_eq!(settings.dso_days, 90);
+        let settings =
+            Settings::from_ledgeline_toml("[invoicer]\naging-buckets = [15, 45]\ndso-days = 365\n")
+                .expect("reads");
+        assert_eq!(settings.aging_buckets, vec![15, 45]);
+        assert_eq!(settings.dso_days, 365);
+        assert_eq!(settings.paid_window_days, 30, "the default window");
+        let settings =
+            Settings::from_ledgeline_toml("[invoicer]\npaid-window-days = 90\n").expect("reads");
+        assert_eq!(settings.paid_window_days, 90);
     }
 
     #[test]

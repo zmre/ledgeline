@@ -5,6 +5,7 @@
 // from the shared client in packages/ui: injected by the window, or adopted
 // from the `#token=` launch fragment.
 import {ApiShapeError, ApiUnreachableError, authHeaders} from "#ui/api/client.js";
+import {isDashboard, type Dashboard} from "./dashboard.js";
 import type {Anchor, Delivery, Destination, Exported} from "./delivery.js";
 import {localToday, type BooksInfo, type InvoiceBooks, type InvoiceDetail, type InvoiceEntry, type Preview, type TemplateEntry} from "./invoices.js";
 
@@ -90,13 +91,26 @@ export function fetchBooks(today: string = localToday()): Promise<BooksInfo> {
     return json<BooksInfo>("GET", `/api/books?today=${today}`, (body) => isObject(body) && "basis" in body);
 }
 
+/** `GET /api/dashboard`: the receivables dashboard on `today` (PLAN 5a). */
+export function fetchDashboard(today: string = localToday(), paidDays: number | null = null): Promise<Dashboard> {
+    const paid = paidDays === null ? "" : `&paid_days=${paidDays}`;
+    return json<Dashboard>("GET", `/api/dashboard?today=${today}${paid}`, isDashboard);
+}
+
+/** `POST /api/ledgeline/open`: these books in Ledgeline (the window, macOS). */
+export async function openInLedgeline(): Promise<void> {
+    await call("POST", "/api/ledgeline/open");
+}
+
 /**
- * `GET /api/invoices`: every document, newest first. "Overdue" is measured
+ * `GET /api/invoices`: every document, newest first, or as `query` (the
+ * list's URL query, `lib/listQuery.ts`) filters and sorts them. "Overdue" is measured
  * against `today`, the browser's local date by default: the user's calendar,
  * not the server process's.
  */
-export function fetchInvoices(today: string = localToday()): Promise<InvoiceEntry[]> {
-    return json<InvoiceEntry[]>("GET", `/api/invoices?today=${today}`, Array.isArray);
+export function fetchInvoices(today: string = localToday(), query: string = ""): Promise<InvoiceEntry[]> {
+    const rest = query.replace(/^[?&]+/, "");
+    return json<InvoiceEntry[]>("GET", `/api/invoices?today=${today}${rest === "" ? "" : `&${rest}`}`, Array.isArray);
 }
 
 /** `GET /api/invoices/{number}`: one document in full (`today` as above). */

@@ -54,6 +54,7 @@ export function customerX(over: Partial<CustomerDetail> = {}): CustomerDetail {
             {kind: "file", path: "/customers/contracts/gone.pdf", found: null, name: "gone.pdf"},
         ],
         open_pos: [],
+        po_usage: [],
         snippets: [],
         documents: [
             entry({path: "invoices/108.md", number: "108", status: "draft", open: false, paid: null, total: "$1,200.00"}),
@@ -85,6 +86,7 @@ export function customerX(over: Partial<CustomerDetail> = {}): CustomerDetail {
                 requires_reference: true,
                 instructions: "Upload the PDF under Invoices.\n",
             },
+            open_pos: [],
         },
         backlinks: [
             {

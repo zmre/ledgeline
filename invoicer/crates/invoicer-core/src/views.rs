@@ -15,6 +15,7 @@ use crate::customers::{self, BillingContact, ContactKind, ContractRef, Customer,
 use crate::doc::{Header, Invoice, Paid, Status};
 use crate::frontmatter::Fields;
 use crate::index::{DocumentIndex, IndexedDoc, ListFilter};
+use crate::numbering::natural_cmp;
 use crate::problem::{Problem, ProblemCode, Severity};
 use crate::reconcile::{self, BookStates};
 use crate::session::Session;
@@ -28,6 +29,10 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 pub mod account;
+pub mod dashboard;
+pub mod query;
+
+pub use query::{Aged, CustomerQuery, CustomerSort, InvoiceSort, ListStatus, SortDir};
 
 /// Whether a document is open by its `paid:` mirror alone: sent, and
 /// `paid:` isn't a date.
@@ -53,6 +58,21 @@ pub fn overdue_in(states: Option<&BookStates>, doc: &IndexedDoc, today: &str) ->
             .due_date
             .as_deref()
             .is_some_and(|due| due < today)
+}
+
+/// The days money was received for `doc`: by the books when given (and
+/// they can say: [`BookStates::money_received`]), else by its `paid:`
+/// mirror (a partial payment's days, or the day it was paid in full).
+#[must_use]
+pub fn paid_dates(states: Option<&BookStates>, doc: &IndexedDoc) -> Vec<String> {
+    if let Some(received) = states.and_then(|s| s.money_received(doc)) {
+        return received.into_iter().map(|(date, _)| date).collect();
+    }
+    match &doc.header.paid {
+        Some(Paid::Full { date }) => vec![date.clone()],
+        Some(Paid::Partial { parts }) => parts.iter().map(|p| p.date.clone()).collect(),
+        Some(Paid::No) | None => Vec::new(),
+    }
 }
 
 /// Whether a document is overdue on `today`: open, and due before it.
@@ -111,7 +131,7 @@ pub struct DocEntry<'a> {
     pub problems: Counts,
 }
 
-/// `list`'s filters beyond [`ListFilter`].
+/// `list`'s filters beyond [`ListFilter`], and its sort (PLAN 5b, S1).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ListQuery {
     /// Type, status and customer.
@@ -120,6 +140,194 @@ pub struct ListQuery {
     pub open: bool,
     /// Only overdue documents.
     pub overdue: bool,
+    /// Only sent documents paid in full (sent and not open).
+    pub paid: bool,
+    /// Only documents dated on or after this day (YYYY-MM-DD).
+    pub from: Option<String>,
+    /// Only documents dated on or before this day.
+    pub to: Option<String>,
+    /// Only documents with money received on or after this day (PLAN R14,
+    /// the dashboard's "paid in the last N days").
+    pub paid_from: Option<String>,
+    /// Only documents with money received on or before this day.
+    pub paid_to: Option<String>,
+    /// Only open documents this many days past due.
+    pub aged: Option<Aged>,
+    /// Only documents whose number, title, customer, reference or total
+    /// holds this text, any case.
+    pub text: Option<String>,
+    /// The column; `None` is the index's order, newest first.
+    pub sort: Option<InvoiceSort>,
+    /// Which way the column sorts.
+    pub dir: SortDir,
+}
+
+impl ListQuery {
+    /// The query with `status` applied: a `status:` value goes to the
+    /// filter, paid, open and overdue to their flags.
+    #[must_use]
+    pub fn with_status(mut self, status: ListStatus) -> Self {
+        match status {
+            ListStatus::Draft => self.filter.status = Some(Status::Draft),
+            ListStatus::Sent => self.filter.status = Some(Status::Sent),
+            ListStatus::Void => self.filter.status = Some(Status::Void),
+            ListStatus::Paid => {
+                self.filter.status = Some(Status::Sent);
+                self.paid = true;
+            }
+            ListStatus::Open => self.open = true,
+            ListStatus::Overdue => self.overdue = true,
+        }
+        self
+    }
+
+    /// Whether `doc` passes the filters beyond [`ListFilter`].
+    fn keeps(&self, doc: &IndexedDoc, states: Option<&BookStates>, today: &str) -> bool {
+        let header = &doc.header;
+        let open = || open_in(states, doc);
+        if (self.open || self.aged.is_some()) && !open() {
+            return false;
+        }
+        if self.overdue && !overdue_in(states, doc, today) {
+            return false;
+        }
+        if self.paid && (header.status != Some(Status::Sent) || open()) {
+            return false;
+        }
+        let date = header.date.as_deref();
+        if let Some(from) = &self.from
+            && date.is_none_or(|d| d < from.as_str())
+        {
+            return false;
+        }
+        if let Some(to) = &self.to
+            && date.is_none_or(|d| d > to.as_str())
+        {
+            return false;
+        }
+        if (self.paid_from.is_some() || self.paid_to.is_some())
+            && !paid_dates(states, doc).iter().any(|d| {
+                self.paid_from
+                    .as_deref()
+                    .is_none_or(|from| d.as_str() >= from)
+                    && self.paid_to.as_deref().is_none_or(|to| d.as_str() <= to)
+            })
+        {
+            return false;
+        }
+        if let Some(aged) = self.aged {
+            let Some(due) = header.due_date.as_deref() else {
+                return false;
+            };
+            if !aged.holds(ledgeline_core::reports::periods::days_between(due, today)) {
+                return false;
+            }
+        }
+        if let Some(text) = query::search_text(self.text.as_deref()) {
+            let party = &header.invoicee;
+            let link = party
+                .link
+                .as_deref()
+                .map(|l| crate::notes::wikilink_target(l).unwrap_or(l));
+            let total = doc.summary.as_ref().map(|s| s.total_text.as_str());
+            let fields = [
+                doc.number(),
+                Some(doc.title.as_str()),
+                party.name.as_deref(),
+                link,
+                header.reference.as_deref(),
+                total,
+            ];
+            if !fields.into_iter().any(|f| query::contains_text(f, &text)) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// The `customer` filter's name as the index matches it: a name no
+/// customer's title answers to but one's `ledger_customer` (the books' name,
+/// which the dashboard links with) does becomes that customer's title.
+#[must_use]
+pub fn customer_filter_name(index: &DocumentIndex, name: &str) -> String {
+    let wanted = crate::notes::normalize_name(name);
+    let customers = index.customers();
+    if customers
+        .iter()
+        .any(|c| crate::notes::normalize_name(&c.contact.title) == wanted)
+    {
+        return name.to_string();
+    }
+    customers
+        .iter()
+        .find(|c| crate::notes::normalize_name(&c.ledger_customer) == wanted)
+        .map_or_else(|| name.to_string(), |c| c.contact.title.clone())
+}
+
+/// Where a list row stands, for sorting by status: draft, open, overdue,
+/// paid, void, anything else.
+fn standing_rank(entry: &DocEntry<'_>) -> u8 {
+    match entry.header.status {
+        Some(Status::Draft) => 0,
+        Some(Status::Sent) if entry.overdue => 2,
+        Some(Status::Sent) if entry.open => 1,
+        Some(Status::Sent) => 3,
+        Some(Status::Void) => 4,
+        _ => 5,
+    }
+}
+
+/// `a` against `b` by `sort`, `dir` way round; equal when the column can't
+/// tell them apart (the caller's order stands).
+fn compare_rows(
+    sort: InvoiceSort,
+    dir: SortDir,
+    a: (&IndexedDoc, &DocEntry<'_>),
+    b: (&IndexedDoc, &DocEntry<'_>),
+) -> std::cmp::Ordering {
+    let customer = |d: &IndexedDoc| {
+        let party = &d.header.invoicee;
+        party
+            .name
+            .as_deref()
+            .or_else(|| {
+                party
+                    .link
+                    .as_deref()
+                    .map(|l| crate::notes::wikilink_target(l).unwrap_or(l))
+            })
+            .map(crate::notes::normalize_name)
+    };
+    match sort {
+        InvoiceSort::Number => {
+            query::missing_last(a.0.number(), b.0.number(), dir, |x, y| natural_cmp(x, y))
+        }
+        InvoiceSort::Customer => query::missing_last(customer(a.0), customer(b.0), dir, Ord::cmp),
+        InvoiceSort::Date => query::missing_last(
+            a.0.header.date.as_deref(),
+            b.0.header.date.as_deref(),
+            dir,
+            Ord::cmp,
+        ),
+        InvoiceSort::Due => query::missing_last(
+            a.0.header.due_date.as_deref(),
+            b.0.header.due_date.as_deref(),
+            dir,
+            Ord::cmp,
+        ),
+        InvoiceSort::Total => query::missing_last(
+            a.0.summary
+                .as_ref()
+                .map(|s| (s.total, s.commodity.as_str())),
+            b.0.summary
+                .as_ref()
+                .map(|s| (s.total, s.commodity.as_str())),
+            dir,
+            |x, y| x.0.cmp(&y.0).then_with(|| x.1.cmp(y.1)),
+        ),
+        InvoiceSort::Status => dir.apply(standing_rank(a.1).cmp(&standing_rank(b.1))),
+    }
 }
 
 fn problem_counts(problems: &[Problem]) -> HashMap<&VaultPath, Counts> {
@@ -153,9 +361,10 @@ fn entry<'a>(
     }
 }
 
-/// `list`: matching documents, newest first, each with its `check` counts
-/// (`problems`, from [`problems`]). Open and overdue read `states` (the
-/// books) when given, else the `paid:` mirrors.
+/// `list`: matching documents, newest first unless `query` sorts them, each
+/// with its `check` counts (`problems`, from [`problems`]). Open, overdue,
+/// paid and aged read `states` (the books) when given, else the `paid:`
+/// mirrors; days past due count to `today`.
 #[must_use]
 pub fn list<'a>(
     index: &'a DocumentIndex,
@@ -165,20 +374,27 @@ pub fn list<'a>(
     today: &str,
 ) -> Vec<DocEntry<'a>> {
     let counts = problem_counts(problems);
-    index
+    let mut rows: Vec<(&IndexedDoc, DocEntry<'a>)> = index
         .list(&query.filter)
         .into_iter()
-        .filter(|d| !query.open || open_in(states, d))
-        .filter(|d| !query.overdue || overdue_in(states, d, today))
+        .filter(|d| query.keeps(d, states, today))
         .map(|d| {
-            entry(
+            (
                 d,
-                states,
-                today,
-                counts.get(&d.path).copied().unwrap_or_default(),
+                entry(
+                    d,
+                    states,
+                    today,
+                    counts.get(&d.path).copied().unwrap_or_default(),
+                ),
             )
         })
-        .collect()
+        .collect();
+    if let Some(sort) = query.sort {
+        // Stable: rows the column can't tell apart stay newest first.
+        rows.sort_by(|a, b| compare_rows(sort, query.dir, (a.0, &a.1), (b.0, &b.1)));
+    }
+    rows.into_iter().map(|(_, entry)| entry).collect()
 }
 
 /// A deferred row's recognition terms.
@@ -516,7 +732,7 @@ pub struct CustomerEntry {
     pub open: usize,
 }
 
-fn billed_to<'a>(index: &'a DocumentIndex, customer: &Customer) -> Vec<&'a IndexedDoc> {
+pub(crate) fn billed_to<'a>(index: &'a DocumentIndex, customer: &Customer) -> Vec<&'a IndexedDoc> {
     let site = index.site();
     index
         .list(&ListFilter::default())
@@ -622,12 +838,104 @@ pub struct CustomerDetail<'a> {
     pub billing_portal: Option<&'a crate::customers::BillingPortal>,
     /// `open_pos:`.
     pub open_pos: &'a [crate::customers::OpenPo],
+    /// Each open PO with what has been invoiced against it (PLAN 5b, S6),
+    /// in `open_pos` order.
+    pub po_usage: Vec<PoUsage>,
     /// `snippets:` (default snippets, as written).
     pub snippets: &'a [String],
     /// Its documents, newest first.
     pub documents: Vec<DocEntry<'a>>,
     /// What `check` finds in the customer note.
     pub problems: Vec<Problem>,
+}
+
+/// An open PO and what its customer's sent invoices quoting it add up to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PoUsage {
+    /// What the customer quotes back.
+    pub reference: String,
+    /// The PO's amount, as written.
+    pub amount: Option<String>,
+    /// When it expires.
+    pub expires: Option<String>,
+    /// Expired before `today`.
+    pub expired: bool,
+    /// The numbers of the sent invoices (not drafts, not void) whose
+    /// `reference` is this PO's (any case), oldest first.
+    pub invoices: Vec<String>,
+    /// Their totals added up, in the PO's commodity (the invoices' when the
+    /// PO has no amount); `None` when there are none, or they are in
+    /// another commodity than the PO's.
+    pub invoiced: Option<String>,
+    /// The amount less `invoiced` (negative when over); `None` without an
+    /// amount that reads as money.
+    pub remaining: Option<String>,
+}
+
+/// What has been invoiced against each of `customer`'s open POs, by
+/// `docs` (the customer's documents) on `today`.
+pub(crate) fn po_usage(
+    index: &DocumentIndex,
+    customer: &Customer,
+    docs: &[&IndexedDoc],
+    today: &str,
+) -> Vec<PoUsage> {
+    let money = index.money();
+    customer
+        .open_pos
+        .iter()
+        .map(|po| {
+            let wanted = crate::notes::normalize_name(&po.reference);
+            let mut quoting: Vec<&IndexedDoc> = docs
+                .iter()
+                .copied()
+                .filter(|d| d.header.status == Some(Status::Sent))
+                .filter(|d| {
+                    d.header
+                        .reference
+                        .as_deref()
+                        .is_some_and(|r| crate::notes::normalize_name(r) == wanted)
+                })
+                .collect();
+            quoting.sort_by(|a, b| a.header.date.cmp(&b.header.date));
+            let amount = po.amount.as_deref().and_then(|a| money.read(a));
+            let commodity = amount.as_ref().map(|(c, _)| c.clone()).or_else(|| {
+                quoting
+                    .iter()
+                    .find_map(|d| d.summary.as_ref().map(|s| s.commodity.clone()))
+            });
+            let mut invoiced: Option<ledgeline_core::Dec> = None;
+            let mut mixed = false;
+            for doc in &quoting {
+                match &doc.summary {
+                    Some(s) if Some(&s.commodity) == commodity.as_ref() => {
+                        let sum = invoiced.unwrap_or_else(ledgeline_core::Dec::zero);
+                        invoiced = Some(sum.add(s.total).unwrap_or(sum));
+                    }
+                    _ => mixed = true,
+                }
+            }
+            let invoiced = invoiced.filter(|_| !mixed);
+            let format =
+                |value: ledgeline_core::Dec| money.style(commodity.as_deref()).format(value);
+            let remaining = amount.as_ref().filter(|_| !mixed).map(|(_, total)| {
+                let used = invoiced.unwrap_or_else(ledgeline_core::Dec::zero);
+                format(total.sub(used).unwrap_or(*total))
+            });
+            PoUsage {
+                reference: po.reference.clone(),
+                amount: po.amount.clone(),
+                expires: po.expires.clone(),
+                expired: po.expires.as_deref().is_some_and(|e| e < today),
+                invoices: quoting
+                    .iter()
+                    .filter_map(|d| d.number().map(str::to_string))
+                    .collect(),
+                invoiced: invoiced.map(format),
+                remaining,
+            }
+        })
+        .collect()
 }
 
 /// The customer `name` names: a title, alias, file stem or `[[wikilink]]`.
@@ -675,6 +983,7 @@ pub fn customer_detail<'a>(
         })
         .collect();
     let states = Some(session.book_states());
+    let docs = billed_to(index, customer);
     CustomerDetail {
         entry: customer_entry(index, states, customer),
         contact: &customer.contact,
@@ -683,8 +992,9 @@ pub fn customer_detail<'a>(
         contracts,
         billing_portal: customer.billing_portal.as_ref(),
         open_pos: &customer.open_pos,
+        po_usage: po_usage(index, customer, &docs, today),
         snippets: &customer.snippets,
-        documents: billed_to(index, customer)
+        documents: docs
             .into_iter()
             .map(|d| {
                 entry(
@@ -1254,6 +1564,207 @@ mod tests {
         let detail = customer_detail(&session, &customer, &problems(&session), "2026-11-17");
         assert!(detail.contracts.iter().all(|c| c.found.is_some()));
         assert_eq!(detail.documents.len(), 3);
+    }
+
+    fn numbers_for(session: &Session, query: &ListQuery) -> Vec<String> {
+        let problems = problems(session);
+        list(
+            session.index(),
+            Some(session.book_states()),
+            &problems,
+            query,
+            "2026-11-17",
+        )
+        .iter()
+        .map(|d| {
+            d.header
+                .number
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_default()
+        })
+        .collect()
+    }
+
+    #[test]
+    fn list_filters_by_the_day_money_came_in() {
+        // The dashboard's "paid in the last N days" (R14): 102 was paid in
+        // full on 2026-10-20, $1,000 of 107 came in on 2026-11-05 (still
+        // open), 104 on 2026-10-08, 101 on 2026-10-05.
+        let session = session("accrual");
+        let paid = |from: Option<&str>, to: Option<&str>| {
+            numbers_for(
+                &session,
+                &ListQuery {
+                    paid_from: from.map(str::to_string),
+                    paid_to: to.map(str::to_string),
+                    ..ListQuery::default()
+                },
+            )
+        };
+        assert_eq!(paid(Some("2026-10-19"), Some("2026-11-17")), ["107", "102"]);
+        assert_eq!(paid(Some("2026-11-05"), Some("2026-11-05")), ["107"]);
+        assert_eq!(paid(None, Some("2026-10-08")), ["104", "101"]);
+        assert!(paid(Some("2026-11-06"), None).is_empty());
+        // Without the books, the `paid:` mirrors say when.
+        let problems = problems(&session);
+        let mirrored: Vec<String> = list(
+            session.index(),
+            None,
+            &problems,
+            &ListQuery {
+                paid_from: Some("2026-10-19".into()),
+                ..ListQuery::default()
+            },
+            "2026-11-17",
+        )
+        .iter()
+        .filter_map(|d| d.header.number.as_ref().map(ToString::to_string))
+        .collect();
+        assert!(mirrored.contains(&"102".to_string()), "{mirrored:?}");
+    }
+
+    #[test]
+    fn list_filters_by_status_dates_age_and_text() {
+        let session = session("accrual");
+        let numbers = |query: ListQuery| numbers_for(&session, &query);
+        let status = |s: &str| ListQuery::default().with_status(ListStatus::parse(s).expect(s));
+        assert_eq!(numbers(status("paid")), ["104", "102", "101"]);
+        assert_eq!(numbers(status("draft")), ["108"]);
+        assert_eq!(numbers(status("void")), ["103"]);
+        assert_eq!(numbers(status("open")), ["105", "107", "106"]);
+        assert_eq!(numbers(status("overdue")), ["107", "106"]);
+        assert_eq!(
+            numbers(status("sent")),
+            ["105", "107", "104", "102", "101", "106"]
+        );
+        assert_eq!(
+            numbers(ListQuery {
+                from: Some("2026-10-01".into()),
+                to: Some("2026-10-31".into()),
+                ..ListQuery::default()
+            }),
+            ["107", "104", "103"]
+        );
+        let aged = |a: &str| ListQuery {
+            aged: Aged::parse(a),
+            ..ListQuery::default()
+        };
+        // On 2026-11-17: 107 was due 11-14 (3 days), 106 08-31 (78 days).
+        assert_eq!(numbers(aged("1-30")), ["107"]);
+        assert_eq!(numbers(aged("61-90")), ["106"]);
+        assert_eq!(numbers(aged("current")), ["105"]);
+        assert!(numbers(aged("91+")).is_empty());
+        let text = |t: &str| ListQuery {
+            text: Some(t.into()),
+            ..ListQuery::default()
+        };
+        // The reference, any case: 108 (draft), 105 (rev. 2) and 104.
+        assert_eq!(numbers(text("py75334")), ["108", "105", "104"]);
+        assert_eq!(numbers(text(" CONTOSO ")), ["107", "101"]);
+        assert_eq!(numbers(text("106")), ["106"]);
+        assert_eq!(numbers(text("   ")).len(), 8, "a blank search is no filter");
+        // Filters combine.
+        assert_eq!(
+            numbers(ListQuery {
+                filter: ListFilter {
+                    customer: Some("Customer X".into()),
+                    ..ListFilter::default()
+                },
+                text: Some("rev".into()),
+                ..ListQuery::default()
+            }),
+            ["105"]
+        );
+    }
+
+    #[test]
+    fn list_sorts_by_any_column() {
+        let session = session("accrual");
+        let sorted = |sort: &str, dir: SortDir| {
+            numbers_for(
+                &session,
+                &ListQuery {
+                    sort: InvoiceSort::parse(sort),
+                    dir,
+                    ..ListQuery::default()
+                },
+            )
+        };
+        assert_eq!(
+            sorted("number", SortDir::Asc),
+            ["101", "102", "103", "104", "105", "106", "107", "108"]
+        );
+        assert_eq!(
+            sorted("number", SortDir::Desc),
+            ["108", "107", "106", "105", "104", "103", "102", "101"]
+        );
+        // Draft, open, overdue, paid, void; ties newest first.
+        assert_eq!(
+            sorted("status", SortDir::Asc),
+            ["108", "105", "107", "106", "104", "102", "101", "103"]
+        );
+        assert_eq!(
+            sorted("date", SortDir::Asc),
+            ["106", "101", "102", "104", "103", "107", "105", "108"]
+        );
+        // Customer by name, then newest first within one.
+        assert_eq!(
+            sorted("customer", SortDir::Asc),
+            ["107", "101", "108", "105", "104", "102", "103", "106"]
+        );
+        // Totals by value: each no smaller than the next.
+        let index = session.index();
+        let totals: Vec<ledgeline_core::Dec> = sorted("total", SortDir::Desc)
+            .iter()
+            .map(|n| {
+                index
+                    .docs()
+                    .find(|d| d.number() == Some(n.as_str()))
+                    .and_then(|d| d.summary.as_ref())
+                    .expect("a total")
+                    .total
+            })
+            .collect();
+        assert!(totals.windows(2).all(|w| w[0] >= w[1]), "{totals:?}");
+        assert_eq!(
+            sorted("due", SortDir::Asc).first().map(String::as_str),
+            Some("106")
+        );
+    }
+
+    #[test]
+    fn open_pos_show_what_was_invoiced_against_them() {
+        let session = session("accrual");
+        let customer = find_customer(session.index(), "Customer X").expect("found");
+        let detail = customer_detail(&session, &customer, &problems(&session), "2026-11-17");
+        let [po] = detail.po_usage.as_slice() else {
+            panic!("{:?}", detail.po_usage);
+        };
+        assert_eq!(po.reference, "PO #PY75334");
+        assert_eq!(po.amount.as_deref(), Some("$40,000"));
+        assert!(!po.expired);
+        // 104 quotes it and is sent; 108 is a draft, 105 quotes "…, rev. 2".
+        assert_eq!(po.invoices, ["104"]);
+        let total = session
+            .index()
+            .docs()
+            .find(|d| d.number() == Some("104"))
+            .and_then(|d| d.summary.as_ref())
+            .expect("104's total")
+            .clone();
+        assert_eq!(po.invoiced.as_deref(), Some(total.total_text.as_str()));
+        let money = session.index().money();
+        let left = ledgeline_core::Dec::parse("40000", '.')
+            .expect("dec")
+            .sub(total.total)
+            .expect("sub");
+        assert_eq!(
+            po.remaining.as_deref(),
+            Some(money.style(Some("$")).format(left).as_str())
+        );
+        let later = customer_detail(&session, &customer, &problems(&session), "2027-07-01");
+        assert!(later.po_usage[0].expired);
     }
 
     #[test]

@@ -556,6 +556,40 @@ impl BookStates {
         }
     }
 
+    /// The money the books record as received for `doc`: `(date, amount)`,
+    /// oldest first, in its table's commodity. Payments only: a credit (a
+    /// credit note, a write-off) and a void are not money in. `None` when
+    /// the books can't say (no number or table; accrual books with no
+    /// receivable booked); a zero total is paid without money, so empty.
+    #[must_use]
+    pub fn money_received(&self, doc: &IndexedDoc) -> Option<Vec<(String, Dec)>> {
+        let number = doc.number()?;
+        let summary = doc.summary.as_ref()?;
+        let standing = self.numbers.get(number);
+        let mut out: Vec<(String, Dec)> = match self.basis {
+            Basis::Accrual => standing?
+                .bookings
+                .iter()
+                .find_map(|b| b.receivable.as_ref())?
+                .settled_by
+                .iter()
+                .filter(|s| !s.credit)
+                .map(|s| (s.date.clone(), s.amount))
+                .collect(),
+            Basis::Cash => standing
+                .map(|s| {
+                    s.payments
+                        .iter()
+                        .filter(|p| p.commodity == summary.commodity)
+                        .map(|p| (p.source.date.clone(), p.amount))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        };
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Some(out)
+    }
+
     /// Whether `doc` is open: sent, and not paid in full — by the books
     /// when they can say, else by its `paid:` mirror.
     #[must_use]

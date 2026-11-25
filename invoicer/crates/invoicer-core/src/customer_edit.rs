@@ -21,6 +21,7 @@
 //! meaning "leave it". An empty string or list, or `null`, removes the key.
 
 use crate::customers::{BillingPortal, ContactKind, ContractRef, Customer, Labelled, is_customer};
+use crate::doc::Money;
 use crate::frontmatter::{self, EditError, FieldEdit};
 use crate::index::DocumentIndex;
 use crate::notes::{Note, Stamp};
@@ -96,6 +97,27 @@ pub struct CustomerFields {
     /// `billing_portal:`. Its keys the form doesn't know are kept.
     #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
     pub billing_portal: Option<Option<BillingPortal>>,
+    /// `open_pos:`, the whole list in order (PLAN 5b, S5). A PO left out is
+    /// closed: removed from the list. Each entry's keys the form doesn't
+    /// know are kept.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open_pos: Option<Vec<PoFields>>,
+}
+
+/// One `open_pos:` entry as the form edits it: the keys the core reads
+/// ([`crate::customers::OpenPo`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PoFields {
+    /// What the customer quotes back (`PO #PY75334`). Required, one per PO.
+    pub reference: String,
+    /// The PO's amount, as money (`$40,000`); empty for none.
+    pub amount: Option<String>,
+    /// When it expires (YYYY-MM-DD); empty for never.
+    pub expires: Option<String>,
+    /// The reference it had when the form was filled (`None`: a new PO).
+    /// The note's entry with that reference keeps its other keys.
+    pub was: Option<String>,
 }
 
 /// What a create or an update wrote.
@@ -117,6 +139,9 @@ pub struct CustomerSaved {
     pub written: bool,
     /// The keys written, in order.
     pub changed: Vec<String>,
+    /// The open POs closed by this save, each noted under `## Closed POs`
+    /// in the note's body (PLAN 5b, S5).
+    pub noted: Vec<String>,
 }
 
 /// Why a create or an update refused. Nothing is written when one is
@@ -207,6 +232,18 @@ pub fn fields_of(customer: &Customer, note: &Note) -> CustomerFields {
                 .collect(),
         ),
         billing_portal: Some(customer.billing_portal.clone()),
+        open_pos: Some(
+            customer
+                .open_pos
+                .iter()
+                .map(|po| PoFields {
+                    reference: po.reference.clone(),
+                    amount: po.amount.clone(),
+                    expires: po.expires.clone(),
+                    was: Some(po.reference.clone()),
+                })
+                .collect(),
+        ),
     }
 }
 
@@ -416,6 +453,98 @@ fn portal_value(
     Ok((!map.is_empty()).then_some(Value::Object(map)))
 }
 
+/// The text a PO entry's `key` reads as (as [`Customer::from_note`] reads it).
+fn entry_text(map: &Map<String, Value>, key: &str) -> Option<String> {
+    match map.get(key) {
+        Some(Value::String(s)) => Some(s.trim().to_string()).filter(|s| !s.is_empty()),
+        Some(Value::Number(n)) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+/// `open_pos:` as written: each PO over the note's own entry with its old
+/// reference (`was`), keeping keys the form doesn't know and values that read
+/// the same as they are written (`amount: 40000` stays a number). `None`
+/// removes the key: no POs left.
+fn open_pos_value(
+    pos: &[PoFields],
+    existing: Option<&Value>,
+    money: &Money,
+) -> Result<Option<Value>, CustomerError> {
+    let entries: Vec<&Map<String, Value>> = match existing {
+        Some(Value::Array(items)) => items.iter().filter_map(Value::as_object).collect(),
+        _ => Vec::new(),
+    };
+    let mut seen: Vec<String> = Vec::new();
+    let mut out = Vec::new();
+    for po in pos {
+        let Some(reference) = one_line("a PO's reference", &po.reference)? else {
+            if po.amount.as_deref().is_some_and(|a| !a.trim().is_empty())
+                || po.expires.as_deref().is_some_and(|e| !e.trim().is_empty())
+            {
+                return Err(invalid("every open PO needs its reference (PO #105)"));
+            }
+            continue;
+        };
+        let key = reference.to_lowercase();
+        if seen.contains(&key) {
+            return Err(invalid(format!(
+                "two open POs are both {reference:?}; give each its own reference"
+            )));
+        }
+        seen.push(key);
+        let amount = match &po.amount {
+            Some(a) => one_line("a PO's amount", a)?,
+            None => None,
+        };
+        if let Some(a) = &amount
+            && money.read(a).is_none()
+        {
+            return Err(invalid(format!(
+                "{reference}: the amount {a:?} isn't money; write it like $40,000"
+            )));
+        }
+        let expires = match &po.expires {
+            Some(e) => one_line("a PO's expiry date", e)?,
+            None => None,
+        };
+        if let Some(e) = &expires
+            && !crate::table::books::is_iso_date(e)
+        {
+            return Err(invalid(format!(
+                "{reference}: the expiry date {e:?} isn't a date (YYYY-MM-DD)"
+            )));
+        }
+        let was = po
+            .was
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or(reference.as_str());
+        let mut map = entries
+            .iter()
+            .find(|m| entry_text(m, "reference").as_deref() == Some(was))
+            .map(|m| (*m).clone())
+            .unwrap_or_default();
+        for (k, v) in [
+            ("reference", Some(reference.clone())),
+            ("amount", amount),
+            ("expires", expires),
+        ] {
+            match v {
+                Some(v) if entry_text(&map, k).as_deref() == Some(v.as_str()) => {}
+                Some(v) => {
+                    map.insert(k.to_string(), Value::String(v));
+                }
+                None => {
+                    map.remove(k);
+                }
+            }
+        }
+        out.push(Value::Object(map));
+    }
+    Ok((!out.is_empty()).then_some(Value::Array(out)))
+}
+
 /// Set `key` to `value` (remove it for `None`), leaving a value that only
 /// differs in trailing white space as written (a `|` block stays one).
 fn set_text(map: &mut Map<String, Value>, key: &str, value: Option<String>) {
@@ -449,8 +578,10 @@ impl Wanted {
 
 fn wanted(
     fields: &CustomerFields,
-    existing_portal: Option<&Value>,
+    existing: Option<&crate::frontmatter::Fields>,
+    money: &Money,
 ) -> Result<Wanted, CustomerError> {
+    let existing_portal = existing.and_then(|f| f.get("billing_portal"));
     let mut out = Wanted { keys: Vec::new() };
     let text = |s: String| Some(Value::String(s));
     if let Some(title) = &fields.title {
@@ -510,6 +641,12 @@ fn wanted(
         out.put(
             "contracts",
             (!list.is_empty()).then_some(Value::Array(list)),
+        );
+    }
+    if let Some(pos) = &fields.open_pos {
+        out.put(
+            "open_pos",
+            open_pos_value(pos, existing.and_then(|f| f.get("open_pos")), money)?,
         );
     }
     if let Some(portal) = &fields.billing_portal {
@@ -587,8 +724,100 @@ fn saved(path: VaultPath, text: &str, written: bool, changed: Vec<String>) -> Cu
         hash: content_hash(text.as_bytes()),
         written,
         changed,
+        noted: Vec::new(),
         path,
     }
+}
+
+/// The heading closed POs are noted under, in the customer note's body.
+pub const CLOSED_POS_HEADING: &str = "## Closed POs";
+
+/// A closed PO's line under [`CLOSED_POS_HEADING`]: `- PO #PY75334 —
+/// $40,000, expires 2027-06-30; invoiced $16,700.00; closed 2026-11-24.`
+/// The amount and expiry as written; what was invoiced in the books' money
+/// style ([`crate::views::PoUsage`]); the date when given.
+#[must_use]
+pub fn closed_po_line(po: &crate::views::PoUsage, today: Option<&str>) -> String {
+    let details: Vec<String> = [
+        po.amount.clone(),
+        po.expires.as_ref().map(|e| format!("expires {e}")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let mut line = format!("- {}", po.reference);
+    if !details.is_empty() {
+        line.push_str(" — ");
+        line.push_str(&details.join(", "));
+    }
+    match &po.invoiced {
+        Some(invoiced) => line.push_str(&format!("; invoiced {invoiced}")),
+        None => line.push_str("; nothing invoiced"),
+    }
+    match today {
+        Some(day) => line.push_str(&format!("; closed {day}.")),
+        None => line.push_str("; closed."),
+    }
+    line
+}
+
+/// `text` with `lines` added under [`CLOSED_POS_HEADING`] in its body: after
+/// the section's last line when the note has the section, else a new
+/// section at the end of the body. Every other byte stays as it was.
+#[must_use]
+pub fn note_closed_pos(text: &str, lines: &[String]) -> String {
+    if lines.is_empty() {
+        return text.to_string();
+    }
+    let body_start = frontmatter::locate(text).map_or(0, |b| b.body_start);
+    let body = &text[body_start..];
+    let added: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    // Line starts in the body, with each line's text (terminator excluded).
+    let mut starts = Vec::new();
+    let mut at = 0;
+    for line in body.split_inclusive('\n') {
+        starts.push((at, line.trim_end_matches(['\n', '\r'])));
+        at += line.len();
+    }
+    let heading = starts
+        .iter()
+        .position(|(_, l)| l.trim_end().eq_ignore_ascii_case(CLOSED_POS_HEADING));
+    let Some(h) = heading else {
+        // A new section at the end, after a blank line.
+        let mut out = text.to_string();
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        if !out.ends_with("\n\n") {
+            out.push('\n');
+        }
+        out.push_str(CLOSED_POS_HEADING);
+        out.push_str("\n\n");
+        out.push_str(&added);
+        return out;
+    };
+    // The section runs to the next heading of level 1 or 2, or the end.
+    let end = starts[h + 1..]
+        .iter()
+        .position(|(_, l)| l.starts_with("# ") || l.starts_with("## "))
+        .map_or(starts.len(), |k| h + 1 + k);
+    // After its last non-blank line (the heading itself when it is empty).
+    let last = (h..end)
+        .rev()
+        .find(|&k| !starts[k].1.trim().is_empty())
+        .unwrap_or(h);
+    let line_end = starts.get(last + 1).map_or(body.len(), |(start, _)| *start);
+    let mut out = String::with_capacity(text.len() + added.len() + 2);
+    out.push_str(&text[..body_start + line_end]);
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    if last == h {
+        out.push('\n');
+    }
+    out.push_str(&added);
+    out.push_str(&text[body_start + line_end..]);
+    out
 }
 
 /// Create a customer: a new person or organization note in `customers-dir`
@@ -625,7 +854,7 @@ pub fn create(
     let path = VaultPath::new(&name)
         .map_err(|e| invalid(format!("{name:?} can't be a file in the books: {e}")))?;
     let tag = settings.words.customer_tag.clone();
-    let wanted = wanted(fields, None)?;
+    let wanted = wanted(fields, None, index.money())?;
     let mut block: Vec<(&str, Value)> = Vec::new();
     for (key, value) in wanted.keys {
         if let Some(value) = value {
@@ -676,6 +905,25 @@ pub fn update(
     expected: &str,
     fields: &CustomerFields,
 ) -> Result<CustomerSaved, CustomerError> {
+    update_on(index, vault, path, expected, fields, None)
+}
+
+/// [`update`], with `today` for the date a closed PO is noted with (PLAN
+/// 5b, S5): an open PO the new `open_pos` leaves out (none names it by
+/// `was`, or by reference when new) is noted in the body under
+/// [`CLOSED_POS_HEADING`], with what was invoiced against it, in the same
+/// write as the frontmatter (one hash check, one conditional replace).
+///
+/// # Errors
+/// As [`update`].
+pub fn update_on(
+    index: &mut DocumentIndex,
+    vault: &dyn Vault,
+    path: &VaultPath,
+    expected: &str,
+    fields: &CustomerFields,
+    today: Option<&str>,
+) -> Result<CustomerSaved, CustomerError> {
     let (bytes, revision) = vault.read_pinned(path, None).map_err(|e| {
         if e.is_not_found() {
             CustomerError::NotFound(path.clone())
@@ -723,7 +971,7 @@ pub fn update(
             });
         }
     }
-    let mut wanted = wanted(fields, note.frontmatter.get("billing_portal"))?;
+    let mut wanted = wanted(fields, Some(&note.frontmatter), index.money())?;
     let renamed = wanted.keys.iter().any(|(k, v)| {
         *k == "title" && v.as_ref().and_then(Value::as_str) != Some(customer.contact.title.as_str())
     });
@@ -745,7 +993,32 @@ pub fn update(
             None => FieldEdit::Remove(key.to_string()),
         })
         .collect();
-    let text = frontmatter::edit(&source, &edits)?;
+    let mut text = frontmatter::edit(&source, &edits)?;
+    // Closed POs: what the new list no longer names, noted in the body.
+    let closed: Vec<&crate::customers::OpenPo> = match &fields.open_pos {
+        Some(pos) => customer
+            .open_pos
+            .iter()
+            .filter(|old| {
+                !pos.iter().any(|po| {
+                    let named = po.was.as_deref().unwrap_or(po.reference.as_str());
+                    named.trim() == old.reference
+                })
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    let noted: Vec<String> = closed.iter().map(|po| po.reference.clone()).collect();
+    if !closed.is_empty() {
+        let docs = crate::views::billed_to(index, &customer);
+        let usage = crate::views::po_usage(index, &customer, &docs, today.unwrap_or(""));
+        let lines: Vec<String> = usage
+            .iter()
+            .filter(|u| noted.contains(&u.reference))
+            .map(|u| closed_po_line(u, today))
+            .collect();
+        text = note_closed_pos(&text, &lines);
+    }
     let written = text != source;
     let changed: Vec<String> = edits
         .iter()
@@ -772,7 +1045,9 @@ pub fn update(
             })?;
         index.refresh(vault, std::slice::from_ref(path));
     }
-    Ok(saved(path.clone(), &text, written, changed))
+    let mut done = saved(path.clone(), &text, written, changed);
+    done.noted = noted;
+    Ok(done)
 }
 
 // ---------------------------------------------------------------------------

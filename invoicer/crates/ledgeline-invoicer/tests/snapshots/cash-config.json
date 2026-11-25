@@ -6,15 +6,22 @@
   },
   "books_folder": "<BOOKS>",
   "invoicer": {
+    "aging-buckets": [
+      30,
+      60,
+      90
+    ],
     "cash-deposits": "income-on-receipt",
     "catalog": "invoices/catalog.md",
     "company": "[[My Company]]",
     "customers-dir": "customers",
     "deposit-account": "liabilities:customer-deposits",
     "discount-account": null,
+    "dso-days": 90,
     "filename": "{date} {customer} Invoice {invoice_num}.md",
     "invoices-dir": "invoices",
     "number-start": "201",
+    "paid-window-days": 30,
     "payment-allocation": "match-rows",
     "pdf-dir": "invoices/pdf",
     "recalc-on-save": "drafts",

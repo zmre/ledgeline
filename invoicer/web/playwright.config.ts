@@ -77,6 +77,8 @@ export default defineConfig({
     testMatch: "**/*.e2e.{ts,js}",
     // Every spec shares one server and one scratch copy of the books, so the
     // specs that change it run in turn, each a project after the last:
+    //   0. dashboard.e2e.ts (5a) only reads, but reads the fixture's figures
+    //      as committed (the totals, aging, one draft), so it goes first;
     //   1. customers.e2e.ts reads the fixture's balances (Customer X owes
     //      $8,350.00, 108 a draft), creates Northwind Traders and removes it;
     //   2. the rest (invoices.e2e.ts sends 108, so Customer X owes more; it
@@ -86,18 +88,33 @@ export default defineConfig({
     //   4. library.e2e.ts edits the catalog and the snippets, and puts them
     //      back after;
     //   5. templates.e2e.ts (4d) creates a template, uses it on 101 and
-    //      deletes it, putting 101 back.
+    //      deletes it, putting 101 back;
+    //   6. lists.e2e.ts (PLAN 5b) filters and sorts both lists over what the
+    //      others leave (it relies only on facts they don't change, 101 paid
+    //      among them, which templates.e2e.ts puts back first), and adds,
+    //      edits and closes an open PO on Customer X (a close notes it in the
+    //      body), then writes Customer X back byte for byte.
     // empty.e2e.ts has its own server and books (5198), so it runs alongside.
     projects: [
-        {name: "customers", testMatch: "**/customers.e2e.ts"},
+        {name: "dashboard", testMatch: "**/dashboard.e2e.ts"},
+        {name: "customers", testMatch: "**/customers.e2e.ts", dependencies: ["dashboard"]},
         {name: "empty", testMatch: "**/empty.e2e.ts"},
         {
             name: "pages",
-            testIgnore: ["**/customers.e2e.ts", "**/editor.e2e.ts", "**/library.e2e.ts", "**/empty.e2e.ts", "**/templates.e2e.ts"],
+            testIgnore: [
+                "**/dashboard.e2e.ts",
+                "**/customers.e2e.ts",
+                "**/editor.e2e.ts",
+                "**/library.e2e.ts",
+                "**/empty.e2e.ts",
+                "**/templates.e2e.ts",
+                "**/lists.e2e.ts",
+            ],
             dependencies: ["customers"],
         },
         {name: "editor", testMatch: "**/editor.e2e.ts", dependencies: ["pages"]},
         {name: "library", testMatch: "**/library.e2e.ts", dependencies: ["editor"]},
         {name: "templates", testMatch: "**/templates.e2e.ts", dependencies: ["library"]},
+        {name: "lists", testMatch: "**/lists.e2e.ts", dependencies: ["templates"]},
     ],
 });

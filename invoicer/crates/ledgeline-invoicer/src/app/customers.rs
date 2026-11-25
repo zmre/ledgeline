@@ -4,10 +4,10 @@
 //!
 //! | Route                          | Does                                                        |
 //! |--------------------------------|-------------------------------------------------------------|
-//! | `GET /api/customers`           | `customers list --json`, each row with its `account` (`today`). |
+//! | `GET /api/customers`           | `customers list --json`, each row with its `account` (`today`); `owes`, `overdue`, `kind`, `q`, `sort`, `dir` (PLAN 5b S2). |
 //! | `POST /api/customers`          | Create one: `CustomerFields` → `201` [`CustomerSaved`].     |
 //! | `GET /api/customers/{*key}`    | `customers show --json` plus `account`, `hash`, `form`, `backlinks` (`today`). |
-//! | `PUT /api/customers/{*key}`    | `{hash, fields}`: edit by key → [`CustomerSaved`].          |
+//! | `PUT /api/customers/{*key}`    | `{hash, fields, today?}`: edit by key → [`CustomerSaved`]; a closed PO is noted in the body (5b S5). |
 //!
 //! `key` is the note's path in the books folder (`customers/Fabrikam.md`,
 //! the `.md` optional) or a name `customers show` takes (title, alias, file
@@ -30,16 +30,18 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Router, response::Response};
 use invoicer_core::customer_edit::{self, CustomerError, CustomerFields};
-use invoicer_core::customers::{Customer, CustomerLookup, is_customer};
+use invoicer_core::customers::{ContactKind, Customer, CustomerLookup, is_customer};
 use invoicer_core::notes::Note;
 use invoicer_core::session::Session;
-use invoicer_core::views::{self, account};
+use invoicer_core::views::{self, CustomerQuery, CustomerSort, account};
 use ledgeline_core::vault::VaultPath;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::AppState;
-use super::api::{ApiError, ApiResult, blocking, no_books, to_value, today, with_books};
+use super::api::{
+    ApiError, ApiResult, bad, blocking, given, no_books, sort_dir, to_value, today, with_books,
+};
 use super::books::OpenBooks;
 
 /// The customer routes (state still to be supplied).
@@ -69,11 +71,56 @@ fn customer_error(error: &CustomerError) -> ApiError {
     ApiError(status, error.to_string())
 }
 
-/// `GET /api/customers`: every customer, by title, with its account.
-async fn list(State(state): State<AppState>, Query(params): Query<TodayParam>) -> ApiResult {
+/// `GET /api/customers`' query: the customer list's URL contract (PLAN
+/// 5b, S2), plus `today`. A blank value is no filter.
+#[derive(Debug, Default, Deserialize)]
+struct ListParams {
+    /// Only customers that owe something.
+    #[serde(default)]
+    owes: bool,
+    /// Only customers with an overdue invoice.
+    #[serde(default)]
+    overdue: bool,
+    /// `person` or `organization`.
+    kind: Option<String>,
+    /// Name, books name, billing name or email holding this text.
+    q: Option<String>,
+    /// `name` (the default), `owed`, `overdue` or `last-payment`.
+    sort: Option<String>,
+    /// `asc` (the default) or `desc`.
+    dir: Option<String>,
+    today: Option<String>,
+}
+
+impl ListParams {
+    fn query(&self) -> Result<CustomerQuery, ApiError> {
+        Ok(CustomerQuery {
+            owes: self.owes,
+            overdue: self.overdue,
+            kind: given(self.kind.as_ref())
+                .map(|k| match k {
+                    "person" => Ok(ContactKind::Person),
+                    "organization" => Ok(ContactKind::Organization),
+                    other => Err(bad("kind", other)),
+                })
+                .transpose()?,
+            text: given(self.q.as_ref()).map(str::to_string),
+            sort: given(self.sort.as_ref())
+                .map(|s| CustomerSort::parse(s).ok_or_else(|| bad("sort", s)))
+                .transpose()?,
+            dir: sort_dir(self.dir.as_ref())?,
+        })
+    }
+}
+
+/// `GET /api/customers`: the customers with their accounts, by title unless
+/// the query sorts them, filtered by it ([`ListParams`]).
+async fn list(State(state): State<AppState>, Query(params): Query<ListParams>) -> ApiResult {
     let today = today(params.today.as_deref())?;
+    let query = params.query()?;
     with_books(&state, move |books| {
-        to_value(account::customer_accounts(&books.session(), &today))
+        let rows = account::customer_accounts(&books.session(), &today);
+        to_value(account::query_customers(rows, &query))
     })
     .await
 }
@@ -286,6 +333,10 @@ struct UpdateBody {
     hash: String,
     /// The fields to write; absent ones are left as they are.
     fields: CustomerFields,
+    /// The date a closed PO is noted with (YYYY-MM-DD); the local date by
+    /// default (PLAN 5b, S5).
+    #[serde(default)]
+    today: Option<String>,
 }
 
 /// `PUT /api/customers/{key}`: edit the note by key ([`CustomerSaved`]).
@@ -296,13 +347,15 @@ async fn update(
     body: Result<Json<UpdateBody>, JsonRejection>,
 ) -> ApiResult {
     let Json(body) = body.map_err(|e| ApiError::bad_request(e.body_text()))?;
+    let day = today(body.today.as_deref())?;
     let books = state.books().ok_or_else(no_books)?;
     blocking(move || {
         let mut session = books.session();
         let path = find(&session, &key)?;
         let (index, vault) = session.parts_mut();
-        let saved = customer_edit::update(index, vault, &path, &body.hash, &body.fields)
-            .map_err(|e| customer_error(&e))?;
+        let saved =
+            customer_edit::update_on(index, vault, &path, &body.hash, &body.fields, Some(&day))
+                .map_err(|e| customer_error(&e))?;
         to_value(saved)
     })
     .await

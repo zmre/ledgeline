@@ -197,6 +197,19 @@
     }
   ],
   "path": "customers/Customer X.md",
+  "po_usage": [
+    {
+      "amount": "$40,000",
+      "expired": false,
+      "expires": "2027-06-30",
+      "invoiced": "$8,350.00",
+      "invoices": [
+        "104"
+      ],
+      "reference": "PO #PY75334",
+      "remaining": "$31,650.00"
+    }
+  ],
   "portal": "Coupa",
   "problems": [],
   "revenue_account": "revenue:consulting",
