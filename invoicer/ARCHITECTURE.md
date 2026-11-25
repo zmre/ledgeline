@@ -638,6 +638,7 @@ There are no new config files. This follows the rules in
 | `cash-deposits`, `payment-allocation` (accounting policy; PLAN "Configurable accounting flows") | `ledgeline.toml [invoicer]`        | Hand                                                                    |
 | `recalc-on-save` (`drafts` or `never`; PLAN F10)                                                | `ledgeline.toml [invoicer]`        | Hand                                                                    |
 | `aging-buckets` (`[30, 60, 90]`), `dso-days` (`90`): the dashboard (PLAN R4, R6)                | `ledgeline.toml [invoicer]`        | Hand                                                                    |
+| `paid-window-days` (`30`): the dashboard's "paid in the last N days" (PLAN R14)                 | `ledgeline.toml [invoicer]`        | Hand                                                                    |
 | `filename`, `number-start`, `pdf-dir`                                                           | `ledgeline.toml [invoicer]`        | Hand                                                                    |
 | Recognized words (below)                                                                        | `ledgeline.toml [invoicer.words]`  | Hand                                                                    |
 | `basis`, `closed-through`, `recognition-file`                                                   | `ledgeline.toml [books]` (plan 45) | Shared with Ledgeline                                                   |
