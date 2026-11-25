@@ -572,6 +572,12 @@ async fn save(
     with_books(&state, move |books| {
         let mut session = books.session();
         let path = find(&session, &number)?;
+        // Read it, and the books, afresh: sent outside the app (the CLI, a
+        // hand edit) since the watcher's last refresh, it must still be
+        // checked and re-booked as sent (RA-6).
+        reload_after_write(&mut session);
+        let (index, vault) = session.parts_mut();
+        index.refresh(vault, std::slice::from_ref(&path));
         let doc = session.index().doc(&path);
         let sent = doc.is_some_and(|d| d.header.status == Some(Status::Sent));
         let doc_number = doc.and_then(|d| d.number()).map(str::to_string);
