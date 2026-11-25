@@ -877,6 +877,15 @@ fn accrual_books_end_to_end() {
     assert_eq!(preview["status"], "draft");
     assert_eq!(preview["basis"], "accrual");
     assert!(preview["booked"].is_null());
+    // The text shows money as the books do: `commodity $1,000.00` (P3).
+    let text = books.text(&["send", "108", "--dry-run"]);
+    for amount in [
+        "receivable    $13,600.00  ;",
+        "deferred-revenue  $-12,000.00  ;",
+        "consulting            $-1,600.00  ;",
+    ] {
+        assert!(text.contains(amount), "{amount}: {text}");
+    }
     assert_eq!(books.read("books.journal"), journal);
 
     // 2. Send: the journal gains 108's transaction; the file is marked sent.

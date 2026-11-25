@@ -12,6 +12,9 @@ use invoicer_core::reconcile::{MirrorChange, Reconciled};
 use invoicer_core::views::{
     CheckReport, ConfigView, Counts, CustomerDetail, CustomerEntry, DocDetail, DocEntry,
 };
+use ledgeline_core::display::format_amount;
+use ledgeline_core::edit::render_amount;
+use ledgeline_core::parse::parse_journal;
 use ledgeline_core::vault::VaultPath;
 use std::fmt::Write as _;
 use unicode_width::UnicodeWidthStr;
@@ -602,6 +605,49 @@ fn basis_name(basis: Basis) -> &'static str {
     }
 }
 
+/// `transaction` (one, as the books write it) with each posting's amount
+/// shown in its commodity's journal style, `$13,600.00` rather than the
+/// booking's plain `$13600.00`: how the books show money (P3). Unchanged
+/// when it doesn't read as one transaction.
+fn journal_styled(transaction: &str, money: &Money) -> String {
+    let Ok(journal) = parse_journal(transaction, "") else {
+        return transaction.to_string();
+    };
+    let [txn] = journal.transactions.as_slice() else {
+        return transaction.to_string();
+    };
+    // Posting lines, in order: indented and not a comment line.
+    let mut postings = txn.postings.iter();
+    transaction
+        .lines()
+        .enumerate()
+        .map(|(at, line)| {
+            let posting_line =
+                at > 0 && line.starts_with([' ', '\t']) && !line.trim_start().starts_with(';');
+            let restyled = posting_line
+                .then(|| postings.next())
+                .flatten()
+                .and_then(|p| match p.amounts.as_slice() {
+                    [amount] if amount.cost.is_none() => Some(amount),
+                    _ => None,
+                })
+                .and_then(|amount| {
+                    let style = money.style(Some(&amount.commodity.0));
+                    let shown = format_amount(
+                        &amount.commodity.0,
+                        amount.quantity,
+                        style.style(),
+                        style.precision().max(amount.quantity.places),
+                    );
+                    let written = format!("  {}", render_amount(amount));
+                    line.contains(&written)
+                        .then(|| line.replacen(&written, &format!("  {shown}"), 1))
+                });
+            restyled.unwrap_or_else(|| line.to_string()) + "\n"
+        })
+        .collect()
+}
+
 /// `send --dry-run` and `rebook --dry-run`.
 pub fn preview(p: &Preview, money: &Money) -> String {
     let mut out = format!(
@@ -616,7 +662,11 @@ pub fn preview(p: &Preview, money: &Money) -> String {
             out.push_str("  Cash books book nothing at send; Apply payment books its payments.\n")
         }
         (Some(would), None) => {
-            let _ = write!(out, "  Would book:\n{}", indent_block(would));
+            let _ = write!(
+                out,
+                "  Would book:\n{}",
+                indent_block(&journal_styled(would, money))
+            );
         }
         (Some(would), Some(booked)) => {
             if p.in_step == Some(true) {
@@ -630,7 +680,7 @@ pub fn preview(p: &Preview, money: &Money) -> String {
                     out,
                     "  Booked:\n{}  Its file now says to book:\n{}",
                     indent_block(&booked.text),
-                    indent_block(would)
+                    indent_block(&journal_styled(would, money))
                 );
             }
         }
@@ -1017,4 +1067,25 @@ pub fn recognized(r: &Recognized) -> String {
         );
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn would_book_text_takes_the_journal_style() {
+        let journal =
+            ledgeline_core::parse::parse_journal("commodity $1,000.00\n", "").expect("parses");
+        let money = Money::of_journal(&journal);
+        let txn = "2026-11-17 Customer X | Invoice 108  ; invoice: 108\n    \
+                   assets:receivable    $13600.00  ; customer: X\n    \
+                   revenue:consulting  $-13600.00\n";
+        assert_eq!(
+            journal_styled(txn, &money),
+            "2026-11-17 Customer X | Invoice 108  ; invoice: 108\n    \
+             assets:receivable    $13,600.00  ; customer: X\n    \
+             revenue:consulting  $-13,600.00\n"
+        );
+    }
 }
