@@ -323,6 +323,25 @@ is. It applies only to a note with no `template:` of its own.
 
 **Defaults.** Pages that render today render the same.
 
+## M14–M18. Security fixes (in MBR 0.7.5)
+
+The invoicer's pre-release security review asked for five more changes;
+all shipped in 0.7.5, which the invoicer pins (`=0.7.5`):
+
+- **M14** `get_env` is disabled in every Tera engine MBR builds (the page
+  engine, its reloads, page templates and their siblings, the standalone
+  renderer). The invoicer's stopgap (dropping secret-named variables from
+  its environment at startup) is gone.
+- **M15** frontmatter aliases are capped. The invoicer's own frontmatter
+  parser (invoicer-core) keeps its own cap.
+- **M16** the PDF export webview navigates only within the exported page's
+  origin, and refuses popups and downloads. The invoicer exports from its
+  own origin, so it needs no allowlist.
+- **M17** per-class `Content-Security-Policy` (`content_security_policy`),
+  no inline script in MBR's templates, and a raw-HTML policy (`raw_html`).
+  The invoicer uses all three (ARCHITECTURE §6.1).
+- **M18** template output and `range()` are bounded.
+
 ## Not needed (decided against)
 
 - **A base-path mount for `Server.router`.** The invoicer mounts MBR at the

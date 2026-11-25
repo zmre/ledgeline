@@ -1190,9 +1190,10 @@ then recents. File → Open swaps state. The bundle is
 Putting MBR at the root and the SPA under `/app` avoids any need for MBR to
 support a base path. The invoicer shows MBR pages in two ways:
 
-- **Browse mode:** MBR itself (a browser tab or MBR's own app) with MBR's
-  chrome, so the user can jump between invoices, customers and backlinks.
-  The templates include that chrome when MBR serves the page.
+- **Browse mode:** MBR's page for a note or invoice. The templates include
+  MBR's chrome (sidebar, search, backlinks) when MBR serves the page, but
+  the books' content is served in a CSP sandbox, so its scripts run only on
+  the page a PDF export prints (see below), where print rules hide it.
 - **Preview mode:** the invoice template page alone, which is what a
   customer sees: the app's frame runs no scripts, so the template's
   `<noscript>` rule hides the chrome; a standalone render has none.
@@ -1202,6 +1203,20 @@ theme reaches MBR's chrome through MBR-CHANGES M8. The SPA frames a preview
 by URL (`/.ledgeline-invoicer/preview`, behind MBR's gate and CSP), never
 as `srcdoc`: a srcdoc document inherits the SPA's CSP, whose
 `frame-ancestors 'none'` WebKit applies to it (PLAN, Phase 3 feedback).
+
+**The CSP on MBR's pages** (`app/mbr.rs`, security review SEC-1/3/6, MBR
+0.7.5's M17 hooks). Everything MBR serves or renders, and the preview,
+loads scripts, images, media, fonts and frames from this server only, and
+runs no inline script. The books' content (rendered notes, the books' own
+files, the preview) is also in a CSP sandbox without scripts, so a
+`<script>` in a note or a contract `.html` runs nowhere, a browser tab
+included; MBR's own `/.mbr/` UI isn't sandboxed. The one exception is the
+page a PDF export prints, which needs MBR's export-ready script: its export
+link redirects with a one-time pass that lifts the sandbox for that one
+response, and MBR's export webview navigates only within this origin (M16),
+so a script there can read but not send. Raw HTML in notes is sanitized
+(MBR's `raw_html`, never below `sanitize`), and MBR's Tera engines have
+`get_env` disabled (M14).
 
 ### 6.2 HTTP API (sketch)
 

@@ -243,6 +243,8 @@ mod files_tests;
 #[cfg(test)]
 mod library_tests;
 #[cfg(test)]
+mod mbr_csp_tests;
+#[cfg(test)]
 mod spa_shell_csp_tests;
 #[cfg(test)]
 mod tests;
