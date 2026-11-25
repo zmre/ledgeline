@@ -12,14 +12,20 @@
      - the file's `paid:` line only when it disagrees with the books, in
        plain words, and anything `check` finds.
 
+     Cash books: a sent invoice not yet paid in full gets Apply payment… on
+     its first line (`onApplyPayment`, the page's dialog, I17); accrual
+     books never do: their payments are linked in Ledgeline.
+
      Everything shown is the server's text (Patrick's feedback, 2026-11-23:
      the old "Payments and credits" list and the `paid:` mirror line said too
      little and repeated "paid"). -->
 <script lang="ts">
     import {settlementText, type EntryView, type InvoiceBooks} from "#lib/invoices.js";
+    import {hint} from "#ui/keys/hint.svelte.js";
     import {friendlyMessage} from "#lib/labels.js";
+    import {canApplyPayment} from "#lib/payments.js";
 
-    let {books}: {books: InvoiceBooks} = $props();
+    let {books, onApplyPayment}: {books: InvoiceBooks; onApplyPayment?: () => void} = $props();
 
     const empty = $derived(books.bookings.length === 0 && books.voids.length === 0 && books.payments.length === 0);
     const tone: Record<string, string> = {paid: "text-success", partial: "text-warning", unpaid: "text-warning", void: "text-base-content/70"};
@@ -65,6 +71,15 @@
         <span class="badge badge-outline badge-sm">{books.basis === "cash" ? "Cash basis" : "Accrual basis"}</span>
         {#if books.settlement !== null}
             <span class="font-medium {tone[books.settlement.state] ?? ''}" data-testid="books-status">{settlementText(books.settlement)}</span>
+        {/if}
+        {#if onApplyPayment !== undefined && canApplyPayment(books)}
+            <button
+                type="button"
+                class="btn ml-auto btn-outline btn-xs"
+                onclick={onApplyPayment}
+                title={hint("Apply payment…", "a")}
+                data-testid="books-apply-payment">Apply payment…</button
+            >
         {/if}
     </div>
 

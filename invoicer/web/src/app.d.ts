@@ -5,7 +5,10 @@ declare global {
         // interface Error {}
         // interface Locals {}
         // interface PageData {}
-        // interface PageState {}
+        interface PageState {
+            /** New → the editor: what went wrong once the draft was written (`POST /api/invoices` `warnings`). */
+            createWarnings?: string[];
+        }
         // interface Platform {}
     }
 }

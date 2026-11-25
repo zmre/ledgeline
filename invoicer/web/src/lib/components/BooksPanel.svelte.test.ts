@@ -1,8 +1,8 @@
 // The Books panel, mounted: where the invoice stands in one line, where it was
 // booked (account by account), its payments and credits, and the file's
 // `paid:` line only when it disagrees with the books.
-import {render, screen, within} from "@testing-library/svelte";
-import {describe, expect, it} from "vitest";
+import {cleanup, fireEvent, render, screen, within} from "@testing-library/svelte";
+import {describe, expect, it, vi} from "vitest";
 import BooksPanel from "./BooksPanel.svelte";
 import {BOOKS_105} from "./fixtures.js";
 
@@ -136,5 +136,31 @@ describe("COMPONENT BooksPanel", () => {
         expect(screen.getByTestId("books-void").textContent).toContain("Void Invoice 103");
         expect(screen.getByTestId("books-status").textContent).toContain("Void");
         expect(screen.getByTestId("books-problems").textContent).toContain("differs");
+    });
+});
+
+describe("COMPONENT BooksPanel: Apply payment", () => {
+    const cash = {
+        ...BOOKS_105,
+        basis: "cash" as const,
+        number: "207",
+        bookings: [],
+        receivable: null,
+        settlement: {state: "unpaid" as const, total: "$7,000.00", paid: "$0.00", outstanding: "$7,000.00", paid_on: null, due_date: "2026-12-16"},
+    };
+
+    it("offers Apply payment… on a sent, unpaid invoice in cash books", async () => {
+        const onApplyPayment = vi.fn();
+        render(BooksPanel, {books: cash, onApplyPayment});
+        await fireEvent.click(screen.getByTestId("books-apply-payment"));
+        expect(onApplyPayment).toHaveBeenCalledOnce();
+    });
+
+    it("never in accrual books, nor once paid", () => {
+        render(BooksPanel, {books: BOOKS_105, onApplyPayment: vi.fn()});
+        expect(screen.queryByTestId("books-apply-payment")).toBeNull();
+        cleanup();
+        render(BooksPanel, {books: {...cash, settlement: {...cash.settlement, state: "paid" as const}}, onApplyPayment: vi.fn()});
+        expect(screen.queryByTestId("books-apply-payment")).toBeNull();
     });
 });

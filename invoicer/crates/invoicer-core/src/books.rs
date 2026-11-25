@@ -9,7 +9,8 @@
 //! - [`InvoiceBooks::open_deposits`], [`InvoiceBooks::apply_deposit`]:
 //!   deposits (§4.4).
 //! - [`InvoiceBooks::payment_candidates`], [`InvoiceBooks::apply_payment`],
-//!   [`InvoiceBooks::undo_payment`]: Apply payment in cash books (I17).
+//!   [`InvoiceBooks::preview_payment`], [`InvoiceBooks::undo_payment`]: Apply
+//!   payment in cash books (I17).
 //!
 //! # The basis decides what is booked
 //!
@@ -45,7 +46,9 @@ pub use deposits::{ApplyDeposit, DepositApplied, OpenDeposit, OpenDeposits};
 pub use lifecycle::{
     Basis, BookedTransaction, Preview, Rebook, Rebooked, Send, Sent, StepCheck, Void, Voided,
 };
-pub use payments::{ApplyPayment, PaymentApplied, PaymentCandidate, PaymentOptions, PaymentUndo};
+pub use payments::{
+    ApplyPayment, PaymentApplied, PaymentCandidate, PaymentOptions, PaymentPreview, PaymentUndo,
+};
 pub use recognize::{Recognize, Recognized};
 pub use spec::{BookLine, InvoiceBooking, SpecContext, booking_of};
 pub use undo::{UNDO_DIR, UndoRecord};

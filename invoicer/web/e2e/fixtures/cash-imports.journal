@@ -1,0 +1,8 @@
+
+; Appended to the e2e scratch copy of invoicer/fixtures/cash (target/e2e-invoicer-cash/)
+; by playwright.config.ts, never to the fixture itself: a bank import as
+; Ledgeline's importer writes it, not yet applied to any invoice. cash.e2e.ts
+; applies it to 207 ($7,000 due): a part payment, split $1,500.00 / $2,000.00.
+2026-11-17 * WIRE CUSTOMER X INV 207  ; id: wx-7
+    assets:bank:checking   $3,500.00
+    income:unknown        $-3,500.00

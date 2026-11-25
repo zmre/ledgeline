@@ -141,6 +141,27 @@ pub fn save(vault: &dyn Vault, record: &UndoRecord) -> Result<VaultPath, BooksEr
     Ok(path)
 }
 
+/// Keep `applied`'s undo record (made on `today`), as every Apply payment
+/// does once the journal is written: the file, or, when it couldn't be
+/// written, `None` and the warning to show (the payment stands either way).
+#[must_use]
+pub fn keep(
+    vault: &dyn Vault,
+    applied: &PaymentApplied,
+    today: &str,
+) -> (Option<VaultPath>, Option<String>) {
+    match save(vault, &UndoRecord::of(applied, today)) {
+        Ok(path) => (Some(path), None),
+        Err(error) => (
+            None,
+            Some(format!(
+                "the payment is applied, but its undo record wasn't written ({error}); undo it \
+                 by hand from the deposit's text"
+            )),
+        ),
+    }
+}
+
 /// Every readable undo record for invoice `number`, oldest applied first
 /// (then by file). A missing folder is none; an unreadable file is skipped.
 #[must_use]

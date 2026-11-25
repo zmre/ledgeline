@@ -6,7 +6,11 @@
      amounts disagree with its rows, a notice says so, with Recalculate
      (Phase 3 feedback F9, F10).
 
-     Keyboard (PLAN 5k): `e` edits it; Shift+P exports its PDF (SendPanel). -->
+     Cash books: Apply payment… (`a`) in the Books panel re-splits an imported
+     deposit onto the invoice (I17; ApplyPaymentDialog), then says what it did.
+
+     Keyboard (PLAN 5k): `e` edits it; Shift+P exports its PDF (SendPanel); `a`
+     applies a payment (cash books, a sent invoice not paid in full). -->
 <script lang="ts">
     import {onMount, untrack} from "svelte";
     import {goto} from "$app/navigation";
@@ -24,6 +28,9 @@
     import TotalsNotice from "#lib/components/TotalsNotice.svelte";
     import {changes} from "#lib/changes.svelte.js";
     import StatusBadge from "#lib/components/StatusBadge.svelte";
+    import ApplyPaymentDialog from "#lib/components/ApplyPaymentDialog.svelte";
+    import {errorText} from "#lib/labels.js";
+    import {canApplyPayment, paymentOutcome, type PaymentResult} from "#lib/payments.js";
 
     const number = $derived(page.params.number ?? "");
 
@@ -39,6 +46,13 @@
                 enabled: () => detail !== null,
                 run: () => void goto(resolve("/invoices/[number]/edit", {number})),
             },
+            {
+                keys: "a",
+                label: "Apply a payment…",
+                group: "Invoice",
+                enabled: () => canApplyPayment(books) && !applying,
+                run: () => openApplyPayment(),
+            },
         ],
     });
 
@@ -49,6 +63,21 @@
     let templates = $state<TemplateEntry[]>([]);
     let sessionReady = $state(false);
     let sessionError = $state<Error | null>(null);
+
+    // Apply payment (cash books, I17): the dialog, and what the last apply did.
+    let applying = $state(false);
+    let applied = $state<PaymentResult | null>(null);
+
+    function openApplyPayment(): void {
+        applied = null;
+        applying = true;
+    }
+
+    function onPaymentApplied(result: PaymentResult): void {
+        applying = false;
+        applied = result;
+        refreshAll(number);
+    }
 
     /** The template the frame shows: the invoice's own (MBR's page), or another (a preview). */
     let chosen = $state<string>("");
@@ -164,6 +193,8 @@
         chosen = "";
         templateError = null;
         recalcError = null;
+        applying = false;
+        applied = null;
         loadDetail(target);
         loadBooks(target);
     });
@@ -243,9 +274,21 @@
                 onRetry={() => loadBooks(number)}
             >
                 {#snippet children(panel)}
-                    <BooksPanel books={panel} />
+                    {#if applied !== null}
+                        <div class="alert flex-col items-start gap-1 text-sm alert-success" role="status" data-testid="books-payment-applied">
+                            <span>{applied.date} {applied.description}: {paymentOutcome(applied)}</span>
+                            {#each applied.warnings as warning, i (i)}<span class="text-warning-content" data-testid="books-payment-warning"
+                                    >{errorText(warning)}</span
+                                >{/each}
+                        </div>
+                    {/if}
+                    <BooksPanel books={panel} onApplyPayment={openApplyPayment} />
                 {/snippet}
             </AsyncSection>
         {/snippet}
     </AsyncSection>
 </div>
+
+{#if applying}
+    <ApplyPaymentDialog {number} onApplied={onPaymentApplied} onCancel={() => (applying = false)} />
+{/if}

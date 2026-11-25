@@ -6,13 +6,15 @@
 //! |-----------------------------------------|-----------------------------------------------------------|
 //! | `GET /api/editor/options`               | What the editor's pickers offer: customers (with open POs), the catalog, the journal's accounts, custom field keys, the table words. |
 //! | `GET /api/fields/{key}/values`          | Autocomplete for a custom frontmatter field.              |
-//! | `POST /api/invoices`                    | `new`: a draft for a customer (snapshot, terms, snippets). |
+//! | `POST /api/invoices`                    | `new`: a draft for a customer (snapshot, terms, snippets). `deposit`: a deposit invoice. |
 //! | `GET /api/invoices/{num}/form`          | The document as the editor's form, with its revision and its computed amounts. |
 //! | `POST /api/invoices/{num}/compute`      | The text a form makes, its amounts and problems; with `books`, what it would book. Writes nothing. |
 //! | `PUT /api/invoices/{num}/form`          | Save a form over the revision read; a sent invoice only with `rebook` (then re-booked). |
 //! | `GET /api/invoices/{num}/deposits`      | The customer's open deposits, each with the row that applies it. |
 //! | `POST /api/invoices/{num}/void`         | `void` (a reversing entry in accrual books).               |
 //! | `POST /api/invoices/{num}/rebook`       | `rebook` (replace its transaction).                        |
+//! | `GET /api/invoices/{num}/payments`      | Cash books: the deposits that might pay it (`apply-payment N`). |
+//! | `POST /api/invoices/{num}/payments`     | Cash books: Apply payment (`apply-payment N --txn REF`); `dry_run` previews it. |
 //! | `POST /api/preview/draft`               | Keep unsaved text for the preview frame; its page URL.     |
 //!
 //! Errors are `{"error": "…", "code": "…"}`: `changed` (409, the file
@@ -25,20 +27,24 @@ use std::collections::BTreeMap;
 
 use axum::Json;
 use axum::Router;
-use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, State};
+use axum::extract::rejection::{JsonRejection, QueryRejection};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use invoicer_core::books::{BooksError, Document, Rebook, Void, retry_once};
+use invoicer_core::books::{
+    self, ApplyPayment, BooksError, Document, PaymentCandidate, Rebook, Void, retry_once,
+};
 use invoicer_core::customers::ContactKind;
 use invoicer_core::doc::{DocType, Invoice, Status};
-use invoicer_core::draft::NewInvoice;
+use invoicer_core::draft::{DraftRow, NewInvoice};
 use invoicer_core::edit;
 use invoicer_core::editor::{self, EditorError, Form, KNOWN_KEYS};
 use invoicer_core::session::Session;
 use invoicer_core::table::books::is_iso_date;
+use invoicer_core::table::money::MoneyStyle;
 use invoicer_core::views;
+use ledgeline_core::Dec;
 use ledgeline_core::vault::{Revision, VaultPath};
 use ledgeline_shell::security::no_store_json;
 use serde::Deserialize;
@@ -63,6 +69,10 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/invoices/{number}/deposits", get(deposits))
         .route("/api/invoices/{number}/void", post(void))
         .route("/api/invoices/{number}/rebook", post(rebook))
+        .route(
+            "/api/invoices/{number}/payments",
+            get(payments).post(apply_payment),
+        )
         .route("/api/preview/draft", post(preview_draft))
 }
 
@@ -356,6 +366,10 @@ struct CreateBody {
     terms: Option<u32>,
     #[serde(default)]
     reference: Option<String>,
+    /// A deposit invoice (ARCHITECTURE §4.4): one row, booked to the deposit
+    /// account, at zero for the author to fill in.
+    #[serde(default)]
+    deposit: bool,
 }
 
 fn text(value: Option<String>) -> Option<String> {
@@ -364,8 +378,23 @@ fn text(value: Option<String>) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// A deposit invoice's one row: "Deposit", booked to the deposit account,
+/// at zero for the author to fill in (a row needs an amount). The `deposit`
+/// word ("Less deposit") is the other side: a final invoice's row applying it.
+fn deposit_row(session: &Session) -> DraftRow {
+    DraftRow {
+        description: "Deposit".to_string(),
+        amount: Some(session.index().money().style(None).format(Dec::zero())),
+        books: Some(invoicer_core::books::spec::deposit_account(
+            session.settings(),
+            session.journal(),
+        )),
+        ..DraftRow::default()
+    }
+}
+
 /// `POST /api/invoices`: `new` (a draft), `{path, number, total, written,
-/// copied, warnings}`.
+/// copied, warnings}`; with `deposit`, a deposit invoice's draft.
 async fn create(
     State(state): State<AppState>,
     payload: Result<Json<CreateBody>, JsonRejection>,
@@ -384,6 +413,11 @@ async fn create(
             number: text(request.number),
             terms: request.terms,
             reference: text(request.reference),
+            rows: if request.deposit {
+                vec![deposit_row(&session)]
+            } else {
+                Vec::new()
+            },
             ..NewInvoice::new(request.customer.trim(), request.date.trim())
         };
         let booked: Vec<String> = session.booked_numbers().to_vec();
@@ -816,6 +850,168 @@ async fn rebook(
             reconcile_in(&mut session, Some(vec![number]));
         }
         value(&rebooked)
+    })
+    .await
+}
+
+/// `GET /api/invoices/{num}/payments`'s query.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PaymentsQuery {
+    today: Option<String>,
+}
+
+/// A deposit that might pay the invoice, its amount in the books' style.
+fn candidate_view(candidate: &PaymentCandidate, style: &MoneyStyle) -> Value {
+    json!({
+        "reference": candidate.reference,
+        "date": candidate.date,
+        "description": candidate.description,
+        "received": style.format(candidate.received),
+        "exact": candidate.exact,
+        "by_number": candidate.by_number,
+        "by_customer": candidate.by_customer,
+        "gap_days": candidate.gap_days,
+    })
+}
+
+/// Row shares (`render_dec` text, as the CLI's JSON has them) in the books'
+/// style: `[{account, amount}]`.
+fn shares_view(shares: &[(String, String)], style: &MoneyStyle) -> Value {
+    shares
+        .iter()
+        .map(|(account, amount)| {
+            let shown =
+                Dec::parse(amount, '.').map_or_else(|_| amount.clone(), |d| style.format(d));
+            json!({ "account": account, "amount": shown })
+        })
+        .collect()
+}
+
+/// The commodity of the invoice at `path` (its table's), for formatting.
+fn commodity_of(session: &Session, path: &VaultPath) -> Option<String> {
+    session
+        .index()
+        .doc(path)
+        .and_then(|d| d.summary.as_ref())
+        .map(|s| s.commodity.clone())
+}
+
+/// `GET /api/invoices/{num}/payments`: Apply payment's choices (cash books,
+/// I17) — the CLI's `apply-payment N`: `{number, commodity, total, paid,
+/// remaining, candidates: [{reference, date, description, received, exact,
+/// by_number, by_customer, gap_days}]}`, amounts in the books' style, best
+/// candidate first. `refused` in accrual books; a `status` code for an
+/// invoice not sent.
+async fn payments(
+    State(state): State<AppState>,
+    Path(number): Path<String>,
+    query: Result<Query<PaymentsQuery>, QueryRejection>,
+) -> Answer {
+    let Query(query) = query.map_err(|e| Failure::bad_request(e.body_text()))?;
+    let today = today(query.today.as_deref()).map_err(Failure::from)?;
+    with_books(&state, move |books| {
+        let session = books.session();
+        let number = number_of(&session, &number)?;
+        let options = session
+            .invoice_books()
+            .payment_options(session.index(), &number, &today)
+            .map_err(|e| Failure::from(&e))?;
+        let style = session.index().money().style(Some(&options.commodity));
+        Ok(json!({
+            "number": options.number,
+            "commodity": options.commodity,
+            "total": style.format(options.total),
+            "paid": style.format(options.paid),
+            "remaining": style.format(options.remaining),
+            "candidates": options
+                .candidates
+                .iter()
+                .map(|c| candidate_view(c, &style))
+                .collect::<Vec<_>>(),
+        }))
+    })
+    .await
+}
+
+/// `POST /api/invoices/{num}/payments`'s body.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PaymentBody {
+    /// A candidate's `reference`.
+    reference: String,
+    /// Show what it would write; write nothing.
+    #[serde(default)]
+    dry_run: bool,
+    today: Option<String>,
+}
+
+/// `POST /api/invoices/{num}/payments`: **Apply payment** (cash books,
+/// I17), the CLI's `apply-payment N --txn REF` — the same
+/// [`InvoiceBooks::apply_payment`](invoicer_core::books::InvoiceBooks::apply_payment),
+/// its undo record, and the `paid:` mirror. With `dry_run`,
+/// [`preview_payment`](invoicer_core::books::InvoiceBooks::preview_payment):
+/// the same plan, nothing written. Either way `{written, number, date,
+/// description, received, applied: [{account, amount}], partial, remaining,
+/// warnings}`, amounts in the books' style. `refused` for a reference that
+/// is no longer a candidate, and in accrual books.
+async fn apply_payment(
+    State(state): State<AppState>,
+    Path(number): Path<String>,
+    payload: Result<Json<PaymentBody>, JsonRejection>,
+) -> Answer {
+    let request = body(payload)?;
+    let today = today(request.today.as_deref()).map_err(Failure::from)?;
+    with_books(&state, move |books| {
+        let mut session = books.session();
+        let path = find(&session, &number)?;
+        let number = number_of(&session, &number)?;
+        let style = session
+            .index()
+            .money()
+            .style(commodity_of(&session, &path).as_deref());
+        let invoice_books = session.invoice_books();
+        let apply = ApplyPayment {
+            number: number.clone(),
+            reference: request.reference,
+            today: today.clone(),
+            expected: None,
+        };
+        if request.dry_run {
+            let preview = invoice_books
+                .preview_payment(session.index(), &apply)
+                .map_err(|e| Failure::from(&e))?;
+            let style = session.index().money().style(Some(&preview.commodity));
+            return Ok(json!({
+                "written": false,
+                "number": preview.number,
+                "date": preview.deposit.date,
+                "description": preview.deposit.description,
+                "received": style.format(preview.received),
+                "applied": shares_view(&preview.applied, &style),
+                "partial": preview.partial,
+                "remaining": style.format(preview.remaining),
+                "warnings": [],
+            }));
+        }
+        let (index, _) = session.parts_mut();
+        let (result, _) = retry_once(|| invoice_books.apply_payment(index, &apply));
+        reload_after_write(&mut session);
+        let applied = result.map_err(|e| Failure::from(&e))?;
+        let (undo_file, warning) = books::undo::keep(session.vault(), &applied, &today);
+        reconcile_in(&mut session, Some(vec![number]));
+        Ok(json!({
+            "written": true,
+            "number": applied.number,
+            "date": applied.transaction.date,
+            "description": applied.transaction.description,
+            "received": style.format(applied.received),
+            "applied": shares_view(&applied.applied, &style),
+            "partial": applied.remaining.mantissa > 0,
+            "remaining": style.format(applied.remaining),
+            "undo_file": undo_file.map(|p| p.to_string()),
+            "warnings": warning.into_iter().collect::<Vec<_>>(),
+        }))
     })
     .await
 }
