@@ -28,10 +28,13 @@
         const mine = ++latest;
         refreshing = delivery !== null;
         fetchDelivery(target)
+            // Only the newest fetch answers: an older one landing late is stale.
             .then((d) => {
-                if (target === number) delivery = d;
+                if (mine === latest && target === number) delivery = d;
             })
-            .catch((e: unknown) => (error = errorText(e)))
+            .catch((e: unknown) => {
+                if (mine === latest && target === number) error = errorText(e);
+            })
             .finally(() => {
                 if (mine === latest) refreshing = false;
             });
