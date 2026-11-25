@@ -550,8 +550,12 @@ pub fn save_fields(
     text: &str,
     expected: &Revision,
 ) -> Result<Revision, DraftError> {
-    if verify(source, index.settings(), index.money()).is_ok() {
-        return save(index, vault, path, text, expected);
+    // The new text verifying is the common case: one check. Only when it
+    // fails does the source decide whether that is this edit's doing.
+    if let Err(error) = verify(text, index.settings(), index.money())
+        && verify(source, index.settings(), index.money()).is_ok()
+    {
+        return Err(error);
     }
     let written = vault.replace(path, text.as_bytes(), expected)?;
     index.refresh(vault, std::slice::from_ref(path));
