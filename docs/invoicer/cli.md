@@ -184,6 +184,49 @@ ledgeline-invoicer customers show "Customer X"
 
 `list` prints every customer with their kind, terms, billing email and portal, how many invoices they have and how many are open. `show` adds the contact details, accounts, template, contracts (and whether each file exists), portal, open purchase orders with what is left of each, snippets and invoices.
 
+#### Adding customers
+
+`customers new` and `customers import-csv` create customer notes in your customers folder, exactly as **Add customer** in the app does: the same details make the same file.
+
+```sh
+ledgeline-invoicer customers new "Northwind Traders" --email ap@northwind.example --terms 30
+```
+
+| Flag                                                                                                                              | Writes                                                                             |
+|-----------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------|
+| `NAME` (required)                                                                                                                 | The customer's name: what invoices link to, and the books' customer                |
+| `--kind person\|organization`                                                                                                     | Person or organization (default organization)                                      |
+| `--email`, `--phone`, `--address`                                                                                                 | The billing email, phone and address. Put line breaks in an address with `$'…\n…'` |
+| `--company ORG`                                                                                                                   | A person's organization                                                            |
+| `--terms DAYS`                                                                                                                    | Net days                                                                           |
+| `--revenue-account ACCOUNT`                                                                                                       | The revenue account for this customer's lines                                      |
+| `--invoice-template PATH`                                                                                                         | The customer's invoice template, such as `/invoices/tpl/x.html`                    |
+| `--ledger-customer NAME`                                                                                                          | The name the books use, when it differs                                            |
+| `--contract LINK\|PATH`                                                                                                           | A contract; repeat for more                                                        |
+| `--portal-name`, `--portal-url`, `--portal-login`, `--portal-supplier-id`, `--portal-requires-reference`, `--portal-instructions` | The billing portal. The login is a username, never a password                      |
+
+A name any note already has is refused, whatever its case, and an existing file is never overwritten. `--dry-run` prints the note without writing it.
+
+```sh
+ledgeline-invoicer customers import-csv customers.csv --dry-run
+ledgeline-invoicer customers import-csv customers.csv
+```
+
+The first row names the columns and each row after it is one customer:
+
+```text
+name,kind,email,address,terms
+"Smith, Jones & Co",organization,ap@sj.example,"1 Main St
+Springfield, CO",30
+Zoë Müller,person,zoe@example.de,,14
+```
+
+The columns are `name` (required), `kind`, `email`, `phone`, `address`, `company`, `terms`, `revenue_account`, `invoice_template`, `ledger_customer`, `contracts` (several separated by `;`), `portal_name`, `portal_url`, `portal_login`, `portal_supplier_id`, `portal_requires_reference` (yes or no) and `portal_instructions`. They mean what the `customers new` options of the same name mean. Headers match whatever their case, spacing, `-` or `_`, so `Revenue Account` works. Any other header is refused, and the message lists the ones allowed. Blank cells and blank rows are skipped.
+
+Save the file from your spreadsheet as CSV UTF-8. Quoted cells may hold commas and line breaks. Files are limited to 4 MiB and 10,000 rows.
+
+**All or nothing.** Every row is checked before anything is written. If a row doesn't read, repeats another row's customer, or names a customer that already exists, nothing is written and every such row is listed with its line number. To add only the new customers from a list you imported before, use `--skip-existing`: rows naming an existing customer are skipped and reported. `--dry-run` checks every row and lists what would be created.
+
 ### send
 
 ```sh
