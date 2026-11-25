@@ -127,7 +127,7 @@ spa-hash-check:
     ./scripts/check-spa-hash.sh
 
 # aarch64-darwin locally; x86_64-linux on $LEDGELINE_LINUX_STORE (default
-# ssh-ng://avalon). x86_64-darwin is release-dry-run only.
+# ssh-ng://avalon); x86_64-darwin under Rosetta on an Apple Silicon Mac.
 # Re-pin spaNodeModulesHashes in flake.nix after a bun.lock change
 repin-spa-hashes:
     ./scripts/repin-spa-hashes.sh
@@ -341,13 +341,14 @@ version-set version:
 # but `cargo package --workspace` packages unpublished members anyway and then
 # rejects its version-less path dependency on the server. Excluding it beats
 # adding a third version literal for scripts/release.sh to keep in step.
-# `--exclude ledgeline-invoicer` likewise: it is `publish = false` until invoicer
-# Phase 6, and cargo cannot resolve its dependency on the unpublished
-# invoicer-core (which itself packages fine, so it stays in).
+# `--exclude ledgeline-invoicer --exclude invoicer-core` likewise: both are
+# `publish = false` until Patrick decides to share them (invoicer PLAN I19),
+# and nothing about the invoicer goes to crates.io before then. This rehearses
+# exactly what release.yml publishes: ledgeline-core, ledgeline-shell, ledgeline.
 # Rehearse the crates.io package locally
 package-crates:
     cd web && bun run build
-    cargo package --workspace --exclude ledgeline-ffi --exclude ledgeline-invoicer --allow-dirty
+    cargo package --workspace --exclude ledgeline-ffi --exclude ledgeline-invoicer --exclude invoicer-core --allow-dirty
     @echo "spa files in the packaged crate: $(tar tzf target/package/ledgeline-[0-9]*.crate | grep -c '/spa/')"
 
 # --- Rust engine (crates/) ---
