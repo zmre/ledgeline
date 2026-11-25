@@ -243,4 +243,6 @@ mod files_tests;
 #[cfg(test)]
 mod library_tests;
 #[cfg(test)]
+mod payments_tests;
+#[cfg(test)]
 mod tests;

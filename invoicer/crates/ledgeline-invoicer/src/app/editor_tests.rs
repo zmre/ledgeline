@@ -576,3 +576,56 @@ async fn the_editor_copies_a_starter_with_its_base() {
         mine
     );
 }
+
+/// New → Deposit invoice: the same `new`, with one row booked to the
+/// deposit account (so the editor shows its deposit fields), at zero for
+/// the author to fill in; on the cash fixture, whose deposit account is set.
+#[tokio::test(flavor = "multi_thread")]
+async fn create_a_deposit_invoice() {
+    let app = app_on("cash", None);
+    let (status, created) = json_of(
+        &app,
+        post_json(
+            "/api/invoices",
+            &json!({"customer": "[[Customer X]]", "date": "2026-11-17", "deposit": true}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(created["warnings"], json!([]));
+    let number = created["number"].as_str().unwrap().to_string();
+    let state = state_of(&app, &number).await;
+    assert_eq!(state["status"], "draft");
+    let table = &state["form"]["table"];
+    let columns = table["columns"].as_array().unwrap();
+    let at = |role: &str| {
+        columns
+            .iter()
+            .position(|c| c["role"] == role)
+            .unwrap_or_else(|| panic!("{role}: {table}"))
+    };
+    let rows = table["rows"].as_array().unwrap();
+    let deposit = rows
+        .iter()
+        .find(|r| r[at("books")] == "liabilities:customer-deposits")
+        .unwrap_or_else(|| panic!("a deposit row: {table}"));
+    assert_eq!(deposit[at("description")], "Deposit");
+    assert_eq!(deposit[at("amount")], "$0.00");
+
+    // Without `deposit`, no row books to the deposit account.
+    let (_, plain) = json_of(
+        &app,
+        post_json(
+            "/api/invoices",
+            &json!({"customer": "[[Customer X]]", "date": "2026-11-17"}),
+        ),
+    )
+    .await;
+    let state = state_of(&app, plain["number"].as_str().unwrap()).await;
+    assert!(
+        !state["form"]["table"]
+            .to_string()
+            .contains("customer-deposits"),
+        "{state}"
+    );
+}
