@@ -93,9 +93,31 @@ git push --no-verify
 1. `cargoArtifacts = craneLib.buildDepsOnly …` compiles **only the third-party
    dependencies** (including the entire wry/tao GUI stack) from a dummy source.
    This is a single cached layer in the Nix store.
-2. Every real output — the binary and each check — is built with
-   `… // { inherit cargoArtifacts; }`, so they **reuse** that layer instead of
-   recompiling dependencies.
+2. Every real output — the binary and each check — is built on top of a
+   layer, so they **reuse** it instead of recompiling dependencies.
+
+There are two layers, one per cargo profile, because cargo only reuses
+artifacts built with the same profile and the same resolved features:
+
+| Layer | Profile | Used by |
+| --- | --- | --- |
+| `.#cargoArtifacts` | `release` (fat LTO, `codegen-units = 1`) | what ships: `.#ledgeline`, `.#ledgelineWithSpa`, macApp/macDist, linuxDist |
+| `.#cargoArtifactsCi` | `ci` (release minus LTO, `codegen-units = 16`; see `Cargo.toml`) | the checks: `.#tests`, `.#clippy`, `.#spaShellCsp` |
+
+The checks run without LTO because under `release` every one of the ~150
+integration-test binaries did a whole-program LTO link: about 50 of the Linux
+`tests` job's 54 minutes, and over two hours of the macOS job (CI run
+45465085877).
+
+Each layer also runs the same cargo commands, with the same feature flags and
+the same `-p` selection, as the outputs that reuse it, because cargo unifies
+features over the packages a command selects. The ci layer runs
+`--features ledgeline-ffi/mobile` over the workspace (what `tests` and `clippy`
+pass) plus a `test --no-run -p ledgeline` pass for `spaShellCsp`; the release
+layer runs `build -p ledgeline`, like `.#ledgeline` and `.#ledgelineWithSpa`.
+When either one doesn't match, the output recompiles every crate whose features
+differ. CI run 45513409069 hit that: 122 crates for `spaShellCsp`, and ~220
+for each `ledgeline` build when the release layer built the whole workspace.
 
 Because the dependency layer's hash depends only on `Cargo.toml` / `Cargo.lock`
 (not on your source), editing a `.rs` file or a fixture recompiles only the
@@ -440,21 +462,25 @@ churn kept evicting the one path that actually saves CI time. Pushes are now exp
 
 | What | Pushed by | When | Why |
 | --- | --- | --- | --- |
-| `.#cargoArtifacts` (the crane deps layer) | `tests` (Linux), `macos` | pushes **and** PRs | The 45+ minute part of a cold build; a `Cargo.lock` bump lands on a PR first, and that PR's runs are the cold ones. Not pinned. |
+| `.#cargoArtifactsCi` (the ci-profile deps layer) | `tests` (Linux), `macos` | pushes **and** PRs | The 45+ minute part of a cold build; a `Cargo.lock` bump lands on a PR first, and that PR's runs are the cold ones. Not pinned. |
+| `.#cargoArtifacts` (the release-profile deps layer) | `build` (Linux), `macos` | pushes **and** PRs | Same, for the shipped binaries. Not pinned. Two layers per platform is more of the 5 GB LRU than one. |
 | `.#ledgeline`, `.#linuxDist`, `.#ledgelineWithSpa` | `build` (Linux) | pushes to `main` | What a Linux user substitutes. Pinned. |
 | `.#ledgeline`, `.#macDist`, `.#ledgelineWithSpa`, `.#bundledHledger` | `macos` | pushes to `main` | What a Mac user substitutes. Pinned. |
 
-`cargoArtifacts` is exposed under `packages` for exactly this purpose. Push it by hand with:
+Both layers are exposed under `packages` for exactly this purpose. Push them by hand with:
 
 ```sh
-cachix push zmre "$(nix build --no-link --print-out-paths .#cargoArtifacts)"
+cachix push zmre "$(nix build --no-link --print-out-paths .#cargoArtifacts .#cargoArtifactsCi)"
 ```
 
 The `macos` job also keeps a second-tier cache: `nix-community/cache-nix-action` saves a whole
 `/nix/store` snapshot (GC'd to ~8 GiB, with the deps layer GC-rooted) to the repo's own GitHub
-Actions cache, keyed on `flake.lock` + `Cargo.lock`. Only pushes to `main` save it (and purge
-the older `nix-macOS-*` entries); PRs restore `main`'s copy. It covers the case where Cachix has
-already evicted the darwin deps layer.
+Actions cache, keyed on `flake.lock`, `flake.nix`, `Cargo.lock` and every `Cargo.toml`, which
+is everything that can change a deps layer. Only pushes to `main` save it (and purge the older
+`nix-macOS-*` entries); PRs restore `main`'s copy. It covers the case where Cachix has already
+evicted the darwin deps layers. The action never re-saves a key it restored, so a key built from
+the lockfiles alone kept a snapshot with the old layers after a `flake.nix` change, and every
+later run rebuilt them.
 
 ### Pins (why the cache kept going empty)
 
@@ -508,9 +534,9 @@ too). Jobs:
 |----------------|-----------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `format-check` | ubuntu    | `nix build -L .#fmt` (runs first)                                                                                                                                                                   |
 | `clippy`       | ubuntu    | `nix build -L .#clippy`                                                                                                                                                                             |
-| `tests`        | ubuntu    | `nix build -L .#tests` (+ pushes the Linux deps layer)                                                                                                                                              |
-| `build`        | ubuntu    | `nix build -L .#ledgeline`, `.#linuxDist`, `.#spaShellCsp` (+ pushes and pins release artifacts on `main`)                                                                                          |
-| `macos`        | macos-15  | one `nix build -L --no-link --keep-going .#tests .#clippy .#ledgeline .#macDist .#spaShellCsp` (+ pushes the darwin deps layer; pushes and pins release artifacts on `main`)                        |
+| `tests`        | ubuntu    | `nix build -L .#tests`, `.#spaShellCsp` (+ pushes the Linux ci-profile deps layer)                                                                                                                  |
+| `build`        | ubuntu    | `nix build -L .#ledgeline`, `.#linuxDist` (+ pushes the Linux release deps layer; pushes and pins release artifacts on `main`)                                                                      |
+| `macos`        | macos-15  | one `nix build -L --no-link --keep-going .#tests .#clippy .#ledgeline .#macDist .#spaShellCsp` (+ pushes both darwin deps layers; pushes and pins release artifacts on `main`)                       |
 | `spa`          | ubuntu    | `bun install --frozen-lockfile`, then `bun run build`, `bun run test:unit`, `bun run check` and `bun run lint` in `web/` and `invoicer/web/`, and `test:unit`, `check` and `lint` in `packages/ui/` |
 
 macOS is a single job because GitHub's free macOS runners are slow (an M1 with 3 CPUs and

@@ -114,3 +114,16 @@ opt-level = 3
 lto = true
 codegen-units = 1
 strip = "debuginfo"
+
+# CI's tests and clippy (`.#tests`, `.#clippy`, `.#spaShellCsp` in flake.nix,
+# and their own crane deps layer `.#cargoArtifactsCi`). Optimised like release
+# but WITHOUT fat LTO and with parallel codegen: under `release` every one of
+# the ~150 integration-test binaries ran a whole-program LTO link over the
+# full dependency graph, which is most of the 54 min the Linux tests job and
+# the 2h24m the macOS `ledgeline-test` derivation spent after the last crate
+# started compiling (run 45465085877). What ships (`.#ledgeline`,
+# `.#ledgelineWithSpa`, macDist, linuxDist, release.yml) keeps `release`.
+[profile.ci]
+inherits = "release"
+lto = false
+codegen-units = 16
