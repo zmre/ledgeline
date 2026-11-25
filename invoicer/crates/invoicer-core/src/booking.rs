@@ -30,7 +30,8 @@ use thiserror::Error;
 /// account types — is the caller's job.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AccountDefaults {
-    /// Step 2: the catalog's books entry per item code.
+    /// Step 2: the catalog's books entry per item code, keyed in ASCII
+    /// upper case (codes match case-insensitively).
     pub catalog: BTreeMap<ItemCode, BooksEntry>,
     /// Step 3: the customer's `revenue_account`.
     pub customer: Option<BooksEntry>,
@@ -71,7 +72,15 @@ pub fn resolve(
         .or_else(|| {
             row.item
                 .as_ref()
-                .and_then(|code| defaults.catalog.get(code))
+                .and_then(|code| {
+                    // Codes match case-insensitively, as everywhere else in
+                    // the catalog.
+                    defaults.catalog.get(code).or_else(|| {
+                        defaults
+                            .catalog
+                            .get(&ItemCode(code.0.trim().to_ascii_uppercase()))
+                    })
+                })
                 .map(|entry| (entry.clone(), AccountSource::Catalog))
         })
         .or_else(|| {

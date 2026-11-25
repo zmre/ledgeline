@@ -463,7 +463,7 @@ fn defaults_with(
     for item in catalogs.iter().flat_map(|c| &c.items) {
         if let Some(books) = &item.books {
             catalog
-                .entry(ItemCode(item.code.clone()))
+                .entry(ItemCode(item.code.trim().to_ascii_uppercase()))
                 .or_insert_with(|| books.clone());
         }
     }
