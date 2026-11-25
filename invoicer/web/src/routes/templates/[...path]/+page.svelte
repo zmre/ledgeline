@@ -29,7 +29,7 @@
     import {changes} from "#lib/changes.svelte.js";
     import {EditorApiError} from "#lib/editorApi.js";
     import type {InvoiceEntry} from "#lib/invoices.js";
-    import {friendlyMessage} from "#lib/labels.js";
+    import {errorText} from "#lib/labels.js";
     import {
         TEMPLATE_KINDS,
         baseText,
@@ -59,8 +59,6 @@
     import ConflictNotice from "#lib/components/ConflictNotice.svelte";
     import InvoiceFrame from "#lib/components/InvoiceFrame.svelte";
     import SaveDiscardDialog from "#lib/components/SaveDiscardDialog.svelte";
-
-    const asMessage = (e: unknown): string => friendlyMessage(e instanceof Error ? e.message : String(e));
 
     const template = $derived(templateOfParam(page.params.path ?? ""));
 
@@ -120,7 +118,7 @@
             adopt(await fetchTemplate(target));
             schedulePreview(0);
         } catch (e) {
-            loadError = asMessage(e);
+            loadError = errorText(e);
         }
     }
 
@@ -132,7 +130,7 @@
             }
             schedulePreview(0);
         } catch (e) {
-            previewError = asMessage(e);
+            previewError = errorText(e);
         }
     }
 
@@ -153,7 +151,7 @@
             problem = answer.problem;
             if (answer.url !== null) previewUrl = answer.url;
         } catch (e) {
-            if (seq === previewSeq) previewError = asMessage(e);
+            if (seq === previewSeq) previewError = errorText(e);
         } finally {
             if (seq === previewSeq) previewing = false;
         }
@@ -186,7 +184,7 @@
             if (next.hash !== hash && next.hash !== lastSaved) conflict = next.hash ?? "";
         } catch (e) {
             // Deleted or renamed on disk while open.
-            if (!dirty) loadError = asMessage(e);
+            if (!dirty) loadError = errorText(e);
         }
     }
 
@@ -195,15 +193,21 @@
         saving = true;
         saveError = null;
         savedNote = null;
+        // What this save sends: anything typed while it is in flight stays
+        // in the form (unsaved) instead of being replaced by the re-read file.
+        const sent = JSON.stringify(form);
         try {
             const saved = await saveTemplate(template, over, templateChanges(original, form));
             lastSaved = saved.hash;
             savedNote = saved.written ? "Saved." : "Nothing to save.";
-            adopt(await fetchTemplate(template));
+            const next = await fetchTemplate(template);
+            const typed = JSON.stringify(form) === sent ? null : $state.snapshot(form);
+            adopt(next);
+            if (typed !== null) form = typed;
             return true;
         } catch (e) {
             if (e instanceof EditorApiError && e.code === "changed") conflict = e.revision ?? "";
-            else saveError = asMessage(e);
+            else saveError = errorText(e);
             return false;
         } finally {
             saving = false;
@@ -222,7 +226,7 @@
             await customizeTemplate(template);
             await load();
         } catch (e) {
-            saveError = asMessage(e);
+            saveError = errorText(e);
         } finally {
             customizing = false;
         }
@@ -242,7 +246,7 @@
             duplicating = false;
             await goto(resolve("/templates/[...path]", {path: templateParam(made.template)}));
         } catch (e) {
-            copyError = asMessage(e);
+            copyError = errorText(e);
         }
     }
 
@@ -253,9 +257,11 @@
         try {
             await deleteTemplate(template, hash);
             deleting = false;
+            // Unsaved edits went with the file: leaving mustn't ask to save them.
+            form = {...original, kinds: [...original.kinds]};
             await goto(resolve("/templates"));
         } catch (e) {
-            deleteError = asMessage(e);
+            deleteError = errorText(e);
         } finally {
             saving = false;
         }

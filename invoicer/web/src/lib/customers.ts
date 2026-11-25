@@ -7,6 +7,7 @@
 import {ApiShapeError, ApiUnreachableError, authHeaders} from "#ui/api/client.js";
 import {failureMessage} from "./api.js";
 import {localToday, type InvoiceEntry} from "./invoices.js";
+import {linkName} from "./links.js";
 
 /** `person` or `organization` (the note's `type:`). */
 export type ContactKind = "person" | "organization";
@@ -193,15 +194,8 @@ export interface CustomerDetail extends CustomerRow {
     backlinks: Backlink[];
 }
 
-/**
- * A wikilink's name (`[[Customer X]]` → `Customer X`, `[[MSA|the MSA]]` →
- * `MSA`); any other text as it is. The pages never show `[[…]]`.
- */
-export function linkName(text: string): string {
-    const inner = /^\s*\[\[([^\]]*)\]\]\s*$/.exec(text)?.[1];
-    if (inner === undefined) return text.trim();
-    return inner.split("|")[0].split("#")[0].trim();
-}
+/** A wikilink's name; one implementation, in links.ts (re-exported for the customer pages). */
+export {linkName} from "./links.js";
 
 /** A contract entry's name without the server: a link's target, a path's file name. */
 export function contractName(entry: string): string {

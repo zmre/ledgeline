@@ -154,4 +154,59 @@ describe("COMPONENT Combobox passAltArrows", () => {
         // Plain arrows are still the list's.
         expect(key(field, "ArrowDown")).toBe(true);
     });
+
+    it("lists options that share a value (two catalog items described alike)", async () => {
+        const alike: ComboOption[] = [
+            {value: "Consulting", label: "Consulting", detail: "CONS-STD"},
+            {value: "Consulting", label: "Consulting", detail: "CONS-RUSH"},
+        ];
+        const onChoose = vi.fn();
+        const {field} = mount({options: alike, onChoose});
+        key(field, "ArrowDown");
+        await tick();
+        expect(shown()).toEqual(["Consulting CONS-STD", "Consulting CONS-RUSH"]);
+        key(field, "ArrowDown");
+        await tick();
+        expect(field.getAttribute("aria-activedescendant")).toMatch(/-1$/);
+        key(field, "Enter");
+        expect(onChoose).toHaveBeenCalledWith(alike[1]);
+    });
+
+    it("commits once a press on an option ends without a click (dragged off), and on later blurs", async () => {
+        const onCommit = vi.fn();
+        const {field} = mount({onCommit});
+        field.focus();
+        await type(field, "co");
+        await fireEvent.pointerDown(screen.getAllByRole("option")[0]!);
+        field.blur();
+        // The press's own blur: held, the list stays for the click.
+        expect(onCommit).not.toHaveBeenCalled();
+        window.dispatchEvent(new Event("pointerup"));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        await tick();
+        expect(onCommit).toHaveBeenCalledTimes(1);
+        expect(screen.queryByRole("listbox")).toBeNull();
+        // Not stuck: the next blur commits too.
+        field.focus();
+        field.blur();
+        expect(onCommit).toHaveBeenCalledTimes(2);
+    });
+
+    it("chooses on a click after the press, with no extra commit", async () => {
+        const onCommit = vi.fn();
+        const onChoose = vi.fn();
+        const {field} = mount({onCommit, onChoose});
+        field.focus();
+        await type(field, "con");
+        const option = screen.getAllByRole("option")[0]!;
+        await fireEvent.pointerDown(option);
+        field.blur();
+        window.dispatchEvent(new Event("pointerup"));
+        await fireEvent.click(option);
+        expect(onChoose).toHaveBeenCalledWith(CUSTOMERS[1]);
+        // The click ended the press: the abandoned-press path doesn't commit again.
+        const commits = onCommit.mock.calls.length;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(onCommit).toHaveBeenCalledTimes(commits);
+    });
 });

@@ -7,6 +7,10 @@ describe("wikilinks without brackets", () => {
         expect(linkName("[[Customer X|the customer]]")).toBe("Customer X");
         expect(linkName("Phase 1 build")).toBe("Phase 1 build");
         expect(linkName(null)).toBe("");
+        expect(linkName(" [[Notes#Terms]] ")).toBe("Notes");
+        // A link naming no note shows nothing, never its brackets.
+        expect(linkName("[[#Acme]]")).toBe("");
+        expect(linkName("[[]]")).toBe("");
     });
 
     it("links a known note as it is spelled, and free text only when asked", () => {

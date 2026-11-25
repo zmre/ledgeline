@@ -225,6 +225,11 @@ async function fetchSimilar(index: number): Promise<SimilarSet | null> {
             // already held for the run's generation wins.
             const held = similarCache.get(index);
             if (held !== undefined && held.generation === run?.generation && set.generation !== held.generation) return held;
+            // The run moved on (a save landed) while this was out: its set
+            // still holds what that save edited. Keep what is held (already
+            // filtered by `applyResult`); the refetch at the new generation
+            // replaces it. A staged run has no generation to move.
+            if (target.source !== "staged" && run !== null && target.generation !== run.generation) return held ?? null;
             const next = new Map(similarCache);
             next.set(index, set);
             similarCache = next;
@@ -232,11 +237,14 @@ async function fetchSimilar(index: number): Promise<SimilarSet | null> {
         } catch {
             // Similar is an aid, never a blocker: a card without it is still a card.
             return null;
-        } finally {
-            inflight.delete(index);
         }
     })();
     inflight.set(index, request);
+    // Only this request's own entry: after `applyResult` the slot may hold the
+    // refetch at the new generation, which a stale request mustn't drop.
+    void request.finally(() => {
+        if (inflight.get(index) === request) inflight.delete(index);
+    });
     return request;
 }
 

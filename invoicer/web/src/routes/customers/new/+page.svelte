@@ -7,7 +7,7 @@
     import {resolve} from "$app/paths";
     import {fetchTemplates} from "#lib/api.js";
     import {createCustomer, emptyForm, fetchCustomers, newCustomerFields, routeParam} from "#lib/customers.js";
-    import {friendlyMessage} from "#lib/labels.js";
+    import {errorText} from "#lib/labels.js";
     import type {TemplateEntry} from "#lib/invoices.js";
     import CustomerForm from "#lib/components/CustomerForm.svelte";
 
@@ -35,7 +35,7 @@
             const made = await createCustomer(newCustomerFields(form));
             await goto(resolve("/customers/[...path]", {path: routeParam(made.path)}));
         } catch (e: unknown) {
-            failure = friendlyMessage(e instanceof Error ? e.message : String(e));
+            failure = errorText(e);
         } finally {
             saving = false;
         }

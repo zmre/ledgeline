@@ -44,4 +44,24 @@ describe("COMPONENT SendSection", () => {
         expect(screen.queryByTestId("send-prompt")).toBeNull();
         await vi.waitFor(() => expect(api.exportPdf).toHaveBeenCalledWith("108", {temp: false}));
     });
+
+    it("shows the newest delivery when an older fetch lands after it", async () => {
+        let older: (d: Delivery) => void = () => {};
+        let newer: (d: Delivery) => void = () => {};
+        api.fetchDelivery
+            .mockReset()
+            .mockReturnValueOnce(new Promise<Delivery>((resolve) => (older = resolve)))
+            .mockReturnValueOnce(new Promise<Delivery>((resolve) => (newer = resolve)));
+        const view = render(SendSection, {number: "108", reload: 0});
+        await view.rerender({number: "108", reload: 1});
+        await tick();
+        expect(api.fetchDelivery).toHaveBeenCalledTimes(2);
+
+        newer(SENT);
+        await vi.waitFor(() => expect(screen.getByTestId("send-sent")).toBeTruthy());
+        older(DELIVERY_108);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        await tick();
+        expect(screen.queryByTestId("send-sent")).not.toBeNull();
+    });
 });

@@ -8,7 +8,7 @@
 <script lang="ts">
     import {onMount} from "svelte";
     import {fetchFiles, kindLabel, pickFile, type FileCandidate, type FileList} from "#lib/customers.js";
-    import {friendlyMessage} from "#lib/labels.js";
+    import {errorText} from "#lib/labels.js";
 
     let {
         onPick,
@@ -47,7 +47,7 @@
     onMount(() => {
         load()
             .then((l) => (list = l))
-            .catch((e: unknown) => (failure = friendlyMessage(e instanceof Error ? e.message : String(e))));
+            .catch((e: unknown) => (failure = errorText(e)));
     });
 
     async function choose(): Promise<void> {
@@ -57,7 +57,7 @@
             const file = await pick();
             if (file !== null) onPick(file);
         } catch (e: unknown) {
-            failure = friendlyMessage(e instanceof Error ? e.message : String(e));
+            failure = errorText(e);
         } finally {
             picking = false;
         }

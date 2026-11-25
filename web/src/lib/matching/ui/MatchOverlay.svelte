@@ -37,7 +37,7 @@
     // A `PRIORITY.overlay`, `modal: true` layer, the "Matches" group of `?`.
     // Card mode / field mode as in review: single keys act on the card,
     // Escape leaves a field, then closes (asking first when edits would go).
-    import {tick, untrack} from "svelte";
+    import {onDestroy, tick, untrack} from "svelte";
     import {hint} from "#ui/keys/hint.svelte.js";
     import {dismissible} from "#ui/keys/dismissible.js";
     import {keymap, registerKeys} from "#ui/keys/keymap.svelte.js";
@@ -176,7 +176,18 @@
      * when the write went) stay on the card for the halves still showing:
      * the re-read may have re-seeded it underneath (review's D14 rule).
      */
+    /**
+     * False once unmounted (as in MatchFocus): a write that lands after the
+     * overlay closed must not settle its cards, or move focus into the
+     * closing overlay while its outro plays.
+     */
+    let mounted = true;
+    onDestroy(() => {
+        mounted = false;
+    });
+
     function settle(outcome: MatchOutcome<unknown>, kept: Record<number, string>): boolean {
+        if (!mounted) return false;
         if (outcome.ok) {
             notice = null;
             return true;
@@ -219,6 +230,7 @@
         confirmAll = false;
         failure = null;
         const outcome = await matches.linkAll(clearPairs);
+        if (!mounted) return;
         if (settle(outcome, {}) && outcome.ok) linkedAll = outcome.value.linked;
         void focusCard();
     }

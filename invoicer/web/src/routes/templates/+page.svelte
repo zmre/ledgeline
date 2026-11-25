@@ -14,12 +14,10 @@
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
     import {changes} from "#lib/changes.svelte.js";
-    import {friendlyMessage} from "#lib/labels.js";
+    import {errorText} from "#lib/labels.js";
     import {createTemplate, fetchTemplateList, templateParam, type TemplateListEntry} from "#lib/templates.js";
     import EmptyState from "#lib/components/EmptyState.svelte";
     import TemplateList from "#lib/components/TemplateList.svelte";
-
-    const asMessage = (e: unknown): string => friendlyMessage(e instanceof Error ? e.message : String(e));
 
     let list = $state<TemplateListEntry[] | null>(null);
     let loadError = $state<string | null>(null);
@@ -37,7 +35,7 @@
         try {
             list = await fetchTemplateList();
         } catch (e) {
-            loadError = asMessage(e);
+            loadError = errorText(e);
         }
     }
 
@@ -60,7 +58,7 @@
             // eslint-disable-next-line svelte/no-navigation-without-resolve -- editorHref resolves
             await goto(editorHref({path: made.template}));
         } catch (e) {
-            createError = asMessage(e);
+            createError = errorText(e);
         } finally {
             busy = false;
         }
