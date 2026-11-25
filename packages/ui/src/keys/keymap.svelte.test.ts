@@ -182,3 +182,53 @@ describe("COMPONENT always bindings (zoom, plan 39)", () => {
         expect(letter.defaultPrevented).toBe(false);
     });
 });
+
+describe("COMPONENT field-scoped bindings (invoicer Phase 5k)", () => {
+    it("fires a `fields` chord from a field inside its scope, and not from one outside", () => {
+        let moved = 0;
+        const grid = document.createElement("div");
+        const cell = document.createElement("input");
+        grid.append(cell);
+        const other = document.createElement("input");
+        document.body.append(grid, other);
+        render(KeysProbe, {
+            props: {
+                layerOf: (): Layer => ({
+                    id: "grid",
+                    bindings: [{keys: "alt+ArrowUp", label: "Move up", group: "Bill table", run: () => (moved += 1), fields: true, within: () => grid}],
+                }),
+            },
+        });
+
+        const inGrid = press("ArrowUp", cell, {altKey: true});
+        const elsewhere = press("ArrowUp", other, {altKey: true});
+        grid.remove();
+        other.remove();
+
+        expect(moved).toBe(1);
+        expect(inGrid.defaultPrevented).toBe(true);
+        expect(elsewhere.defaultPrevented).toBe(false);
+    });
+
+    it("takes a macOS Option+Shift letter, dead key or not, as its Alt+Shift chord", () => {
+        let added = 0;
+        render(KeysProbe, {
+            props: {
+                layerOf: (): Layer => ({
+                    id: "grid",
+                    bindings: [{keys: "alt+E", label: "Add", group: "Bill table", run: () => (added += 1), fields: true}],
+                }),
+            },
+        });
+        const input = document.createElement("input");
+        document.body.append(input);
+
+        press("Dead", input, {altKey: true, shiftKey: true, code: "KeyE"});
+        // Option+E alone is the acute accent's dead key: still the field's.
+        const accent = press("Dead", input, {altKey: true, code: "KeyE"});
+        input.remove();
+
+        expect(added).toBe(1);
+        expect(accent.defaultPrevented).toBe(false);
+    });
+});

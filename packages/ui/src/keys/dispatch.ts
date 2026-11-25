@@ -48,6 +48,26 @@ export function resolveBindings(layers: readonly RegisteredLayer[]): ResolvedBin
     return resolved;
 }
 
+/**
+ * The bindings that may answer a key aimed at `target`: those without a
+ * `within`, and those whose element contains it. Applied at dispatch only,
+ * after `resolveBindings`, so a scoped binding still shadows a lower layer's
+ * spelling of the same key everywhere (the shadowing rule stays total) and
+ * the `?` sheet lists it.
+ */
+export function inScope(active: readonly ResolvedBinding[], target: unknown): ResolvedBinding[] {
+    return active.filter((binding) => {
+        if (binding.within === undefined) return true;
+        const scope = binding.within();
+        return scope !== null && target !== null && target !== undefined && scope.contains(target);
+    });
+}
+
+/** The bindings that fire while focus is in a field: `always` (zoom) and `fields` (an editor's own chords). */
+export function fieldBindings(active: readonly ResolvedBinding[]): ResolvedBinding[] {
+    return active.filter((binding) => binding.always === true || binding.fields === true);
+}
+
 export type Dispatch =
     | {kind: "run"; binding: ResolvedBinding}
     /** A prefix that some ENABLED binding continues. Swallow the key and wait. */

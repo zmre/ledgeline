@@ -4,7 +4,7 @@
 // bug and it fails silently — hence the tests.
 
 import {describe, expect, it} from "vitest";
-import {canonical, chordToken, formatKeys, MODIFIER_JOINER, isPrefixOf, matchesKeys, steps} from "./chord";
+import {canonical, chordToken, formatKeys, isAltLetter, MODIFIER_JOINER, isPrefixOf, matchesKeys, steps} from "./chord";
 
 function press(key: string, mods: Partial<{ctrlKey: boolean; altKey: boolean; metaKey: boolean; shiftKey: boolean; code: string}> = {}) {
     return {key, ctrlKey: false, altKey: false, metaKey: false, shiftKey: false, ...mods};
@@ -118,5 +118,29 @@ describe("UNIT the + key and keyboard layouts (zoom, plan 39)", () => {
     it("never rewrites a character typed without Ctrl/Cmd", () => {
         expect(chordToken(press("à", {code: "Digit0"}))).toBe("à");
         expect(chordToken(press("à", {altKey: true, code: "Digit0"}))).toBe("alt+à");
+    });
+});
+
+describe("UNIT Alt+Shift+letter (the invoicer's bill-grid row keys)", () => {
+    it("reads macOS's Option layer from the physical key, upper case", () => {
+        // Option+Shift+S types "Í" and Option+Shift+I "ˆ" on a US Mac.
+        expect(chordToken(press("Í", {altKey: true, shiftKey: true, code: "KeyS"}))).toBe("alt+S");
+        expect(chordToken(press("ˆ", {altKey: true, shiftKey: true, code: "KeyI"}))).toBe("alt+I");
+        expect(chordToken(press("Dead", {altKey: true, shiftKey: true, code: "KeyE"}))).toBe("alt+E");
+        // Windows and Linux send the letter already.
+        expect(chordToken(press("S", {altKey: true, shiftKey: true, code: "KeyS"}))).toBe("alt+S");
+        expect(matchesKeys("alt+S", chordToken(press("Í", {altKey: true, shiftKey: true, code: "KeyS"})))).toBe(true);
+    });
+
+    it("leaves a plain Option+letter typing what it types", () => {
+        expect(chordToken(press("ß", {altKey: true, code: "KeyS"}))).toBe("alt+ß");
+        expect(isAltLetter(press("Dead", {altKey: true, code: "KeyE"}))).toBe(false);
+        expect(isAltLetter(press("Í", {altKey: true, shiftKey: true, metaKey: true, code: "KeyS"}))).toBe(false);
+    });
+
+    it("says Shift when a modifier chord names a capital letter", () => {
+        const [step] = formatKeys("alt+S");
+        expect(step.text.split(MODIFIER_JOINER).slice(1)).toEqual(["Shift", "S"]);
+        expect(formatKeys("G")).toEqual([{text: "G"}]);
     });
 });

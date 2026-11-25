@@ -59,10 +59,29 @@ export interface Binding {
      */
     always?: boolean;
     /**
+     * Fires while focus is in a field too, but, unlike `always`, a `modal`
+     * layer above still blinds it: an editor's Cmd/Alt chord that must work
+     * from the cell being typed in (the invoicer's bill-grid row keys), yet
+     * not from inside a dialog over the editor. Never a chord sequence.
+     */
+    fields?: boolean;
+    /**
+     * Only when the key's target is inside this element (Alt+↑ moves a row
+     * only from within the grid that owns it). Read at dispatch alone: the
+     * `?` sheet lists the binding whatever has focus, since the sheet itself
+     * takes focus when it opens. Null (not mounted) means nowhere.
+     */
+    within?: () => Scope | null;
+    /**
      * `false` keeps an alternate spelling off the `?` sheet (Cmd+= beside the
      * listed Cmd++). It still fires. Default: listed.
      */
     help?: boolean;
+}
+
+/** What `Binding.within` returns. An `Element` satisfies it; so does a test's object literal. */
+export interface Scope {
+    contains(node: unknown): boolean;
 }
 
 export interface Layer {

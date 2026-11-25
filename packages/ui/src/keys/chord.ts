@@ -60,12 +60,28 @@ export function chordToken(event: KeyEventLike): string {
  */
 function commandKey(event: KeyEventLike): string {
     const {key, code} = event;
+    if (isAltLetter(event)) return /^Key([A-Z])$/.exec(code ?? "")?.[1] ?? key;
     if (!(event.ctrlKey || event.metaKey) || key.length !== 1 || key.charCodeAt(0) < 0x80 || code === undefined) return key;
     const letter = /^Key([A-Z])$/.exec(code);
     if (letter !== null) return event.shiftKey ? letter[1] : letter[1].toLowerCase();
     const digit = /^(?:Digit|Numpad)([0-9])$/.exec(code);
     if (digit !== null) return digit[1];
     return US_PUNCTUATION[code] ?? key;
+}
+
+/**
+ * Alt with Shift on a letter, whose character is not ASCII: macOS's Option
+ * layer (Option+Shift+S types "Í"), where no binding could be spelled in the
+ * character. The physical letter stands in, upper case: Alt+Shift+S is
+ * `alt+S` on every platform (Windows and Linux already send "S"). Only with
+ * Shift, so a plain Option+letter (ß, a dead key for an accent) keeps typing
+ * what it types; the keymap binds Alt+letter chords with Shift for that
+ * reason.
+ */
+export function isAltLetter(event: KeyEventLike): boolean {
+    const {key, code} = event;
+    if (!event.altKey || !event.shiftKey || event.ctrlKey || event.metaKey || code === undefined || !/^Key[A-Z]$/.test(code)) return false;
+    return key === "Dead" || (key.length === 1 && key.charCodeAt(0) >= 0x80);
 }
 
 const US_PUNCTUATION: Record<string, string> = {Equal: "=", Minus: "-", NumpadAdd: "+", NumpadSubtract: "-"};
@@ -159,7 +175,10 @@ export const MODIFIER_JOINER = IS_MAC ? "-" : "+";
 export function formatKeys(keys: string): KeyToken[] {
     return steps(keys).map((step) => {
         const {mods, key} = splitStep(step);
-        const text = [...mods, key].map((p) => DISPLAY_NAMES[p] ?? p).join(MODIFIER_JOINER);
+        // A capital letter under a modifier is typed with Shift: say so, as
+        // `⌥-S` would read as Option+S. (Alone, `G` is the key's own name.)
+        const shifted = mods.length > 0 && /^[A-Z]$/.test(key) ? ["shift"] : [];
+        const text = [...mods, ...shifted, key].map((p) => DISPLAY_NAMES[p] ?? p).join(MODIFIER_JOINER);
         return {text};
     });
 }
