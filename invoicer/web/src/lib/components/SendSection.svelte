@@ -2,8 +2,12 @@
      and its prompts, Share…, Copy file, Open, the portal. One component, so
      the invoice page and the editor show the same panel rather than two
      copies of its handlers. `reload` bumps re-fetch the delivery (a change on
-     disk); `onChanged` tells the page the invoice was sent or exported. -->
+     disk); `onChanged` tells the page the invoice was sent or exported.
+     While a refresh of a delivery already shown is on its way (after Send,
+     an export, a change on disk) the panel is busy: an export then would
+     act on the old state (a just-sent invoice asking "Mark as sent?"). -->
 <script lang="ts">
+    import {untrack} from "svelte";
     import {copyPdf, exportPdf, fetchDelivery, openPdf, openPortal, sendInvoice, sharePdf} from "#lib/api.js";
     import type {Anchor, Delivery, Destination, Exported} from "#lib/delivery.js";
     import SendPanel from "./SendPanel.svelte";
@@ -17,12 +21,21 @@
 
     const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
+    /** A refresh of the shown delivery is on its way: its state may be stale. */
+    let refreshing = $state(false);
+    let latest = 0;
+
     function load(target: string): void {
+        const mine = ++latest;
+        refreshing = delivery !== null;
         fetchDelivery(target)
             .then((d) => {
                 if (target === number) delivery = d;
             })
-            .catch((e: unknown) => (error = message(e)));
+            .catch((e: unknown) => (error = message(e)))
+            .finally(() => {
+                if (mine === latest) refreshing = false;
+            });
     }
 
     async function act(action: () => Promise<void>): Promise<void> {
@@ -40,7 +53,7 @@
     $effect(() => {
         const target = number;
         void reload;
-        load(target);
+        untrack(() => load(target));
     });
 
     $effect(() => {
@@ -82,7 +95,19 @@
 </script>
 
 {#if delivery !== null}
-    <SendPanel {delivery} {exported} {busy} {error} {onExport} {onSendAndExport} {onShare} {onCopyFile} {onOpenFile} {onOpenPortal} {onCopyText} />
+    <SendPanel
+        {delivery}
+        {exported}
+        busy={busy || refreshing}
+        {error}
+        {onExport}
+        {onSendAndExport}
+        {onShare}
+        {onCopyFile}
+        {onOpenFile}
+        {onOpenPortal}
+        {onCopyText}
+    />
 {:else if error !== null}
     <div class="alert text-sm alert-error" role="alert" data-testid="send-error">{error}</div>
 {/if}
