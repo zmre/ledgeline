@@ -1190,15 +1190,27 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn spawn_reaped_leaves_no_zombie() {
-        let id = super::spawn_reaped(&mut std::process::Command::new("true")).expect("spawns");
-        // `ps` finds a zombie (`Z`) until the child is reaped, then nothing.
-        let gone = (0..200).any(|_| {
-            let found = std::process::Command::new("ps")
+        // Whether process `id` still exists (a zombie counts until it is
+        // reaped), or `None` when this platform can't tell. No `PATH` lookup:
+        // the Nix build sandbox has no `ps` on Linux, so Linux reads `/proc`.
+        fn still_there(id: u32) -> Option<bool> {
+            if cfg!(target_os = "linux") {
+                return Some(std::path::Path::new(&format!("/proc/{id}")).exists());
+            }
+            let found = std::process::Command::new("/bin/ps")
                 .args(["-o", "stat=", "-p", &id.to_string()])
                 .output()
-                .expect("ps runs");
-            let stat = String::from_utf8_lossy(&found.stdout).trim().to_string();
-            if stat.is_empty() {
+                .ok()?;
+            Some(!String::from_utf8_lossy(&found.stdout).trim().is_empty())
+        }
+
+        let id = super::spawn_reaped(&mut std::process::Command::new("true")).expect("spawns");
+        if still_there(std::process::id()) != Some(true) {
+            eprintln!("skipped: this platform can't list processes");
+            return;
+        }
+        let gone = (0..200).any(|_| {
+            if still_there(id) == Some(false) {
                 return true;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
