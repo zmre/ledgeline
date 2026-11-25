@@ -108,6 +108,14 @@ I abhor having to use the mouse, even in GUIs.  Which is why you can navigate ev
 
 The most important thing to know though is that <kbd>?</kbd> will show you the currently relevant keyboard shortcuts, which will change depending on the tab you're in. The full list is in the [keyboard shortcuts docs](https://zmre.github.io/ledgeline/journal/keyboard/).
 
+## Invoicer
+
+[Ledgeline Invoicer](https://zmre.github.io/ledgeline/invoicer/) is a companion app in this repository for billing customers. Each invoice is a markdown note in your books folder, and each customer is a person or organization note, so you can edit them by hand, keep them in git and `grep` them. Drafts never touch the journal. Sending an invoice books it into the same hledger journal Ledgeline reads, as an accrual receivable or, in cash books, when the payment arrives. The invoicer reads payments back from the books and marks each invoice paid, partly paid or unpaid.
+
+It has a bill table that does its own discounts, subtotals, tax and deposits; PDF export through templates you can [customize](https://zmre.github.io/ledgeline/invoicer/templates/) without writing a whole page; a receivables [dashboard](https://zmre.github.io/ledgeline/invoicer/dashboard/) with aging, DSO and what was paid recently; Ledgeline's keyboard shortcuts; and a [command line](https://zmre.github.io/ledgeline/invoicer/cli/) that does nearly everything the app does, with JSON output for [scripts](https://zmre.github.io/ledgeline/invoicer/scripting/). It shares Ledgeline's themes and settings file.
+
+The invoicer isn't in a release download yet. It builds from this repository with `just build-invoicer` and `cargo run -p ledgeline-invoicer -- path/to/books.journal`, for Apple silicon Macs and Linux.
+
 ## Documentation
 
 The user manual is published at **<https://zmre.github.io/ledgeline/>**. The same pages are in [`docs/`](docs/index.md) in this repository, so you can also read them on GitHub.
@@ -199,6 +207,7 @@ The [development section of the manual](https://zmre.github.io/ledgeline/develop
 - **[Releasing](https://zmre.github.io/ledgeline/development/releasing/)**: `scripts/release.sh`, the signed and notarized DMGs, and crates.io publishing.
 - **[Imports internals](https://zmre.github.io/ledgeline/development/imports-internals/)**: the CSV rules-file editor — the format-preserving model, what it will and won't edit, and the guards on its write path.
 - **[Docs site](https://zmre.github.io/ledgeline/development/docs-site/)**: how this manual is built with mbr and published.
+- **[Invoicer code layout](https://zmre.github.io/ledgeline/development/invoicer/)**: the invoicer's crates, its SPA and the shared `packages/ui`.
 
 ## Architecture
 
