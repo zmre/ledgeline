@@ -706,19 +706,7 @@ pub fn navigation_allowed(base: &str, candidate: &str) -> bool {
     candidate == base.trim_end_matches('/') || candidate.starts_with(base)
 }
 
-/// `raw` re-serialized when it is a plain https URL: no port, no credentials.
-/// The first test an app's "open this in the system browser" allowlist
-/// applies, before its own hosts.
-#[must_use]
-pub fn plain_https(raw: &str) -> Option<Url> {
-    let url = Url::parse(raw.trim()).ok()?;
-    let plain = url.scheme() == "https"
-        && url.host_str().is_some()
-        && url.port().is_none()
-        && url.username().is_empty()
-        && url.password().is_none();
-    plain.then_some(url)
-}
+pub use crate::security::plain_https;
 
 /// Open a page (already vetted by the app's allowlist) in the user's
 /// browser. The URL is one argument to a fixed program — no shell.
