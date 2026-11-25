@@ -27,6 +27,11 @@ unicode-width = "0.2"
 # one new crate family this PR adds (with `hashlink` and `arraydeque`); pure
 # Rust, no unsafe in the parser. Default features off, as MBR has them.
 yaml-rust2 = { version = "0.13", default-features = false }
+# `customers import-csv` reads a customer list with the CSV reader
+# ledgeline-core's imports use (the workspace's `csv`, already in
+# Cargo.lock): RFC 4180 quoting, so a quoted field may hold commas, quotes
+# and line breaks.
+csv = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

@@ -2,8 +2,8 @@
 //! §2.2, §6.4).
 //!
 //! The documents (invoicer PLAN 1c): `new`, `list`, `show`, `set`, `recalc`,
-//! `check`, `next-number`, `config` and `customers list|show` write markdown
-//! only, never the journal (I2). The books (PLAN 2c): `send`, `void`,
+//! `check`, `next-number`, `config` and `customers list|show|new|import-csv`
+//! ([`customers`]) write markdown only, never the journal (I2). The books (PLAN 2c): `send`, `void`,
 //! `rebook`, `apply-payment`, `reconcile`, `receivables` and `recognize`.
 //! The PDF (PLAN 3c): `pdf`, in a desktop build ([`pdf`], `app::pdf`).
 //! Every command takes `--json`.
@@ -27,6 +27,7 @@
 
 #[cfg(feature = "server")]
 mod app;
+mod customers;
 mod human;
 mod pdf;
 mod starters;
@@ -339,6 +340,13 @@ enum CustomersCommand {
         /// A title, alias or `[[wikilink]]`.
         name: String,
     },
+    /// Create a customer note in `customers-dir`, as the app's Add customer
+    /// does. Refuses a name some note already has.
+    New(Box<customers::NewArgs>),
+    /// Create customers from a CSV file, one per row. Nothing is written if
+    /// any row doesn't read.
+    #[command(after_help = customers::columns_help())]
+    ImportCsv(customers::ImportCsvArgs),
 }
 
 /// A failure that stops a command (exit 2), with a stable code for the books
@@ -843,6 +851,8 @@ fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
             emit(cli.json, &detail, human::customer);
             Ok(ExitCode::SUCCESS)
         }
+        Command::Customers(CustomersCommand::New(args)) => customers::run_new(cli, args),
+        Command::Customers(CustomersCommand::ImportCsv(args)) => customers::run_import(cli, args),
         Command::Send(args) => run_send(cli, args),
         Command::Void(args) => run_void(cli, args),
         Command::Pdf(args) => run_pdf(cli, args),

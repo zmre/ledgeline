@@ -1225,6 +1225,306 @@ fn reconcile_and_check_exit_1_on_books_errors() {
 }
 
 // ---------------------------------------------------------------------------
+// `customers new` and `customers import-csv` (ARCHITECTURE §6.4). That they
+// write the app's bytes is `app::customers_tests`'
+// `the_cli_writes_the_file_the_app_writes`.
+// ---------------------------------------------------------------------------
+
+/// The customer notes in the books' `customers/` folder, by file name.
+fn customer_files(books: &Books) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(books.file("customers"))
+        .expect("customers/")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".md"))
+        .collect();
+    names.sort();
+    names
+}
+
+impl Books {
+    /// `text` written as a CSV file beside the books (not in them).
+    fn csv(&self, name: &str, text: &str) -> String {
+        let path = self.dir.path().join(name);
+        fs::write(&path, text).expect("writes");
+        path.display().to_string()
+    }
+}
+
+#[test]
+fn customers_new_writes_a_note_and_never_overwrites() {
+    let books = Books::of("accrual");
+    let before = customer_files(&books);
+    let args = [
+        "customers",
+        "new",
+        "Northwind Traders",
+        "--email",
+        "ap@northwind.example",
+        "--address",
+        "1 Main St\nSpringfield, CO 80000",
+        "--terms",
+        "15",
+        "--revenue-account",
+        "revenue:consulting",
+        "--portal-name",
+        "Coupa",
+        "--portal-url",
+        "https://coupa.example/",
+        "--portal-requires-reference",
+    ];
+    let mut dry = args.to_vec();
+    dry.push("--dry-run");
+    let preview = snapshot_json(&books, "accrual-customers-new-dry-run.json", &dry);
+    assert_eq!(preview["written"], false);
+    assert_eq!(customer_files(&books), before, "a dry run writes nothing");
+
+    let made = books.json(&args, 0);
+    for key in [
+        "path",
+        "title",
+        "link",
+        "ledger_customer",
+        "kind",
+        "hash",
+        "written",
+        "changed",
+    ] {
+        assert!(made.get(key).is_some(), "{key}: {made}");
+    }
+    assert!(made.get("text").is_none(), "{made}");
+    assert_eq!(made["path"], "customers/Northwind Traders.md");
+    assert_eq!(made["link"], "[[Northwind Traders]]");
+    assert_eq!(made["kind"], "organization");
+    assert_eq!(made["written"], true);
+    assert_eq!(made["hash"], preview["hash"]);
+    let text = books.read("customers/Northwind Traders.md");
+    assert_eq!(text, preview["text"].as_str().expect("text"));
+
+    // It is a customer at once.
+    let shown = books.json(&["customers", "show", "Northwind Traders"], 0);
+    assert_eq!(shown["terms"], 15);
+    assert_eq!(shown["portal"], "Coupa");
+
+    // Taken: refused, any case, and the note is left as it was.
+    for name in ["Northwind Traders", "northwind traders", "Contoso"] {
+        let refused = books.json(&["customers", "new", name, "--kind", "person"], 2);
+        let error = refused["error"].as_str().expect("error");
+        assert!(error.contains("already exists"), "{name}: {error}");
+    }
+    assert_eq!(books.read("customers/Northwind Traders.md"), text);
+    let refused = books.run(&["customers", "new", "Contoso"]);
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("already exists"));
+
+    // Fields that don't read are refused.
+    for bad in [
+        &["--kind", "company"][..],
+        &["--terms", "net 30"],
+        &["--portal-url", "ftp://portal.example"],
+    ] {
+        let mut args = vec!["customers", "new", "Initech"];
+        args.extend_from_slice(bad);
+        let refused = books.json(&args, 2);
+        assert!(refused["error"].is_string(), "{bad:?}: {refused}");
+    }
+    assert!(!books.file("customers/Initech.md").exists());
+
+    let human = books.text(&["customers", "new", "Zoë Müller", "--kind", "person"]);
+    assert_eq!(
+        human,
+        "Created customers/Zoë Müller.md (person)\n  invoices link it as [[Zoë Müller]]; the \
+         books know it as Zoë Müller\n"
+    );
+}
+
+/// A customer list as a spreadsheet exports it: headers in any case, a
+/// quoted name holding a comma, a quoted address holding line breaks, a
+/// quote written twice, UTF-8, a blank row.
+const CUSTOMERS_CSV: &str = "Name,Kind,E Mail,Address,Terms,Revenue Account\n\
+    \"Smith, Jones & Co\",organization,ap@sj.example,\"1 Main St\nSpringfield, CO\",30,revenue:consulting\n\
+    \n\
+    \"The \"\"Best\"\" Bakery\",,orders@bakery.example,,,\n\
+    Zoë Müller,Person,zoe@example.de,,14,\n";
+
+#[test]
+fn customers_import_csv_writes_every_row_or_none() {
+    let books = Books::of("accrual");
+    let before = customer_files(&books);
+
+    // An unknown column is refused, listing the ones there are.
+    let file = books.csv("customers.csv", CUSTOMERS_CSV);
+    let refused = books.json(&["customers", "import-csv", &file], 2);
+    assert_eq!(refused["code"], "header", "{refused}");
+    let error = refused["error"].as_str().expect("error");
+    assert!(error.contains("unknown column \"E Mail\""), "{error}");
+    assert!(
+        error.contains("name, kind, email, phone, address"),
+        "{error}"
+    );
+    assert_eq!(customer_files(&books), before);
+
+    let file = books.csv("customers.csv", &CUSTOMERS_CSV.replace("E Mail", "EMAIL"));
+    let preview = snapshot_json(
+        &books,
+        "accrual-customers-import-dry-run.json",
+        &["customers", "import-csv", &file, "--dry-run"],
+    );
+    assert_eq!(preview["dry_run"], true);
+    assert_eq!(customer_files(&books), before, "a dry run writes nothing");
+
+    let report = books.json(&["customers", "import-csv", &file], 0);
+    assert_eq!(report["dry_run"], false);
+    let created: Vec<(&str, u64)> = report["created"]
+        .as_array()
+        .expect("created")
+        .iter()
+        .map(|r| {
+            (
+                r["path"].as_str().expect("path"),
+                r["line"].as_u64().expect("line"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        created,
+        [
+            ("customers/Smith, Jones & Co.md", 2),
+            // `"` is no file-name character: `file_stem` makes it `-`.
+            ("customers/The -Best- Bakery.md", 5),
+            ("customers/Zoë Müller.md", 6),
+        ]
+    );
+    for (row, (path, _)) in created.iter().enumerate() {
+        assert_eq!(
+            books.read(path),
+            preview["created"][row]["text"].as_str().expect("text"),
+            "{path}: written as previewed"
+        );
+    }
+    let smith = books.read("customers/Smith, Jones & Co.md");
+    assert!(
+        smith.contains("  - billing: |\n      1 Main St\n      Springfield, CO\n"),
+        "{smith}"
+    );
+    let zoe = books.json(&["customers", "show", "Zoë Müller"], 0);
+    assert_eq!(zoe["kind"], "person");
+    assert_eq!(zoe["terms"], 14);
+
+    // The same file again: every row exists, so nothing is written ...
+    let again = books.json(&["customers", "import-csv", &file], 2);
+    assert_eq!(again["code"], "invalid");
+    assert_eq!(again["rows"].as_array().expect("rows").len(), 3);
+    assert!(
+        again["rows"][0]["error"]
+            .as_str()
+            .expect("error")
+            .contains("--skip-existing"),
+        "{again}"
+    );
+    // ... unless existing rows are skipped.
+    let more = books.csv(
+        "more.csv",
+        "name,email\n\"Smith, Jones & Co\",\nInitech,ap@initech.example\n",
+    );
+    let skipped = books.json(&["customers", "import-csv", &more, "--skip-existing"], 0);
+    assert_eq!(
+        skipped["skipped"][0]["path"],
+        "customers/Smith, Jones & Co.md"
+    );
+    assert_eq!(skipped["skipped"][0]["line"], 2);
+    assert_eq!(skipped["created"][0]["path"], "customers/Initech.md");
+    assert_eq!(
+        books.read("customers/Smith, Jones & Co.md"),
+        smith,
+        "untouched"
+    );
+}
+
+#[test]
+fn customers_import_csv_one_bad_row_writes_nothing() {
+    let books = Books::of("accrual");
+    let before = customer_files(&books);
+    let file = books.csv(
+        "bad.csv",
+        "name,terms,portal_url\n\
+         Good One,30,\n\
+         Bad Terms,soon,\n\
+         Short Row\n\
+         \"Comma, Co\",,https://portal.example/\n\
+         GOOD ONE,,\n",
+    );
+    let refused = books.json(&["customers", "import-csv", &file], 2);
+    assert_eq!(refused["code"], "invalid");
+    let rows: Vec<(u64, &str)> = refused["rows"]
+        .as_array()
+        .expect("rows")
+        .iter()
+        .map(|r| {
+            (
+                r["line"].as_u64().expect("line"),
+                r["name"].as_str().expect("name"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        [(3, "Bad Terms"), (4, "Short Row"), (6, "GOOD ONE")],
+        "{refused}"
+    );
+    assert_eq!(customer_files(&books), before, "all or nothing");
+
+    // As text: every row on stderr, exit 2.
+    let out = books.run(&["customers", "import-csv", &file]);
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("3 rows don't read, so nothing was written:"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("  line 3 (Bad Terms): terms \"soon\""),
+        "{stderr}"
+    );
+
+    // A missing file, and a file past the size cap.
+    let missing = books.json(&["customers", "import-csv", "nowhere.csv"], 2);
+    assert!(
+        missing["error"]
+            .as_str()
+            .expect("error")
+            .contains("nowhere.csv")
+    );
+    let big = books.csv("big.csv", &"x".repeat(4 * 1024 * 1024 + 1));
+    let refused = books.json(&["customers", "import-csv", &big], 2);
+    assert!(
+        refused["error"]
+            .as_str()
+            .expect("error")
+            .contains("larger than"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn customers_import_csv_help_lists_the_columns() {
+    let books = Books::of("cash");
+    let help = books.text(&["customers", "import-csv", "--help"]);
+    for column in [
+        "name",
+        "kind",
+        "email",
+        "address",
+        "terms",
+        "revenue_account",
+        "portal_requires_reference",
+    ] {
+        assert!(help.contains(&format!("\n  {column} ")), "{column}: {help}");
+    }
+    assert!(help.contains("--skip-existing"), "{help}");
+}
+
+// ---------------------------------------------------------------------------
 // `pdf` (PLAN 3c). Printing needs a real webview and the main thread, so the
 // export itself is `#[ignore]`d: the lead runs it on a desktop session with
 //   nix develop -c cargo test -p ledgeline-invoicer --test cli -- --ignored pdf_

@@ -498,3 +498,91 @@ async fn open_pos_are_edited_by_key_and_show_their_use() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(detail(&app, path).await["po_usage"], json!([]));
 }
+
+/// `ledgeline-invoicer <args>`, in process (`main`'s own `run`), on the
+/// books at `root`: what the CLI does, without a second process.
+async fn cli_on(root: &std::path::Path, args: &[&str]) {
+    use clap::Parser as _;
+    let journal = root.join("books.journal");
+    let argv: Vec<String> = ["ledgeline-invoicer", "-f"]
+        .into_iter()
+        .map(str::to_string)
+        .chain([journal.display().to_string(), "--json".to_string()])
+        .chain(args.iter().map(|a| (*a).to_string()))
+        .collect();
+    let cli = crate::Cli::try_parse_from(&argv).expect("parses");
+    let done = tokio::task::spawn_blocking(move || crate::run(&cli, None).ok())
+        .await
+        .expect("runs");
+    assert_eq!(done, Some(std::process::ExitCode::SUCCESS), "{args:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_cli_writes_the_file_the_app_writes() {
+    // What the Add customer dialog sends (AddCustomerDialog.svelte).
+    let by_app = app();
+    let (status, made) = json_of(
+        &by_app,
+        post_json(
+            "/api/customers",
+            &json!({
+                "title": "Smith, Jones & Co",
+                "kind": "person",
+                "emails": [{"label": "billing", "value": "ap@sj.example"}],
+                "addresses": [{"label": "billing", "value": "1 Main St\nSpringfield, CO"}],
+                "terms": 30
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let path = "customers/Smith, Jones & Co.md";
+    let app_bytes = std::fs::read(books_root(&by_app).join(path)).expect("written");
+
+    // `customers new` with the same values.
+    let by_new = app();
+    cli_on(
+        &books_root(&by_new),
+        &[
+            "customers",
+            "new",
+            "Smith, Jones & Co",
+            "--kind",
+            "person",
+            "--email",
+            "ap@sj.example",
+            "--address",
+            "1 Main St\nSpringfield, CO",
+            "--terms",
+            "30",
+        ],
+    )
+    .await;
+    let new_bytes = std::fs::read(books_root(&by_new).join(path)).expect("written");
+    assert_eq!(
+        String::from_utf8_lossy(&new_bytes),
+        String::from_utf8_lossy(&app_bytes),
+        "customers new"
+    );
+
+    // `customers import-csv` with the same values.
+    let by_import = app();
+    let csv = books_root(&by_import).join("../customers.csv");
+    std::fs::write(
+        &csv,
+        "Name,Kind,Email,Address,Terms\n\
+         \"Smith, Jones & Co\",person,ap@sj.example,\"1 Main St\nSpringfield, CO\",30\n",
+    )
+    .expect("writes");
+    cli_on(
+        &books_root(&by_import),
+        &["customers", "import-csv", &csv.display().to_string()],
+    )
+    .await;
+    let import_bytes = std::fs::read(books_root(&by_import).join(path)).expect("written");
+    assert_eq!(
+        String::from_utf8_lossy(&import_bytes),
+        String::from_utf8_lossy(&app_bytes),
+        "customers import-csv"
+    );
+}

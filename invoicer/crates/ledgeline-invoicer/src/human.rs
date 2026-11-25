@@ -4,6 +4,7 @@
 use invoicer_core::books::{
     Basis, PaymentApplied, PaymentOptions, Preview, Rebooked, Recognized, Sent, Voided,
 };
+use invoicer_core::customer_import::ImportReport;
 use invoicer_core::doc::{Header, Money, Paid};
 use invoicer_core::edit::{Created, RecalcReport, SetOutcome};
 use invoicer_core::problem::Problem;
@@ -401,6 +402,74 @@ pub fn customers(all: &[CustomerEntry]) -> String {
         ],
         &rows,
     )
+}
+
+/// `customers new`: the note on a dry run, else what was created.
+pub fn customer_created(made: &crate::customers::NewOut) -> String {
+    let saved = &made.saved;
+    match &made.text {
+        Some(text) => format!("Would create {}:\n\n{text}", saved.path),
+        None => format!(
+            "Created {} ({})\n  invoices link it as {}; the books know it as {}\n",
+            saved.path,
+            kind_name(saved.kind),
+            saved.link,
+            saved.ledger_customer
+        ),
+    }
+}
+
+/// `customers import-csv`: the customers created (or that would be) and
+/// the rows skipped, with their lines.
+pub fn customers_imported(report: &ImportReport) -> String {
+    let verb = if report.dry_run {
+        "Would create"
+    } else {
+        "Created"
+    };
+    let mut out = format!(
+        "{verb} {}",
+        plural(report.created.len(), "customer", "customers")
+    );
+    if !report.skipped.is_empty() {
+        let _ = write!(
+            out,
+            "; skipped {} already there",
+            plural(report.skipped.len(), "row", "rows")
+        );
+    }
+    out.push_str(if report.created.is_empty() && report.skipped.is_empty() {
+        ".\n"
+    } else {
+        ":\n"
+    });
+    let rows: Vec<Vec<String>> = report
+        .created
+        .iter()
+        .map(|r| {
+            vec![
+                r.line.to_string(),
+                r.saved.title.clone(),
+                kind_name(r.saved.kind),
+                r.saved.path.to_string(),
+            ]
+        })
+        .chain(report.skipped.iter().map(|s| {
+            vec![
+                s.line.to_string(),
+                s.title.clone(),
+                "skipped".to_string(),
+                s.path.to_string(),
+            ]
+        }))
+        .collect();
+    if !rows.is_empty() {
+        out.push_str(&columns(
+            &[right("LINE"), left("CUSTOMER"), left("KIND"), left("FILE")],
+            &rows,
+        ));
+    }
+    out
 }
 
 fn kind_name(kind: invoicer_core::customers::ContactKind) -> String {

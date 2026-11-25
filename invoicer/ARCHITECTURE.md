@@ -1426,6 +1426,26 @@ Amounts in these shapes are plain decimals (`"8350.00"`) beside their
 - **Exit codes.** `reconcile` exits 1 on error findings (like `check`) and
   2 when a mirror couldn't be written.
 
+**As built (2026-11-25).** `customers new NAME` and `customers
+import-csv FILE` create customer notes through the app's own create
+(`customer_edit::prepare` then `write_new`), so the CLI writes the bytes
+Add customer writes for the same values. Flags and CSV columns are the same
+`customer_import::Column`s: `name` (required), `kind`, `email`, `phone`,
+`address` (each labelled `billing`, as Add customer writes them),
+`company`, `terms`, `revenue_account`, `invoice_template`,
+`ledger_customer`, `contracts` (`;`-separated in a cell) and the
+`portal_*` keys. CSV headers match whatever the case, spaces, `-` or `_`;
+any other header is refused with the list. An import checks every row
+first and writes nothing if one fails (in-file duplicates included);
+`--skip-existing` skips rows naming an existing customer. Caps: 4 MiB and
+10,000 rows; UTF-8 (a BOM is dropped).
+
+| Command                                                   | `--json` prints                                                                                                         |
+|-----------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------|
+| `customers new NAME [--dry-run]`                          | `{path, title, link, ledger_customer, kind, hash, written, changed, noted}`, plus `text` with `--dry-run`               |
+| `customers import-csv FILE [--skip-existing] [--dry-run]` | `{dry_run, created: [{line, …new's fields, text (dry run)}], skipped: [{line, title, path}]}`                           |
+| a refused import (exit 2)                                 | `{error, code}`: `invalid` with `rows: [{line, name, error}]`, `header`, `file`, `too-large`, or `write` with `created` |
+
 **Measured (2026-11-21).** On the §5.6 corpus, the release binary (on an
 Apple M5 Max, wall clock, opening the journal and the index from scratch)
 runs `list --json` in 0.24 s against a 300 ms budget, and `check` in

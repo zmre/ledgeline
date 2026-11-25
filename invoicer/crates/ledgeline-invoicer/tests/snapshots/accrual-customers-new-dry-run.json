@@ -1,0 +1,21 @@
+{
+  "changed": [
+    "title",
+    "type",
+    "tags",
+    "emails",
+    "addresses",
+    "terms",
+    "revenue_account",
+    "billing_portal"
+  ],
+  "hash": "13c-5746a176e012bc28",
+  "kind": "organization",
+  "ledger_customer": "Northwind Traders",
+  "link": "[[Northwind Traders]]",
+  "noted": [],
+  "path": "customers/Northwind Traders.md",
+  "text": "---\ntitle: Northwind Traders\ntype: organization\ntags:\n  - customer\nemails:\n  - billing: ap@northwind.example\naddresses:\n  - billing: |\n      1 Main St\n      Springfield, CO 80000\nterms: 15\nrevenue_account: revenue:consulting\nbilling_portal:\n  name: Coupa\n  url: https://coupa.example/\n  requires_reference: true\n---\n",
+  "title": "Northwind Traders",
+  "written": false
+}
