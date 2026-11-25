@@ -208,6 +208,7 @@ pub fn set(
             check_new_number(index, path, &header, change)?;
         }
     }
+    let edits = &with_due_from_terms(&header, edits);
     let text = frontmatter::edit(&source, edits)?;
     let after = Invoice::parse(text.as_str(), words);
     let changed: Vec<String> = edits
@@ -240,6 +241,40 @@ pub fn set(
         written,
         problems: doc.map(|d| d.problems.clone()).unwrap_or_default(),
     })
+}
+
+/// `edits`, plus `due_date` = date + terms when they set `terms` (to a
+/// whole number of days) and leave `due_date` alone: a new term moves the
+/// due date as the draft and the editor compute it. The date is the one
+/// the edits set, else the document's.
+fn with_due_from_terms(header: &crate::doc::Header, edits: &[FieldEdit]) -> Vec<FieldEdit> {
+    let key_of = |c: &FieldEdit| match c {
+        FieldEdit::Set(key, _) | FieldEdit::Remove(key) => key.clone(),
+    };
+    let set = |key: &str| {
+        edits.iter().rev().find_map(|c| match c {
+            FieldEdit::Set(k, value) if k == key => Some(value.clone()),
+            _ => None,
+        })
+    };
+    let mut edits = edits.to_vec();
+    if edits.iter().any(|c| key_of(c) == "due_date") {
+        return edits;
+    }
+    let terms = set("terms").and_then(|v| v.as_i64()).filter(|t| *t >= 0);
+    let date = match set("date") {
+        Some(Value::String(date)) => Some(date.trim().to_string()),
+        Some(_) => None,
+        None => header.date.clone(),
+    }
+    .filter(|d| crate::table::books::is_iso_date(d));
+    if let (Some(terms), Some(date)) = (terms, date) {
+        edits.push(FieldEdit::Set(
+            "due_date".to_string(),
+            Value::String(crate::doc::due_from_terms(&date, terms)),
+        ));
+    }
+    edits
 }
 
 pub(crate) fn check_new_number(
@@ -662,6 +697,51 @@ mod tests {
         assert!(assignment("nokey").is_err());
         assert!(assignment("=x").is_err());
         assert!(assignment("x:={").is_err());
+    }
+
+    /// P2: `set terms=N` moves `due_date` to date + N, unless the same
+    /// command sets `due_date` itself.
+    #[test]
+    fn setting_terms_recomputes_the_due_date() {
+        let draft = DRAFT.replace("date: 2026-11-01\n", "date: 2026-11-01\nterms: 30\ndue_date: 2026-12-01\n");
+        let (vault, mut index) = open(&[("a.md", &draft)]);
+        let a = path("a.md");
+        let done = set(
+            &mut index,
+            &vault,
+            &a,
+            &[FieldEdit::Set("terms".into(), Value::from(15))],
+        )
+        .expect("sets");
+        assert_eq!(done.changed, ["terms", "due_date"]);
+        let text = vault.read_to_string(&a).expect("reads");
+        assert!(text.contains("terms: 15\ndue_date: 2026-11-16\n"), "{text}");
+        // An explicit due date wins.
+        set(
+            &mut index,
+            &vault,
+            &a,
+            &[
+                FieldEdit::Set("terms".into(), Value::from(45)),
+                FieldEdit::Set("due_date".into(), Value::from("2027-01-31")),
+            ],
+        )
+        .expect("sets");
+        let text = vault.read_to_string(&a).expect("reads");
+        assert!(text.contains("terms: 45\ndue_date: 2027-01-31\n"), "{text}");
+        // A new date in the same command counts from that date.
+        set(
+            &mut index,
+            &vault,
+            &a,
+            &[
+                FieldEdit::Set("date".into(), Value::from("2026-11-10")),
+                FieldEdit::Set("terms".into(), Value::from(10)),
+            ],
+        )
+        .expect("sets");
+        let text = vault.read_to_string(&a).expect("reads");
+        assert!(text.contains("due_date: 2026-11-20\n"), "{text}");
     }
 
     #[test]

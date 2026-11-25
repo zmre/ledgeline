@@ -568,7 +568,11 @@ fn set_edits_one_key_and_guards_the_lifecycle() {
     let before = books.read(path);
     let done = books.json(&["set", "108", "reference=PO #PY99999", "terms=45"], 0);
     assert_eq!(done["written"], true);
-    assert_eq!(done["changed"], serde_json::json!(["reference", "terms"]));
+    // New terms move the due date (P2): 2026-11-17 + 45.
+    assert_eq!(
+        done["changed"],
+        serde_json::json!(["reference", "terms", "due_date"])
+    );
     let after = books.read(path);
     let changed: Vec<(&str, &str)> = before
         .lines()
@@ -579,6 +583,7 @@ fn set_edits_one_key_and_guards_the_lifecycle() {
         changed,
         [
             ("terms: 30", "terms: 45"),
+            ("due_date: 2026-12-17", "due_date: 2027-01-01"),
             ("reference: \"PO #PY75334\"", "reference: \"PO #PY99999\""),
         ]
     );
