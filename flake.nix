@@ -37,7 +37,13 @@
     # delete this input and `hostNixpkgs` with it.
     nixpkgs-x86-darwin.url = "github:NixOS/nixpkgs/nixpkgs-26.05-darwin";
     flake-utils.url = "github:numtide/flake-utils";
-    rust-overlay.url = "github:oxalica/rust-overlay";
+    # `follows` only to drop the unused third nixpkgs from flake.lock: the
+    # overlay is applied with `import rust-overlay` onto our own pkgs and never
+    # reads its own nixpkgs input.
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     crane.url = "github:ipetkov/crane";
     # Formatting gate for `git push` — see `gitHooks` below. `follows` so it
     # shares our nixpkgs instead of pinning a second full copy.
