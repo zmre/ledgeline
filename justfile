@@ -127,7 +127,7 @@ spa-hash-check:
     ./scripts/check-spa-hash.sh
 
 # aarch64-darwin locally; x86_64-linux on $LEDGELINE_LINUX_STORE (default
-# ssh-ng://avalon). x86_64-darwin is release-dry-run only.
+# ssh-ng://avalon); x86_64-darwin under Rosetta on an Apple Silicon Mac.
 # Re-pin spaNodeModulesHashes in flake.nix after a bun.lock change
 repin-spa-hashes:
     ./scripts/repin-spa-hashes.sh

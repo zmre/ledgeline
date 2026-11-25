@@ -133,28 +133,32 @@ only be generated on the platform it describes**:
 spaNodeModulesHashes = {
   aarch64-darwin = "sha256-…";   # your Mac, or the arm64 runner
   x86_64-linux   = "sha256-…";   # the CI `build` job
-  x86_64-darwin  = "sha256-…";   # the release matrix, under Rosetta
+  x86_64-darwin  = "sha256-…";   # an Apple Silicon Mac under Rosetta
 };
 ```
 
-The x86_64-darwin entry is stale: the bun workspace (invoicer PLAN 0c) and
-`invoicer/web` joining it (0d) changed the tree, and no release dry run has
-re-pinned it since. Get it from the next dry run, as below. Any change to a
-workspace `package.json` or `bun.lock` invalidates **all three at once**, and you can only fix the one
-you are standing on — the other two come back as failures from CI and from a
-release dry run. Budget for that: a dependency bump is a three-round-trip
-change, not a one-liner.
+Any change to a workspace `package.json` or `bun.lock` invalidates **all three
+at once**. `just repin-spa-hashes` re-pins every one this machine can build: on
+an Apple Silicon Mac that is aarch64-darwin natively and x86_64-darwin under
+Rosetta 2 (`--option extra-platforms x86_64-darwin`, which the Nix daemon only
+honours for a user in `trusted-users`), plus x86_64-linux on a remote Linux
+store. Whatever it cannot build comes back as a failure from CI or a release
+dry run.
 
 Nothing catches a stale entry except building it, which is why the CI `build`
 job builds `linuxDist` and the release matrix builds both Macs. Every system
 with an entry above is built by something.
 
-**Get the x86_64-darwin one from a dry run, never from a tag.** The `release`
-job needs *every* leg, so a hash mismatch there fails the whole release — after
+**Never find out about the x86_64-darwin one from a tag.** The `release` job
+needs *every* leg, so a hash mismatch there fails the whole release — after
 the arm64 legs have already signed, notarized and stapled, which spends
-notarization round trips and leaves a tag with no GitHub Release. A
-`workflow_dispatch` run with **dry_run** checked builds and packages every leg
-and stops before signing, so it surfaces the hash for free:
+notarization round trips and leaves a tag with no GitHub Release.
+`scripts/release.sh check vX.Y.Z` fails when `bun.lock` or `bunfig.toml`
+changed since the commit that set the x86_64-darwin pin (plain `check`, which CI
+runs on every PR, only warns), so run it before tagging. Re-pin locally as above,
+or, without Rosetta, use a dry run: a `workflow_dispatch` run with **dry_run**
+checked builds and packages every leg and stops before signing, so it surfaces
+the hash for free:
 
 1. Actions → Release → Run workflow, `dry_run` checked.
 2. The x86_64 leg fails; copy the `got: sha256-…` value out of its log.

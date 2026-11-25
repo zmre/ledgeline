@@ -375,8 +375,7 @@
       # Re-pinned (aarch64-darwin, x86_64-linux) for the bun.lock security
       # bumps — brace-expansion, undici, source-map-js, postcss-selector-parser:
       # the FOD hash covers the resolved `node_modules`, so any dependency
-      # change, even a transitive patch release, invalidates it. x86_64-darwin
-      # is now stale too and gets re-pinned at the next release dry run.
+      # change, even a transitive patch release, invalidates it.
       #
       # An FOD hash can only be produced ON the platform it describes, so an
       # entry here can only be refreshed by a runner of that architecture: the
@@ -392,10 +391,12 @@
       spaNodeModulesHashes = {
         aarch64-darwin = "sha256-czIjvHDQC7wUcDT8XhNh0u377rCeiV0o8Pz8Xcqc8vs=";
         x86_64-linux = "sha256-zu7aNoGw5b8qxuqMpkC6kVuvHF0rOVrcbNYPxAg8A+Y=";
-        # Intel Macs, for the x86_64 half of the release matrix. Produced by a
-        # release-workflow dry run under Rosetta, which is the only machine that
-        # can generate it — see docs/development/releasing.md.
-        x86_64-darwin = "sha256-144A9MQzynvHnoze2aNAJpRmVqxb0rQq91nqPCps8qo=";
+        # Intel Macs, for the x86_64 half of the release matrix. Produced under
+        # Rosetta: `just repin-spa-hashes` on an Apple Silicon Mac (a trusted Nix
+        # user), or a release dry run — see docs/development/releasing.md.
+        # `scripts/release.sh check` fails a tag whose bun.lock moved since
+        # this line last did.
+        x86_64-darwin = "sha256-9mysF9acNfbdTANAERZ5Z+R2PGL4vK8k3ZzISQnY8Ec=";
       };
 
       # The bun WORKSPACE (root package.json: web/, invoicer/web and
