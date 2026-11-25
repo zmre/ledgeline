@@ -45,8 +45,9 @@ if [ -z "$(git diff --no-ext-diff --no-color -U0 "$base" -- bun.lock bunfig.toml
   exit 0
 fi
 
-# x86_64-darwin is left out on purpose: only a release dry run under Rosetta
-# can produce it (docs/development/releasing.md), so it cannot be required per-push.
+# x86_64-darwin is left out on purpose: it needs Rosetta and a trusted Nix user
+# (or a release dry run), so it cannot be required per-push. `scripts/release.sh
+# check <tag>` enforces it before a release instead.
 # Reads flake.nix on stdin; only looks inside the spaNodeModulesHashes block,
 # since other per-system hash maps (hledgerAsset) use the same keys.
 pin() {

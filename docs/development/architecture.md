@@ -87,9 +87,11 @@ Two related changes key off the device, not off native mode, so they apply in an
 
 Ledgeline Invoicer lives under `invoicer/` in the same Cargo and bun workspaces, so it can move out later. Its design is `invoicer/ARCHITECTURE.md` and its build order `invoicer/PLAN.md`.
 
-- **`invoicer/crates/invoicer-core`** (lib). Invoice documents, the bill-table engine and the booking bridge, on top of `ledgeline-core`. The same plan 26 rules as core: no globals, no IO, no platform `cfg`.
-- **`invoicer/crates/ledgeline-invoicer`** (bin). The CLI and, later, the desktop app on `ledgeline-shell`. So far it answers `--version` and `--help`.
-- **`invoicer/web`**. A SvelteKit SPA served under `/app` (the root belongs to MBR's router). It imports `packages/ui` as `web/` does, so the themes and UI scale are shared. So far it is an empty themed shell.
+- **`invoicer/crates/invoicer-core`** (lib). Invoice documents, the bill-table engine, the booking bridge, reconciliation and the views, on top of `ledgeline-core`. The same plan 26 rules as core: no globals, all IO through a `Vault`, no platform `cfg`.
+- **`invoicer/crates/ledgeline-invoicer`** (bin). The CLI, the axum API, the desktop window on `ledgeline-shell`, and PDF export through mbr.
+- **`invoicer/web`**. A SvelteKit SPA served under `/app` (the root belongs to mbr's router). It imports `packages/ui` as `web/` does, so the themes, UI scale and keymap are shared.
+
+[Invoicer code layout](invoicer.md) has the details.
 
 ## Adding a native UI
 

@@ -14,7 +14,13 @@
 #                                  daemon's /etc/nix/machines builders: the
 #                                  daemon runs as root and may not have the SSH
 #                                  key, but `--store` uses yours.
-#   x86_64-darwin                  never: release dry run only (docs/development/releasing.md).
+#   x86_64-darwin from an          built locally under Rosetta 2, with
+#   Apple Silicon Mac              `--option extra-platforms x86_64-darwin`.
+#                                  The daemon only honours that for a trusted
+#                                  user (`trusted-users` in nix.conf); without
+#                                  it, or without Rosetta, it is skipped and a
+#                                  release dry run produces it instead
+#                                  (docs/development/releasing.md).
 #
 # A system that cannot be built keeps its current pin, and is reported.
 set -euo pipefail
@@ -43,6 +49,9 @@ real_hash() {
   local system=$1 out
   if [ "$system" = "$current" ]; then
     out=$(nix build ".#packages.$system.spaNodeModules" --no-link 2>&1 || true)
+  elif [ "$system" = x86_64-darwin ]; then
+    out=$(nix build ".#packages.$system.spaNodeModules" --no-link \
+      --option extra-platforms x86_64-darwin 2>&1 || true)
   else
     local drv
     drv=$(nix eval --raw ".#packages.$system.spaNodeModules.drvPath")
@@ -53,9 +62,19 @@ real_hash() {
     sed -nE 's/^[[:space:]]*got:[[:space:]]+(sha256-[^[:space:]]+).*/\1/p' | head -1
 }
 
+# Whether this machine can build $1 at all.
+can_build() {
+  case $1 in
+    "$current") return 0 ;;
+    x86_64-linux) [ -n "$linux_store" ] ;;
+    x86_64-darwin) [ "$current" = aarch64-darwin ] && /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null ;;
+    *) return 1 ;;
+  esac
+}
+
 skipped=()
-for system in aarch64-darwin x86_64-linux; do
-  if [ "$system" != "$current" ] && { [ "$system" != x86_64-linux ] || [ -z "$linux_store" ]; }; then
+for system in aarch64-darwin x86_64-linux x86_64-darwin; do
+  if ! can_build "$system"; then
     skipped+=("$system")
     continue
   fi
