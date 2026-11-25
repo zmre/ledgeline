@@ -22,6 +22,7 @@ invoicer_phone: +1 (555) 010-2000
 invoicer_address: |
   1234 Background Blvd.
   Anywhere, CA 90000
+invoicer_logo: /company/logo.png
 sent_date: 2026-11-10
 sent_via: portal
 paid: no

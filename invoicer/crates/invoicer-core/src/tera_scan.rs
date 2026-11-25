@@ -1,26 +1,32 @@
 //! A light scan of Tera template text, without parsing it: its `{% … %}`
 //! tags outside comments and `{% raw %}`, its `{% block %}`s, and what it
-//! `{% extends %}`. For the shipped base (PLAN Q1): folding a starter into
-//! it for a preview ([`crate::starters::fold_into_base`]) and seeing
-//! whether a child prints with MBR's export-ready signal
-//! ([`crate::pdf`]). Tera itself stays the judge of what renders.
+//! `{% extends %}`. For the shipped base (PLAN Q1): the app folds a starter
+//! into it for a preview and sees whether a child prints with MBR's
+//! export-ready signal; [`crate::template_edit`] reads which blocks a
+//! template overrides (PLAN 4d). Tera itself stays the judge of what
+//! renders.
 
 /// A `{% … %}` tag in a template: where it is and its words.
-pub(crate) struct Tag<'a> {
+pub struct Tag<'a> {
+    /// Where `{%` is.
     pub start: usize,
+    /// Just after `%}`.
     pub end: usize,
+    /// The words between, without `-` trim marks.
     pub inner: &'a str,
 }
 
 impl<'a> Tag<'a> {
-    pub(crate) fn words(&self) -> Vec<&'a str> {
+    /// The tag's words (`["block", "theme"]`).
+    #[must_use]
+    pub fn words(&self) -> Vec<&'a str> {
         self.inner.split_whitespace().collect()
     }
 }
 
 /// The `{% … %}` tags of `source`, outside `{# … #}` comments and
 /// `{% raw %}` sections, in order.
-pub(crate) fn tags(source: &str) -> impl Iterator<Item = Tag<'_>> {
+pub fn tags(source: &str) -> impl Iterator<Item = Tag<'_>> {
     let mut at = 0;
     let mut raw = false;
     std::iter::from_fn(move || {
@@ -57,14 +63,17 @@ pub(crate) fn tags(source: &str) -> impl Iterator<Item = Tag<'_>> {
 }
 
 /// A `{% block NAME %}…{% endblock %}` pair: its name and its body's span.
-pub(crate) struct Block<'a> {
+pub struct Block<'a> {
+    /// The block's name.
     pub name: &'a str,
+    /// Its body, between the tags.
     pub body: std::ops::Range<usize>,
 }
 
 /// Every block of `source`, by position; `None` when the block tags don't
 /// pair.
-pub(crate) fn blocks(source: &str) -> Option<Vec<Block<'_>>> {
+#[must_use]
+pub fn blocks(source: &str) -> Option<Vec<Block<'_>>> {
     let mut open: Vec<(&str, usize)> = Vec::new();
     let mut found = Vec::new();
     for tag in tags(source) {
@@ -93,7 +102,8 @@ pub(crate) fn blocks(source: &str) -> Option<Vec<Block<'_>>> {
 
 /// The blocks not inside another (sorted by position): a block inside
 /// another is carried with it.
-pub(crate) fn outermost(sorted: Vec<Block<'_>>) -> Vec<Block<'_>> {
+#[must_use]
+pub fn outermost(sorted: Vec<Block<'_>>) -> Vec<Block<'_>> {
     let mut outer: Vec<Block<'_>> = Vec::new();
     for block in sorted {
         if outer.last().is_none_or(|o| block.body.start >= o.body.end) {
@@ -104,7 +114,8 @@ pub(crate) fn outermost(sorted: Vec<Block<'_>>) -> Vec<Block<'_>> {
 }
 
 /// The template `source` extends (`{% extends "x.html" %}`), if any.
-pub(crate) fn extends(source: &str) -> Option<&str> {
+#[must_use]
+pub fn extends(source: &str) -> Option<&str> {
     tags(source).find_map(|tag| {
         let name = tag.inner.strip_prefix("extends")?.trim();
         let quote = name
@@ -116,7 +127,8 @@ pub(crate) fn extends(source: &str) -> Option<&str> {
 }
 
 /// The body of the block `name` in `source`, if it has one.
-pub(crate) fn block_body<'a>(source: &'a str, name: &str) -> Option<&'a str> {
+#[must_use]
+pub fn block_body<'a>(source: &'a str, name: &str) -> Option<&'a str> {
     let found = blocks(source)?;
     let block = found.iter().find(|b| b.name == name)?;
     Some(&source[block.body.clone()])

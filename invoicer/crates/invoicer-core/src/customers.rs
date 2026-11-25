@@ -359,6 +359,40 @@ pub fn company(site: &Site, settings: &Settings) -> Option<Contact> {
     Contact::from_note(note)
 }
 
+/// The image types a `logo:` may name: what a browser shows in an `<img>`
+/// and prints.
+pub const LOGO_EXTENSIONS: [&str; 6] = ["png", "jpg", "jpeg", "gif", "svg", "webp"];
+
+/// Your company's logo: the image the `logo:` key on its note names, when it
+/// is a file in the books. `logo: "[[logo.png]]"` or `logo: logo.png` is
+/// looked for beside the note, then from the books folder
+/// (`assets/logo.png`); `logo: /assets/logo.png` only from the books folder.
+/// Not an image ([`LOGO_EXTENSIONS`]), a URL, a path climbing out of the
+/// books, in a hidden or ignored folder, or missing: `None`, so no logo is
+/// shown. The page loads it from MBR, which serves the books folder at `/`.
+#[must_use]
+pub fn company_logo(site: &Site, vault: &dyn Vault, company: &Contact) -> Option<VaultPath> {
+    let written = site.note(&company.path)?.str("logo")?;
+    let target = wikilink_target(written).unwrap_or_else(|| written.trim());
+    if target.is_empty() || target.contains(':') {
+        return None;
+    }
+    let candidates = if target.starts_with('/') {
+        vec![resolve_relative(&company.path, target)]
+    } else {
+        vec![
+            resolve_relative(&company.path, target),
+            VaultPath::new(target).ok(),
+        ]
+    };
+    candidates.into_iter().flatten().find(|path| {
+        path.extension()
+            .is_some_and(|ext| LOGO_EXTENSIONS.iter().any(|e| e.eq_ignore_ascii_case(ext)))
+            && !site.config().is_ignored(path)
+            && vault.is_file(path)
+    })
+}
+
 impl Customer {
     /// The customer fields of a contact note (tag not checked: see
     /// [`is_customer`]). Fields that don't read are left empty here and
@@ -794,5 +828,63 @@ Fred Smith is the champion.
             Some("finance@mycompany.com")
         );
         assert_eq!(company(&site, &Settings::default()), None);
+    }
+
+    #[test]
+    fn the_company_logo_is_an_image_in_the_books() {
+        let logo = |written: &str| {
+            let vault = MemVault::new()
+                .with_file(
+                    "orgs/My Company.md",
+                    format!("---\ntype: organization\nlogo: {written}\n---\n"),
+                )
+                .with_file("orgs/mark.png", "PNG")
+                .with_file("assets/Logo Wide.SVG", "<svg/>")
+                .with_file("assets/notes.txt", "x")
+                .with_file(".hidden/logo.png", "PNG");
+            let site = site(&vault);
+            let settings = Settings {
+                company: Some("[[My Company]]".into()),
+                ..Settings::default()
+            };
+            let me = company(&site, &settings).expect("company");
+            company_logo(&site, &vault, &me).map(|p| p.as_str().to_string())
+        };
+        // Beside the note, by wikilink or path; else from the books folder.
+        assert_eq!(logo("\"[[mark.png]]\"").as_deref(), Some("orgs/mark.png"));
+        assert_eq!(logo("mark.png").as_deref(), Some("orgs/mark.png"));
+        assert_eq!(
+            logo("assets/Logo Wide.SVG").as_deref(),
+            Some("assets/Logo Wide.SVG")
+        );
+        assert_eq!(
+            logo("\"[[assets/Logo Wide.SVG]]\"").as_deref(),
+            Some("assets/Logo Wide.SVG")
+        );
+        assert_eq!(logo("/orgs/mark.png").as_deref(), Some("orgs/mark.png"));
+        // Rooted means from the books folder only.
+        assert_eq!(logo("/mark.png"), None);
+        // Not there, not an image, a URL, out of the books, hidden, blank.
+        for bad in [
+            "missing.png",
+            "assets/notes.txt",
+            "https://example.com/logo.png",
+            "data:image/png;base64,AAAA",
+            "../../etc/logo.png",
+            ".hidden/logo.png",
+            "/.hidden/logo.png",
+            "\"\"",
+        ] {
+            assert_eq!(logo(bad), None, "{bad}");
+        }
+        // No `logo:` at all.
+        let vault = vault();
+        let site = site(&vault);
+        let me = Contact::from_note(
+            site.note(&VaultPath::new("orgs/My Company.md").unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(company_logo(&site, &vault, &me), None);
     }
 }

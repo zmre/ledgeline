@@ -13,6 +13,7 @@
 <script lang="ts">
     import {kindLabel, type InvoiceEntry} from "#lib/invoices.js";
     import type {SortDir} from "#lib/listQuery.js";
+    import {rowClick} from "#lib/rows.js";
     import EmptyState from "./EmptyState.svelte";
     import SortHeader from "./SortHeader.svelte";
     import StatusBadge from "./StatusBadge.svelte";
@@ -48,19 +49,6 @@
         {column: "total", label: "Total", align: "right"},
         {column: "status", label: "Status"},
     ];
-
-    /** Open `doc` from a click on its row, unless the click was on a control, or selected text. */
-    function rowClick(event: MouseEvent, doc: InvoiceEntry): void {
-        const target = event.target as Element | null;
-        if (target?.closest("a, button, input, select, textarea, label, summary") ?? false) return;
-        if ((window.getSelection?.()?.toString() ?? "") !== "") return;
-        if (onOpen !== undefined) {
-            onOpen(doc);
-            return;
-        }
-        // Without a handler: follow the number's own link (same tab rules).
-        (event.currentTarget as HTMLElement).querySelector<HTMLAnchorElement>("a[data-row-link]")?.click();
-    }
 </script>
 
 {#if invoices.length === 0 && filtered}
@@ -102,7 +90,7 @@
                         data-testid="invoice-row"
                         data-number={doc.number}
                         data-overdue={doc.overdue ? "true" : undefined}
-                        onclick={(event) => rowClick(event, doc)}
+                        onclick={(event) => rowClick(event, onOpen === undefined ? undefined : () => onOpen(doc))}
                     >
                         <td class="font-medium whitespace-nowrap">
                             <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- the page passes `href` built with resolve() -->

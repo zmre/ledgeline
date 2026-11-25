@@ -60,6 +60,10 @@ pub(crate) struct PreviewRequest {
     pub source: Option<String>,
     /// Render through this template instead of the note's own.
     pub template: Option<String>,
+    /// The unsaved text of `template` (the template editor, PLAN 4d): used
+    /// instead of its file, which need not exist yet.
+    #[serde(default)]
+    pub template_source: Option<String>,
 }
 
 /// The rendered page.
@@ -89,6 +93,18 @@ pub(crate) enum PreviewError {
     Template(String),
     /// Anything else.
     Internal(String),
+}
+
+impl PreviewError {
+    /// The HTTP status it answers with, and its sentence.
+    pub(crate) fn status_and_message(self) -> (StatusCode, String) {
+        match self {
+            Self::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
+            Self::NotFound(m) => (StatusCode::NOT_FOUND, m),
+            Self::Template(m) => (StatusCode::UNPROCESSABLE_ENTITY, m),
+            Self::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
+        }
+    }
 }
 
 /// Render `request` over `books`. Runs on the blocking pool.
@@ -128,11 +144,16 @@ pub(crate) fn render(books: &OpenBooks, request: PreviewRequest) -> Result<Previ
             }
         })?,
     };
-    let override_template = request
-        .template
-        .as_deref()
-        .map(|t| template_text(&**vault, &templates_dir, t))
-        .transpose()?;
+    let override_template = match (request.template.as_deref(), request.template_source) {
+        (Some(template), Some(text)) => Some(unsaved_template(&**vault, template, text)?),
+        (Some(template), None) => Some(template_text(&**vault, &templates_dir, template)?),
+        (None, Some(_)) => {
+            return Err(PreviewError::BadRequest(
+                "template_source: name its `template` too".to_string(),
+            ));
+        }
+        (None, None) => None,
+    };
 
     let renderer = books.renderer().map_err(PreviewError::Internal)?;
     let started = Instant::now();
@@ -189,14 +210,44 @@ const DRAFT_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 /// preview can't be a `srcdoc` (see the module docs). Each id is random, one
 /// per post; the oldest are dropped past [`MAX_DRAFTS`] or [`DRAFT_TTL`].
 /// Held by the open books, so File → Open forgets them.
+///
+/// The template editor (4d) renders when it posts, to answer with Tera's
+/// error at once, and keeps the page it rendered ([`Kept::Page`]), so the
+/// frame's load doesn't render it again.
 #[derive(Debug, Default)]
 pub(crate) struct DraftPreviews {
-    drafts: std::sync::Mutex<std::collections::HashMap<String, (PreviewRequest, Instant)>>,
+    drafts: std::sync::Mutex<std::collections::HashMap<String, (Kept, Instant)>>,
+}
+
+/// What an unsaved preview's id names.
+#[derive(Debug, Clone)]
+pub(crate) enum Kept {
+    /// Rendered when the frame loads it.
+    Request(PreviewRequest),
+    /// Rendered already: the page (without its `<base>`) and the note's path.
+    Page {
+        /// The whole page.
+        html: Arc<str>,
+        /// The note it was rendered as.
+        path: String,
+    },
 }
 
 impl DraftPreviews {
     /// Keep `request` (a path and its unsaved source); its id.
     pub(crate) fn put(&self, request: PreviewRequest) -> Option<String> {
+        self.keep(Kept::Request(request))
+    }
+
+    /// Keep a page rendered already (the template editor's); its id.
+    pub(crate) fn put_page(&self, preview: &Preview) -> Option<String> {
+        self.keep(Kept::Page {
+            html: Arc::from(preview.html.as_str()),
+            path: preview.path.clone(),
+        })
+    }
+
+    fn keep(&self, kept: Kept) -> Option<String> {
         let id = ledgeline_shell::security::AccessToken::generate()
             .ok()?
             .as_str()
@@ -217,12 +268,12 @@ impl DraftPreviews {
             };
             drafts.remove(&oldest);
         }
-        drafts.insert(id.clone(), (request, now));
+        drafts.insert(id.clone(), (kept, now));
         Some(id)
     }
 
     /// The preview `id` names (kept: the frame may load it again).
-    fn get(&self, id: &str) -> Option<PreviewRequest> {
+    fn get(&self, id: &str) -> Option<Kept> {
         let drafts = self
             .drafts
             .lock()
@@ -230,7 +281,7 @@ impl DraftPreviews {
         drafts
             .get(id)
             .filter(|(_, at)| at.elapsed() < DRAFT_TTL)
-            .map(|(request, _)| request.clone())
+            .map(|(kept, _)| kept.clone())
     }
 }
 
@@ -269,9 +320,9 @@ pub(crate) async fn page(
         Ok(params) => params,
         Err(error) => return problem_page(StatusCode::BAD_REQUEST, &error.body_text()),
     };
-    let request = match params.draft {
+    let kept = match params.draft {
         Some(id) => match books.drafts().get(&id) {
-            Some(request) => request,
+            Some(kept) => kept,
             None => {
                 return problem_page(
                     StatusCode::NOT_FOUND,
@@ -279,26 +330,33 @@ pub(crate) async fn page(
                 );
             }
         },
-        None => PreviewRequest {
+        None => Kept::Request(PreviewRequest {
             number: params.number,
             path: params.path,
             source: None,
             template: params.template,
-        },
+            template_source: None,
+        }),
     };
-    let rendered = tokio::task::spawn_blocking(move || render(&books, request)).await;
-    let preview = match rendered {
-        Ok(Ok(preview)) => preview,
-        Ok(Err(error)) => {
-            let (status, message) = match error {
-                PreviewError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
-                PreviewError::NotFound(m) => (StatusCode::NOT_FOUND, m),
-                PreviewError::Template(m) => (StatusCode::UNPROCESSABLE_ENTITY, m),
-                PreviewError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
-            };
-            return problem_page(status, &message);
+    let preview = match kept {
+        Kept::Page { html, path } => Preview {
+            html: html.to_string(),
+            path,
+            template: None,
+            render_ms: 0.0,
+        },
+        Kept::Request(request) => {
+            match tokio::task::spawn_blocking(move || render(&books, request)).await {
+                Ok(Ok(preview)) => preview,
+                Ok(Err(error)) => {
+                    let (status, message) = error.status_and_message();
+                    return problem_page(status, &message);
+                }
+                Err(error) => {
+                    return problem_page(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string());
+                }
+            }
         }
-        Err(error) => return problem_page(StatusCode::INTERNAL_SERVER_ERROR, &error.to_string()),
     };
     let base = VaultPath::new(&preview.path)
         .map(|note| crate::pdf::page_url(&note))
@@ -393,13 +451,9 @@ fn note_path(path: &str) -> Result<VaultPath, PreviewError> {
     Ok(note)
 }
 
-/// The template a request names, and its text: the file in the books, else
-/// a starter not copied in yet.
-fn template_text(
-    vault: &dyn Vault,
-    templates_dir: &str,
-    template: &str,
-) -> Result<(VaultPath, String), PreviewError> {
+/// A template's path from a request: inside the books folder, not hidden,
+/// `.html`.
+pub(crate) fn template_path(template: &str) -> Result<VaultPath, PreviewError> {
     let bad = |why: &str| PreviewError::BadRequest(format!("template {template:?}: {why}"));
     let path =
         VaultPath::new(template.trim().trim_start_matches('/')).map_err(|e| bad(&e.to_string()))?;
@@ -412,6 +466,56 @@ fn template_text(
     if path.segments().any(|s| s.starts_with('.')) {
         return Err(bad("in a hidden folder"));
     }
+    Ok(path)
+}
+
+/// Unsaved template text at `template`'s path (PLAN 4d): as it is when the
+/// base it extends is beside it on disk (MBR reads it from there), else
+/// folded into the shipped base ([`starters::fold_into_base`]) when it
+/// extends that; a text that can't be folded (it calls `super()`) says the
+/// base is missing.
+fn unsaved_template(
+    vault: &dyn Vault,
+    template: &str,
+    text: String,
+) -> Result<(VaultPath, String), PreviewError> {
+    let path = template_path(template)?;
+    if text.len() > MAX_SOURCE_BYTES {
+        return Err(PreviewError::BadRequest(format!(
+            "template_source: more than {MAX_SOURCE_BYTES} bytes"
+        )));
+    }
+    let Some(parent) = crate::tera_scan::extends(&text).map(str::to_string) else {
+        return Ok((path, text));
+    };
+    let beside = path
+        .parent()
+        .unwrap_or_else(VaultPath::root)
+        .child(&parent)
+        .ok()
+        .and_then(|p| vault.stat(&p).ok().flatten())
+        .is_some();
+    if beside || parent != starters::BASE.file {
+        return Ok((path, text));
+    }
+    match starters::fold_into_base(&text, starters::BASE.source) {
+        Some(folded) => Ok((path, folded)),
+        None => Err(PreviewError::Template(format!(
+            "this template extends {parent}, which isn't in the templates folder yet; \
+             saving the template copies it in"
+        ))),
+    }
+}
+
+/// The template a request names, and its text: the file in the books, else
+/// a starter not copied in yet.
+fn template_text(
+    vault: &dyn Vault,
+    templates_dir: &str,
+    template: &str,
+) -> Result<(VaultPath, String), PreviewError> {
+    let path = template_path(template)?;
+    let bad = |why: &str| PreviewError::BadRequest(format!("template {template:?}: {why}"));
     match vault.read_pinned(&path, Some(MAX_TEMPLATE_BYTES)) {
         Ok((bytes, _)) => String::from_utf8(bytes)
             .map(|text| (path, text))
@@ -421,65 +525,6 @@ fn template_text(
             .ok_or_else(|| PreviewError::NotFound(format!("template {template}: no such file"))),
         Err(e) => Err(PreviewError::Internal(e.to_string())),
     }
-}
-
-/// `GET /api/templates`: every template in the books, then each starter not
-/// copied in yet (which a preview can use, and an invoice copies in).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct TemplateEntry {
-    /// The `template:` value naming it.
-    pub path: String,
-    /// Its display name.
-    pub name: String,
-    /// The document types it is for.
-    pub kinds: Vec<String>,
-    /// One of the shipped starters (copied in or not).
-    pub starter: bool,
-    /// A file in the books (`false`: a starter not copied in yet).
-    pub installed: bool,
-}
-
-/// The templates list.
-pub(crate) fn templates(books: &OpenBooks) -> Vec<TemplateEntry> {
-    templates_in(&books.session())
-}
-
-/// The templates list, from a session already locked.
-pub(crate) fn templates_in(session: &invoicer_core::session::Session) -> Vec<TemplateEntry> {
-    let dir = session.settings().templates_dir.clone();
-    let found = invoicer_core::templates::discover(session.vault(), session.index().site());
-    let mut out: Vec<TemplateEntry> = found
-        .iter()
-        .map(|t| {
-            let path = t.template_path();
-            TemplateEntry {
-                starter: starters::named(&dir, &path).is_some(),
-                path,
-                name: t.name.clone(),
-                kinds: t.kinds.clone(),
-                installed: true,
-            }
-        })
-        .collect();
-    for starter in &starters::STARTERS {
-        let Some(path) = starters::template_value(&dir, starter) else {
-            continue;
-        };
-        if out.iter().any(|t| t.path == path) {
-            continue;
-        }
-        let kinds = invoicer_core::templates::header(starter.source)
-            .map(|h| h.kinds)
-            .unwrap_or_default();
-        out.push(TemplateEntry {
-            path,
-            name: starter.name.to_string(),
-            kinds,
-            starter: true,
-            installed: false,
-        });
-    }
-    out
 }
 
 #[cfg(test)]

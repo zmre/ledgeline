@@ -11,6 +11,7 @@
 <script lang="ts">
     import {balanceText, lastPaymentText, type CustomerRow} from "#lib/customers.js";
     import type {SortDir} from "#lib/listQuery.js";
+    import {rowClick} from "#lib/rows.js";
     import EmptyState from "./EmptyState.svelte";
     import SortHeader from "./SortHeader.svelte";
 
@@ -36,17 +37,6 @@
         filtered?: boolean;
         onClear?: () => void;
     } = $props();
-
-    function rowClick(event: MouseEvent, row: CustomerRow): void {
-        const target = event.target as Element | null;
-        if (target?.closest("a, button, input, select, textarea, label, summary") ?? false) return;
-        if ((window.getSelection?.()?.toString() ?? "") !== "") return;
-        if (onOpen !== undefined) {
-            onOpen(row);
-            return;
-        }
-        (event.currentTarget as HTMLElement).querySelector<HTMLAnchorElement>("a[data-row-link]")?.click();
-    }
 </script>
 
 {#snippet header(column: string, label: string, align?: "right")}
@@ -92,7 +82,7 @@
                         class="cursor-pointer {row.account.overdue > 0 ? 'bg-error/8 hover:bg-error/15' : 'hover:bg-base-200'}"
                         data-testid="customer-row"
                         data-path={row.path}
-                        onclick={(event) => rowClick(event, row)}
+                        onclick={(event) => rowClick(event, onOpen === undefined ? undefined : () => onOpen(row))}
                     >
                         <td class="font-medium">
                             <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- the page passes `href` built with resolve() -->

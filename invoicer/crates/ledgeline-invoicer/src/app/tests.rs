@@ -822,6 +822,82 @@ async fn mbr_serves_an_invoice_page_through_its_template() {
     );
 }
 
+/// The company's logo (`logo:` on its note, snapshotted as `invoicer_logo`):
+/// in the header of the base (the fixture's MyCo), Classic and Modern when
+/// the invoice carries it (105), absent when it doesn't (101). MBR serves
+/// the image itself, behind the gate, so the frame, the preview and the
+/// PDF export (its export link sets the cookie) all load it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_company_logo_shows_when_the_invoice_carries_it() {
+    let app = app();
+    let img = |page: &str| -> Option<String> {
+        let at = page.find("<img class=\"logo\"")?;
+        Some(page[at..at + page[at..].find('>')? + 1].to_string())
+    };
+    for template in [
+        None,
+        Some("/invoices/tpl/classic.html"),
+        Some("/invoices/tpl/modern.html"),
+    ] {
+        let with = |number: &str| match template {
+            Some(t) => serde_json::json!({"number": number, "template": t}),
+            None => serde_json::json!({"number": number}),
+        };
+        let (status, page, _) = preview(&app, with("105")).await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        let tag = img(&page).unwrap_or_else(|| panic!("{template:?}: no logo in {page}"));
+        assert!(
+            tag.contains("company&#x2F;logo.png\"") || tag.contains("/company/logo.png\""),
+            "{template:?}: {tag}"
+        );
+        assert!(tag.contains("alt=\"My Company\""), "{template:?}: {tag}");
+        let (status, page, _) = preview(&app, with("101")).await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        assert_eq!(img(&page), None, "{template:?}: 101 has no logo");
+    }
+
+    // A file name with a space is a URL that works.
+    let saved = std::fs::read_to_string(app.books.vault().root().join(INVOICE_105)).unwrap();
+    let source = saved.replace("/company/logo.png", "/company/My Logo.png");
+    let (_, page, _) = preview(
+        &app,
+        serde_json::json!({"path": INVOICE_105, "source": source}),
+    )
+    .await;
+    let tag = img(&page).expect("logo");
+    assert!(tag.contains("My%20Logo.png"), "{tag}");
+
+    // MBR's own page for 105 has it too.
+    let (status, _, page) = send(
+        &app.router,
+        authed("/invoices/2026-11-10%20Customer%20X%20Invoice%20105/"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert!(img(&page).is_some(), "{page}");
+
+    // The image, served from the books folder behind the gate.
+    let response = app
+        .router
+        .clone()
+        .oneshot(authed("/company/logo.png"))
+        .await
+        .expect("infallible");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(header::CONTENT_TYPE).unwrap(),
+        "image/png"
+    );
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert!(bytes.starts_with(b"\x89PNG"), "a PNG");
+    let (status, _, _) = send(
+        &app.router,
+        get("/company/logo.png").body(Body::empty()).unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
 // ---------------------------------------------------------------------------
 // PDF and the Send flow (PLAN 3c), with the mock native side: it "prints" a
 // stub `%PDF-` file. The real print is `pdf_export_prints_a_real_pdf` in
@@ -2059,8 +2135,15 @@ async fn copying_a_starter_in_brings_the_base() {
     assert_eq!(status, StatusCode::OK, "{page}");
     assert!(page.contains("#108"), "{page}");
     // The base isn't a template: not listed, and nothing warns of it.
+    // (Templates say they extend it, since 4d; none is it.)
     let (_, list) = json_of(&sending, authed("/api/templates")).await;
-    assert!(!list.to_string().contains("_invoice_base"), "{list}");
+    assert!(
+        list.as_array()
+            .unwrap()
+            .iter()
+            .all(|t| !t["path"].as_str().unwrap().contains("_invoice_base")),
+        "{list}"
+    );
     let (_, detail) = json_of(&sending, authed("/api/invoices/108")).await;
     assert!(!detail.to_string().contains("unknown-template"), "{detail}");
 
@@ -2301,3 +2384,6 @@ async fn the_invoice_list_filters_and_sorts_by_its_url() {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {body}");
     }
 }
+
+#[path = "templates_tests.rs"]
+mod templates_tests;

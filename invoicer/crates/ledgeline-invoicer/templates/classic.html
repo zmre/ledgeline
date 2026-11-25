@@ -177,6 +177,9 @@
 {% block header %}
   <div class="letterhead">
     <div>
+      {%- if fm.invoicer_logo %}
+      <img class="logo" src="{{ fm.invoicer_logo | urlencode }}" alt="{{ fm.invoicer_name | default(value="") }}">
+      {%- endif %}
       <p class="company-name">{{ fm.invoicer_name | default(value="") }}</p>
       <div class="company-contact">
         {%- if fm.invoicer_address %}{{ fm.invoicer_address | trim | escape | linebreaksbr | safe }}{% endif %}
