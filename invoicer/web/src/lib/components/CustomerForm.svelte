@@ -9,8 +9,12 @@
      picked by name (the server writes the link); contracts are listed by
      name and added from the books folder (`ContractPicker`). Fields wrap
      to one column on a narrow window (J2: help text wraps instead of
-     running under the next field). -->
+     running under the next field).
+
+     Open POs (PLAN 5b, S5): a row each (reference, amount, expiry); Close
+     takes one off the list, Add PO adds a blank row. Saved with the form. -->
 <script lang="ts">
+    import DateInput from "#ui/components/DateInput.svelte";
     import {contractName, emptyPortal, type CustomerForm, type FileCandidate} from "#lib/customers.js";
     import type {TemplateEntry} from "#lib/invoices.js";
     import ContractPicker from "./ContractPicker.svelte";
@@ -53,6 +57,14 @@
 
     function setPortal(on: boolean): void {
         form.billing_portal = on ? (form.billing_portal ?? emptyPortal()) : null;
+    }
+
+    function addPo(): void {
+        form.open_pos = [...(form.open_pos ?? []), {reference: "", amount: null, expires: null, was: null}];
+    }
+
+    function closePo(at: number): void {
+        form.open_pos = (form.open_pos ?? []).filter((_, i) => i !== at);
     }
 
     const termsValue = $derived(form.terms === null ? "" : String(form.terms));
@@ -179,6 +191,52 @@
         {#if pickingContract}
             <ContractPicker onPick={addContract} onClose={() => (pickingContract = false)} exclude={form.contracts} />
         {/if}
+    </section>
+
+    <section class="rounded-box border border-base-300 p-4" data-testid="form-open-pos" aria-labelledby="{uid}-pos">
+        <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <h2 id="{uid}-pos" class="text-sm font-semibold tracking-wide text-base-content/70 uppercase">Open POs</h2>
+            <button type="button" class="btn btn-outline btn-xs" onclick={addPo} data-testid="form-po-add">Add PO</button>
+        </div>
+        {#if (form.open_pos ?? []).length === 0}
+            <p class="text-sm text-base-content/60">None. Invoices for this customer suggest its open POs as their reference.</p>
+        {/if}
+        <ul class="flex flex-col gap-3">
+            {#each form.open_pos ?? [] as po, at (at)}
+                <li class="grid items-end gap-2 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_auto]" data-testid="form-po-row">
+                    <label class="flex min-w-0 flex-col gap-1 text-sm"
+                        >Reference
+                        <input class="input w-full input-sm" bind:value={po.reference} placeholder="PO #105" data-testid="form-po-reference" />
+                    </label>
+                    <label class="flex min-w-0 flex-col gap-1 text-sm"
+                        >Amount
+                        <input
+                            class="input w-full input-sm"
+                            bind:value={() => po.amount ?? "", (v) => (po.amount = v)}
+                            placeholder="$40,000"
+                            data-testid="form-po-amount"
+                        />
+                    </label>
+                    <label class="flex min-w-0 flex-col gap-1 text-sm"
+                        >Expires
+                        <DateInput
+                            class="w-full"
+                            value={po.expires ?? ""}
+                            aria-label="Expires"
+                            onchange={(event) => (po.expires = event.currentTarget.value === "" ? null : event.currentTarget.value)}
+                            data-testid="form-po-expires"
+                        />
+                    </label>
+                    <button
+                        type="button"
+                        class="btn btn-ghost btn-sm"
+                        onclick={() => closePo(at)}
+                        aria-label="Close {po.reference.trim() === '' ? 'this PO' : po.reference}"
+                        data-testid="form-po-close">Close</button
+                    >
+                </li>
+            {/each}
+        </ul>
     </section>
 
     <section class="rounded-box border border-base-300 p-4" data-testid="portal">

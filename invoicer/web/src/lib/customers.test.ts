@@ -35,6 +35,7 @@ function fabrikam(): CustomerForm {
         ledger_customer: "",
         contracts: [],
         billing_portal: null,
+        open_pos: [],
     };
 }
 

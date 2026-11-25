@@ -1,7 +1,7 @@
 // The header form, mounted: link fields show names and write [[Name]] (a
 // space typed mid-name survives), the template is a dropdown by name, and
 // Deposit for note shows only on a deposit invoice or where it is set.
-import {fireEvent, render, screen} from "@testing-library/svelte";
+import {fireEvent, render, screen, within} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {describe, expect, it, vi} from "vitest";
 import {DEFAULT_WORDS, emptyForm, type EditorForm, type EditorOptions} from "#lib/editor.js";
@@ -84,5 +84,34 @@ describe("COMPONENT HeaderForm", () => {
         mount({deposit_for: "[[Estimate 12]]"});
         await tick();
         expect((screen.getByTestId("header-deposit-for") as HTMLInputElement).value).toBe("Estimate 12");
+    });
+});
+
+describe("COMPONENT HeaderForm reference suggestions (PLAN 5b)", () => {
+    it("offers the customer's open POs, one expired by the invoice's date last", async () => {
+        const withPos: EditorOptions = {
+            ...OPTIONS,
+            customers: [
+                {
+                    ...OPTIONS.customers[0],
+                    open_pos: [
+                        {reference: "PO #OLD", amount: null, expires: "2026-01-31"},
+                        {reference: "PO #PY75334", amount: "$40,000", expires: "2027-06-30"},
+                    ],
+                },
+            ],
+        };
+        mount({}, {options: withPos});
+        await tick();
+        await fireEvent.click(screen.getByTestId("header-reference"));
+        await tick();
+        const shown = within(screen.getByRole("listbox"))
+            .getAllByRole("option")
+            .map((o) => o.textContent ?? "");
+        expect(shown).toHaveLength(2);
+        expect(shown[0]).toContain("PO #PY75334");
+        expect(shown[0]).toContain("expires 2027-06-30");
+        expect(shown[1]).toContain("PO #OLD");
+        expect(shown[1]).toContain("expired 2026-01-31");
     });
 });

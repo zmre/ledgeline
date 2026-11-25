@@ -28,6 +28,41 @@ export interface Portal {
 }
 
 /**
+ * One open PO as the form edits it (`invoicer_core::customer_edit::PoFields`,
+ * PLAN 5b S5): the keys the core reads. `was` is the reference it had when
+ * read (null for a new one), so the note's entry keeps keys the form doesn't
+ * know. A PO left out of the list is closed: it comes off the note.
+ */
+export interface PoForm {
+    reference: string;
+    /** As money (`$40,000`); null for none. */
+    amount: string | null;
+    /** YYYY-MM-DD; null for never. */
+    expires: string | null;
+    was: string | null;
+}
+
+/** An open PO and what has been invoiced against it (`customers show`'s `po_usage`, S6). */
+export interface PoUsage {
+    reference: string;
+    amount: string | null;
+    expires: string | null;
+    /** Expired before today. */
+    expired: boolean;
+    /** The sent invoices quoting it, oldest first. */
+    invoices: string[];
+    /** Their totals added up; null when none (or in another commodity). */
+    invoiced: string | null;
+    /** The amount less what was invoiced; null without an amount. */
+    remaining: string | null;
+}
+
+/** The form's POs for a usage list: each as read (`was` its own reference). */
+export function posOf(usage: readonly PoUsage[]): PoForm[] {
+    return usage.map((po) => ({reference: po.reference, amount: po.amount, expires: po.expires, was: po.reference}));
+}
+
+/**
  * The customer form (`invoicer_core::customer_edit::CustomerFields`): every
  * field optional. Absent leaves the key as the note has it; an empty string or
  * list, or null, removes it.
@@ -45,6 +80,7 @@ export interface CustomerFields {
     ledger_customer?: string;
     contracts?: string[];
     billing_portal?: Portal | null;
+    open_pos?: PoForm[];
 }
 
 /** The form with every field present: what the page edits. */
@@ -144,6 +180,8 @@ export interface CustomerDetail extends CustomerRow {
     invoice_template: string | null;
     contracts: Contract[];
     open_pos: {reference: string; amount: string | null; expires: string | null}[];
+    /** Each open PO with what was invoiced against it, in `open_pos` order. */
+    po_usage: PoUsage[];
     snippets: string[];
     /** Its invoices, newest first. */
     documents: InvoiceEntry[];
@@ -201,6 +239,7 @@ export function emptyForm(kind: ContactKind = "organization"): CustomerForm {
         ledger_customer: "",
         contracts: [],
         billing_portal: null,
+        open_pos: [],
     };
 }
 
@@ -231,6 +270,14 @@ function normalPortal(portal: Portal | null): Portal | null {
     return empty ? null : out;
 }
 
+/** POs as the server will write them: text trimmed, empty as null, wholly blank rows dropped. */
+function normalPos(pos: PoForm[]): PoForm[] {
+    const text = (s: string | null): string | null => (trimmed(s) === "" ? null : trimmed(s));
+    return pos
+        .map((po) => ({reference: trimmed(po.reference), amount: text(po.amount), expires: text(po.expires), was: po.was}))
+        .filter((po) => po.reference !== "" || po.amount !== null || po.expires !== null);
+}
+
 /** Each field as the server compares it, so whitespace alone is no change. */
 function normal(form: CustomerForm): CustomerForm {
     return {
@@ -246,6 +293,7 @@ function normal(form: CustomerForm): CustomerForm {
         ledger_customer: trimmed(form.ledger_customer),
         contracts: form.contracts.map(trimmed).filter((c) => c !== ""),
         billing_portal: normalPortal(form.billing_portal),
+        open_pos: normalPos(form.open_pos ?? []),
     };
 }
 
@@ -330,9 +378,10 @@ async function request<T>(method: string, path: string, check: (body: unknown) =
 const isObject = (body: unknown): body is Record<string, unknown> => typeof body === "object" && body !== null && !Array.isArray(body);
 const isSaved = (body: unknown): boolean => isObject(body) && typeof body.path === "string" && typeof body.hash === "string";
 
-/** `GET /api/customers`: every customer, by title, with its account on `today`. */
-export function fetchCustomers(today: string = localToday()): Promise<CustomerRow[]> {
-    return request<CustomerRow[]>("GET", `/api/customers?today=${today}`, Array.isArray);
+/** `GET /api/customers`: every customer, by title, with its account on `today`; `query` (the list's URL query) filters and sorts them. */
+export function fetchCustomers(today: string = localToday(), query: string = ""): Promise<CustomerRow[]> {
+    const rest = query.replace(/^[?&]+/, "");
+    return request<CustomerRow[]>("GET", `/api/customers?today=${today}${rest === "" ? "" : `&${rest}`}`, Array.isArray);
 }
 
 /** `GET /api/customers/{key}`: one customer, its form, invoices, account and backlinks. */

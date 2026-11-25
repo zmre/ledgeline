@@ -91,12 +91,14 @@ export function fetchBooks(today: string = localToday()): Promise<BooksInfo> {
 }
 
 /**
- * `GET /api/invoices`: every document, newest first. "Overdue" is measured
+ * `GET /api/invoices`: every document, newest first, or as `query` (the
+ * list's URL query, `lib/listQuery.ts`) filters and sorts them. "Overdue" is measured
  * against `today`, the browser's local date by default: the user's calendar,
  * not the server process's.
  */
-export function fetchInvoices(today: string = localToday()): Promise<InvoiceEntry[]> {
-    return json<InvoiceEntry[]>("GET", `/api/invoices?today=${today}`, Array.isArray);
+export function fetchInvoices(today: string = localToday(), query: string = ""): Promise<InvoiceEntry[]> {
+    const rest = query.replace(/^[?&]+/, "");
+    return json<InvoiceEntry[]>("GET", `/api/invoices?today=${today}${rest === "" ? "" : `&${rest}`}`, Array.isArray);
 }
 
 /** `GET /api/invoices/{number}`: one document in full (`today` as above). */

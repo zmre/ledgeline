@@ -80,12 +80,18 @@
         depositText = v;
         patch({deposit_for: text(toLink(v, noteTitles))});
     }
+    // The customer's open POs (managed on its page, PLAN 5b S5; the options
+    // are fetched again on any change on disk). One expired by the invoice's
+    // date is still offered, last and marked.
     const referenceOptions = $derived<ComboOption[]>(
-        (customer?.open_pos ?? []).map((po) => ({
-            value: po.reference,
-            label: po.reference,
-            detail: [po.amount, po.expires ? `expires ${po.expires}` : null].filter(Boolean).join(" · "),
-        }))
+        (customer?.open_pos ?? [])
+            .map((po) => ({po, expired: po.expires !== null && po.expires !== "" && po.expires < form.date}))
+            .sort((a, b) => Number(a.expired) - Number(b.expired))
+            .map(({po, expired}) => ({
+                value: po.reference,
+                label: po.reference,
+                detail: [po.amount, po.expires ? `${expired ? "expired" : "expires"} ${po.expires}` : null].filter(Boolean).join(" · "),
+            }))
     );
 
     /** `form` with `patch`, the due date following date + terms unless it was set by hand. */
