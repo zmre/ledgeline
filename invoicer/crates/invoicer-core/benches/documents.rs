@@ -14,6 +14,7 @@
 //! | `invoicer/send`                  | send a draft: load, book, write the journal, update the markdown | send (300 ms, relaxed; goal 150 ms) |
 //! | `invoicer/reconcile_change`      | a payment linked in Ledgeline: reload, book states, diff, mirror the one invoice | a journal change → `paid:` (100 ms) |
 //! | `invoicer/books_check`           | the books checks over every invoice, on loaded books (`check`'s books half) | `check` (1 s)                |
+//! | `invoicer/dashboard`             | `GET /api/dashboard`'s work: the books' recognition loaded from the open journal, what is due, receivables, aging, serialized | open → dashboard shown (300 ms) |
 //! | `ledgeline/journal_open`         | ledgeline-core opens the corpus journal                        | open; a journal change (100 ms)         |
 //! | `ledgeline/journal_reopen`       | the reload a journal change triggers                           | a journal change → `paid:` (100 ms)     |
 //!
@@ -34,6 +35,7 @@ use invoicer_core::index::{DocumentIndex, ListFilter};
 use invoicer_core::problem::ProblemCode;
 use invoicer_core::reconcile::{self, BookStates, ReconcileOptions};
 use invoicer_core::settings::Settings;
+use invoicer_core::views::dashboard::{DashboardOptions, dashboard, recognition_view};
 use ledgeline_core::edit::JournalEditor;
 use ledgeline_core::vault::{LocalVault, Vault, VaultPath};
 use std::hint::black_box;
@@ -321,6 +323,46 @@ fn benches(c: &mut Criterion) {
     );
     group.bench_function(BenchmarkId::new("books_check", &label), |b| {
         b.iter(|| reconcile::audit(&books, black_box(&index), &loaded, &states, None));
+    });
+
+    // The dashboard as the API computes it (`views::dashboard::dashboard_for`):
+    // the recognition book from the journal already open, then the views.
+    let ledger_books = ledgeline_core::accrual::ops::Books::open_in(
+        std::sync::Arc::new(LocalVault::new(&dir)),
+        VaultPath::new("books.journal").expect("a path"),
+    );
+    let options = DashboardOptions::of(&settings);
+    let today = invoicer_corpus::TODAY;
+    {
+        // Where the time goes, once (not part of the measurement).
+        let t = Instant::now();
+        let loaded = ledger_books.load_from(&editor).expect("loads");
+        let load = t.elapsed();
+        let t = Instant::now();
+        let recognition = loaded
+            .recognition_exists()
+            .then(|| recognition_view(&loaded.due(today), today));
+        let due = t.elapsed();
+        let t = Instant::now();
+        let view = dashboard(&index, &states, recognition, today, &options);
+        let views = t.elapsed();
+        let t = Instant::now();
+        let json = serde_json::to_string(&view).unwrap_or_default();
+        let serialize = t.elapsed();
+        eprintln!(
+            "dashboard: load {load:?}, recognition due {due:?}, views {views:?}, json {serialize:?} ({} bytes)",
+            json.len()
+        );
+    }
+    group.bench_function(BenchmarkId::new("dashboard", &label), |b| {
+        b.iter(|| {
+            let loaded = ledger_books.load_from(&editor).expect("loads");
+            let recognition = loaded
+                .recognition_exists()
+                .then(|| recognition_view(&loaded.due(today), today));
+            let view = dashboard(black_box(&index), &states, recognition, today, &options);
+            serde_json::to_string(&view).unwrap_or_default()
+        });
     });
     group.finish();
 

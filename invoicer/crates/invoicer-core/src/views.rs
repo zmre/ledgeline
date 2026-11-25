@@ -28,6 +28,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 pub mod account;
+pub mod dashboard;
 
 /// Whether a document is open by its `paid:` mirror alone: sent, and
 /// `paid:` isn't a date.

@@ -5,6 +5,7 @@
 // from the shared client in packages/ui: injected by the window, or adopted
 // from the `#token=` launch fragment.
 import {ApiShapeError, ApiUnreachableError, authHeaders} from "#ui/api/client.js";
+import {isDashboard, type Dashboard} from "./dashboard.js";
 import type {Anchor, Delivery, Destination, Exported} from "./delivery.js";
 import {localToday, type BooksInfo, type InvoiceBooks, type InvoiceDetail, type InvoiceEntry, type Preview, type TemplateEntry} from "./invoices.js";
 
@@ -88,6 +89,16 @@ export function resetSession(): void {
 /** `GET /api/books`: the open books, with the sidebar's counts on `today` (overdue). */
 export function fetchBooks(today: string = localToday()): Promise<BooksInfo> {
     return json<BooksInfo>("GET", `/api/books?today=${today}`, (body) => isObject(body) && "basis" in body);
+}
+
+/** `GET /api/dashboard`: the receivables dashboard on `today` (PLAN 5a). */
+export function fetchDashboard(today: string = localToday()): Promise<Dashboard> {
+    return json<Dashboard>("GET", `/api/dashboard?today=${today}`, isDashboard);
+}
+
+/** `POST /api/ledgeline/open`: these books in Ledgeline (the window, macOS). */
+export async function openInLedgeline(): Promise<void> {
+    await call("POST", "/api/ledgeline/open");
 }
 
 /**

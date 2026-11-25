@@ -1,0 +1,121 @@
+{
+  "basis": "accrual",
+  "today": "2026-11-22",
+  "invoices": 8,
+  "commodities": [
+    {
+      "commodity": "$",
+      "outstanding": {
+        "amount": "22850.00",
+        "text": "$22,850.00",
+        "count": 7
+      },
+      "overdue": {
+        "amount": "12700.00",
+        "text": "$12,700.00",
+        "count": 5
+      },
+      "not_due": {
+        "amount": "10150.00",
+        "text": "$10,150.00",
+        "count": 2
+      },
+      "unfiled": {
+        "amount": "11300.00",
+        "text": "$11,300.00",
+        "count": 4
+      },
+      "scale": {
+        "amount": "22850.00",
+        "text": "$22,850"
+      },
+      "buckets": [
+        {
+          "key": "current",
+          "label": "Current",
+          "from": null,
+          "to": null,
+          "amount": "10150.00",
+          "text": "$10,150.00",
+          "count": 2
+        },
+        {
+          "key": "1-30",
+          "label": "1–30",
+          "from": 1,
+          "to": 30,
+          "amount": "7000.00",
+          "text": "$7,000.00",
+          "count": 2
+        },
+        {
+          "key": "31-60",
+          "label": "31–60",
+          "from": 31,
+          "to": 60,
+          "amount": "1500.00",
+          "text": "$1,500.00",
+          "count": 1
+        },
+        {
+          "key": "61-90",
+          "label": "61–90",
+          "from": 61,
+          "to": 90,
+          "amount": "1200.00",
+          "text": "$1,200.00",
+          "count": 1
+        },
+        {
+          "key": "91-",
+          "label": "91+",
+          "from": 91,
+          "to": null,
+          "amount": "3000.00",
+          "text": "$3,000.00",
+          "count": 1
+        }
+      ],
+      "oldest_overdue": {
+        "number": "2001",
+        "path": null,
+        "customer": "Tailspin",
+        "due": "2026-07-15",
+        "days_past_due": 130,
+        "outstanding": "$3,000.00"
+      },
+      "dso": {
+        "value": "58.9",
+        "days": 90,
+        "outstanding": "$22,850.00",
+        "billed": "$34,900.00"
+      }
+    }
+  ],
+  "average_days_to_pay": {
+    "invoices": 3,
+    "average": "25.3"
+  },
+  "drafts": {
+    "count": 1,
+    "totals": [
+      {
+        "amount": "13600.00",
+        "text": "$13,600.00"
+      }
+    ],
+    "oldest": "2026-11-17"
+  },
+  "recognition": {
+    "due": 10,
+    "closed": 1,
+    "earliest": "2026-11-01"
+  },
+  "aging_buckets": [
+    30,
+    60,
+    90
+  ],
+  "dso_days": 90,
+  "open_ledgeline": false
+}

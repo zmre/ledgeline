@@ -33,7 +33,7 @@ const read = (file: string): string => readFileSync(resolve(BOOKS, file), "utf8"
 
 async function open(page: Page): Promise<void> {
     await page.clock.setFixedTime(FIXED_NOW);
-    await page.goto(`/app/#token=${API_TOKEN}`);
+    await page.goto(`/app/invoices#token=${API_TOKEN}`);
     await expect(page).toHaveURL(/\/app\/invoices$/);
 }
 

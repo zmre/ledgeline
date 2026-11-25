@@ -9,6 +9,7 @@
 //! |-----------------------------|------------------------------------------------|
 //! | `GET /api/version`          | The app and its version.                       |
 //! | `GET /api/books`            | The open books: journal, basis, counts.        |
+//! | `GET /api/dashboard`, `POST /api/ledgeline/open` | The receivables dashboard; the books in Ledgeline ([`super::dashboard`], 5a). |
 //! | `GET /api/invoices`         | `list --json` (`status`, `customer`, `type`, `open`, `overdue`, `today`). |
 //! | `GET /api/invoices/{num}`   | `show --json` (`today`).                       |
 //! | `GET /api/invoices/{num}/books` | The Books panel: what the journal holds (3b). |
@@ -81,6 +82,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/pdf/open", post(pdf::open_pdf))
         .route("/api/events", get(events))
         .merge(super::customers::routes())
+        .merge(super::dashboard::routes())
         .merge(super::library::routes())
         .merge(super::files::routes())
         .route("/api/ui-prefs", get(ui_prefs).patch(patch_ui_prefs))

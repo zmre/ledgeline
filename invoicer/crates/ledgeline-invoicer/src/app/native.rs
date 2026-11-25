@@ -100,6 +100,9 @@ pub(crate) struct Capabilities {
     /// Choose a file with the system's open dialog (the window, macOS): the
     /// contract picker (customers, Phase 4 feedback J5).
     pub pick_file: bool,
+    /// Open these books in Ledgeline (the window, macOS: Launch Services
+    /// by Ledgeline's bundle id): the dashboard's recognition due.
+    pub open_ledgeline: bool,
 }
 
 /// The desktop, as the API sees it.
@@ -130,6 +133,13 @@ pub(crate) trait Native: Send + Sync {
     /// # Errors
     /// When this process can't.
     fn pick_file(&self, start: &std::path::Path, title: &str) -> Result<Option<PathBuf>, String>;
+
+    /// Open the main journal `journal` (already vetted: the open books') in
+    /// Ledgeline.
+    ///
+    /// # Errors
+    /// When this process can't, or Ledgeline isn't installed.
+    fn open_in_ledgeline(&self, journal: &std::path::Path) -> Result<(), String>;
 }
 
 /// Wait for a reply; a dropped sender is the app closing.
@@ -160,6 +170,8 @@ pub(crate) mod mock {
         /// each was asked to start.
         pub pick: Mutex<Option<PathBuf>>,
         pub picked_from: Mutex<Vec<PathBuf>>,
+        /// The journals opened in Ledgeline.
+        pub ledgeline: Mutex<Vec<PathBuf>>,
         /// Fail every print with this.
         pub fail: Option<String>,
     }
@@ -174,6 +186,7 @@ pub(crate) mod mock {
                     open_url: true,
                     open_file: true,
                     pick_file: true,
+                    open_ledgeline: true,
                 },
                 ..Self::default()
             }
@@ -231,6 +244,11 @@ pub(crate) mod mock {
         ) -> Result<Option<PathBuf>, String> {
             self.picked_from.lock().unwrap().push(start.to_path_buf());
             Ok(self.pick.lock().unwrap().clone())
+        }
+
+        fn open_in_ledgeline(&self, journal: &std::path::Path) -> Result<(), String> {
+            self.ledgeline.lock().unwrap().push(journal.to_path_buf());
+            Ok(())
         }
     }
 }
