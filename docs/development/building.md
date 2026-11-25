@@ -107,9 +107,17 @@ artifacts built with the same profile and the same resolved features:
 The checks run without LTO because under `release` every one of the ~150
 integration-test binaries did a whole-program LTO link: about 50 of the Linux
 `tests` job's 54 minutes, and over two hours of the macOS job (CI run
-45465085877). The ci layer is also built with `--features ledgeline-ffi/mobile`,
-the feature `tests` and `clippy` pass; a layer without it made them recompile
-every crate whose features that flag changes.
+45465085877).
+
+Each layer also runs the same cargo commands, with the same feature flags and
+the same `-p` selection, as the outputs that reuse it, because cargo unifies
+features over the packages a command selects. The ci layer runs
+`--features ledgeline-ffi/mobile` over the workspace (what `tests` and `clippy`
+pass) plus a `test --no-run -p ledgeline` pass for `spaShellCsp`; the release
+layer runs `build -p ledgeline`, like `.#ledgeline` and `.#ledgelineWithSpa`.
+When either one doesn't match, the output recompiles every crate whose features
+differ. CI run 45513409069 hit that: 122 crates for `spaShellCsp`, and ~220
+for each `ledgeline` build when the release layer built the whole workspace.
 
 Because the dependency layer's hash depends only on `Cargo.toml` / `Cargo.lock`
 (not on your source), editing a `.rs` file or a fixture recompiles only the

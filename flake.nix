@@ -252,7 +252,8 @@
       # reused by builds with the same profile:
       #   * `cargoArtifacts` — `release` (fat LTO), for what ships:
       #     `ledgeline`, `ledgelineWithSpa` and everything built on them
-      #     (macApp/macDist, linuxDist). Only `cargo build` is needed.
+      #     (macApp/macDist, linuxDist). Both are `cargo build -p ledgeline`,
+      #     so that is exactly what this layer runs.
       #   * `cargoArtifactsCi` — the `ci` profile (release without LTO, see
       #     Cargo.toml), for the CI checks: `clippy`, `tests`, `spaShellCsp`.
       #     Testing under `release` LTO-linked each of ~150 test binaries,
@@ -260,19 +261,27 @@
       #
       # A layer must also compile dependencies with the SAME resolved features
       # as the outputs that reuse it, or cargo's fingerprints miss and those
-      # crates are rebuilt per commit. `clippy` and `tests` pass
-      # `--features ledgeline-ffi/mobile`, which turns on ledgeline-ffi's
-      # server deps and so changes feature unification across the workspace
-      # (before this, a featureless layer made them recompile the three mbr
-      # crates on every Linux run). So the ci layer runs `check` (what clippy
-      # reuses) WITH the feature, and `test --no-run` both with it (`tests`)
-      # and without (`spaShellCsp`, `-p ledgeline`).
+      # crates are rebuilt per commit. Features are unified over the packages
+      # a command SELECTS, so both the feature flags and the `-p` selection
+      # must match:
+      #   * `clippy` and `tests` pass `--features ledgeline-ffi/mobile` over
+      #     the whole workspace (the feature turns on ledgeline-ffi's server
+      #     deps; a featureless layer made them recompile the mbr crates on
+      #     every run). The ci layer runs `check` (what clippy reuses) and
+      #     `test --no-run` (`tests`) with exactly that.
+      #   * `spaShellCsp` runs `test -p ledgeline`, which resolves features
+      #     for ledgeline alone — a workspace-wide pass does not cover it
+      #     (CI run 45513409069 recompiled 122 crates for it). Hence its own
+      #     `test --no-run -p ledgeline` pass.
+      #   * `ledgeline`/`ledgelineWithSpa` run `build -p ledgeline`; the
+      #     release layer used to build the whole workspace and they rebuilt
+      #     ~160-220 dependency crates (with fat LTO) every time.
       mobileFeature = "--features ledgeline-ffi/mobile";
       cargoArtifacts = craneLib.buildDepsOnly (commonArgs
         // {
           src = craneLib.cleanCargoSource ./.;
           doCheck = false;
-          buildPhaseCargoCommand = "cargoWithProfile build --locked";
+          buildPhaseCargoCommand = "cargoWithProfile build ${ledgelineOnly}";
         });
       ciProfile = {CARGO_PROFILE = "ci";};
       cargoArtifactsCi = craneLib.buildDepsOnly (commonArgs
@@ -283,8 +292,8 @@
           pname = "ledgeline-ci";
           buildPhaseCargoCommand = "cargoWithProfile check --locked --all-targets ${mobileFeature}";
           checkPhaseCargoCommand = ''
-            cargoWithProfile test --locked --no-run
             cargoWithProfile test --locked --no-run ${mobileFeature}
+            cargoWithProfile test --no-run ${ledgelineOnly}
           '';
         });
 
