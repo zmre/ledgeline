@@ -501,6 +501,18 @@ pub fn tag_text(text: &str) -> Option<String> {
 
 /// A table cell as plain text: bold and `&nbsp;` stripped, escaped pipes
 /// unescaped.
+/// `text` as a transaction description Ledgeline will write: `;`, `#`
+/// and control characters become spaces (they would start a comment or not
+/// read back), runs of whitespace one space.
+fn description_text(text: &str) -> String {
+    text.chars()
+        .map(|c| if matches!(c, ';' | '#') || c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn cell_text(text: &str) -> String {
     plain(text).replace("\\|", "|")
 }
@@ -691,11 +703,11 @@ pub fn booking_of(
         .invoicee
         .name
         .as_deref()
-        .map(|name| name.split_whitespace().collect::<Vec<_>>().join(" "))
+        .map(description_text)
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| customer.clone());
     Ok(InvoiceBooking {
-        description: format!("{payee} | Invoice {number}"),
+        description: description_text(&format!("{payee} | Invoice {number}")),
         number,
         path: path.clone(),
         date,
