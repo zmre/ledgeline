@@ -52,9 +52,10 @@
     const chosen = $derived((options?.customers ?? []).find((c) => c.title.toLowerCase() === customer.trim().toLowerCase()));
 
     // The customer's own template is the default, until one is picked by hand.
+    // A customer without one goes back to the default (not the last customer's).
     $effect(() => {
         const own = chosen?.invoice_template ?? null;
-        if (!templateTouched && own !== null) template = own;
+        if (!templateTouched) template = own ?? "";
     });
 
     async function submit(event: SubmitEvent): Promise<void> {
