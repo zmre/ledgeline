@@ -6,7 +6,7 @@
 // nearby postings with a running total that gates Link, the empty state,
 // links with Unlink, and the widenable window.
 
-import {fireEvent, render, screen} from "@testing-library/svelte";
+import {cleanup, fireEvent, render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 
@@ -41,6 +41,8 @@ let forAnswer: Record<string, unknown> = {};
 /** What `/for` answers once a write has landed. */
 let forAfter: Record<string, unknown> | null = null;
 let generation = 1;
+/** When set, the next match write is answered only once it settles: a write held in flight. */
+let gate: Promise<void> | null = null;
 
 const POSTS = ["link", "reject", "ignore", "unlink", "link-all"] as const;
 
@@ -55,6 +57,7 @@ async function serve(initial: Record<string, unknown>[] = [], options: {older?: 
     forAnswer = forBody();
     forAfter = null;
     generation = 1;
+    gate = null;
     vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
         const url = new URL(String(input));
         const method = init?.method ?? "GET";
@@ -72,21 +75,32 @@ async function serve(initial: Record<string, unknown>[] = [], options: {older?: 
         if (/\/api\/matches\/for\/\d+$/.test(path)) return json({...forAnswer, generation: `g${generation}`});
         const post = POSTS.find((name) => path.endsWith(`/api/matches/${name}`));
         if (post !== undefined && body !== undefined) {
-            generation += 1;
-            if (forAfter !== null) forAnswer = forAfter;
-            if (post === "link-all") {
-                const pairs = body.pairs as unknown[];
-                proposals = proposals.filter((proposal) => proposal.clear !== true);
-                return json({generation: `g${generation}`, linked: pairs.length, matchIds: pairs.map((_, at) => `id${at}`)});
+            if (gate !== null) {
+                const held = gate;
+                gate = null;
+                return held.then(() => answerWrite(post, body));
             }
-            proposals = [];
-            return json({generation: `g${generation}`, id: "k7f3a2", edited: []});
+            return answerWrite(post, body);
         }
         return Promise.resolve(new Response(`no route for ${url}`, {status: 404}));
     });
     await editing.probe();
     await journal.refresh({force: true});
     await matches.sync(FAKE_ENGINE, journal.generation ?? "");
+}
+
+/** The engine's answer to a match write: a new generation, and the proposals and `/for` answer after it. */
+function answerWrite(post: (typeof POSTS)[number], body: Record<string, unknown>): Promise<Response> {
+    const json = (value: unknown) => Promise.resolve(new Response(JSON.stringify(value), {status: 200}));
+    generation += 1;
+    if (forAfter !== null) forAnswer = forAfter;
+    if (post === "link-all") {
+        const pairs = body.pairs as unknown[];
+        proposals = proposals.filter((proposal) => proposal.clear !== true);
+        return json({generation: `g${generation}`, linked: pairs.length, matchIds: pairs.map((_, at) => `id${at}`)});
+    }
+    proposals = [];
+    return json({generation: `g${generation}`, id: "k7f3a2", edited: []});
 }
 
 const posted = (name: (typeof POSTS)[number]) => seen.filter((request) => request.method === "POST" && request.url.pathname.endsWith(`/api/matches/${name}`));
@@ -104,14 +118,23 @@ async function focusOn(index = 1): Promise<void> {
     render(MatchOverlay);
     // Longer than waitFor's 1 s default: the first render of the file pays for
     // the overlay's imports, and on a loaded CI runner that has taken 1012 ms.
-    await vi.waitFor(() => expect(screen.getByTestId("match-focus-txn")).toBeDefined(), {timeout: 5000});
+    // Shorter than the test's own 5 s, so a view that never shows fails HERE,
+    // naming what it waited for, rather than as a bare "Test timed out".
+    await vi.waitFor(() => expect(screen.getByTestId("match-focus-txn")).toBeDefined(), {timeout: 3000});
 }
 
 beforeEach(() => {
     resetMatches();
     resetReviewLaunch();
 });
-afterEach(() => {
+afterEach(async () => {
+    // Let a write still in flight finish against THIS test's engine first. A
+    // test may end as soon as its POST is seen; the store then re-reads. Left
+    // running, that re-read went to the real network once fetch was unstubbed
+    // (`engine.test`), and the write's completion landed in the NEXT test:
+    // a link that left nothing to match closed the next test's view, and its
+    // `focusOn` waited out the test timeout (the CI flake on the Unlink test).
+    await vi.waitFor(() => expect(matches.busy).toBe(false), {timeout: 3000});
     vi.unstubAllGlobals();
     keymap.reset();
     resetMatches();
@@ -353,6 +376,31 @@ describe("COMPONENT MatchOverlay focused on one transaction (A2)", () => {
         // The view stays open, read again.
         expect(matches.open).toBe(true);
         await vi.waitFor(() => expect(reads(/\/api\/matches\/for\/1$/).length).toBeGreaterThan(1));
+    });
+
+    it("a write that lands after its view was closed does not close the view opened since", async () => {
+        await serve();
+        let release = (): void => {};
+        gate = new Promise((resolve) => {
+            release = resolve;
+        });
+        forAnswer = forBody({postings: [{posting: 1, exact: [partner(EXACT, 3)], combinations: [], nearby: []}]});
+        // Once the link lands, nothing is left to match: the view it came from would close.
+        forAfter = forBody({postings: []});
+        await focusOn();
+        await fireEvent.click(screen.getByTestId("match-link"));
+        await vi.waitFor(() => expect(posted("link")).toHaveLength(1));
+        expect(matches.busy).toBe(true);
+
+        // Closed while the write is in flight, and opened again: a new view.
+        matches.close();
+        cleanup();
+        await focusOn();
+        release();
+        await vi.waitFor(() => expect(matches.busy).toBe(false));
+        await tick();
+        expect(matches.open).toBe(true);
+        expect(screen.getByTestId("match-focus-txn")).toBeDefined();
     });
 
     it("unlinks every BROKEN link a transaction carries from the store (the Problems drawer's fix), naming all members", async () => {

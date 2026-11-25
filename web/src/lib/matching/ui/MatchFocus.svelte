@@ -23,7 +23,7 @@
     // Writes go through the `matches` store, which re-reads this view. A link
     // or an ignore that leaves the transaction nothing more to match closes
     // the overlay; otherwise the view stays on what is left.
-    import {untrack} from "svelte";
+    import {onDestroy, untrack} from "svelte";
     import {formatAmount, neg} from "#lib/domain/money.js";
     import {keymap, registerKeys} from "#lib/keys/keymap.svelte.js";
     import {isTypingTarget, type TargetLike} from "#lib/keys/target.js";
@@ -54,6 +54,11 @@
     let failure = $state<string | null>(null);
     let notice = $state<string | null>(null);
     let seededFor: string | null = null;
+    /** False once unmounted: a write that lands later must not touch the next view (see `settle`). */
+    let mounted = true;
+    onDestroy(() => {
+        mounted = false;
+    });
 
     const focus = $derived(matches.focus);
     const data = $derived(focus?.data ?? null);
@@ -145,6 +150,11 @@
         failure = null;
         armed = null;
         const result = await outcome;
+        // The view this write came from is gone (closed, or replaced by the
+        // next one, while the write was in flight). `matches` is shared, so
+        // acting now would act on whatever view is open instead: a link whose
+        // re-read left nothing here would close a newly opened view.
+        if (!mounted) return;
         if (!result.ok) {
             if (result.failure.kind === "conflict")
                 notice = "The journal changed since this was read, so nothing was written. It has been read again: check and try again.";
