@@ -134,6 +134,47 @@ pub struct PaymentApplied {
     pub undo: PaymentUndo,
 }
 
+/// What [`InvoiceBooks::preview_payment`] shows: what
+/// [`InvoiceBooks::apply_payment`] would write for the same request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PaymentPreview {
+    /// The invoice.
+    pub number: String,
+    /// The deposit, as listed.
+    pub deposit: PaymentCandidate,
+    /// What it would pay.
+    #[serde(serialize_with = "super::dec_text")]
+    pub received: Dec,
+    /// Each row account and its share, as the apply would write them.
+    pub applied: Vec<(String, String)>,
+    /// It pays less than is due.
+    pub partial: bool,
+    /// What would still be due on the invoice after it.
+    #[serde(serialize_with = "super::dec_text")]
+    pub remaining: Dec,
+}
+
+/// A chosen deposit and Ledgeline's request for it, before any write.
+struct PlannedPayment {
+    candidate: PaymentCandidate,
+    /// What was due before it.
+    remaining: Dec,
+    apply: apply::ApplyPayment,
+}
+
+/// Row shares as the CLI's JSON writes them (`render_dec`).
+fn rendered(shares: &[(String, Dec)]) -> Vec<(String, String)> {
+    shares
+        .iter()
+        .map(|(account, amount)| {
+            (
+                account.clone(),
+                ledgeline_core::edit::render_dec(*amount, '.'),
+            )
+        })
+        .collect()
+}
+
 /// What is already paid on `booking`, per row account: the applied
 /// deposits' postings on the split's accounts, tagged with the customer.
 fn paid_so_far(
@@ -440,28 +481,18 @@ impl InvoiceBooks {
         })
     }
 
-    /// **Apply payment** (I17): re-split the deposit `request.reference`
-    /// into invoice `request.number`'s rows — pro rata when it pays part,
-    /// each row's remainder when it pays the rest — tag it `invoice:` and
-    /// its new postings `customer:`, and keep every other line byte for byte.
-    /// The markdown is not written: the reconciler mirrors `paid:` from the
-    /// books.
-    ///
-    /// # Errors
-    /// [`BooksError::Refused`] for a reference that is no longer a candidate
-    /// (edited, applied elsewhere, or more than is due); as
-    /// [`InvoiceBooks::payment_candidates`]; [`BooksError::Ops`] —
-    /// `ExternalChange` when the journal changed since it was read; nothing
-    /// written.
-    pub fn apply_payment(
+    /// The deposit `request` names among `number`'s candidates, and the
+    /// request Ledgeline's [`apply`] takes for it: what
+    /// [`apply_payment`](Self::apply_payment) writes and
+    /// [`preview_payment`](Self::preview_payment) shows, planned once.
+    fn plan_payment(
         &self,
         index: &DocumentIndex,
         request: &ApplyPayment,
-    ) -> Result<PaymentApplied, BooksError> {
-        let mut loaded = self.load()?;
-        check_generation(&loaded, request.expected.as_ref())?;
-        let owed = self.owed(index, &request.number, &loaded)?;
-        let candidates = Self::candidates_of(&loaded, &owed, &request.today);
+        loaded: &Loaded,
+    ) -> Result<PlannedPayment, BooksError> {
+        let owed = self.owed(index, &request.number, loaded)?;
+        let candidates = Self::candidates_of(loaded, &owed, &request.today);
         let wanted = request.reference.trim();
         let exact = candidates.iter().position(|(_, c)| c.reference == wanted);
         let by_prefix: Vec<usize> = candidates
@@ -519,8 +550,10 @@ impl InvoiceBooks {
             .editor()
             .transaction_fingerprint(tindex)
             .ok_or(ledgeline_core::accrual::ops::OpsError::Stale)?;
-        let applied = loaded.apply_payment(
-            &apply::ApplyPayment {
+        Ok(PlannedPayment {
+            candidate,
+            remaining: owed.remaining,
+            apply: apply::ApplyPayment {
                 tindex,
                 fingerprint,
                 number: request.number.clone(),
@@ -530,8 +563,68 @@ impl InvoiceBooks {
                 }),
                 split,
             },
-            None,
-        )?;
+        })
+    }
+
+    /// **Apply payment**, dry: what [`apply_payment`](Self::apply_payment)
+    /// would write for the same request — the deposit, each row account's
+    /// share and what would still be due — planned by the same code
+    /// (Ledgeline's [`apply::plan`], which the write runs too). Writes
+    /// nothing.
+    ///
+    /// # Errors
+    /// As [`InvoiceBooks::apply_payment`].
+    pub fn preview_payment(
+        &self,
+        index: &DocumentIndex,
+        request: &ApplyPayment,
+    ) -> Result<PaymentPreview, BooksError> {
+        let loaded = self.load()?;
+        check_generation(&loaded, request.expected.as_ref())?;
+        let planned = self.plan_payment(index, request, &loaded)?;
+        let txn = loaded
+            .journal()
+            .transactions
+            .iter()
+            .find(|txn| txn.index == planned.apply.tindex)
+            .ok_or(ledgeline_core::accrual::ops::OpsError::Stale)?;
+        let plan = apply::plan(loaded.journal(), txn, &planned.apply)?;
+        Ok(PaymentPreview {
+            number: request.number.clone(),
+            received: plan.received,
+            applied: rendered(&plan.applied),
+            partial: plan.partial,
+            remaining: planned
+                .remaining
+                .sub(plan.received)
+                .map_err(|_| BooksError::Overflow)?,
+            deposit: planned.candidate,
+        })
+    }
+
+    /// **Apply payment** (I17): re-split the deposit `request.reference`
+    /// into invoice `request.number`'s rows — pro rata when it pays part,
+    /// each row's remainder when it pays the rest — tag it `invoice:` and
+    /// its new postings `customer:`, and keep every other line byte for byte.
+    /// The markdown is not written: the reconciler mirrors `paid:` from the
+    /// books. [`preview_payment`](Self::preview_payment) shows it first.
+    ///
+    /// # Errors
+    /// [`BooksError::Refused`] for a reference that is no longer a candidate
+    /// (edited, applied elsewhere, or more than is due); as
+    /// [`InvoiceBooks::payment_candidates`]; [`BooksError::Ops`] —
+    /// `ExternalChange` when the journal changed since it was read; nothing
+    /// written.
+    pub fn apply_payment(
+        &self,
+        index: &DocumentIndex,
+        request: &ApplyPayment,
+    ) -> Result<PaymentApplied, BooksError> {
+        let mut loaded = self.load()?;
+        check_generation(&loaded, request.expected.as_ref())?;
+        let planned = self.plan_payment(index, request, &loaded)?;
+        let tindex = planned.apply.tindex;
+        let applied = loaded.apply_payment(&planned.apply, None)?;
         let transaction = BookedTransaction {
             date: applied.transaction.date.clone(),
             description: applied.transaction.description.clone(),
@@ -540,7 +633,7 @@ impl InvoiceBooks {
                 .transaction_source(tindex)
                 .unwrap_or_default(),
         };
-        let remaining = owed
+        let remaining = planned
             .remaining
             .sub(applied.received)
             .map_err(|_| BooksError::Overflow)?;
@@ -548,16 +641,7 @@ impl InvoiceBooks {
             number: request.number.clone(),
             transaction,
             received: applied.received,
-            applied: applied
-                .applied
-                .iter()
-                .map(|(account, amount)| {
-                    (
-                        account.clone(),
-                        ledgeline_core::edit::render_dec(*amount, '.'),
-                    )
-                })
-                .collect(),
+            applied: rendered(&applied.applied),
             remaining,
             undo: PaymentUndo {
                 number: request.number.clone(),

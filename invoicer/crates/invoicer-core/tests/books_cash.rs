@@ -316,6 +316,57 @@ fn apply_payment_is_for_sent_invoices_in_cash_books() {
     );
 }
 
+/// The dry run shows exactly what the write then writes, and writes
+/// nothing; it refuses what the write refuses.
+#[test]
+fn preview_payment_shows_what_apply_payment_writes() {
+    let dir = scratch("cash", "cash-preview");
+    let start = format!("{}{IMPORTS}", read(&dir, "books.journal"));
+    write(&dir, "books.journal", &start);
+    let (books, index) = open(&dir);
+    let candidates = books
+        .payment_candidates(&index, "207", TODAY)
+        .expect("lists");
+    let half = apply("207", &candidates[0].reference);
+
+    let preview = books.preview_payment(&index, &half).expect("previews");
+    assert_eq!(
+        read(&dir, "books.journal"),
+        start,
+        "a preview writes nothing"
+    );
+    assert_eq!(preview.deposit, candidates[0]);
+    assert!(preview.partial);
+    assert_eq!(preview.received, Dec::new(350_000, 2));
+    assert_eq!(preview.remaining, Dec::new(350_000, 2));
+
+    let applied = books.apply_payment(&index, &half).expect("applies");
+    assert_eq!(preview.applied, applied.applied);
+    assert_eq!(preview.received, applied.received);
+    assert_eq!(preview.remaining, applied.remaining);
+
+    // Applied, it is no longer a candidate: the preview refuses it too.
+    let again = books.preview_payment(&index, &half);
+    assert!(matches!(again, Err(BooksError::Refused(_))), "{again:?}");
+    // The last one pays the rest: not partial.
+    let rest = books
+        .payment_candidates(&index, "207", TODAY)
+        .expect("lists");
+    let last = books
+        .preview_payment(&index, &apply("207", &rest[0].reference))
+        .expect("previews");
+    assert!(!last.partial);
+    assert_eq!(last.remaining, Dec::zero());
+
+    let dir = scratch("accrual", "accrual-preview");
+    let (books, index) = open(&dir);
+    let accrual = books.preview_payment(&index, &apply("106", "abcdef"));
+    assert!(
+        matches!(accrual, Err(BooksError::Refused(_))),
+        "{accrual:?}"
+    );
+}
+
 #[test]
 fn voiding_an_unpaid_cash_invoice_writes_only_the_markdown() {
     let dir = scratch("cash", "cash-void");
