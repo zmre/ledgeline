@@ -5,6 +5,7 @@
 import {ApiShapeError, ApiUnreachableError, authHeaders} from "#ui/api/client.js";
 import type {Computed, EditorForm, EditorOptions, EditorState, OpenDeposits} from "./editor.js";
 import {localToday} from "./invoices.js";
+import type {PaymentOptions, PaymentResult} from "./payments.js";
 
 /** A refused editor request: the HTTP status, the server's `code` and sentence, and (on `changed`) the file's current revision. */
 export class EditorApiError extends Error {
@@ -121,6 +122,21 @@ export function rebookInvoice(number: string): Promise<unknown> {
 /** `GET /api/invoices/{num}/deposits`: the customer's open deposits, each with the row that applies it. */
 export function fetchDeposits(number: string): Promise<OpenDeposits> {
     return send<OpenDeposits>("GET", `/api/invoices/${num(number)}/deposits`, (b) => isObject(b) && Array.isArray(b.deposits));
+}
+
+/** `GET /api/invoices/{num}/payments` (cash books): what is due and the imported deposits that might pay it. */
+export function fetchPaymentOptions(number: string): Promise<PaymentOptions> {
+    return send<PaymentOptions>("GET", `/api/invoices/${num(number)}/payments?today=${localToday()}`, (b) => isObject(b) && Array.isArray(b.candidates));
+}
+
+/** `POST /api/invoices/{num}/payments` (cash books): apply the deposit `reference`; with `dryRun`, what it would write (nothing is written). */
+export function applyPayment(number: string, reference: string, options: {dryRun?: boolean} = {}): Promise<PaymentResult> {
+    return send<PaymentResult>(
+        "POST",
+        `/api/invoices/${num(number)}/payments`,
+        (b) => isObject(b) && typeof b.written === "boolean" && Array.isArray(b.applied),
+        {reference, dry_run: options.dryRun ?? false, today: localToday()}
+    );
 }
 
 /** `POST /api/preview/draft`: hold unsaved text for the preview page; the URL to frame. */

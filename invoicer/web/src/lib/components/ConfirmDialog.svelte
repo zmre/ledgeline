@@ -3,7 +3,8 @@
      (a div, so it mounts as is in jsdom), with focus on the safe choice:
      Enter on a stray keypress cancels, never confirms. Escape cancels, from
      anywhere; Tab and Shift+Tab stay inside (fields included); closing hands
-     focus back to what had it (`dismissible`). -->
+     focus back to what had it (`dismissible`). `confirmDisabled` keeps
+     the confirm button off until there is something to confirm. -->
 <script lang="ts">
     import {dismissible} from "#ui/keys/dismissible.js";
     import {modalKeys} from "#lib/keys/modalKeys.svelte.js";
@@ -15,6 +16,7 @@
         cancelLabel = "Cancel",
         tone = "primary",
         busy = false,
+        confirmDisabled = false,
         error = null,
         onConfirm,
         onCancel,
@@ -26,6 +28,8 @@
         cancelLabel?: string;
         tone?: "primary" | "warning" | "error";
         busy?: boolean;
+        /** The confirm button is off (nothing chosen yet), Cancel still on. */
+        confirmDisabled?: boolean;
         error?: string | null;
         onConfirm: () => void;
         onCancel: () => void;
@@ -69,7 +73,7 @@
         {/if}
         <div class="modal-action">
             <button type="button" class="btn btn-ghost btn-sm" onclick={onCancel} disabled={busy} data-safe-choice>{cancelLabel}</button>
-            <button type="button" class="btn btn-sm {TONE[tone]}" onclick={onConfirm} disabled={busy} data-testid="{testid}-confirm">
+            <button type="button" class="btn btn-sm {TONE[tone]}" onclick={onConfirm} disabled={busy || confirmDisabled} data-testid="{testid}-confirm">
                 {#if busy}<span class="loading loading-xs loading-spinner"></span>{/if}
                 {confirmLabel}
             </button>
