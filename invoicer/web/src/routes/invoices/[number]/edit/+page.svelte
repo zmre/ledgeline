@@ -8,7 +8,10 @@
      rules are lib/invoiceEditor.svelte.ts; every write goes through the
      server, which writes through invoicer-core like the CLI.
 
-     Keyboard: Cmd/Ctrl+S saves. Leaving with unsaved changes (a link, Back)
+     Keyboard (PLAN 5k): Cmd/Ctrl+S saves; Shift+D discards (after asking),
+     Shift+S sends, Shift+R re-books and Shift+V voids, each opening its
+     confirmation; `c` and `t` go to the customer and template fields; the
+     bill grid adds and moves rows (BillGrid). Leaving with unsaved changes (a link, Back)
      asks Save / Discard / Cancel (H13). Steps that touch the books ask first
      (ARCHITECTURE §4): Send books it; Void reverses it; Re-book replaces its
      transaction; saving a sent invoice re-books it. -->
@@ -18,6 +21,8 @@
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
     import DateInput from "#ui/components/DateInput.svelte";
+    import {hint} from "#ui/keys/hint.svelte.js";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
     import {fetchDelivery, fetchTemplates, sendInvoice} from "#lib/api.js";
     import {changes} from "#lib/changes.svelte.js";
     import {defaultVia, sendBlocker, VIA_CHOICES, type Delivery} from "#lib/delivery.js";
@@ -137,13 +142,6 @@
         if (after !== null) sendReload += 1;
     }
 
-    function onKeydown(event: KeyboardEvent): void {
-        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
-            event.preventDefault();
-            if (editor.dirty && !readonly) void save();
-        }
-    }
-
     // Send / Void / Re-book, each after a confirmation.
     let dialog = $state<"send" | "void" | "rebook" | null>(null);
     let stepBusy = $state(false);
@@ -191,12 +189,43 @@
         }
     }
 
+    // Discard from the keyboard asks first: a stray Shift+D shouldn't lose
+    // an afternoon's edits (the button, aimed, doesn't ask).
+    let confirmDiscard = $state(false);
+
+    const loaded = (): boolean => editor.form !== null;
+    const saved = (): boolean => loaded() && !editor.dirty && !readonly;
+    registerKeys({
+        id: "invoice-editor",
+        bindings: [
+            // `always`: from a field too, and with nothing to save it still
+            // keeps the browser's Save Page dialog away (as before PLAN 5k).
+            {
+                keys: "mod+s",
+                label: "Save the invoice",
+                group: "Invoice editor",
+                always: true,
+                run: () => {
+                    if (editor.dirty && !readonly && !editor.saving) void save();
+                },
+            },
+            {
+                keys: "D",
+                label: "Discard the changes…",
+                group: "Invoice editor",
+                enabled: () => loaded() && editor.dirty && !readonly && !editor.saving,
+                run: () => (confirmDiscard = true),
+            },
+            {keys: "S", label: "Send…", group: "Invoice editor", enabled: () => saved() && editor.status === "draft", run: () => void ask("send")},
+            {keys: "R", label: "Re-book…", group: "Invoice editor", enabled: () => saved() && editor.status === "sent", run: () => void ask("rebook")},
+            {keys: "V", label: "Void…", group: "Invoice editor", enabled: saved, run: () => void ask("void")},
+        ],
+    });
+
     const accrual = $derived(editor.books?.basis !== "cash");
     const blocker = $derived(delivery === null ? null : sendBlocker(delivery));
     const linkBase = $derived(editor.path === "" ? "/" : pageUrl(editor.path).replace(/[^/]+\/$/, ""));
 </script>
-
-<svelte:window onkeydown={onKeydown} />
 
 <svelte:head>
     <title>Edit {editor.title || `invoice ${number}`} · Ledgeline Invoicer</title>
@@ -239,7 +268,7 @@
                         class="btn btn-primary btn-sm"
                         disabled={!editor.dirty || editor.saving}
                         onclick={() => void save()}
-                        title="Save (⌘S)"
+                        title={hint("Save", "⌘/Ctrl+S")}
                         data-testid="editor-save">Save</button
                     >
                 {/if}
@@ -394,6 +423,22 @@
             Invoice {editor.number} is sent, so its amount is booked. Saving these edits replaces its transaction in the books and restates any recognition schedule.
         </p>
         <p>An invoice dated on or before the books' closed-through date can't be re-booked; void it and issue a new one instead.</p>
+    </ConfirmDialog>
+{/if}
+
+{#if confirmDiscard}
+    <ConfirmDialog
+        title="Discard the changes to invoice {editor.number}?"
+        confirmLabel="Discard changes"
+        tone="error"
+        onConfirm={() => {
+            confirmDiscard = false;
+            editor.discard();
+        }}
+        onCancel={() => (confirmDiscard = false)}
+        testid="confirm-discard"
+    >
+        <p>The invoice goes back to how it was last saved.</p>
     </ConfirmDialog>
 {/if}
 

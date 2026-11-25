@@ -13,7 +13,7 @@ import {fireEvent, screen} from "@testing-library/svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import type {EditResult} from "#lib/api/editFailure.js";
 import type {RuleChoice, RulesCandidate, RulesFor} from "#lib/imports/reviewTypes.js";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import {resetReview, review} from "#lib/stores/review.svelte.js";
 import {connectFakeEngine} from "#lib/testing/fakeEngine.js";
 import {deferred, queueItemWire, queuePageWire, reviewTxnWire, serveReview, txnFixture, type SeenRequest} from "#lib/testing/reviewFixture.js";

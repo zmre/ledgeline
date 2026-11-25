@@ -9,8 +9,12 @@
      Narrow widths (container queries): one row that scrolls sideways, cards
      snapping to its start; from `@3xl` a grid of three, from `@5xl` all six
      in a row. Hover and keyboard focus lift a card (no rise under
-     prefers-reduced-motion). -->
+     prefers-reduced-motion).
+
+     Keyboard (PLAN 5k): `j` and `k` step focus through the cards (from the
+     first, or the last for `k`); Enter opens the focused one, as a link. -->
 <script lang="ts">
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
     import {recentEventText, recentStatus, type RecentView} from "#lib/dashboard.js";
 
     let {
@@ -21,6 +25,24 @@
         /** An invoice's page, resolved, by number. */
         invoiceHref: (number: string) => string;
     } = $props();
+
+    let listEl = $state<HTMLUListElement | null>(null);
+    /** Focus the card `delta` from the focused one; from outside the row, the first (or, going back, the last). */
+    function step(delta: number): void {
+        const links = [...(listEl?.querySelectorAll<HTMLAnchorElement>("a[href]") ?? [])];
+        if (links.length === 0) return;
+        const at = links.indexOf(document.activeElement as HTMLAnchorElement);
+        const next = at < 0 ? (delta > 0 ? 0 : links.length - 1) : Math.max(0, Math.min(links.length - 1, at + delta));
+        links[next].focus();
+        links[next].scrollIntoView?.({block: "nearest", inline: "nearest"});
+    }
+    registerKeys({
+        id: "dashboard-recent",
+        bindings: [
+            {keys: "j", label: "Next recent invoice", group: "Dashboard", enabled: () => recent.some((r) => r.number !== null), run: () => step(1)},
+            {keys: "k", label: "Previous recent invoice", group: "Dashboard", enabled: () => recent.some((r) => r.number !== null), run: () => step(-1)},
+        ],
+    });
 
     // Literal classes, so the stylesheet keeps them.
     const BAND: Record<string, string> = {
@@ -52,7 +74,11 @@
 
 <section class="@container flex flex-col gap-3" aria-labelledby="recent-title" data-testid="recent">
     <h2 id="recent-title" class="text-sm font-medium text-base-content/70">Recently updated</h2>
-    <ul class="flex snap-x gap-3 overflow-x-auto px-1 pt-1 pb-2 @3xl:grid @3xl:grid-cols-3 @3xl:overflow-visible @5xl:grid-cols-6" data-testid="recent-cards">
+    <ul
+        class="flex snap-x gap-3 overflow-x-auto px-1 pt-1 pb-2 @3xl:grid @3xl:grid-cols-3 @3xl:overflow-visible @5xl:grid-cols-6"
+        bind:this={listEl}
+        data-testid="recent-cards"
+    >
         {#each recent as item (item.path)}
             <li class="w-44 shrink-0 snap-start @3xl:w-auto" data-testid="recent-card" data-number={item.number}>
                 {#if item.number !== null}

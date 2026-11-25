@@ -5,7 +5,7 @@
 
 import {render, screen} from "@testing-library/svelte";
 import {afterEach, describe, expect, it} from "vitest";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import {filters} from "#lib/stores/filters.svelte.js";
 import SearchInput from "./SearchInput.svelte";
 

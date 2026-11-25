@@ -9,7 +9,7 @@ import {render, screen} from "@testing-library/svelte";
 import {afterEach, describe, expect, it} from "vitest";
 import {dec, type MixedAmount} from "#lib/domain/money.js";
 import type {AmountStyle} from "#lib/domain/types.js";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import type {PeriodReport} from "#lib/reports/types.js";
 import ReportTable from "./ReportTable.svelte";
 import {periodsOf} from "#lib/reports/test-helpers.js";

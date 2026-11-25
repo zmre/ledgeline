@@ -25,9 +25,9 @@
     // the overlay; otherwise the view stays on what is left.
     import {onDestroy, untrack} from "svelte";
     import {formatAmount, neg} from "#lib/domain/money.js";
-    import {keymap, registerKeys} from "#lib/keys/keymap.svelte.js";
-    import {isTypingTarget, type TargetLike} from "#lib/keys/target.js";
-    import {PRIORITY} from "#lib/keys/types.js";
+    import {keymap, registerKeys} from "#ui/keys/keymap.svelte.js";
+    import {isTypingTarget, type TargetLike} from "#ui/keys/target.js";
+    import {PRIORITY} from "#ui/keys/types.js";
     import {longDate} from "#lib/review/card.js";
     import {cardIn, type MotionParams} from "#lib/review/ui/motion.js";
     import ReviewIcon from "#lib/review/ui/ReviewIcon.svelte";

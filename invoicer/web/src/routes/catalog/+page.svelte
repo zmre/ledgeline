@@ -13,12 +13,14 @@
      first. `?new=1` (the sidebar's New menu, H20) does the same on arrival,
      then drops the parameter so a reload doesn't add another.
 
-     Keyboard: Cmd/Ctrl+S saves. -->
+     Keyboard (PLAN 5k): Cmd/Ctrl+S saves; in the grid, Alt+↑/↓ moves the
+     focused item. -->
 <script lang="ts">
     import {onMount, tick, untrack} from "svelte";
     import {beforeNavigate, goto} from "$app/navigation";
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
     import {changes} from "#lib/changes.svelte.js";
     import type {GridForm} from "#lib/editor.js";
     import {EditorApiError, fetchEditorOptions} from "#lib/editorApi.js";
@@ -187,12 +189,22 @@
         saveError = null;
     }
 
-    function onKeydown(event: KeyboardEvent): void {
-        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
-            event.preventDefault();
-            if (dirty && !saving && ownProblems.length === 0) void save();
-        }
-    }
+    // Cmd/Ctrl+S saves, from a field too (PLAN 5k); with nothing to save
+    // it still keeps the browser's Save Page dialog away.
+    registerKeys({
+        id: "catalog-page",
+        bindings: [
+            {
+                keys: "mod+s",
+                label: "Save the catalog",
+                group: "Catalog",
+                always: true,
+                run: () => {
+                    if (dirty && !saving && ownProblems.length === 0) void save();
+                },
+            },
+        ],
+    });
 
     beforeNavigate(({cancel, to}) => {
         // The same page with another query (the New menu's `?new=1`) isn't leaving.
@@ -224,8 +236,6 @@
 <svelte:head>
     <title>Catalog · Ledgeline Invoicer</title>
 </svelte:head>
-
-<svelte:window onkeydown={onKeydown} />
 
 <div class="mx-auto flex max-w-7xl flex-col gap-4" data-testid="catalog-page">
     <header class="flex flex-wrap items-center gap-x-3 gap-y-2">

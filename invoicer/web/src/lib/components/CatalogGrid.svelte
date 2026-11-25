@@ -5,15 +5,18 @@
      hand-written cell is never lost.
 
      Keyboard: Tab through the cells; Alt+ArrowUp / Alt+ArrowDown moves the
-     focused row; each row also has Move up, Move down and Delete. A pointer
+     focused row (keymap bindings, PLAN 5k); each row also has Move up, Move down and Delete. A pointer
      can drag a row by its handle; a line shows where it will land. Add item
      goes at the bottom, as in the invoice grid. A cell with a problem is
      marked and named below the grid. -->
 <script lang="ts">
     import {tick} from "svelte";
     import AccountInput from "#ui/components/AccountInput.svelte";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
+    import {PRIORITY} from "#ui/keys/types.js";
     import {plain} from "#lib/arithmetic.js";
     import {dropIndex, moveRow, removeRow, type GridForm, type Role} from "#lib/editor.js";
+    import {moveRowKeys} from "#lib/keys/gridKeys.js";
     import {addCatalogRow, setCatalogCell, type CellProblem} from "#lib/library.js";
     import DeferralPopover from "./DeferralPopover.svelte";
 
@@ -68,12 +71,11 @@
         void focusRow(to, column);
     }
 
-    function onRowKeydown(event: KeyboardEvent, row: number): void {
-        if (readonly || !event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
-        event.preventDefault();
-        const cell = (event.target as HTMLElement | null)?.closest<HTMLElement>("[data-col]");
-        move(row, event.key === "ArrowUp" ? row - 1 : row + 1, Number(cell?.dataset.col ?? 0));
-    }
+    registerKeys({
+        id: "catalog-grid",
+        priority: PRIORITY.widget,
+        bindings: moveRowKeys({group: "Catalog", grid: () => gridEl, readonly: () => readonly, move}),
+    });
 
     function add(): void {
         const {table: next, at} = addCatalogRow(table);
@@ -132,7 +134,6 @@
                         data-testid="catalog-row"
                         class={dragFrom === r ? "opacity-50" : ""}
                         data-drop={dropMark(r)}
-                        onkeydown={(event) => onRowKeydown(event, r)}
                         ondragover={(event) => onDragOver(event, r)}
                         ondrop={onDrop}
                     >
@@ -163,6 +164,7 @@
                                     <div class="flex items-start gap-1">
                                         <div class="min-w-56 flex-1 {problem ? 'rounded-field outline outline-error' : ''}">
                                             <AccountInput
+                                                passAltArrows
                                                 bind:value={() => cells[c], (v) => update(r, c, v)}
                                                 accountNames={accounts}
                                                 {label}

@@ -6,7 +6,7 @@
      the write. A failed check keeps Share them shut. -->
 <script lang="ts">
     import {onMount} from "svelte";
-    import {dismissible} from "#lib/keys/dismissible.js";
+    import {dismissible} from "#ui/keys/dismissible.js";
     import {syncStore, type SyncFailure} from "../syncStore.svelte";
     import type {WireSharePreview} from "../types";
 

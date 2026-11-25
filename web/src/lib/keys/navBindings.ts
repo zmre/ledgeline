@@ -1,6 +1,6 @@
 // The global layer: help, and `g`-prefixed route jumps.
 //
-// The only file in `lib/keys/` that imports `$app/*` — keeping the router out of
+// Ledgeline's own bindings (the engine is `#ui/keys/`). Imports `$app/*` — keeping the router out of
 // `keymap.svelte.ts` is what lets the core be tested in the node project with no
 // SvelteKit around it.
 //
@@ -13,8 +13,8 @@ import {page} from "$app/state";
 import {rulesStore} from "#lib/imports/rulesStore.svelte.js";
 import {isNative} from "#ui/native/detect.js";
 import {zoomIn, zoomOut, zoomReset} from "#ui/theme/zoom.svelte.js";
-import {keymap} from "./keymap.svelte";
-import {PRIORITY, type Layer} from "./types";
+import {keymap} from "#ui/keys/keymap.svelte.js";
+import {PRIORITY, type Layer} from "#ui/keys/types.js";
 
 type Route = "/" | "/holdings" | "/budget" | "/projections" | "/reports" | "/imports";
 

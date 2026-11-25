@@ -14,7 +14,7 @@ import {tick} from "svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {dec} from "#lib/domain/money.js";
 import type {Amount, AmountStyle, ISODate, Posting, Transaction} from "#lib/domain/types.js";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import {showRows} from "#lib/testing/journalViewFixture.js";
 import TransactionTable from "./TransactionTable.svelte";
 import {rowActions} from "./rowAction.svelte";

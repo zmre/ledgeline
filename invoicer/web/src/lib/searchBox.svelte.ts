@@ -35,6 +35,12 @@ export class SearchBox {
         this.#send(q);
     }
 
+    /** Empty the box and send that at once (Escape in the box, PLAN 5k). */
+    clear(): void {
+        this.text = "";
+        this.flush();
+    }
+
     /** The URL's `q` now: a value this box didn't send replaces its text. */
     sync(q: string): void {
         if (q.trim() === this.#sent) return;

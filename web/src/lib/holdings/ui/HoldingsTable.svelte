@@ -23,8 +23,8 @@
     import {signClass} from "#lib/format/sign.js";
     import type {GainPeriod, Holding, HoldingsReport} from "#lib/holdings/types.js";
     import {openJournal} from "#lib/journal/openJournal.js";
-    import {registerKeys} from "#lib/keys/keymap.svelte.js";
-    import {PRIORITY} from "#lib/keys/types.js";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
+    import {PRIORITY} from "#ui/keys/types.js";
     import {listCursor} from "#ui/ui/listCursor.svelte.js";
     import {gainWindowSuffix} from "./gainPeriod";
     import {EM_DASH, formatGainPct, formatShares, sortHoldings, type SortKey} from "./view";

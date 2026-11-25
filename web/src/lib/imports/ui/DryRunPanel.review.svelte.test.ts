@@ -10,7 +10,7 @@
 import {fireEvent, render, screen} from "@testing-library/svelte";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {decodeCsvStagedTxn} from "#lib/api/importReviewDecode.js";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import {dryRun, ROTH_ALIAS} from "#lib/testing/aliasFixtures.js";
 import {stagedTxnWire, txnFixture} from "#lib/testing/reviewFixture.js";
 import type {DryRunResult} from "../importTypes";

@@ -5,7 +5,7 @@
      Disconnect asks first, with the plan's wording: it removes the access key
      from this computer only, and says how to stop SimpleFIN itself. -->
 <script lang="ts">
-    import {dismissible} from "#lib/keys/dismissible.js";
+    import {dismissible} from "#ui/keys/dismissible.js";
     import type {ProblemEffect} from "../problemAction";
     import {syncStore} from "../syncStore.svelte";
     import type {WireConnection, WireLinkedAccount, WireRemoteAccount} from "../types";

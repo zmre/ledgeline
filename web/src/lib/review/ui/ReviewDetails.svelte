@@ -13,7 +13,7 @@
     // The secondary date is optional, so it is a `DateInput`: WebKit paints
     // TODAY into an empty `<input type="date">`.
     import DateInput from "#ui/components/DateInput.svelte";
-    import {hint} from "#lib/keys/hint.svelte.js";
+    import {hint} from "#ui/keys/hint.svelte.js";
     import {nextStatus} from "#lib/journal/rowModel.js";
     import {detailsSummary} from "../card";
     import type {ReviewForm} from "../types";

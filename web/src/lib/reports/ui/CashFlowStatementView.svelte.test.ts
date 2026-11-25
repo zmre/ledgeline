@@ -5,7 +5,7 @@
 import {fireEvent, render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {afterEach, describe, expect, it, vi} from "vitest";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import {CASH_FLOW, CASH_FLOW_TOTAL, flow} from "#lib/testing/cashFlowFixture.js";
 import {expectSharedGrid} from "#lib/testing/statementGrid.js";
 import CashFlowStatementView from "./CashFlowStatementView.svelte";

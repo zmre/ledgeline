@@ -5,7 +5,7 @@
     // empty input takes the last chip off. Only what `parseTag` accepts — what
     // the engine can write surgically — can become a chip.
     import {tick} from "svelte";
-    import {TYPING_ATTRIBUTE} from "#lib/keys/target.js";
+    import {TYPING_ATTRIBUTE} from "#ui/keys/target.js";
     import {remToPx} from "#ui/theme/scale.js";
     import {popupPosition, portal, liveViewport} from "#ui/ui/anchoredPopup.js";
     import {parseTag, tagCompletions, type TagCompletion} from "../complete";

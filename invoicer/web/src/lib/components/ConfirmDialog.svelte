@@ -3,6 +3,7 @@
      (a div, so it mounts as is in jsdom), with focus on the safe choice:
      Enter on a stray keypress cancels, never confirms. Escape cancels. -->
 <script lang="ts">
+    import {modalKeys} from "#lib/keys/modalKeys.svelte.js";
     import type {Snippet} from "svelte";
 
     let {
@@ -28,6 +29,9 @@
         children?: Snippet;
         testid?: string;
     } = $props();
+
+    // While open, the page beneath has no keys (PLAN 5k, Y8).
+    modalKeys("confirm-dialog");
 
     const uid = $props.id();
     const TONE = {primary: "btn-primary", warning: "btn-warning", error: "btn-error"} as const;

@@ -38,11 +38,11 @@
     // Card mode / field mode as in review: single keys act on the card,
     // Escape leaves a field, then closes (asking first when edits would go).
     import {tick, untrack} from "svelte";
-    import {hint} from "#lib/keys/hint.svelte.js";
-    import {dismissible} from "#lib/keys/dismissible.js";
-    import {keymap, registerKeys} from "#lib/keys/keymap.svelte.js";
-    import {isTypingTarget, type TargetLike} from "#lib/keys/target.js";
-    import {PRIORITY} from "#lib/keys/types.js";
+    import {hint} from "#ui/keys/hint.svelte.js";
+    import {dismissible} from "#ui/keys/dismissible.js";
+    import {keymap, registerKeys} from "#ui/keys/keymap.svelte.js";
+    import {isTypingTarget, type TargetLike} from "#ui/keys/target.js";
+    import {PRIORITY} from "#ui/keys/types.js";
     import {longDate, shortDate} from "#lib/review/card.js";
     import {reviewLaunch} from "#lib/review/ui/launch.svelte.js";
     import {

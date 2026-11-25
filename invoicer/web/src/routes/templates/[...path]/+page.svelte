@@ -17,13 +17,14 @@
      the books, then it is edited here. Duplicate and Delete work on the saved
      file (Delete is refused while invoices or customers use it).
 
-     Keyboard: Cmd/Ctrl+S saves; in the code, Tab indents and Esc then Tab
+     Keyboard (PLAN 5k): Cmd/Ctrl+S saves; in the code, Tab indents and Esc then Tab
      moves on. -->
 <script lang="ts">
     import {onMount, untrack} from "svelte";
     import {beforeNavigate, goto} from "$app/navigation";
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
     import {ensureSession, fetchInvoices} from "#lib/api.js";
     import {changes} from "#lib/changes.svelte.js";
     import {EditorApiError} from "#lib/editorApi.js";
@@ -272,12 +273,22 @@
         if (at !== null) editor?.focusAt(at.index);
     }
 
-    function onKeydown(event: KeyboardEvent): void {
-        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
-            event.preventDefault();
-            if (dirty && !saving) void save();
-        }
-    }
+    // Cmd/Ctrl+S saves, from a field too (PLAN 5k); with nothing to save
+    // it still keeps the browser's Save Page dialog away.
+    registerKeys({
+        id: "template-page",
+        bindings: [
+            {
+                keys: "mod+s",
+                label: "Save the template",
+                group: "Template",
+                always: true,
+                run: () => {
+                    if (dirty && !saving) void save();
+                },
+            },
+        ],
+    });
 
     function finishLeaving(to: string): void {
         leaving = null;
@@ -350,8 +361,6 @@
 <svelte:head>
     <title>{detail?.name ?? "Template"} · Ledgeline Invoicer</title>
 </svelte:head>
-
-<svelte:window onkeydown={onKeydown} />
 
 <div class="@container mx-auto flex max-w-[110rem] flex-col gap-4" data-testid="template-editor">
     <header class="flex flex-wrap items-center gap-x-3 gap-y-2">

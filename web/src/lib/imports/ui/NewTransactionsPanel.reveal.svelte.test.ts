@@ -13,7 +13,7 @@
 import {fireEvent, render, screen} from "@testing-library/svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {importStore} from "#lib/imports/importStore.svelte.js";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import {connectFakeEngine, FAKE_ENGINE} from "#lib/testing/fakeEngine.js";
 import {CAPABILITIES, STAGE, upload} from "#lib/testing/importFixtures.js";
 import NewTransactionsPanel from "./NewTransactionsPanel.svelte";

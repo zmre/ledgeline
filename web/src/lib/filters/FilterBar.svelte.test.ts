@@ -12,7 +12,7 @@ import {render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import FilterBar from "./FilterBar.svelte";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import {filters} from "#lib/stores/filters.svelte.js";
 import {problems} from "#lib/stores/problems.svelte.js";
 import {running} from "#lib/stores/running.svelte.js";

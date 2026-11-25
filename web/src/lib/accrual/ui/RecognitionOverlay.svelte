@@ -18,10 +18,10 @@
     // yet, so a changed entry is posted, then edited in the journal.
     import {untrack} from "svelte";
     import {resolve} from "$app/paths";
-    import {dismissible} from "#lib/keys/dismissible.js";
-    import {hint} from "#lib/keys/hint.svelte.js";
-    import {keymap, registerKeys} from "#lib/keys/keymap.svelte.js";
-    import {PRIORITY} from "#lib/keys/types.js";
+    import {dismissible} from "#ui/keys/dismissible.js";
+    import {hint} from "#ui/keys/hint.svelte.js";
+    import {keymap, registerKeys} from "#ui/keys/keymap.svelte.js";
+    import {PRIORITY} from "#ui/keys/types.js";
     import {sub, isZero} from "#lib/domain/money.js";
     import {fmt} from "#lib/format/amounts.js";
     import {backdrop, barIn, layerOut, prefersReducedMotion} from "#lib/review/ui/motion.js";

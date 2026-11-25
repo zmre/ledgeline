@@ -4,6 +4,7 @@
      the customers API (`POST /api/customers`, 4b's K3/K4 rules); the
      customers page edits everything else. -->
 <script lang="ts">
+    import {modalKeys} from "#lib/keys/modalKeys.svelte.js";
     import {untrack} from "svelte";
     import {createCustomer, emptyForm, newCustomerFields, type ContactKind, type CustomerSaved} from "#lib/customers.js";
 
@@ -16,6 +17,9 @@
         onCreated: (customer: CustomerSaved) => void;
         onCancel: () => void;
     } = $props();
+
+    // While open, the page beneath has no keys (PLAN 5k, Y8).
+    modalKeys("add-customer-dialog");
 
     // Starts as what was typed in the combobox; the user may change it here.
     let name = $state(untrack(() => initial));

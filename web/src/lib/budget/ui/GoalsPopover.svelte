@@ -24,7 +24,7 @@
     import {goalAmountText, goalKey, lockReason, periodLabel, type GoalRef} from "#lib/budget/rowGoals.js";
     import type {BudgetGoal, BudgetListing, BudgetRule} from "#lib/budget/types.js";
     import type {AmountStyle} from "#lib/domain/types.js";
-    import {dismissible} from "#lib/keys/dismissible.js";
+    import {dismissible} from "#ui/keys/dismissible.js";
     import {remToPx} from "#ui/theme/scale.js";
     import {menuPosition, portal, liveViewport} from "#ui/ui/anchoredPopup.js";
 

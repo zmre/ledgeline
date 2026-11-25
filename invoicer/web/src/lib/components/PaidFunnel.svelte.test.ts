@@ -5,6 +5,7 @@ import {fireEvent, render, screen} from "@testing-library/svelte";
 import {describe, expect, it, vi} from "vitest";
 import PaidFunnel from "./PaidFunnel.svelte";
 import {golden} from "../dashboardGolden.js";
+import {listenForKeys, press} from "#lib/testing/keys.js";
 
 const listBase = "/app/invoices";
 
@@ -65,5 +66,33 @@ describe("COMPONENT PaidFunnel", () => {
         // Only movement and shadow animate: colours follow a theme switch at once (no half-switched card).
         expect(card.className).toContain("transition-[translate,box-shadow,opacity]");
         expect(card.className).not.toMatch(/(^|\s)transition(\s|$)|transition-colors|transition-all/);
+    });
+});
+
+describe("COMPONENT PaidFunnel keys (PLAN 5k)", () => {
+    listenForKeys();
+
+    it("opens a card with 1, 2 and 3", async () => {
+        render(PaidFunnel, {dashboard: golden("accrual"), listBase});
+        const opened: string[] = [];
+        for (const id of ["funnel-drafts", "funnel-outstanding", "funnel-paid"]) {
+            screen.getByTestId(id).addEventListener("click", (event) => {
+                event.preventDefault();
+                opened.push(id);
+            });
+        }
+        await press("2");
+        await press("1");
+        await press("3");
+        expect(opened).toEqual(["funnel-outstanding", "funnel-drafts", "funnel-paid"]);
+    });
+
+    it("steps the paid window with w and W, and stops at the ends", async () => {
+        const onPaidDays = vi.fn();
+        render(PaidFunnel, {dashboard: golden("accrual"), listBase, onPaidDays});
+        await press("w");
+        expect(onPaidDays).toHaveBeenLastCalledWith(90);
+        await press("W");
+        expect(onPaidDays).toHaveBeenLastCalledWith(7);
     });
 });

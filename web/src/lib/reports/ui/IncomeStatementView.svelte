@@ -40,8 +40,8 @@
     import HScroll from "#ui/components/HScroll.svelte";
     import type {AmountStyle} from "#lib/domain/types.js";
     import {openJournal} from "#lib/journal/openJournal.js";
-    import {registerKeys} from "#lib/keys/keymap.svelte.js";
-    import {PRIORITY} from "#lib/keys/types.js";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
+    import {PRIORITY} from "#ui/keys/types.js";
     import type {Amounts, IncomeStatementReport, IsSectionKind} from "#lib/reports/types.js";
     import {settings} from "#lib/stores/settings.svelte.js";
     import {listCursor} from "#ui/ui/listCursor.svelte.js";

@@ -4,6 +4,7 @@ import {fireEvent, render, screen, within} from "@testing-library/svelte";
 import {describe, expect, it, vi} from "vitest";
 import CustomerList from "./CustomerList.svelte";
 import {row} from "./customerFixtures.js";
+import {listenForKeys, press} from "#lib/testing/keys.js";
 
 const href = (r: {path: string}) => `/app/customers/${r.path.replace(/\.md$/, "")}`;
 
@@ -85,5 +86,28 @@ describe("COMPONENT CustomerList sorting and filters (PLAN 5b)", () => {
         render(CustomerList, {href, newHref: "/app/customers/new", customers: [], filtered: true, onClear: vi.fn()});
         expect(screen.queryByTestId("customer-list-empty")).toBeNull();
         expect(screen.getByTestId("customer-list-no-match")).toBeDefined();
+    });
+});
+
+describe("COMPONENT CustomerList keys (PLAN 5k)", () => {
+    listenForKeys();
+
+    it("opens the customer under the cursor, and sorts by the sortable columns in turn", async () => {
+        const onOpen = vi.fn();
+        const onSort = vi.fn();
+        render(CustomerList, {
+            href,
+            newHref: "/app/customers/new",
+            customers: [row({}), row({path: "customers/Fabrikam.md", title: "Fabrikam"})],
+            onOpen,
+            onSort,
+            shown: {sort: "last-payment", dir: "desc"},
+        });
+        await press("G");
+        await press("o");
+        expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({title: "Fabrikam"}));
+        // The last sortable column wraps to the first.
+        await press("s");
+        expect(onSort).toHaveBeenLastCalledWith("name");
     });
 });

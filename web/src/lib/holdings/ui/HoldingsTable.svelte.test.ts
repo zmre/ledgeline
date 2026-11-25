@@ -16,7 +16,7 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import {dec, formatDec, type Dec} from "#lib/domain/money.js";
 import type {AmountStyle} from "#lib/domain/types.js";
 import type {Holding, HoldingsReport} from "#lib/holdings/types.js";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import HoldingsTable from "./HoldingsTable.svelte";
 
 // Enter drills into the journal; a router is neither available nor the subject.

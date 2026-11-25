@@ -7,7 +7,7 @@
 import {fireEvent, render, screen, within} from "@testing-library/svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {txnModal} from "#lib/journal/edit/modalState.svelte.js";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import type {Amount, Posting, Transaction} from "#lib/domain/types.js";
 import {resetReviewLaunch} from "#lib/review/ui/launch.svelte.js";
 import ReviewOverlay from "#lib/review/ui/ReviewOverlay.svelte";

@@ -18,7 +18,7 @@
     // shows a small ≠ that offers Forget rejection. A row with an unlinked
     // clearing posting offers Find match (Amendment A2) among its hover actions.
     import {descriptionPatch} from "#lib/api/editMapping.js";
-    import {hint} from "#lib/keys/hint.svelte.js";
+    import {hint} from "#ui/keys/hint.svelte.js";
     import {maxSeverity, type Problem} from "#lib/checks/engine.js";
     import type {Transaction} from "#lib/domain/types.js";
     import type {RunningCell, TransferRow} from "#lib/journalView/types.js";

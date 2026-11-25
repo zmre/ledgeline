@@ -6,7 +6,7 @@
 import {fireEvent, render, screen} from "@testing-library/svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import {resetReviewLaunch} from "#lib/review/ui/launch.svelte.js";
 import {journal} from "#lib/stores/journal.svelte.js";
 import {matches, resetMatches} from "#lib/stores/matches.svelte.js";

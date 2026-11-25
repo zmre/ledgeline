@@ -10,7 +10,7 @@
  * pointer anywhere (a phone; an iPad with no trackpad or mouse) there is no
  * keyboard to speak of, so the `<kbd>` beside a button and any sentence that
  * only explains a shortcut (`.key-hint`) go. Titles drop their "(v)" through
- * `hint()` in #lib/keys/hint.svelte.ts, which asks the same question.
+ * `hint()` in #ui/keys/hint.svelte.ts, which asks the same question.
  *
  * Unlayered on purpose: it must beat daisyUI's `.kbd` and Tailwind's display
  * utilities, which live in layers. The `?` sheet and the chord indicator are
