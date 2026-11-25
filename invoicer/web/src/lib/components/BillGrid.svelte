@@ -60,6 +60,7 @@
         type Words,
     } from "#lib/editor.js";
     import {moveRowKeys} from "#lib/keys/gridKeys.js";
+    import {errorText} from "#lib/labels.js";
     import DeferralPopover from "./DeferralPopover.svelte";
 
     let {
@@ -267,7 +268,7 @@
         try {
             deposits = await loadDeposits();
         } catch (error) {
-            depositsError = error instanceof Error ? error.message : String(error);
+            depositsError = errorText(error);
         }
     }
 

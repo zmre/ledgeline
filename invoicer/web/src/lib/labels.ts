@@ -63,9 +63,22 @@ export function fieldLabel(key: string): string {
     return words === "" ? key : words.charAt(0).toUpperCase() + words.slice(1);
 }
 
+/** A caught error for the app: its message through `friendlyMessage`. */
+export function errorText(error: unknown): string {
+    return friendlyMessage(error instanceof Error ? error.message : String(error));
+}
+
 /** Several keys in a sentence: "Terms, Phones". */
 export function fieldList(keys: readonly string[]): string {
     return keys.map(fieldLabel).join(", ");
+}
+
+/** A snippet's keys as its form names them; others as everywhere else. */
+const SNIPPET_FIELD_LABELS: Readonly<Record<string, string>> = {title: "Title", snippet_kind: "Kind", body: "Text"};
+
+/** A snippet's changed keys in a sentence: "Kind, Text". */
+export function snippetFieldList(keys: readonly string[]): string {
+    return keys.map((key) => (Object.hasOwn(SNIPPET_FIELD_LABELS, key) ? SNIPPET_FIELD_LABELS[key] : fieldLabel(key))).join(", ");
 }
 
 /** A label as it reads inside a sentence: "due date", but "PO number" keeps its capitals. */

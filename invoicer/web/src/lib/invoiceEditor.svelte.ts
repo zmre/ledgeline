@@ -25,6 +25,7 @@ import {
     type EditorState,
     type WouldBook,
 } from "./editor.js";
+import {errorText} from "./labels.js";
 import {computeForm, draftPreview, EditorApiError, fetchForm, saveForm} from "./editorApi.js";
 
 /** Debounces, in milliseconds. */
@@ -130,7 +131,7 @@ export class InvoiceEditor {
                     booked: null,
                     in_step: null,
                     receivable: null,
-                    error: error instanceof Error ? error.message : String(error),
+                    error: errorText(error),
                 };
         }
     }
@@ -173,7 +174,7 @@ export class InvoiceEditor {
             } else if (error instanceof EditorApiError && error.code === "confirm-rebook") {
                 this.confirmRebook = true;
             } else {
-                this.saveError = error instanceof Error ? error.message : String(error);
+                this.saveError = errorText(error);
                 this.confirmRebook = false;
             }
             return null;
@@ -186,7 +187,7 @@ export class InvoiceEditor {
         try {
             this.conflict = await fetchForm(this.number);
         } catch (error) {
-            this.saveError = error instanceof Error ? error.message : String(error);
+            this.saveError = errorText(error);
         }
     }
 

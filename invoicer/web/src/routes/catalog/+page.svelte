@@ -39,9 +39,7 @@
     import CatalogGrid from "#lib/components/CatalogGrid.svelte";
     import ConflictNotice from "#lib/components/ConflictNotice.svelte";
     import EmptyState from "#lib/components/EmptyState.svelte";
-    import {friendlyMessage} from "#lib/labels.js";
-
-    const asMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+    import {errorText, friendlyMessage} from "#lib/labels.js";
 
     let list = $state<CatalogList | null>(null);
     let loadError = $state<string | null>(null);
@@ -85,7 +83,7 @@
         try {
             adopt(await fetchCatalog());
         } catch (e) {
-            loadError = asMessage(e);
+            loadError = errorText(e);
         }
     }
 
@@ -113,19 +111,25 @@
         saving = true;
         saveError = null;
         savedNote = null;
+        // What this save sends: edits made while it is in flight stay in
+        // the grid (unsaved) instead of being replaced by the re-read note.
+        const sent = JSON.stringify(table);
         try {
             const saved = await saveCatalog(note.path, over, table);
             lastSaved = saved.hash;
             savedNote = saved.written ? `Saved: ${saved.items} ${saved.items === 1 ? "item" : "items"}.` : "Nothing to save.";
-            adopt(await fetchCatalog());
+            const next = await fetchCatalog();
+            const typed = table === null || JSON.stringify(table) === sent ? null : cloneGrid(table);
+            adopt(next);
+            if (typed !== null && table !== null) table = typed;
         } catch (e) {
             if (e instanceof EditorApiError && e.code === "changed") {
                 conflict = e.revision ?? "";
             } else if (e instanceof EditorApiError && e.code === "invalid") {
                 serverProblems = cellProblemsOf(e.body);
-                saveError = serverProblems.length > 0 ? "Some cells don't read; they're marked below." : e.message;
+                saveError = serverProblems.length > 0 ? "Some cells don't read; they're marked below." : errorText(e);
             } else {
-                saveError = asMessage(e);
+                saveError = errorText(e);
             }
         } finally {
             saving = false;
@@ -141,7 +145,7 @@
             adopt(await fetchCatalog());
             return true;
         } catch (e) {
-            saveError = asMessage(e);
+            saveError = errorText(e);
             return false;
         } finally {
             saving = false;

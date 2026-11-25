@@ -25,6 +25,7 @@
     import {registerKeys} from "#ui/keys/keymap.svelte.js";
     import {CURSOR_ROW, rowKeys} from "#lib/keys/rowKeys.svelte.js";
     import {EditorApiError} from "#lib/editorApi.js";
+    import {errorText, snippetFieldList} from "#lib/labels.js";
     import {
         SNIPPET_KINDS,
         createSnippet,
@@ -44,8 +45,6 @@
     import ConflictNotice from "#lib/components/ConflictNotice.svelte";
     import EmptyState from "#lib/components/EmptyState.svelte";
     import SnippetEditor from "#lib/components/SnippetEditor.svelte";
-
-    const asMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
     let list = $state<SnippetEntry[] | null>(null);
     let loadError = $state<string | null>(null);
@@ -84,14 +83,20 @@
         saveError = null;
     }
 
-    async function load(keep: string | null = chosen): Promise<void> {
+    /**
+     * Read the list and select `keep`. After a save, `sent` is the form it
+     * sent: anything typed since stays in the form (unsaved).
+     */
+    async function load(keep: string | null = chosen, sent?: string): Promise<void> {
         loadError = null;
         try {
             const next = await fetchSnippets();
+            const typed = sent === undefined || JSON.stringify(form) === sent ? null : {...form};
             list = next;
             select(next.some((s) => s.path === keep) ? keep : (next[0]?.path ?? null), next);
+            if (typed !== null && chosen === keep) form = typed;
         } catch (e) {
-            loadError = asMessage(e);
+            loadError = errorText(e);
         }
     }
 
@@ -126,14 +131,15 @@
         saving = true;
         saveError = null;
         savedNote = null;
+        const sent = JSON.stringify(form);
         try {
             const saved = await saveSnippet(entry.path, over, snippetChanges(original, form));
             lastSaved = saved.hash;
-            savedNote = saved.written ? `Saved ${saved.changed.join(", ")}.` : "Nothing to save.";
-            await load(saved.path);
+            savedNote = saved.written ? `Saved: ${snippetFieldList(saved.changed)}.` : "Nothing to save.";
+            await load(saved.path, sent);
         } catch (e) {
             if (e instanceof EditorApiError && e.code === "changed") conflict = e.revision ?? "";
-            else saveError = asMessage(e);
+            else saveError = errorText(e);
         } finally {
             saving = false;
         }
@@ -149,7 +155,7 @@
             savedNote = null;
             await load(made.path);
         } catch (e) {
-            createError = asMessage(e);
+            createError = errorText(e);
         }
     }
 
@@ -181,7 +187,7 @@
             savedNote = null;
             await load(null);
         } catch (e) {
-            deleteError = asMessage(e);
+            deleteError = errorText(e);
         } finally {
             saving = false;
         }

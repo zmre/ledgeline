@@ -17,6 +17,7 @@
     import type {EditorOptions} from "#lib/editor.js";
     import {createInvoice, fetchEditorOptions} from "#lib/editorApi.js";
     import {localToday, nextNumberReason, type TemplateEntry} from "#lib/invoices.js";
+    import {errorText} from "#lib/labels.js";
     import {linkName, toLink} from "#lib/links.js";
     import AddCustomerDialog from "#lib/components/AddCustomerDialog.svelte";
 
@@ -33,7 +34,7 @@
     function loadOptions(): void {
         fetchEditorOptions()
             .then((o) => (options = o))
-            .catch((e: unknown) => (error = e instanceof Error ? e.message : String(e)));
+            .catch((e: unknown) => (error = errorText(e)));
     }
 
     let formEl = $state<HTMLFormElement | null>(null);
@@ -66,7 +67,7 @@
             const made = await createInvoice({customer: link, template: template === "" ? null : template, date});
             await goto(resolve("/invoices/[number]/edit", {number: made.number}));
         } catch (e) {
-            error = e instanceof Error ? e.message : String(e);
+            error = errorText(e);
         } finally {
             busy = false;
         }

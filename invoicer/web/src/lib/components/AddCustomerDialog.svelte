@@ -7,6 +7,7 @@
     import {modalKeys} from "#lib/keys/modalKeys.svelte.js";
     import {untrack} from "svelte";
     import {createCustomer, emptyForm, newCustomerFields, type ContactKind, type CustomerSaved} from "#lib/customers.js";
+    import {errorText} from "#lib/labels.js";
 
     let {
         name: initial,
@@ -44,7 +45,7 @@
             form.terms = terms;
             onCreated(await createCustomer(newCustomerFields(form)));
         } catch (e) {
-            error = e instanceof Error ? e.message : String(e);
+            error = errorText(e);
         } finally {
             busy = false;
         }
