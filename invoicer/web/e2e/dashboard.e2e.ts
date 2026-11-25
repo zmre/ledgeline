@@ -35,7 +35,8 @@ const SHOTS = resolve(import.meta.dirname, "../../../target/e2e-invoicer-shots")
 async function open(page: Page): Promise<void> {
     await page.clock.setFixedTime(FIXED_NOW);
     await page.goto(`/app/#token=${API_TOKEN}`);
-    await expect(page).toHaveURL(/\/app\/$/);
+    // Still the dashboard (no redirect); a repeat visit may keep the `#token=` fragment.
+    await expect(page).toHaveURL(/\/app\/(#.*)?$/);
     await expect(page.getByTestId("dashboard")).toBeVisible();
 }
 
