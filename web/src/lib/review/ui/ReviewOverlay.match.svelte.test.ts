@@ -9,7 +9,7 @@ import {fireEvent, render, screen} from "@testing-library/svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import type {Transaction} from "#lib/domain/types.js";
 import {txnModal} from "#lib/journal/edit/modalState.svelte.js";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import {editing} from "#lib/stores/editing.svelte.js";
 import {matches, resetMatches} from "#lib/stores/matches.svelte.js";
 import {resetReview, review} from "#lib/stores/review.svelte.js";

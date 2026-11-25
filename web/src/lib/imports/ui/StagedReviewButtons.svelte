@@ -11,9 +11,9 @@
     // mounted — the hosts mount it only once a dry run (or a QuickBooks preview
     // with every account mapped) is on screen — and each key is disabled exactly
     // when its button is.
-    import {registerKeys} from "#lib/keys/keymap.svelte.js";
-    import {hint} from "#lib/keys/hint.svelte.js";
-    import {PRIORITY} from "#lib/keys/types.js";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
+    import {hint} from "#ui/keys/hint.svelte.js";
+    import {PRIORITY} from "#ui/keys/types.js";
     import {REVIEW_BUTTON} from "#lib/review/ui/buttons.js";
     import type {StagedRunKind} from "../stagedReview";
     import {reveal, revealArm} from "#ui/ui/reveal.js";

@@ -8,7 +8,7 @@
 import {fireEvent, render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import {editing} from "#lib/stores/editing.svelte.js";
 import {journal} from "#lib/stores/journal.svelte.js";
 import {journalView, resetJournalView} from "#lib/stores/journalView.svelte.js";

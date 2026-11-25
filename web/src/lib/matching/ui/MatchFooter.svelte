@@ -10,8 +10,8 @@
     // the edits in the same write. ⋯ holds Ignore this side (one per side).
     // A combination card (Amendment A4) has no Not a match (a rejection is
     // pairwise) and one side to ignore: the single posting.
-    import {dismissible} from "#lib/keys/dismissible.js";
-    import {formatKeys} from "#lib/keys/chord.js";
+    import {dismissible} from "#ui/keys/dismissible.js";
+    import {formatKeys} from "#ui/keys/chord.js";
     import {footerFade} from "#lib/review/ui/motion.js";
     import ReviewIcon from "#lib/review/ui/ReviewIcon.svelte";
 

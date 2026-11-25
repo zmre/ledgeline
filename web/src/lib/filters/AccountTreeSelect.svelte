@@ -5,9 +5,9 @@
     // holdings scope); `accountNames` is a prop for the same reason.
     import {untrack} from "svelte";
     import {buildAccountTree, type AccountNode} from "#lib/domain/accounts.js";
-    import {dismissible} from "#lib/keys/dismissible.js";
-    import {registerKeys} from "#lib/keys/keymap.svelte.js";
-    import {PRIORITY} from "#lib/keys/types.js";
+    import {dismissible} from "#ui/keys/dismissible.js";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
+    import {PRIORITY} from "#ui/keys/types.js";
     import {filterTree, selectionState} from "./treeSelect";
 
     let {

@@ -36,7 +36,7 @@ test.beforeEach(async ({page}) => {
             // the table at this viewport.
             localStorage.setItem("ledgeline.settings.v1", JSON.stringify({serverUrl: url, serverToken: token, insightsOpen: false}));
             // The keymap records every keystroke and what it did with it
-            // (src/lib/keys/trace.ts), printed below when a test fails.
+            // (packages/ui/src/keys/trace.ts), printed below when a test fails.
             const trace: unknown[] = [];
             (window as unknown as {__ledgelineKeyTrace: unknown[]}).__ledgelineKeyTrace = trace;
             // The flake's third shape: Similar opens but focus ends on <body>.

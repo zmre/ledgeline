@@ -7,7 +7,7 @@
 import {render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {vi} from "vitest";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import type {QueueKind} from "#lib/review/types.js";
 import ReviewOverlay from "#lib/review/ui/ReviewOverlay.svelte";
 import {review} from "#lib/stores/review.svelte.js";

@@ -4,7 +4,7 @@
 
 import {fireEvent, render, screen, within} from "@testing-library/svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import {journal} from "#lib/stores/journal.svelte.js";
 import {FAKE_ENGINE} from "#lib/testing/fakeEngine.js";
 import {dueEntryWire, dueMonthWire, dueWire, needsWire, serveAccrual, sideWire, tieWire} from "#lib/testing/accrualFixture.js";

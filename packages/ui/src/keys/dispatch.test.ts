@@ -4,10 +4,10 @@
 
 import {describe, expect, it} from "vitest";
 import {handleKey, helpSections, resolveBindings, type Dispatch} from "./dispatch";
-import {PRIORITY, type Binding, type KeyGroup, type Layer, type RegisteredLayer} from "./types";
+import {PRIORITY, type Binding, type Layer, type RegisteredLayer} from "./types";
 
 function binding(keys: string, label = keys, extra: Partial<Binding> = {}): Binding {
-    return {keys, label, group: "Journal" as KeyGroup, run: () => {}, ...extra};
+    return {keys, label, group: "Journal", run: () => {}, ...extra};
 }
 
 /** Register in the order given, stamping the `seq` the store would. */
@@ -137,7 +137,24 @@ describe("UNIT helpSections", () => {
             })
         );
 
-        expect(helpSections(active).map((s) => s.group)).toEqual(["Global", "Journal"]);
+        expect(helpSections(active, ["Global", "Journal"]).map((s) => s.group)).toEqual(["Global", "Journal"]);
+    });
+
+    it("puts a section the app's order leaves out after the named ones, never hiding it", () => {
+        const active = resolveBindings(
+            stack({
+                id: "test",
+                bindings: [
+                    {...binding("x", "Stray"), group: "Unlisted"},
+                    {...binding("j", "Move down"), group: "Journal"},
+                    {...binding("?", "Show shortcuts"), group: "Global"},
+                ],
+            })
+        );
+
+        expect(helpSections(active, ["Global", "Journal"]).map((s) => s.group)).toEqual(["Global", "Journal", "Unlisted"]);
+        // No order at all: first-resolved first.
+        expect(helpSections(active).map((s) => s.group)).toEqual(["Unlisted", "Journal", "Global"]);
     });
 
     it("REGRESSION: the sheet and the dispatcher agree on every shadowed key", () => {

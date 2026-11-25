@@ -16,7 +16,7 @@ import {tick} from "svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {decodeIncomeStatementReport} from "#lib/api/nativeDecode.js";
 import type {AmountStyle} from "#lib/domain/types.js";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import {GROUPED_INCOME_STATEMENT, MULTI_STEP_INCOME_STATEMENT, UNCOMPARED_INCOME_STATEMENT} from "#lib/testing/incomeStatementFixture.js";
 import {expectSharedGrid} from "#lib/testing/statementGrid.js";
 import IncomeStatementView from "./IncomeStatementView.svelte";

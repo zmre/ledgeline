@@ -15,8 +15,8 @@
     import type {AmountStyle} from "#lib/domain/types.js";
     import {formatTotals} from "#lib/journal/rowModel.js";
     import {openJournal} from "#lib/journal/openJournal.js";
-    import {registerKeys} from "#lib/keys/keymap.svelte.js";
-    import {PRIORITY} from "#lib/keys/types.js";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
+    import {PRIORITY} from "#ui/keys/types.js";
     import type {PeriodReport, SectionedReport} from "#lib/reports/types.js";
     import {listCursor} from "#ui/ui/listCursor.svelte.js";
     import {compressPeriodRows, compressSectionRows} from "./displayRows";

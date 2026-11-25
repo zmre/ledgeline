@@ -8,7 +8,7 @@ import {fireEvent, render, screen, within} from "@testing-library/svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {decodeCsvStagedTxn, decodeQbStagedTxn} from "#lib/api/importReviewDecode.js";
 import type {EditResult} from "#lib/api/editFailure.js";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import type {RulePreview, RuleSource, StagedSave, StagedTxn} from "#lib/imports/reviewTypes.js";
 import {importPrefill} from "#lib/imports/ruleBuilder.js";
 import {resetReview, review, type StagedKind} from "#lib/stores/review.svelte.js";

@@ -4,7 +4,7 @@
 import {render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {afterEach, describe, expect, it} from "vitest";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import ImportTabs from "./ImportTabs.svelte";
 
 async function press(key: string): Promise<void> {

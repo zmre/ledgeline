@@ -80,14 +80,14 @@
     // nothing is selected, and no rule is saved until the user picks. The save
     // order is the import's: the rule, then the card (the usual batch).
     import {flushSync, tick, untrack} from "svelte";
-    import {hint} from "#lib/keys/hint.svelte.js";
+    import {hint} from "#ui/keys/hint.svelte.js";
     import {addComment, cardChange, cardOps, formToBody, isSplit, reviewFormOf, validateForm} from "#lib/api/editMapping.js";
     import {openAutoRule} from "#lib/autoRules/openRule.js";
     import {txnModal} from "#lib/journal/edit/modalState.svelte.js";
-    import {dismissible} from "#lib/keys/dismissible.js";
-    import {keymap, registerKeys} from "#lib/keys/keymap.svelte.js";
-    import {isTypingTarget, type TargetLike} from "#lib/keys/target.js";
-    import {PRIORITY, type Binding} from "#lib/keys/types.js";
+    import {dismissible} from "#ui/keys/dismissible.js";
+    import {keymap, registerKeys} from "#ui/keys/keymap.svelte.js";
+    import {isTypingTarget, type TargetLike} from "#ui/keys/target.js";
+    import {PRIORITY, type Binding} from "#ui/keys/types.js";
     import {localToday} from "#lib/stores/filters.svelte.js";
     import {journal} from "#lib/stores/journal.svelte.js";
     import type {RuleChoice, RuleSource, RuleSpec} from "#lib/imports/reviewTypes.js";

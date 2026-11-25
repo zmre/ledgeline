@@ -27,7 +27,7 @@
      Items are real `<button>`s so a test can find them by role and name without
      asserting on geometry, and so the keyboard reaches them at all. -->
 <script lang="ts">
-    import {dismissible} from "#lib/keys/dismissible.js";
+    import {dismissible} from "#ui/keys/dismissible.js";
     import {remToPx} from "#ui/theme/scale.js";
     import {menuPosition, portal, liveViewport} from "#ui/ui/anchoredPopup.js";
 

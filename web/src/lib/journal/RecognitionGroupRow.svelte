@@ -10,7 +10,7 @@
     import type {Transaction} from "#lib/domain/types.js";
     import {fmt} from "#lib/format/amounts.js";
     import type {RecognitionGroup} from "#lib/journalView/types.js";
-    import {hint} from "#lib/keys/hint.svelte.js";
+    import {hint} from "#ui/keys/hint.svelte.js";
     import {rowShadow} from "#lib/review/card.js";
     import ReviewIcon from "#lib/review/ui/ReviewIcon.svelte";
     import {journal} from "#lib/stores/journal.svelte.js";

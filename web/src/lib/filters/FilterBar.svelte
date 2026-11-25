@@ -5,10 +5,10 @@
     // filters differ from the default. A pinned running balance (plan 36) gets
     // its own chip, and each account chip a ⚖ button that pins that account.
     import {accrual} from "#lib/accrual/store.svelte.js";
-    import {registerKeys} from "#lib/keys/keymap.svelte.js";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
     import type {RecognitionRows} from "#lib/settings/uiPrefs.js";
     import {settings} from "#lib/stores/settings.svelte.js";
-    import {PRIORITY} from "#lib/keys/types.js";
+    import {PRIORITY} from "#ui/keys/types.js";
     import {defaultFilter, filters} from "#lib/stores/filters.svelte.js";
     import {toggleSubtreeRoot} from "./treeSelect";
     import AccountTreeSelect from "./AccountTreeSelect.svelte";

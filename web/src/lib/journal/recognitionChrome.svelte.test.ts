@@ -11,7 +11,7 @@ import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {accrual, resetAccrual} from "#lib/accrual/store.svelte.js";
 import {dec} from "#lib/domain/money.js";
 import FilterBar from "#lib/filters/FilterBar.svelte";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import TopTxnsList from "#lib/reports/ui/insights/TopTxnsList.svelte";
 import {filters} from "#lib/stores/filters.svelte.js";
 import {settings} from "#lib/stores/settings.svelte.js";

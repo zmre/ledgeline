@@ -18,11 +18,11 @@
     // Rows come from the journal view's block cache (`ensure` over the whole
     // month), so an edit re-reads them exactly as it re-reads the table's.
     import {untrack} from "svelte";
-    import {hint} from "#lib/keys/hint.svelte.js";
+    import {hint} from "#ui/keys/hint.svelte.js";
     import {styleOf} from "#lib/format/amounts.js";
-    import {dismissible} from "#lib/keys/dismissible.js";
-    import {registerKeys} from "#lib/keys/keymap.svelte.js";
-    import {PRIORITY} from "#lib/keys/types.js";
+    import {dismissible} from "#ui/keys/dismissible.js";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
+    import {PRIORITY} from "#ui/keys/types.js";
     import {editing} from "#lib/stores/editing.svelte.js";
     import {filters, localToday} from "#lib/stores/filters.svelte.js";
     import {journal} from "#lib/stores/journal.svelte.js";

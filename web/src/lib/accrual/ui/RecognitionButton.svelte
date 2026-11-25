@@ -4,8 +4,8 @@
     // invoice matches, broken down in the tooltip), and a ▾ holding the lookback for
     // "Needs a schedule" and why the helpers are on. Nothing renders while the
     // helpers are off for the ledger (`{enabled: false}`, D-gate).
-    import {hint} from "#lib/keys/hint.svelte.js";
-    import {dismissible} from "#lib/keys/dismissible.js";
+    import {hint} from "#ui/keys/hint.svelte.js";
+    import {dismissible} from "#ui/keys/dismissible.js";
     import {REVIEW_BUTTON} from "#lib/review/ui/buttons.js";
     import ReviewIcon from "#lib/review/ui/ReviewIcon.svelte";
     import {NEEDS_LOOKBACK_CHOICES} from "../model";

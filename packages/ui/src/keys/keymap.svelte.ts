@@ -1,4 +1,5 @@
-// The keymap store: the layer stack, the armed chord prefix, the help sheet's
+// The keymap store, shared by Ledgeline and the invoicer (one per SPA: the
+// state is module-level, and each app bundles its own copy). The layer stack, the armed chord prefix, the help sheet's
 // open state, and the one window-level handler the whole app routes through.
 //
 // This is the app's FIRST global key handling of any kind. The listener lives in
@@ -18,17 +19,20 @@ import {untrack} from "svelte";
 import {handleKey, helpSections, resolveBindings, type HelpSection} from "./dispatch";
 import {isTypingTarget, type TargetLike} from "./target";
 import {keyTrace, recordKey} from "./trace";
-import {CHORD_TIMEOUT_MS, type Layer, type RegisteredLayer, type ResolvedBinding} from "./types";
+import {CHORD_TIMEOUT_MS, type KeyGroup, type Layer, type RegisteredLayer, type ResolvedBinding} from "./types";
 
 let layers = $state<RegisteredLayer[]>([]);
 let pending = $state("");
 let helpOpen = $state(false);
+// The app's help-sheet section order (`setGroupOrder`). Empty: sections in
+// the order their first binding resolves.
+let groupOrder = $state<readonly KeyGroup[]>([]);
 
 let seq = 0;
 let pendingTimer: ReturnType<typeof setTimeout> | undefined;
 
 const active = $derived.by(() => resolveBindings(layers));
-const help = $derived.by(() => helpSections(active));
+const help = $derived.by(() => helpSections(active, groupOrder));
 
 function disarm(): void {
     if (pendingTimer !== undefined) {
@@ -110,6 +114,14 @@ export const keymap = {
     },
     toggleHelp(): void {
         helpOpen = !helpOpen;
+    },
+    /**
+     * The app's help-sheet sections, in the order the `?` sheet shows them.
+     * Called once at startup by each app's root layout; a section it leaves
+     * out still shows, after these.
+     */
+    setGroupOrder(order: readonly KeyGroup[]): void {
+        groupOrder = [...order];
     },
     /** Drop any armed chord prefix. Also bound to window blur, for Cmd-Tab. */
     disarm,

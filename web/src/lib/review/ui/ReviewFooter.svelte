@@ -8,7 +8,7 @@
     //   dirty-unknown  Save → (primary, not reviewed)    ✕ Revert Changes
     //
     // Every button shows its key.
-    import {formatKeys} from "#lib/keys/chord.js";
+    import {formatKeys} from "#ui/keys/chord.js";
     import type {FooterState} from "../card";
     import {footerFade} from "./motion";
     import ReviewIcon from "./ReviewIcon.svelte";

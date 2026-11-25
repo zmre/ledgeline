@@ -21,7 +21,7 @@
     // Presentational: the table works out which actions apply and what they
     // do. `dismissible` makes it the overlay the iOS app's back button closes.
     import type {Transaction} from "#lib/domain/types.js";
-    import {dismissible} from "#lib/keys/dismissible.js";
+    import {dismissible} from "#ui/keys/dismissible.js";
     import TxnDetailBody from "./TxnDetailBody.svelte";
 
     let {

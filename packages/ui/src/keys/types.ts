@@ -1,35 +1,16 @@
 // The keymap's vocabulary: the shape of a binding, the shape of a layer, and
-// the two ordering conventions everything else reads. Pure types and constants
+// the ordering conventions everything else reads. Pure types and constants
 // — no runes, no DOM — so `dispatch.ts` and its tests stay in the fast `unit`
 // vitest project rather than needing jsdom.
 
 /**
- * Help-sheet sections, rendered in this order. A binding with no home here has
- * no home in the app.
- *
- * The middle groups mirror the nav bar's own order (Journal, Holdings,
- * Projections, Reports, Imports, Settings), so a reader scanning `?` finds the section where they
- * expect the page to be. "Holdings" arrived with plans/14: the holdings
- * table's row cursor had been borrowing "Journal" while it was the page's
- * only keyboard surface, and once the tab strip added a second one, that
- * would have filed one feature under two headings.
+ * A help-sheet section. Each app names its own ("Journal", "Invoices") and
+ * hands the keymap their order with `keymap.setGroupOrder` (see
+ * `helpSections`): the engine is shared by Ledgeline and the invoicer
+ * (invoicer PLAN J13), and their sections are not. A plain string, so neither
+ * app's vocabulary leaks into the other's.
  */
-export type KeyGroup = "Global" | "Navigation" | "Journal" | "Review" | "Matches" | "Holdings" | "Projections" | "Reports" | "Imports" | "Settings" | "Filters";
-
-/** "Review" (plan 32 D16) and "Matches" (plan 35) sit right after "Journal", the page their overlays open from. */
-export const GROUP_ORDER: readonly KeyGroup[] = [
-    "Global",
-    "Navigation",
-    "Journal",
-    "Review",
-    "Matches",
-    "Holdings",
-    "Projections",
-    "Reports",
-    "Imports",
-    "Settings",
-    "Filters",
-];
+export type KeyGroup = string;
 
 /**
  * Layer priorities. Higher wins; registration order breaks ties (later beats

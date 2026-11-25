@@ -16,7 +16,7 @@ import {tick} from "svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {decodeBalanceSheetColumns, decodeBalanceSheetReport} from "#lib/api/nativeDecode.js";
 import type {AmountStyle} from "#lib/domain/types.js";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import {CLASSIFIED_BALANCE_SHEET, GROUPED_BALANCE_SHEET, STRADDLING_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "#lib/testing/balanceSheetFixture.js";
 import {PROJECTION_COLUMNS, widenSheet} from "#lib/testing/projectionFixture.js";
 import {expectSharedGrid} from "#lib/testing/statementGrid.js";

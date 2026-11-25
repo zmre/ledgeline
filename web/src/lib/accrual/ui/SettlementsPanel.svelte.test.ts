@@ -10,7 +10,7 @@ import {FAKE_ENGINE} from "#lib/testing/fakeEngine.js";
 import {proposalWire, serveAccrual, settlementsWire, sideWire} from "#lib/testing/accrualFixture.js";
 import {accrual, resetAccrual} from "../store.svelte";
 import {resetTxnDetails} from "../details.svelte";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import {txnFixture} from "#lib/testing/reviewFixture.js";
 import {wireRow} from "#lib/testing/journalViewFixture.js";
 import {bpsToPercent, percentToBps} from "./format";

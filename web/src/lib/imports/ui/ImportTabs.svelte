@@ -3,8 +3,8 @@
      the same thing to look at and to operate. -->
 <script lang="ts">
     import {TAB_LABELS, TAB_ORDER, type ImportTab} from "#lib/imports/params.js";
-    import {registerKeys} from "#lib/keys/keymap.svelte.js";
-    import {PRIORITY} from "#lib/keys/types.js";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
+    import {PRIORITY} from "#ui/keys/types.js";
     import {isNative} from "#ui/native/detect.js";
 
     let {tab = $bindable()}: {tab: ImportTab} = $props();

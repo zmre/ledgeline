@@ -10,7 +10,7 @@ import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {decodeCsvStagedTxn} from "#lib/api/importReviewDecode.js";
 import type {Amount, Posting, Transaction} from "#lib/domain/types.js";
 import type {StagedSave} from "#lib/imports/reviewTypes.js";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import {localToday} from "#lib/stores/filters.svelte.js";
 import {resetReview, review} from "#lib/stores/review.svelte.js";
 import {connectFakeEngine} from "#lib/testing/fakeEngine.js";

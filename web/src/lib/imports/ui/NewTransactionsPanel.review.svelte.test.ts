@@ -10,7 +10,7 @@
 import {fireEvent, render, screen} from "@testing-library/svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {importStore} from "#lib/imports/importStore.svelte.js";
-import {keymap} from "#lib/keys/keymap.svelte.js";
+import {keymap} from "#ui/keys/keymap.svelte.js";
 import {resetReviewLaunch} from "#lib/review/ui/launch.svelte.js";
 import {resetReview, review} from "#lib/stores/review.svelte.js";
 import {settings} from "#lib/stores/settings.svelte.js";

@@ -10,9 +10,10 @@
     import SyncStatusDot from "#lib/sync/ui/SyncStatusDot.svelte";
     import ServerSetupModal from "#lib/components/ServerSetupModal.svelte";
     import {rulesStore} from "#lib/imports/rulesStore.svelte.js";
-    import ChordIndicator from "#lib/keys/ChordIndicator.svelte";
-    import KeyHelp from "#lib/keys/KeyHelp.svelte";
-    import {keymap, registerKeys} from "#lib/keys/keymap.svelte.js";
+    import ChordIndicator from "#ui/keys/ChordIndicator.svelte";
+    import KeyHelp from "#ui/keys/KeyHelp.svelte";
+    import {keymap, registerKeys} from "#ui/keys/keymap.svelte.js";
+    import {LEDGELINE_KEY_GROUPS} from "#lib/keys/groups.js";
     import {globalLayer} from "#lib/keys/navBindings.js";
     import {
         GLOBAL_ACTION_ORDER,
@@ -69,6 +70,7 @@
     // why bubble phase (and not a capture-phase document listener) is what keeps
     // the four pre-existing element handlers working untouched.
     registerKeys(globalLayer());
+    keymap.setGroupOrder(LEDGELINE_KEY_GROUPS);
 
     // Theme and interface scale (plan 39): applied from the saved prefs and the
     // OS colour scheme, with the zoom shortcuts stepping the saved scale. The
