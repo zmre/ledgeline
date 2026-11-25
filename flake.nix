@@ -827,6 +827,9 @@
         # Info.plist's CFBundleIconFile, plus `.icns`.
         icnsFile,
         assetsCar,
+        # Ship hledger beside the binary in Contents/MacOS/ (step 5). Only
+        # Ledgeline runs hledger (imports); the invoicer runs none.
+        bundleHledger,
       }:
         pkgs.runCommand drvName {
           # A bare darwin `runCommand` has NONE of these: cctools supplies
@@ -847,8 +850,10 @@
           # which is precisely where `hledger::sibling_hledger` looks. Not
           # Contents/Resources: `codesign --deep` and notarization both expect
           # executable code under MacOS/, and Resources/ is for data.
-          cp ${bundledHledger}/bin/hledger "$app/Contents/MacOS/hledger"
-          chmod u+w "$app/Contents/MacOS/hledger"
+          ${lib.optionalString bundleHledger ''
+            cp ${bundledHledger}/bin/hledger "$app/Contents/MacOS/hledger"
+            chmod u+w "$app/Contents/MacOS/hledger"
+          ''}
 
           # `for`, NOT `otool | while read`: a piped while-loop body runs in a
           # SUBSHELL, so the `exit 1` below would kill only the subshell and the
@@ -918,12 +923,12 @@
           # install_name_tool just broke the ad-hoc signature the linker gave it.
           codesign -f -s - "$bin"
 
-          # The guarantee, asserted rather than assumed. Covers the bundled
-          # hledger too: `bundledHledger` already made the same assertion, but
-          # this is the check that speaks for the ARTIFACT rather than for one of
-          # its inputs, so it is the one that keeps holding if the bundle later
-          # grows a third Mach-O.
-          for macho in "$bin" "$app/Contents/MacOS/hledger"; do
+          # The guarantee, asserted rather than assumed. Covers every Mach-O in
+          # Contents/MacOS/ (the bundled hledger, where there is one):
+          # `bundledHledger` already made the same assertion, but this is the
+          # check that speaks for the ARTIFACT rather than for one of its inputs,
+          # so it keeps holding if the bundle later grows another Mach-O.
+          for macho in "$app"/Contents/MacOS/*; do
             if otool -L "$macho" | tail -n +2 | grep -q /nix/store; then
               echo "ERROR: Nix store paths survived de-nixing in $macho:" >&2
               otool -L "$macho" >&2
@@ -941,12 +946,13 @@
         icns = ledgelineIcns;
         icnsFile = "ledgeline.icns";
         assetsCar = ./assets/Assets.car;
+        bundleHledger = true;
       };
 
       # `Ledgeline Invoicer.app` (invoicer ARCHITECTURE §6.1, bundle id
       # `com.zmre.ledgeline.invoicer`), Apple Silicon only in releases (I18).
-      # It bundles hledger beside its binary like Ledgeline.app (invoicer PLAN
-      # 6a), though the invoicer itself runs none today.
+      # No bundled hledger: the invoicer runs none, so it would only add
+      # ~150 MiB to the DMG.
       invoicerMacApp = mkMacApp {
         drvName = "ledgeline-invoicer-app";
         appName = "Ledgeline Invoicer";
@@ -956,6 +962,7 @@
         icns = invoicerIcns;
         icnsFile = "ledgeline-invoicer.icns";
         assetsCar = ./assets/invoicer/Assets.car;
+        bundleHledger = false;
       };
 
       # 7. Combined darwin install: the `Applications/Ledgeline.app` bundle PLUS
@@ -971,12 +978,17 @@
       #    home-manager's app linking picks it up via `Applications/`. The
       #    `bin/ledgeline` link is relative so it keeps resolving into the bundle
       #    within whatever prefix the output is installed under.
+      #
+      #    It installs Ledgeline Invoicer.app beside Ledgeline.app, with its
+      #    own `bin/ledgeline-invoicer` link, as `linuxDist` does on Linux: one
+      #    `nix profile install` gives both apps.
       macDist = pkgs.symlinkJoin {
         name = "ledgeline-${version}";
-        paths = [macApp];
+        paths = [macApp invoicerMacApp];
         postBuild = ''
           mkdir -p "$out/bin"
           ln -s ../Applications/Ledgeline.app/Contents/MacOS/ledgeline "$out/bin/ledgeline"
+          ln -s "../Applications/Ledgeline Invoicer.app/Contents/MacOS/ledgeline-invoicer" "$out/bin/ledgeline-invoicer"
         '';
         meta = ledgeline.meta;
       };
