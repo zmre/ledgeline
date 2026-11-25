@@ -226,33 +226,9 @@ impl fmt::Display for BooksEntry {
     }
 }
 
-/// `YYYY-MM-DD` naming a real day (ledgeline-core's own check is
-/// crate-private).
-#[must_use]
-pub fn is_iso_date(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    let shape = bytes.len() == 10
-        && bytes[4] == b'-'
-        && bytes[7] == b'-'
-        && bytes
-            .iter()
-            .enumerate()
-            .all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit());
-    if !shape {
-        return false;
-    }
-    let num = |range: std::ops::Range<usize>| text[range].parse::<u32>().unwrap_or(0);
-    let (year, month, day) = (num(0..4), num(5..7), num(8..10));
-    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
-    let days = match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if leap => 29,
-        2 => 28,
-        _ => 0,
-    };
-    (1..=days).contains(&day)
-}
+/// `YYYY-MM-DD` naming a real day: ledgeline-core's check, so the books
+/// and the invoicer agree on what a date is.
+pub use ledgeline_core::accrual::is_iso_date;
 
 #[cfg(test)]
 mod tests {
