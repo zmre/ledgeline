@@ -537,6 +537,32 @@ jobs:
           security delete-keychain "$RUNNER_TEMP/ledgeline-signing.keychain-db" || true
           rm -f "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/certificate.p12"
 
+  # The crates.io publish, rehearsed: the same script as `publish`, with
+  # --dry-run, so a packaging break (a file outside the crate, a dependency
+  # that only resolves through `path`) fails here, on a dry run or before the
+  # GitHub Release, rather than in `publish` after the Release is public.
+  # Runs on every run, dry or tagged, in parallel with `package`; `release`
+  # needs it. No token: a dry run uploads nothing.
+  crates-dry-run:
+    name: crates.io dry run
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: zmre
+          extraPullNames: nix-community
+
+      - name: cargo publish --dry-run
+        run: ./scripts/publish-crates.sh --dry-run
+
   # ONE GitHub Release carrying ALL THREE DMGs. This is a separate job rather
   # than a step in `package` because `gh release create` is not idempotent: run
   # once per matrix leg, the first would create the release and the second would
@@ -548,11 +574,11 @@ jobs:
   # broken Intel or invoicer build therefore blocks the release rather than
   # shipping a partial one under a tag that claims all three — which is the
   # right trade for a signed artifact, and is why the matrix does not set
-  # `continue-on-error`. `verify` is listed too: it runs in parallel with
-  # `package`, and this is where its tests gate what ships.
+  # `continue-on-error`. `verify` and `crates-dry-run` are listed too: they run
+  # in parallel with `package`, and this is where they gate what ships.
   release:
     name: Publish the GitHub Release
-    needs: [verify, package]
+    needs: [verify, crates-dry-run, package]
     if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     permissions:
@@ -716,48 +742,11 @@ jobs:
       - name: Verify the tag and every version reference
         run: ./scripts/release.sh check "$GITHUB_REF_NAME"
 
-      # `crates/ledgeline-server/spa/` is git-ignored, so a fresh checkout has
-      # none — and `build.rs` would happily write its placeholder there and
-      # cargo would package THAT. Building the real SPA and copying it in is
-      # what makes the published crate usable.
-      - name: Build the SPA and stage it into the crate
-        run: |
-          set -euo pipefail
-          nix build -L .#spaBuild -o result-spa
-          rm -rf crates/ledgeline-server/spa
-          mkdir -p crates/ledgeline-server/spa
-          cp -RL result-spa/. crates/ledgeline-server/spa/
-          chmod -R u+w crates/ledgeline-server/spa
-
-      # The assertion that stops the quiet failure. A placeholder SPA packages
-      # exactly as happily as the real one — same file name, same manifest, no
-      # warning anywhere — and the result is a published, unyankable version
-      # whose UI is a single line of text saying it was not built.
-      - name: Assert the staged SPA is real
-        run: |
-          set -euo pipefail
-          index=crates/ledgeline-server/spa/index.html
-          [ -f "$index" ] || { echo "::error::$index is missing"; exit 1; }
-          if grep -q "SPA not built" "$index"; then
-            echo "::error::The staged SPA is the build.rs PLACEHOLDER, not the real UI."
-            echo "  Publishing this would ship a crate whose entire UI is an error page." >&2
-            exit 1
-          fi
-          echo "Staged SPA looks real ($(find crates/ledgeline-server/spa -type f | wc -l | tr -d ' ') files)."
-
-      # The invoicer's crates (`invoicer-core`, `ledgeline-invoicer`) are NOT
-      # here and are `publish = false`: nothing about the invoicer goes to
-      # crates.io until Patrick decides to share it (invoicer PLAN I19).
-      #
-      # Sequential and explicit: `ledgeline` depends on `ledgeline-shell`,
-      # which depends on `ledgeline-core`, so they go up in that order. `cargo publish` has waited
-      # for its own upload to appear in the index since 1.66, so the second
-      # command does not race the first.
-      #
-      # `--allow-dirty` is load-bearing rather than lazy: `spa/` was just written
-      # into the tree by the step above and is git-ignored by design, so cargo
-      # would otherwise refuse to package the very files that make the crate
-      # worth publishing. The checkout is a tag, so nothing else can be dirty.
+      # scripts/publish-crates.sh stages the real SPA into the crate, asserts it
+      # is not build.rs's placeholder, and publishes all three crates in ONE
+      # `cargo publish`, which verify-builds every one before uploading any.
+      # `crates-dry-run` already ran the same script with --dry-run on this
+      # commit. The invoicer's crates are `publish = false` (invoicer PLAN I19).
       - name: Publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -769,6 +758,4 @@ jobs:
             echo "see docs/development/releasing.md → 'Publishing to crates.io'." >&2
             exit 0
           fi
-          nix develop path:. --command cargo publish -p ledgeline-core --allow-dirty
-          nix develop path:. --command cargo publish -p ledgeline-shell --allow-dirty
-          nix develop path:. --command cargo publish -p ledgeline --allow-dirty
+          ./scripts/publish-crates.sh

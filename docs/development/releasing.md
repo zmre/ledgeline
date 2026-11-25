@@ -364,14 +364,18 @@ cp -R web/build/. crates/ledgeline-server/spa/
 grep -q "SPA not built" crates/ledgeline-server/spa/index.html \
   && { echo "PLACEHOLDER — do not publish"; exit 1; }
 
-# 3. Publish. Core first; cargo has waited for its own upload to appear in the
-#    index since 1.66, so the second command does not race the first.
+# 3. Publish. One command: cargo (1.90+) packages and verify-builds all three
+#    before uploading any, then uploads core, shell, ledgeline in that order.
 #    `--allow-dirty` because `spa/` is git-ignored by design.
 export CARGO_REGISTRY_TOKEN=<a publish-new token>
-cargo publish -p ledgeline-core --allow-dirty
-cargo publish -p ledgeline-shell --allow-dirty
-cargo publish -p ledgeline --allow-dirty
+cargo publish -p ledgeline-core -p ledgeline-shell -p ledgeline --allow-dirty
 ```
+
+Steps 1–3 are what `scripts/publish-crates.sh` does (it builds the SPA with
+Nix rather than bun), and what CI runs: with `--dry-run` in the release
+workflow's `crates-dry-run` job on every run, dry or tagged, and for real in
+`publish`. `release` needs `crates-dry-run`, so a crate that will not package
+fails before the GitHub Release exists.
 
 Then **revoke the `publish-new` token** at
 <https://crates.io/settings/tokens> and add the `publish-update` one to Actions.
