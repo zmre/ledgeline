@@ -103,10 +103,10 @@ Keys are lowercase with underscores, dates are `YYYY-MM-DD`, and amounts never a
 | `invoicer_name`, `_email`, `_address`, `_phone` | as above | Your company's details, copied the same way from its note.                                                               |
 | `invoicer_logo`                                 | no       | Your logo's path, copied from the company note's `logo:`. See [Templates](templates.md#your-logo).                       |
 | `terms`                                         | no       | Net days, a whole number. Copied from the customer.                                                                      |
-| `due_date`                                      | no       | The date plus the terms, unless you set it yourself. "Overdue" is always worked out from it, never stored.               |
+| `due_date`                                      | no       | The date plus the terms, unless you set it yourself. "Overdue" is worked out from it, never stored.                      |
 | `reference`                                     | no       | What the customer quotes back, such as a purchase order: `PO #PY75334`.                                                  |
 | `deposit_for`                                   | no       | On a deposit invoice, what it is a deposit for.                                                                          |
-| `paid`                                          | written  | `no`, `partial 2026-10-28 $1,500, 2026-11-19 $3,500`, or the date it was paid in full. The app writes it from the books. |
+| `paid`                                          | written  | `no`, `partial 2026-10-28 $1,500, 2026-11-19 $3,500`, or the paid-in-full date. Written from the books; none on void.    |
 | `sent_date`                                     | written  | When it was first sent.                                                                                                  |
 | `sent_via`                                      | no       | How it was delivered: `email`, `portal`, `mail`, or anything you like. Send sets it.                                     |
 | `void_date`                                     | written  | When it was voided.                                                                                                      |

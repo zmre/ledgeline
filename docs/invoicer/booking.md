@@ -28,7 +28,7 @@ Both work fully. Keep whichever basis your books already use; the invoicer follo
 | Send                    | One transaction on the invoice date: the total to accounts receivable, each row to its account.  | Nothing in the journal. The invoice is tracked from its file.                                                  |
 | Payment arrives         | You import or sync it in Ledgeline and link it to the invoice there.                             | You import or sync it in Ledgeline, then apply it to the invoice, which splits it into the invoice's accounts. |
 | Edit after sending      | The transaction is replaced to match, after you confirm.                                         | Only the file changes.                                                                                         |
-| Void                    | A reversing transaction on the void date, linked to the original so the receivable nets to zero. | The file is marked void.                                                                                       |
+| Void                    | A reversing transaction on the void date, linked to the original so the receivable nets to zero. | The file is marked void and its `paid:` line removed.                                                          |
 
 ### Drafts never touch the books
 
@@ -105,7 +105,7 @@ Apply payment is a command for now; the app shows the result but has no button f
 
 ## The paid status
 
-Each sent invoice shows whether it is paid. The invoicer works that out from the books and writes it into the invoice file, so `grep` and templates can see it:
+Each sent invoice shows whether it is paid; a void one has no paid status. The invoicer works that out from the books and writes it into the invoice file, so `grep` and templates can see it:
 
 | Books say    | The invoice says                               |
 |--------------|------------------------------------------------|
@@ -127,7 +127,7 @@ The app refreshes this when it opens your books and whenever the journal or an i
     revenue:consulting          $800.00  ; customer: Tailspin, item: Site visit
 ```
 
-The reversal is linked to the original, so Ledgeline treats the receivable as settled. The file keeps its rows and is marked void with the date. Voiding a draft only marks the file.
+The reversal is linked to the original, so Ledgeline treats the receivable as settled. The file keeps its rows, is marked void with the date, and loses its `paid:` line. Voiding a draft only marks the file, unless a send stopped partway and the draft is already booked; then it is reversed like a sent invoice.
 
 In cash books, an invoice with a payment applied can't be voided until you undo the payment.
 

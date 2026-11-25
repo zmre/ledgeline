@@ -141,7 +141,7 @@ ledgeline-invoicer set 108 --unset support_tier
 
 `set` refuses three fields. `status` changes only through `send` and `void`. `paid` is written from the books by `reconcile`. `invoice_num` can change only on a draft, and only to a number not in use.
 
-`set` writes exactly what you give it and nothing more. Changing `terms` or `date` doesn't move `due_date`; set it too.
+Setting `terms` also sets `due_date` to the invoice date plus the new terms, unless you give `due_date` in the same command. Changing `date` alone doesn't move `due_date`; set it too.
 
 Setting `template` to a starter your books don't have copies the starter in.
 

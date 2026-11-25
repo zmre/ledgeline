@@ -25,7 +25,7 @@ grep -l '^status: draft' invoices/*.md
 invoices/2026-11-17 Customer X Invoice 108.md
 ```
 
-**Sent and not paid at all.** A void invoice also reads `paid: no`, so look among the sent ones only. File names have spaces, so pass them along with `--null` and `xargs -0`:
+**Sent and not paid at all.** Voiding removes an invoice's `paid:` line, but invoices voided by older versions may still read `paid: no`, so look among the sent ones only. File names have spaces, so pass them along with `--null` and `xargs -0`:
 
 ```sh
 grep -l --null '^status: sent' invoices/*.md | xargs -0 grep -l '^paid: no'
