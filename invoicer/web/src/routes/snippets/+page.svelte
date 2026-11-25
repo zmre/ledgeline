@@ -44,6 +44,7 @@
     import ConfirmDialog from "#lib/components/ConfirmDialog.svelte";
     import ConflictNotice from "#lib/components/ConflictNotice.svelte";
     import EmptyState from "#lib/components/EmptyState.svelte";
+    import SaveDiscardDialog from "#lib/components/SaveDiscardDialog.svelte";
     import SnippetEditor from "#lib/components/SnippetEditor.svelte";
 
     let list = $state<SnippetEntry[] | null>(null);
@@ -72,6 +73,10 @@
 
     let deleting = $state(false);
     let deleteError = $state<string | null>(null);
+
+    /** What waits on Save / Discard / Cancel over unsaved edits: leaving, another snippet, a new one. */
+    let pending = $state<{then: () => void} | null>(null);
+    let pendingError = $state<string | null>(null);
 
     function select(path: string | null, from: SnippetEntry[] | null = list): void {
         chosen = path;
@@ -102,9 +107,30 @@
 
     function choose(path: string): void {
         if (path === chosen) return;
-        if (dirty && !confirm("This snippet has unsaved changes. Switch without saving?")) return;
-        savedNote = null;
-        select(path);
+        const open = (): void => {
+            savedNote = null;
+            select(path);
+        };
+        if (dirty) ask(open);
+        else open();
+    }
+
+    function ask(then: () => void): void {
+        pending = {then};
+        pendingError = null;
+    }
+
+    function carryOn(): void {
+        const then = pending?.then;
+        pending = null;
+        pendingError = null;
+        then?.();
+    }
+
+    async function saveAndCarryOn(): Promise<void> {
+        if (pending === null) return;
+        if (await save()) carryOn();
+        else pendingError = saveError ?? (conflict !== null ? "The snippet changed on disk; reload it or keep yours first." : null);
     }
 
     /** After a change on disk: adopt it when nothing is unsaved; else say so. */
@@ -126,8 +152,8 @@
         }
     }
 
-    async function save(over: string = hash): Promise<void> {
-        if (entry === null) return;
+    async function save(over: string = hash): Promise<boolean> {
+        if (entry === null) return false;
         saving = true;
         saveError = null;
         savedNote = null;
@@ -137,9 +163,11 @@
             lastSaved = saved.hash;
             savedNote = saved.written ? `Saved: ${snippetFieldList(saved.changed)}.` : "Nothing to save.";
             await load(saved.path, sent);
+            return true;
         } catch (e) {
             if (e instanceof EditorApiError && e.code === "changed") conflict = e.revision ?? "";
             else saveError = errorText(e);
+            return false;
         } finally {
             saving = false;
         }
@@ -160,9 +188,12 @@
     }
 
     function startCreate(): void {
-        if (dirty && !confirm("This snippet has unsaved changes. Start a new one without saving?")) return;
-        creating = true;
-        createError = null;
+        const open = (): void => {
+            creating = true;
+            createError = null;
+        };
+        if (dirty) ask(open);
+        else open();
     }
 
     // `?new=1` from the New menu: drop the parameter, then open the form.
@@ -221,10 +252,15 @@
         open: () => (snippet) => choose(snippet.path),
     });
 
-    beforeNavigate(({cancel, to}) => {
+    beforeNavigate(({cancel, to, type}) => {
         // The same page with another query (the New menu's `?new=1`) isn't leaving.
-        if (to?.url.pathname === page.url.pathname) return;
-        if (dirty && to !== null && !confirm("This snippet has unsaved changes. Leave without saving?")) cancel();
+        if (to === null || to.url.pathname === page.url.pathname || !dirty) return;
+        cancel();
+        // Closing the window or reloading: the browser's own prompt.
+        if (type === "leave") return;
+        const href = to.url.pathname + to.url.search + to.url.hash;
+        // eslint-disable-next-line svelte/no-navigation-without-resolve -- a URL SvelteKit itself was navigating to
+        ask(() => void goto(href));
     });
 
     onMount(() => {
@@ -400,4 +436,21 @@
             </p>
         {/if}
     </ConfirmDialog>
+{/if}
+
+{#if pending !== null}
+    <SaveDiscardDialog
+        message="This snippet has unsaved changes. Save them first?"
+        {saving}
+        error={pendingError}
+        onSave={() => void saveAndCarryOn()}
+        onDiscard={() => {
+            form = {...original};
+            carryOn();
+        }}
+        onCancel={() => {
+            pending = null;
+            pendingError = null;
+        }}
+    />
 {/if}

@@ -39,6 +39,7 @@
     import CatalogGrid from "#lib/components/CatalogGrid.svelte";
     import ConflictNotice from "#lib/components/ConflictNotice.svelte";
     import EmptyState from "#lib/components/EmptyState.svelte";
+    import SaveDiscardDialog from "#lib/components/SaveDiscardDialog.svelte";
     import {errorText, friendlyMessage} from "#lib/labels.js";
 
     let list = $state<CatalogList | null>(null);
@@ -62,6 +63,10 @@
     let conflict = $state<string | null>(null);
     /** The hash this page last wrote: its own save coming back isn't a conflict. */
     let lastSaved = "";
+
+    /** What waits on Save / Discard / Cancel over unsaved edits: leaving, or another catalog. */
+    let pending = $state<{then: () => void} | null>(null);
+    let pendingError = $state<string | null>(null);
 
     const ownProblems = $derived(table === null ? [] : catalogProblems(table));
     const problems = $derived([...ownProblems, ...serverProblems.filter((p) => !ownProblems.some((o) => o.row === p.row && o.column === p.column))]);
@@ -106,8 +111,8 @@
         }
     }
 
-    async function save(over: string = hash): Promise<void> {
-        if (note === null || table === null) return;
+    async function save(over: string = hash): Promise<boolean> {
+        if (note === null || table === null) return false;
         saving = true;
         saveError = null;
         savedNote = null;
@@ -122,6 +127,7 @@
             const typed = table === null || JSON.stringify(table) === sent ? null : cloneGrid(table);
             adopt(next);
             if (typed !== null && table !== null) table = typed;
+            return true;
         } catch (e) {
             if (e instanceof EditorApiError && e.code === "changed") {
                 conflict = e.revision ?? "";
@@ -131,6 +137,7 @@
             } else {
                 saveError = errorText(e);
             }
+            return false;
         } finally {
             saving = false;
         }
@@ -182,9 +189,30 @@
     }
 
     function choose(path: string): void {
-        if (dirty && !confirm("The catalog has unsaved changes. Switch without saving?")) return;
-        chosen = path;
-        if (list !== null) adopt(list);
+        const open = (): void => {
+            chosen = path;
+            if (list !== null) adopt(list);
+        };
+        if (dirty) ask(open);
+        else open();
+    }
+
+    function ask(then: () => void): void {
+        pending = {then};
+        pendingError = null;
+    }
+
+    function carryOn(): void {
+        const then = pending?.then;
+        pending = null;
+        pendingError = null;
+        then?.();
+    }
+
+    async function saveAndCarryOn(): Promise<void> {
+        if (pending === null) return;
+        if (await save()) carryOn();
+        else pendingError = saveError ?? (conflict !== null ? "The catalog changed on disk; reload it or keep yours first." : null);
     }
 
     function discard(): void {
@@ -210,10 +238,15 @@
         ],
     });
 
-    beforeNavigate(({cancel, to}) => {
+    beforeNavigate(({cancel, to, type}) => {
         // The same page with another query (the New menu's `?new=1`) isn't leaving.
-        if (to?.url.pathname === page.url.pathname) return;
-        if (dirty && to !== null && !confirm("The catalog has unsaved changes. Leave without saving?")) cancel();
+        if (to === null || to.url.pathname === page.url.pathname || !dirty) return;
+        cancel();
+        // Closing the window or reloading: the browser's own prompt.
+        if (type === "leave") return;
+        const href = to.url.pathname + to.url.search + to.url.hash;
+        // eslint-disable-next-line svelte/no-navigation-without-resolve -- a URL SvelteKit itself was navigating to
+        ask(() => void goto(href));
     });
 
     onMount(() => {
@@ -250,7 +283,17 @@
         {#if list !== null && list.catalogs.length > 1}
             <label class="flex items-center gap-2 text-sm">
                 <span class="text-base-content/70">Catalog</span>
-                <select class="select select-sm" value={chosen} onchange={(event) => choose(event.currentTarget.value)} data-testid="catalog-choice">
+                <select
+                    class="select select-sm"
+                    value={chosen}
+                    onchange={(event) => {
+                        const to = event.currentTarget.value;
+                        // Stays on the open catalog until it is chosen (a Save / Discard prompt may come first).
+                        event.currentTarget.value = chosen ?? "";
+                        choose(to);
+                    }}
+                    data-testid="catalog-choice"
+                >
                     {#each list.catalogs as c (c.path)}<option value={c.path}>{c.title} ({c.path})</option>{/each}
                 </select>
             </label>
@@ -335,3 +378,20 @@
         {/if}
     {/if}
 </div>
+
+{#if pending !== null}
+    <SaveDiscardDialog
+        message="The catalog has unsaved changes. Save them first?"
+        {saving}
+        error={pendingError}
+        onSave={() => void saveAndCarryOn()}
+        onDiscard={() => {
+            discard();
+            carryOn();
+        }}
+        onCancel={() => {
+            pending = null;
+            pendingError = null;
+        }}
+    />
+{/if}
