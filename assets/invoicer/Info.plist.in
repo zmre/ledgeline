@@ -46,7 +46,7 @@
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSHumanReadableCopyright</key>
-  <string>Copyright © 2026 Patrick Walsh. All rights reserved.</string>
+  <string>Copyright © 2026 Patrick Walsh. Licensed under AGPL-3.0-or-later.</string>
   <!-- No CFBundleDocumentTypes: journals belong to Ledgeline.app, and the
        invoicer claiming them (even at Alternate rank) would put a second app
        in every journal's Open With menu. `open -a "Ledgeline Invoicer" books.journal`
