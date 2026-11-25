@@ -9,6 +9,7 @@
 //! |-----------------------------|------------------------------------------------|
 //! | `GET /api/version`          | The app and its version.                       |
 //! | `GET /api/books`            | The open books: journal, basis, counts.        |
+//! | `GET /api/dashboard`, `POST /api/ledgeline/open` | The receivables dashboard; the books in Ledgeline ([`super::dashboard`], 5a). |
 //! | `GET /api/invoices`         | `list --json` (`status`, `customer`, `type`, `open`, `overdue`, `from`, `to`, `aged`, `q`, `sort`, `dir`, `today`; PLAN 5b S1). |
 //! | `GET /api/invoices/{num}`   | `show --json` (`today`).                       |
 //! | `GET /api/invoices/{num}/books` | The Books panel: what the journal holds (3b). |
@@ -81,6 +82,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/pdf/open", post(pdf::open_pdf))
         .route("/api/events", get(events))
         .merge(super::customers::routes())
+        .merge(super::dashboard::routes())
         .merge(super::library::routes())
         .merge(super::files::routes())
         .route("/api/ui-prefs", get(ui_prefs).patch(patch_ui_prefs))
@@ -326,9 +328,13 @@ impl ListParams {
 /// ([`ListParams`]).
 async fn invoices(State(state): State<AppState>, Query(params): Query<ListParams>) -> ApiResult {
     let today = today(params.today.as_deref())?;
-    let query = params.query()?;
+    let mut query = params.query()?;
     with_books(&state, move |books| {
         let session = books.session();
+        // The dashboard links a customer by the books' name (R5).
+        if let Some(name) = &query.filter.customer {
+            query.filter.customer = Some(views::customer_filter_name(session.index(), name));
+        }
         let problems = views::document_problems(&session);
         to_value(views::list(
             session.index(),

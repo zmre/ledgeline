@@ -182,7 +182,8 @@ pub enum Aged {
 
 impl Aged {
     /// `current`, `A-B` (A to B days past due, inclusive) or `N+` (N days or
-    /// more). `None` for anything else, a range running backwards included.
+    /// more; `N-` reads the same, the dashboard's first form). `None` for
+    /// anything else, a range running backwards included.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
         let text = text.trim();
@@ -190,7 +191,7 @@ impl Aged {
             return Some(Self::Current);
         }
         let days = |s: &str| s.trim().parse::<i64>().ok().filter(|d| *d >= 0);
-        if let Some(min) = text.strip_suffix('+') {
+        if let Some(min) = text.strip_suffix('+').or_else(|| text.strip_suffix('-')) {
             return Some(Self::Days {
                 min: days(min)?,
                 max: None,
@@ -309,7 +310,15 @@ mod tests {
             })
         );
         assert_eq!(Aged::parse("91+"), Some(Aged::Days { min: 91, max: None }));
-        for bad in ["", "60-31", "-5", "abc", "1-", "x+", "-1-3"] {
+        assert_eq!(Aged::parse("91-"), Aged::parse("91+"));
+        assert_eq!(
+            Aged::parse("16-45"),
+            Some(Aged::Days {
+                min: 16,
+                max: Some(45)
+            })
+        );
+        for bad in ["", "60-31", "-5", "abc", "x+", "-1-3", "-"] {
             assert_eq!(Aged::parse(bad), None, "{bad}");
         }
         let bucket = Aged::parse("31-60").expect("reads");

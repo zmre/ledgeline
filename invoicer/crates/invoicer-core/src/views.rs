@@ -29,6 +29,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 pub mod account;
+pub mod dashboard;
 pub mod query;
 
 pub use query::{Aged, CustomerQuery, CustomerSort, InvoiceSort, ListStatus, SortDir};
@@ -213,6 +214,25 @@ impl ListQuery {
         }
         true
     }
+}
+
+/// The `customer` filter's name as the index matches it: a name no
+/// customer's title answers to but one's `ledger_customer` (the books' name,
+/// which the dashboard links with) does becomes that customer's title.
+#[must_use]
+pub fn customer_filter_name(index: &DocumentIndex, name: &str) -> String {
+    let wanted = crate::notes::normalize_name(name);
+    let customers = index.customers();
+    if customers
+        .iter()
+        .any(|c| crate::notes::normalize_name(&c.contact.title) == wanted)
+    {
+        return name.to_string();
+    }
+    customers
+        .iter()
+        .find(|c| crate::notes::normalize_name(&c.ledger_customer) == wanted)
+        .map_or_else(|| name.to_string(), |c| c.contact.title.clone())
 }
 
 /// Where a list row stands, for sorting by status: draft, open, overdue,

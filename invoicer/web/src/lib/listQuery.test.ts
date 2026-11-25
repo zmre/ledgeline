@@ -47,8 +47,14 @@ describe("UNIT invoice list URL", () => {
     });
 
     it("knows the aging buckets and ranges", () => {
-        for (const ok of ["current", "1-30", "31-60", "61-90", "91+", "90+", "0-0"]) expect(isAged(ok), ok).toBe(true);
-        for (const bad of ["", "60-31", "-5", "old", "1-", "+"]) expect(isAged(bad), bad).toBe(false);
+        for (const ok of ["current", "1-30", "31-60", "61-90", "91+", "90+", "0-0", "16-45", "46-"]) expect(isAged(ok), ok).toBe(true);
+        for (const bad of ["", "60-31", "-5", "old", "-", "+"]) expect(isAged(bad), bad).toBe(false);
+    });
+
+    it("reads the dashboard's `N-` as `N+`, for any edges", () => {
+        expect(invoices("aged=91-").aged).toBe("91+");
+        expect(invoices("aged=46-").aged).toBe("46+");
+        expect(invoiceQueryString(invoices("aged=8-"))).toBe("aged=8%2B");
     });
 
     it("writes nothing for the default list, so /invoices stays bare", () => {

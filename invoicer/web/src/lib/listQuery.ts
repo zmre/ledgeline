@@ -66,7 +66,7 @@ export interface CustomerQuery {
 type Params = Pick<URLSearchParams, "get">;
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
-const AGED = /^(current|\d+-\d+|\d+\+)$/;
+const AGED = /^(current|\d+-\d+|\d+[+-])$/;
 
 const oneOf = <T extends string>(values: readonly T[], text: string | null): T | "" => ((values as readonly string[]).includes(text ?? "") ? (text as T) : "");
 
@@ -75,7 +75,7 @@ const param = (params: Params, name: string): string => (params.get(name) ?? "")
 
 const flag = (params: Params, name: string): boolean => ["true", "1", "yes"].includes(param(params, name));
 
-/** Whether `aged` is a value the server reads (`current`, `A-B` with A ≤ B, `N+`). */
+/** Whether `aged` is a value the server reads (`current`, `A-B` with A ≤ B, `N+` or `N-`), for any bucket edges. */
 export function isAged(text: string): boolean {
     if (!AGED.test(text)) return false;
     const range = /^(\d+)-(\d+)$/.exec(text);
@@ -95,7 +95,8 @@ export function parseInvoiceQuery(params: Params): InvoiceQuery {
         customer: param(params, "customer"),
         from: date("from"),
         to: date("to"),
-        aged: isAged(aged) ? aged : "",
+        // `91-` (the dashboard's first form) reads as `91+`.
+        aged: isAged(aged) ? aged.replace(/^(\d+)-$/, "$1+") : "",
         q: params.get("q") ?? "",
         sort,
         dir: sort === "" ? "desc" : param(params, "dir") === "desc" ? "desc" : "asc",

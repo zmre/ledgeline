@@ -31,10 +31,10 @@ const CUSTOMER_X = "customers/Customer X.md";
 
 const read = (file: string): string => readFileSync(resolve(BOOKS, file), "utf8");
 
-/** Open the app the way `--server` prints it, then go to `path` (under /app). */
+/** Open the app on the invoice list with the launch token (`/app/` is the dashboard, R1), then go to `path`. */
 async function open(page: Page, path = "/app/invoices"): Promise<void> {
     await page.clock.setFixedTime(FIXED_NOW);
-    await page.goto(`/app/#token=${API_TOKEN}`);
+    await page.goto(`/app/invoices#token=${API_TOKEN}`);
     await expect(page).toHaveURL(/\/app\/invoices$/);
     if (path !== "/app/invoices") await page.goto(path);
 }

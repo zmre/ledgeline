@@ -48,6 +48,7 @@ pub(crate) fn capabilities(window: bool) -> Capabilities {
         open_url: window,
         open_file: window && cfg!(target_os = "macos"),
         pick_file: window && cfg!(target_os = "macos"),
+        open_ledgeline: window && cfg!(target_os = "macos"),
     }
 }
 
@@ -116,7 +117,30 @@ impl<E: Send + 'static> Native for LoopNative<E> {
             .set_directory(start)
             .pick_file())
     }
+
+    fn open_in_ledgeline(&self, journal: &Path) -> Result<(), String> {
+        if !self.caps.open_ledgeline {
+            return Err("this process has no window to open Ledgeline from".to_string());
+        }
+        // Launch Services by bundle id: Ledgeline opens a document handed to
+        // it (tao's `Opened`), so it opens these books, or switches to them.
+        // `open` waits only for the hand-off, and fails when no app has the
+        // id: Ledgeline isn't installed.
+        let output = std::process::Command::new("/usr/bin/open")
+            .args(["-b", LEDGELINE_BUNDLE_ID])
+            .arg(journal)
+            .output()
+            .map_err(|e| format!("couldn't open Ledgeline: {e}"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err("Ledgeline isn't installed on this Mac".to_string())
+        }
+    }
 }
+
+/// Ledgeline's bundle id (`assets/Info.plist.in`).
+const LEDGELINE_BUNDLE_ID: &str = "com.zmre.ledgeline";
 
 /// The sink MBR's exports report through: back into the loop.
 pub(crate) fn export_sink<E: Send + 'static>(

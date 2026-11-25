@@ -231,9 +231,10 @@ struct ReceivablesArgs {
     /// Show the aging buckets too (`--json` always includes them).
     #[arg(long)]
     aging: bool,
-    /// The days sales outstanding window, in days.
-    #[arg(long, value_name = "DAYS", default_value_t = 90)]
-    dso_days: u32,
+    /// The days sales outstanding window, in days. Default: `[invoicer]
+    /// dso-days`, else 90.
+    #[arg(long, value_name = "DAYS")]
+    dso_days: Option<u32>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -854,7 +855,7 @@ fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
                 session.index(),
                 session.book_states(),
                 &today(cli)?,
-                args.dso_days,
+                args.dso_days.unwrap_or(session.settings().dso_days),
             );
             emit(cli.json, &view, |v| {
                 human::receivables(v, session.index().money(), args.aging)
