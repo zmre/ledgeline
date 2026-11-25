@@ -233,6 +233,34 @@ fn create_never_replaces_a_file() {
 }
 
 #[test]
+fn prepare_renders_what_create_writes_and_writes_nothing() {
+    let new = fields(json!({
+        "title": "  Northwind Traders ",
+        "kind": "person",
+        "emails": [{"label": "billing", "value": "ap@northwind.example"}],
+        "terms": 15
+    }));
+    let (vault, mut index) = open(&[]);
+    let prepared = prepare(&index, &new).expect("prepares");
+    assert_eq!(prepared.title, "Northwind Traders");
+    assert_eq!(prepared.path, path("customers/Northwind Traders.md"));
+    assert_eq!(prepared.keys, ["title", "type", "tags", "emails", "terms"]);
+    assert!(vault.read(&prepared.path).is_err(), "nothing written");
+    let preview = prepared.saved(false);
+    assert!(!preview.written);
+    let made = create(&mut index, &vault, &new).expect("creates");
+    let text = vault.read_to_string(&made.path).expect("reads");
+    assert_eq!(text, prepared.text);
+    assert_eq!(made.hash, preview.hash);
+    assert_eq!(made.changed, prepared.keys);
+    // Now the name is taken.
+    assert!(matches!(
+        prepare(&index, &new),
+        Err(CustomerError::NameTaken { .. })
+    ));
+}
+
+#[test]
 fn update_edits_only_the_keys_named_and_keeps_everything_else() {
     let (vault, mut index) = open(&[("customers/Fabrikam.md", HAND_WRITTEN)]);
     let p = path("customers/Fabrikam.md");

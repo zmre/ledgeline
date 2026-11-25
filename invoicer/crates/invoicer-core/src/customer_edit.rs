@@ -1,10 +1,12 @@
 //! Creating and editing customer notes (invoicer PLAN 4b; ARCHITECTURE
-//! §3.4, §5.5). One library call each, shared by the API and, later, the
-//! CLI.
+//! §3.4, §5.5). One library call each, shared by the API and the CLI
+//! (`customers new`, `customers import-csv`).
 //!
 //! - [`create`] writes a new person or organization note in
 //!   `customers-dir`, tagged with the customer tag. It refuses a title some
 //!   note already answers to, so the new `[[Title]]` links only this note.
+//!   It is [`prepare`] (check and render, no I/O: a dry run) then
+//!   [`write_new`].
 //! - [`update`] edits a customer note **by key**, through
 //!   [`frontmatter::edit`]: only the keys the request names are rewritten;
 //!   every other key, comment and the markdown body stay byte for byte. A
@@ -820,9 +822,35 @@ pub fn note_closed_pos(text: &str, lines: &[String]) -> String {
     out
 }
 
+/// A new customer note, validated and rendered but not yet written
+/// ([`prepare`]): what [`create`] writes, and what a dry run shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewCustomer {
+    /// Its title (the `title:` written).
+    pub title: String,
+    /// Where it goes: `customers-dir/<Title>.md`.
+    pub path: VaultPath,
+    /// The note's whole text.
+    pub text: String,
+    /// The keys it writes, in order.
+    pub keys: Vec<String>,
+}
+
+impl NewCustomer {
+    /// What [`create`] answers for it; `written` is whether it was.
+    #[must_use]
+    pub fn saved(&self, written: bool) -> CustomerSaved {
+        saved(self.path.clone(), &self.text, written, self.keys.clone())
+    }
+}
+
 /// Create a customer: a new person or organization note in `customers-dir`
 /// named after its title, tagged with the customer tag, holding the form's
 /// fields in a fixed order, with an empty body. Indexed at once.
+///
+/// [`prepare`] then [`write_new`]: the app's `POST /api/customers` and the
+/// CLI's `customers new` and `customers import-csv` all write through here,
+/// so the same fields make the same bytes.
 ///
 /// # Errors
 /// [`CustomerError::Invalid`] (no title or kind, or a field that doesn't
@@ -833,6 +861,21 @@ pub fn create(
     vault: &dyn Vault,
     fields: &CustomerFields,
 ) -> Result<CustomerSaved, CustomerError> {
+    let new = prepare(index, fields)?;
+    write_new(index, vault, &new)
+}
+
+/// [`create`] without the write: the fields checked against the index (a
+/// title no note answers to) and rendered as the note's text. Nothing is
+/// read from or written to the vault.
+///
+/// # Errors
+/// As [`create`], but never a vault error, and [`CustomerError::Exists`]
+/// only from [`write_new`].
+pub fn prepare(
+    index: &DocumentIndex,
+    fields: &CustomerFields,
+) -> Result<NewCustomer, CustomerError> {
     let title = clean_title(fields.title.as_deref().unwrap_or_default())?;
     if fields.kind.is_none() {
         return Err(invalid("choose person or organization"));
@@ -865,11 +908,31 @@ pub fn create(
         }
     }
     let text = frontmatter::render_block(&block)?;
+    let keys = block.iter().map(|(k, _)| (*k).to_string()).collect();
+    Ok(NewCustomer {
+        title,
+        path,
+        text,
+        keys,
+    })
+}
+
+/// Write a [`prepare`]d customer, never over a file already there, and
+/// index it at once.
+///
+/// # Errors
+/// [`CustomerError::Exists`] (the file is there), or a vault error.
+pub fn write_new(
+    index: &mut DocumentIndex,
+    vault: &dyn Vault,
+    new: &NewCustomer,
+) -> Result<CustomerSaved, CustomerError> {
+    let path = &new.path;
     if let Some(parent) = path.parent() {
         vault.create_dir_all(&parent)?;
     }
     vault
-        .create_new_shared(&path, text.as_bytes())
+        .create_new_shared(path, new.text.as_bytes())
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::AlreadyExists {
                 CustomerError::Exists(path.clone())
@@ -877,9 +940,8 @@ pub fn create(
                 CustomerError::Vault(e)
             }
         })?;
-    index.refresh(vault, std::slice::from_ref(&path));
-    let changed = block.iter().map(|(k, _)| (*k).to_string()).collect();
-    Ok(saved(path, &text, true, changed))
+    index.refresh(vault, std::slice::from_ref(path));
+    Ok(new.saved(true))
 }
 
 /// Edit the customer note at `path` by key: the keys `fields` names, and
