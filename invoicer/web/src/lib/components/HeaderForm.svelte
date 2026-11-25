@@ -9,7 +9,9 @@
      shows on a deposit invoice, or where it is set (H3).
 
      The due date follows date + terms until it is typed by hand (a due date
-     that isn't date + terms is the user's and stays). -->
+     that isn't date + terms is the user's and stays).
+
+     Keyboard (PLAN 5k): `c` goes to the customer, `t` to the template. -->
 <script lang="ts">
     import {untrack} from "svelte";
     import Combobox from "#ui/components/Combobox.svelte";
@@ -17,6 +19,7 @@
     import DateInput from "#ui/components/DateInput.svelte";
     import {addDays, type CustomField, type EditorForm, type EditorOptions} from "#lib/editor.js";
     import type {TemplateEntry} from "#lib/invoices.js";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
     import {fieldLabel} from "#lib/labels.js";
     import {linkName, toLink} from "#lib/links.js";
 
@@ -45,6 +48,18 @@
 
     const draft = $derived(status === "draft");
     const locked = $derived(status === "void");
+
+    // The pickers from the keyboard (PLAN 5k): `c` to the customer field
+    // (ArrowDown there opens its list), `t` to the template's select.
+    let sectionEl = $state<HTMLElement | null>(null);
+    const focusField = (testid: string) => (): void => sectionEl?.querySelector<HTMLElement>(`[data-testid="${testid}"]`)?.focus();
+    registerKeys({
+        id: "invoice-header",
+        bindings: [
+            {keys: "c", label: "Go to the customer", group: "Invoice editor", enabled: () => !locked, run: focusField("header-customer")},
+            {keys: "t", label: "Go to the template", group: "Invoice editor", enabled: () => !locked, run: focusField("header-template")},
+        ],
+    });
 
     const customerOptions = $derived<ComboOption[]>((options?.customers ?? []).map((c) => ({value: c.title, label: c.title, detail: c.kind})));
     const customerTitles = $derived((options?.customers ?? []).map((c) => c.title));
@@ -162,7 +177,7 @@
     }
 </script>
 
-<section class="@container rounded-box border border-base-300 p-3" aria-label="Invoice details" data-testid="header-form">
+<section class="@container rounded-box border border-base-300 p-3" aria-label="Invoice details" bind:this={sectionEl} data-testid="header-form">
     <div class="grid gap-3 @lg:grid-cols-2 @3xl:grid-cols-3">
         <label class="flex min-w-0 flex-col gap-1 text-sm @lg:col-span-2"
             >Customer

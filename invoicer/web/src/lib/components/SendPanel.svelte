@@ -9,8 +9,13 @@
      and with a window it opens in the default PDF viewer on a click, as does
      each earlier one (2026-11-23). Laid out across the page, above the
      invoice: actions and prompts on the left, the portal and the PDFs on the
-     right. -->
+     right.
+
+     Keyboard (PLAN 5k): Shift+P exports the PDF, as the button does; a
+     prompt it raises takes focus, on its first choice. -->
 <script lang="ts">
+    import {tick} from "svelte";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
     import {
         anchorOf,
         currentPdf,
@@ -76,6 +81,28 @@
         else asking = prompt;
     }
 
+    let sectionEl = $state<HTMLElement | null>(null);
+
+    /** Export from the keyboard: as the button, then into any prompt it raised. */
+    async function exportFromKeys(): Promise<void> {
+        clickExport();
+        await tick();
+        sectionEl?.querySelector<HTMLElement>('[data-testid="send-prompt"] button')?.focus();
+    }
+
+    registerKeys({
+        id: "send-panel",
+        bindings: [
+            {
+                keys: "P",
+                label: "Export the PDF",
+                group: "Invoice",
+                enabled: () => caps.pdf && !busy && delivery.status !== null && asking === null,
+                run: () => void exportFromKeys(),
+            },
+        ],
+    });
+
     function share(event: MouseEvent): void {
         if (target === null) return;
         const button = event.currentTarget as HTMLElement;
@@ -93,7 +120,12 @@
     );
 </script>
 
-<section class="grid grid-cols-1 gap-4 rounded-box border border-base-300 p-4 md:grid-cols-2" aria-labelledby="send-heading" data-testid="send-panel">
+<section
+    class="grid grid-cols-1 gap-4 rounded-box border border-base-300 p-4 md:grid-cols-2"
+    aria-labelledby="send-heading"
+    bind:this={sectionEl}
+    data-testid="send-panel"
+>
     <div class="flex min-w-0 flex-col gap-3">
         <div class="flex items-center justify-between">
             <h2 id="send-heading" class="text-sm font-semibold tracking-wide uppercase">Send</h2>

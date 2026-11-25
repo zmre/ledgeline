@@ -6,8 +6,11 @@
 
      A click anywhere on a row opens the template, as in the invoice and
      customer lists (`lib/rows.ts`): the name is the row's one link, for the
-     keyboard and screen readers. -->
+     keyboard and screen readers.
+     Keyboard (PLAN 5k): `j`/`k` move a row cursor, Enter or `o` opens the
+     template, `g g`/`G` jump to the ends, Escape drops it. -->
 <script lang="ts">
+    import {CURSOR_ROW, rowKeys} from "#lib/keys/rowKeys.svelte.js";
     import {rowClick} from "#lib/rows.js";
     import {baseText, kindsText, usageText, type TemplateListEntry} from "#lib/templates.js";
 
@@ -19,10 +22,21 @@
         entry.used_by.length === 0
             ? undefined
             : entry.used_by.map((u) => (u.how === "invoice" ? `Invoice ${u.number ?? u.title}` : `${u.title} (new invoices)`)).join(", ");
+
+    let tableEl = $state<HTMLTableElement | null>(null);
+    const cursor = rowKeys<TemplateListEntry>({
+        id: "template-list",
+        group: "Templates",
+        noun: "template",
+        items: () => entries,
+        keyOf: (entry) => entry.path,
+        root: () => tableEl,
+        open: () => onOpen,
+    });
 </script>
 
 <div class="overflow-x-auto rounded-box border border-base-300">
-    <table class="table table-sm" data-testid="template-list">
+    <table class="table table-sm" bind:this={tableEl} data-testid="template-list">
         <thead>
             <tr>
                 <th>Name</th>
@@ -33,9 +47,10 @@
             </tr>
         </thead>
         <tbody>
-            {#each entries as entry (entry.path)}
+            {#each entries as entry, at (entry.path)}
                 <tr
-                    class="cursor-pointer hover:bg-base-200"
+                    class="cursor-pointer hover:bg-base-200 {cursor.index === at ? CURSOR_ROW : ''}"
+                    data-cursor={cursor.index === at ? "" : undefined}
                     data-testid="template-row"
                     data-path={entry.path}
                     onclick={(event) => rowClick(event, onOpen === undefined ? undefined : () => onOpen(entry))}

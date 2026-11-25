@@ -12,13 +12,18 @@
      disk meanwhile the save is refused (409): reload it, or apply the same
      changes over the new version (only the keys changed here are written).
      Live reload: an outside change shows at once when the form is clean;
-     with unsaved changes the page says the note changed and keeps them. -->
+     with unsaved changes the page says the note changed and keeps them.
+
+     Keyboard (PLAN 5k): `e` edits; while editing, Cmd/Ctrl+S saves and
+     Escape cancels (from a field too, once a list in it is closed), asking
+     first when something is unsaved. -->
 <script lang="ts">
     import {onMount, untrack} from "svelte";
     import {beforeNavigate, goto} from "$app/navigation";
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
     import AsyncSection from "#ui/components/AsyncSection.svelte";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
     import type {DataView} from "#ui/ui/dataView.js";
     import {ensureSession, fetchTemplates} from "#lib/api.js";
     import {changes} from "#lib/changes.svelte.js";
@@ -232,6 +237,33 @@
         finishLeaving(to);
     }
 
+    let formEl = $state<HTMLFormElement | null>(null);
+    registerKeys({
+        id: "customer-page",
+        bindings: [
+            {keys: "e", label: "Edit the customer", group: "Customer", enabled: () => detail !== null && !editing, run: startEditing},
+            {
+                keys: "Escape",
+                label: "Cancel editing",
+                group: "Customer",
+                fields: true,
+                within: () => formEl,
+                enabled: () => editing && !saving && leaving === null,
+                run: cancel,
+            },
+            {
+                keys: "mod+s",
+                label: "Save the customer",
+                group: "Customer",
+                always: true,
+                enabled: () => editing,
+                run: () => {
+                    if (detail !== null && dirty && !saving) void save(changedFields(original, form), detail.hash);
+                },
+            },
+        ],
+    });
+
     beforeNavigate((navigation) => {
         if (!dirty || navigation.to === null) return;
         // Closing the window or reloading: the browser's own prompt.
@@ -299,7 +331,7 @@
         onRetry={() => load(key)}
     >
         {#snippet children(customer)}
-            <form class="flex flex-col gap-4" onsubmit={onSubmit} data-testid="customer-page" data-mode={editing ? "edit" : "view"}>
+            <form class="flex flex-col gap-4" onsubmit={onSubmit} bind:this={formEl} data-testid="customer-page" data-mode={editing ? "edit" : "view"}>
                 <header class="flex flex-wrap items-center gap-x-3 gap-y-2">
                     <h1 class="min-w-0 text-2xl font-semibold tracking-tight break-words" data-testid="customer-heading">{customer.title}</h1>
                     <span class="badge badge-outline badge-sm">{customer.kind === "person" ? "Person" : "Organization"}</span>

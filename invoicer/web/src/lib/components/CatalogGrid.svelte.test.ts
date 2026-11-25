@@ -5,6 +5,7 @@ import {fireEvent, render, screen} from "@testing-library/svelte";
 import {describe, expect, it, vi} from "vitest";
 import type {GridForm} from "#lib/editor.js";
 import CatalogGrid from "./CatalogGrid.svelte";
+import {listenForKeys, press} from "#lib/testing/keys.js";
 
 const TABLE: GridForm = {
     columns: [
@@ -29,6 +30,9 @@ function mount(over: Record<string, unknown> = {}) {
 const lastTable = (onChange: ReturnType<typeof vi.fn>): GridForm => onChange.mock.calls.at(-1)?.[0] as GridForm;
 
 describe("COMPONENT CatalogGrid", () => {
+    // Alt+Arrow is a keymap binding (PLAN 5k).
+    listenForKeys();
+
     it("shows each column by role, the books column as Account", () => {
         mount();
         const headers = screen.getAllByRole("columnheader").map((h) => h.textContent?.trim());
@@ -52,7 +56,7 @@ describe("COMPONENT CatalogGrid", () => {
         await fireEvent.click(screen.getByTestId("add-catalog-item"));
         expect(lastTable(onChange).rows.map((r) => r[0])).toEqual(["ARCH", "JR", ""]);
 
-        await fireEvent.keyDown(screen.getByLabelText("Row 2 code"), {key: "ArrowUp", altKey: true});
+        await press("ArrowUp", screen.getByLabelText("Row 2 code"), {altKey: true});
         expect(lastTable(onChange).rows.map((r) => r[0])).toEqual(["JR", "ARCH"]);
 
         await fireEvent.click(screen.getByRole("button", {name: "Move row 1 down"}));

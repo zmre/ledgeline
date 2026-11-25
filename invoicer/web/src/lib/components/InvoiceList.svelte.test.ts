@@ -4,6 +4,7 @@ import {fireEvent, render, screen, within} from "@testing-library/svelte";
 import {describe, expect, it, vi} from "vitest";
 import InvoiceList from "./InvoiceList.svelte";
 import {entry} from "./fixtures.js";
+import {listenForKeys, press} from "#lib/testing/keys.js";
 
 const href = (doc: {number: string | null}) => `/app/invoices/${doc.number}`;
 
@@ -103,5 +104,62 @@ describe("COMPONENT InvoiceList sorting and filters (PLAN 5b)", () => {
         expect(screen.getByTestId("invoice-list-no-match").textContent).toContain("No invoices match");
         await fireEvent.click(screen.getByTestId("invoice-list-clear"));
         expect(onClear).toHaveBeenCalledOnce();
+    });
+});
+
+describe("COMPONENT InvoiceList keys (PLAN 5k)", () => {
+    listenForKeys();
+
+    const three = () => [entry({}), entry({path: "b.md", number: "106"}), entry({path: "c.md", number: "108"})];
+    const cursored = () => screen.getAllByTestId("invoice-row").findIndex((r) => r.hasAttribute("data-cursor"));
+
+    it("moves a cursor with j and k, focusing the row's link, and jumps with g g and G", async () => {
+        render(InvoiceList, {href, invoices: three()});
+        expect(cursored()).toBe(-1);
+        await press("j");
+        expect(cursored()).toBe(0);
+        await vi.waitFor(() => expect(document.activeElement).toBe(screen.getByRole("link", {name: "105"})));
+        (document.activeElement as HTMLElement).blur();
+        await press("j");
+        await press("j");
+        await press("j");
+        expect(cursored()).toBe(2);
+        await press("k");
+        expect(cursored()).toBe(1);
+        await press("g");
+        await press("g");
+        expect(cursored()).toBe(0);
+        await press("G");
+        expect(cursored()).toBe(2);
+        await press("Escape");
+        expect(cursored()).toBe(-1);
+    });
+
+    it("opens the cursored invoice with o, and with Enter inside the list", async () => {
+        const onOpen = vi.fn();
+        render(InvoiceList, {href, invoices: three(), onOpen});
+        await press("j");
+        await press("j");
+        await press("o");
+        expect(onOpen).toHaveBeenLastCalledWith(expect.objectContaining({number: "106"}));
+        await press("Enter", screen.getByRole("link", {name: "106"}));
+        expect(onOpen).toHaveBeenCalledTimes(2);
+        // Enter outside the list is the focused control's own.
+        await press("Enter");
+        expect(onOpen).toHaveBeenCalledTimes(2);
+    });
+
+    it("sorts by the next column with s and flips the order with S", async () => {
+        const onSort = vi.fn();
+        render(InvoiceList, {href, invoices: three(), onSort, shown: {sort: "date", dir: "desc"}});
+        await press("s");
+        expect(onSort).toHaveBeenLastCalledWith("due");
+        await press("S");
+        expect(onSort).toHaveBeenLastCalledWith("date");
+    });
+
+    it("has no sort keys without onSort", async () => {
+        render(InvoiceList, {href, invoices: three()});
+        expect(await press("s")).toBe(true);
     });
 });

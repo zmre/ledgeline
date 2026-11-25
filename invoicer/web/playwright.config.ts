@@ -93,7 +93,10 @@ export default defineConfig({
     //      others leave (it relies only on facts they don't change, 101 paid
     //      among them, which templates.e2e.ts puts back first), and adds,
     //      edits and closes an open PO on Customer X (a close notes it in the
-    //      body), then writes Customer X back byte for byte.
+    //      body), then writes Customer X back byte for byte;
+    //   7. keyboard.e2e.ts (PLAN 5k) drives the lists by keys, then writes,
+    //      sends and exports an invoice for Fabrikam without the mouse; last,
+    //      since every figure above would see it.
     // empty.e2e.ts has its own server and books (5198), so it runs alongside.
     projects: [
         {name: "dashboard", testMatch: "**/dashboard.e2e.ts"},
@@ -109,6 +112,7 @@ export default defineConfig({
                 "**/empty.e2e.ts",
                 "**/templates.e2e.ts",
                 "**/lists.e2e.ts",
+                "**/keyboard.e2e.ts",
             ],
             dependencies: ["customers"],
         },
@@ -116,5 +120,6 @@ export default defineConfig({
         {name: "library", testMatch: "**/library.e2e.ts", dependencies: ["editor"]},
         {name: "templates", testMatch: "**/templates.e2e.ts", dependencies: ["library"]},
         {name: "lists", testMatch: "**/lists.e2e.ts", dependencies: ["templates"]},
+        {name: "keyboard", testMatch: "**/keyboard.e2e.ts", dependencies: ["lists"]},
     ],
 });

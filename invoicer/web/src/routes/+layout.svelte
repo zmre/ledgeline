@@ -4,12 +4,17 @@
     import {onMount} from "svelte";
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
+    import ChordIndicator from "#ui/keys/ChordIndicator.svelte";
+    import KeyHelp from "#ui/keys/KeyHelp.svelte";
+    import {keymap, registerKeys} from "#ui/keys/keymap.svelte.js";
     import {useAppearance} from "#ui/theme/appearance.svelte.js";
     import {APP_NAME, defaultAppearance} from "#lib/app.js";
     import {appearanceFrom, ensureSession, fetchBooks, fetchUiPrefs} from "#lib/api.js";
     import {changes, noteChange} from "#lib/changes.svelte.js";
     import {listenForChanges} from "#lib/events.js";
     import {invoiceCounts, invoiceCountsTitle, type BooksInfo} from "#lib/invoices.js";
+    import {appLayer} from "#lib/keys/appKeys.js";
+    import {INVOICER_KEY_GROUPS} from "#lib/keys/groups.js";
     import type {NewChoice} from "#lib/components/NewMenu.svelte";
     import Sidebar, {type SidebarCount, type SidebarLink} from "#lib/components/Sidebar.svelte";
 
@@ -19,6 +24,12 @@
     // defaults until the saved prefs (ui-prefs.toml and the books' pin) load.
     const appearance = $state<{theme: string; uiScale: number; uiPrefsReady: boolean}>({...defaultAppearance()});
     useAppearance(appearance);
+
+    // The keymap (PLAN 5k): packages/ui's engine, Ledgeline's, with the
+    // invoicer's own layers. `<svelte:window onkeydown>` below is its one
+    // listener; pages and widgets register layers while they are mounted.
+    registerKeys(appLayer());
+    keymap.setGroupOrder(INVOICER_KEY_GROUPS);
 
     let books = $state<BooksInfo | null>(null);
 
@@ -129,9 +140,14 @@
     <link rel="icon" type="image/svg+xml" href={asset("ledgeline-invoicer-icon-small.svg")} />
 </svelte:head>
 
+<svelte:window onkeydown={keymap.handle} onblur={keymap.disarm} />
+
 <div class="flex h-screen flex-col bg-base-100 text-base-content md:flex-row">
     <Sidebar {links} {books} {newChoices} />
     <main class="min-h-0 min-w-0 flex-1 overflow-y-auto p-3 sm:p-4 md:p-6">
         {@render children()}
     </main>
 </div>
+
+<KeyHelp note="Shortcuts are off while you're typing in a field, except Save (⌘/Ctrl+S) and the bill table's Alt keys; Esc leaves the field." />
+<ChordIndicator />

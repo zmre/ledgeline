@@ -5,6 +5,7 @@ import {describe, expect, it, vi} from "vitest";
 import SendPanel from "./SendPanel.svelte";
 import {DELIVERY_105, DELIVERY_108} from "./fixtures.js";
 import type {Delivery, Exported} from "#lib/delivery.js";
+import {listenForKeys, press} from "#lib/testing/keys.js";
 
 function mount(delivery: Delivery, extra: {exported?: Exported | null; busy?: boolean; error?: string | null} = {}) {
     const calls = {
@@ -170,5 +171,28 @@ describe("COMPONENT SendPanel", () => {
         mount(DELIVERY_105, {busy: true, error: "printing invoice 105: the print system said no"});
         expect(screen.getByRole("alert").textContent).toContain("the print system said no");
         expect((screen.getByTestId("send-export") as HTMLButtonElement).disabled).toBe(true);
+    });
+});
+
+describe("COMPONENT SendPanel keys (PLAN 5k)", () => {
+    listenForKeys();
+
+    it("exports with Shift+P, as the button does", async () => {
+        const calls = mount(DELIVERY_105);
+        await press("P");
+        expect(calls.onExport).toHaveBeenCalledWith({temp: false});
+    });
+
+    it("puts focus on the prompt a draft's export raises", async () => {
+        const calls = mount(DELIVERY_108);
+        await press("P");
+        await vi.waitFor(() => expect(document.activeElement).toBe(screen.getByTestId("send-mark-and-export")));
+        expect(calls.onExport).not.toHaveBeenCalled();
+    });
+
+    it("has no P while busy", async () => {
+        const calls = mount(DELIVERY_105, {busy: true});
+        await press("P");
+        expect(calls.onExport).not.toHaveBeenCalled();
     });
 });

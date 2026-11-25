@@ -9,9 +9,15 @@
      isn't made a link (a row can't wrap the number's link without nesting
      interactive elements): the number is the row's one link, so the keyboard
      reaches each invoice with Tab and opens it with Enter, and a screen reader
-     reads one link per row. The row click is the pointer's shortcut to it. -->
+     reads one link per row. The row click is the pointer's shortcut to it.
+
+     Keyboard (PLAN 5k): `j`/`k` move a row cursor (a ring, the row's link
+     focused), Enter or `o` opens it, `g g`/`G` jump to the ends, Escape drops
+     it; with `onSort`, `s` sorts by the next column and `S` flips the order. -->
 <script lang="ts">
     import {kindLabel, type InvoiceEntry} from "#lib/invoices.js";
+    import {CURSOR_ROW, rowKeys} from "#lib/keys/rowKeys.svelte.js";
+    import {sortKeys} from "#lib/keys/sortKeys.js";
     import type {SortDir} from "#lib/listQuery.js";
     import {rowClick} from "#lib/rows.js";
     import EmptyState from "./EmptyState.svelte";
@@ -49,6 +55,23 @@
         {column: "total", label: "Total", align: "right"},
         {column: "status", label: "Status"},
     ];
+
+    let tableEl = $state<HTMLTableElement | null>(null);
+    const cursor = rowKeys<InvoiceEntry>({
+        id: "invoice-list",
+        group: "Invoices",
+        noun: "invoice",
+        items: () => invoices,
+        keyOf: (doc) => doc.path,
+        root: () => tableEl,
+        open: () => onOpen,
+        extra: sortKeys({
+            group: "Invoices",
+            columns: COLUMNS.map((c) => c.column),
+            shown: () => shown,
+            onSort: () => onSort,
+        }),
+    });
 </script>
 
 {#if invoices.length === 0 && filtered}
@@ -69,7 +92,7 @@
     />
 {:else}
     <div class="overflow-x-auto rounded-box border border-base-300">
-        <table class="table table-sm" data-testid="invoice-list">
+        <table class="table table-sm" bind:this={tableEl} data-testid="invoice-list">
             <thead>
                 <tr>
                     {#each COLUMNS as c (c.column)}
@@ -82,11 +105,12 @@
                 </tr>
             </thead>
             <tbody>
-                {#each invoices as doc (doc.path)}
+                {#each invoices as doc, at (doc.path)}
                     {@const kind = kindLabel(doc.doc_type)}
                     <!-- The pointer's shortcut; the number's link is the keyboard's way in (see the top). -->
                     <tr
-                        class="cursor-pointer {doc.overdue ? 'bg-error/8 hover:bg-error/15' : 'hover:bg-base-200'}"
+                        class="cursor-pointer {doc.overdue ? 'bg-error/8 hover:bg-error/15' : 'hover:bg-base-200'} {cursor.index === at ? CURSOR_ROW : ''}"
+                        data-cursor={cursor.index === at ? "" : undefined}
                         data-testid="invoice-row"
                         data-number={doc.number}
                         data-overdue={doc.overdue ? "true" : undefined}
