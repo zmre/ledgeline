@@ -1071,12 +1071,12 @@ impl InvoiceBooks {
 
     /// **Void** (§4.1): a reversing transaction dated `date` — linked to the
     /// invoice's receivable with `match:` when it has one — then
-    /// `status: void` and `void_date`. A draft never booked and an
-    /// unbooked cash-books invoice with no payment applied change in the
-    /// markdown only; a booked draft (a send that stopped after the
-    /// journal) is reversed as a sent invoice is. A void already booked for
-    /// the number (an earlier void whose markdown write failed) is not
-    /// booked again.
+    /// `status: void`, `void_date`, and no `paid:` (a void invoice has no
+    /// payment mirror). A draft never booked and an unbooked cash-books
+    /// invoice with no payment applied change in the markdown only; a
+    /// booked draft (a send that stopped after the journal) is reversed as
+    /// a sent invoice is. A void already booked for the number (an earlier
+    /// void whose markdown write failed) is not booked again.
     ///
     /// # Errors
     /// [`BooksError::Status`] for an invoice already void;
@@ -1172,6 +1172,7 @@ impl InvoiceBooks {
         let edits = [
             set("status", Status::Void.as_str()),
             set("void_date", &request.date),
+            FieldEdit::Remove("paid".to_string()),
         ];
         if voided.journal_written {
             self.finish_fields(index, &document, &edits)?;

@@ -698,6 +698,28 @@ fn voiding_a_booked_draft_reverses_its_booking() {
     assert!(findings(&books, &index).is_empty());
 }
 
+/// P1: voiding deletes `paid:`; the books say nothing for a void invoice,
+/// so reconcile never writes it back and nothing reports it missing.
+#[test]
+fn a_void_invoice_has_no_paid_mirror_and_reconcile_leaves_it_so() {
+    for (name, number, path) in [
+        ("cash", "203", "invoices/2026-11-05 Wingtip Invoice 203.md"),
+        ("accrual", "106", INV_106),
+    ] {
+        let dir = scratch(name, &format!("void-no-paid-{name}"));
+        let (books, mut index) = open(&dir);
+        assert!(read(&dir, path).contains("paid: no\n"));
+        books.void(&mut index, &void_of(number)).expect("voids");
+        let after = read(&dir, path);
+        assert!(!after.contains("paid:"), "{name}: {after}");
+        assert_eq!(paid_of(&books, &index, number), None, "{name}");
+        let report = run(&books, &mut index, false);
+        assert!(report.changed.is_empty(), "{name}: {:#?}", report.changed);
+        assert_eq!(read(&dir, path), after, "{name}");
+        assert!(findings(&books, &index).is_empty(), "{name}");
+    }
+}
+
 #[test]
 fn a_concurrent_journal_write_is_refused_whole_and_retried_once() {
     let dir = scratch("accrual", "concurrent");

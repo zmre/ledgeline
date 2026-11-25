@@ -502,9 +502,13 @@ impl BookStates {
 
     /// What the books say `doc`'s `paid:` is, or `None` when they can't say
     /// (no number, a table that doesn't read, accrual books with no
-    /// receivable booked, a void in the books).
+    /// receivable booked, a void in the books) or it has none (a void
+    /// invoice: voiding removes `paid:`).
     #[must_use]
     pub fn paid(&self, doc: &IndexedDoc) -> Option<BooksPaid> {
+        if doc.header.status == Some(Status::Void) {
+            return None;
+        }
         let number = doc.number()?;
         let summary = doc.summary.as_ref()?;
         if summary.total.is_zero() {
