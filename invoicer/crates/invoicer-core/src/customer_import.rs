@@ -485,19 +485,22 @@ fn plan_row(
             Ok(Some(_)) => Err(CustomerError::Exists(new.path).to_string()),
             Err(e) => Err(e.to_string()),
         },
-        Err(CustomerError::NameTaken { title, path }) if options.skip_existing => {
+        Err(CustomerError::NameTaken { title, path }) => {
             let words = &index.settings().words;
-            if index
+            let customer = index
                 .site()
                 .note(&path)
-                .is_some_and(|n| is_customer(n, words))
-            {
-                Ok(Planned::Skip(SkippedRow { line, title, path }))
-            } else {
-                Err(format!(
+                .is_some_and(|n| is_customer(n, words));
+            match (customer, options.skip_existing) {
+                (true, true) => Ok(Planned::Skip(SkippedRow { line, title, path })),
+                (true, false) => Err(format!(
+                    "the customer {title:?} already exists ({path}); skip such rows with \
+                     --skip-existing"
+                )),
+                (false, _) => Err(format!(
                     "a note named {title:?} already exists ({path}) and isn't a customer; \
                      choose another name"
-                ))
+                )),
             }
         }
         Err(e) => Err(e.to_string()),
