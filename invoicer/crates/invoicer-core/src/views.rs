@@ -8,7 +8,8 @@
 //! payments in cash books, a zero total paid on its date), so a list is
 //! right even before `reconcile` refreshes the `paid:` mirrors; an invoice
 //! the books can't speak for (accrual, never booked) falls back to its
-//! mirror. Overdue is open with `due_date` before `today`.
+//! mirror. Overdue is open and due ([`crate::doc::Header::due_on`]) before
+//! `today`.
 
 use crate::catalog;
 use crate::customers::{self, BillingContact, ContactKind, ContractRef, Customer, CustomerLookup};
@@ -52,12 +53,7 @@ pub fn open_in(states: Option<&BookStates>, doc: &IndexedDoc) -> bool {
 /// before it.
 #[must_use]
 pub fn overdue_in(states: Option<&BookStates>, doc: &IndexedDoc, today: &str) -> bool {
-    open_in(states, doc)
-        && doc
-            .header
-            .due_date
-            .as_deref()
-            .is_some_and(|due| due < today)
+    open_in(states, doc) && doc.header.due_on().is_some_and(|due| *due < *today)
 }
 
 /// The days money was received for `doc`: by the books when given (and
@@ -78,7 +74,7 @@ pub fn paid_dates(states: Option<&BookStates>, doc: &IndexedDoc) -> Vec<String> 
 /// Whether a document is overdue on `today`: open, and due before it.
 #[must_use]
 pub fn is_overdue(header: &Header, today: &str) -> bool {
-    is_open(header) && header.due_date.as_deref().is_some_and(|due| due < today)
+    is_open(header) && header.due_on().is_some_and(|due| *due < *today)
 }
 
 /// Error and warning counts.
@@ -125,7 +121,7 @@ pub struct DocEntry<'a> {
     pub commodity: Option<&'a str>,
     /// Sent and not paid in full (by the books; else the `paid:` mirror).
     pub open: bool,
-    /// Open and past `due_date`.
+    /// Open and past due ([`crate::doc::Header::due_on`]).
     pub overdue: bool,
     /// What `check` finds in this file.
     pub problems: Counts,
@@ -216,10 +212,10 @@ impl ListQuery {
             return false;
         }
         if let Some(aged) = self.aged {
-            let Some(due) = header.due_date.as_deref() else {
+            let Some(due) = header.due_on() else {
                 return false;
             };
-            if !aged.holds(ledgeline_core::reports::periods::days_between(due, today)) {
+            if !aged.holds(ledgeline_core::reports::periods::days_between(&due, today)) {
                 return false;
             }
         }
@@ -311,8 +307,8 @@ fn compare_rows(
             Ord::cmp,
         ),
         InvoiceSort::Due => query::missing_last(
-            a.0.header.due_date.as_deref(),
-            b.0.header.due_date.as_deref(),
+            a.0.header.due().as_deref(),
+            b.0.header.due().as_deref(),
             dir,
             Ord::cmp,
         ),
@@ -1072,7 +1068,7 @@ pub struct SettlementView {
     pub outstanding: String,
     /// When it was paid in full.
     pub paid_on: Option<String>,
-    /// When it is due (the file's `due_date`).
+    /// When it is due ([`crate::doc::Header::due`]).
     pub due_date: Option<String>,
 }
 
@@ -1300,7 +1296,7 @@ fn settlement(
 ) -> Option<SettlementView> {
     use ledgeline_core::accrual::receivables::PaymentState;
     let money = session.index().money();
-    let due_date = doc.header.due_date.clone();
+    let due_date = doc.header.due().map(String::from);
     let paid_on = match books_paid {
         Some(reconcile::BooksPaid::Full { date }) => Some(date.clone()),
         _ => None,
@@ -1476,6 +1472,34 @@ mod tests {
             .join(name)
             .join("books.journal");
         Session::open_local(&journal).expect("opens")
+    }
+
+    /// RC-6: an invoice with `terms` and no `due_date` is due `date +
+    /// terms` for overdue, aging and the books alike; with neither, on its
+    /// date.
+    #[test]
+    fn overdue_counts_from_terms_when_there_is_no_due_date() {
+        let doc = |head: &str| {
+            crate::doc::Invoice::parse(
+                format!("---\ntype: invoice\nstatus: sent\ndate: 2026-11-01\n{head}paid: no\n---\n")
+                    .as_str(),
+                &crate::table::words::Words::default(),
+            )
+            .header()
+            .clone()
+        };
+        let terms = doc("terms: 30\n");
+        assert_eq!(terms.due().as_deref(), Some("2026-12-01"));
+        assert!(!is_overdue(&terms, "2026-11-10"));
+        assert!(!is_overdue(&terms, "2026-12-01"));
+        assert!(is_overdue(&terms, "2026-12-02"));
+        let written = doc("terms: 30\ndue_date: 2026-11-15\n");
+        assert_eq!(written.due().as_deref(), Some("2026-11-15"));
+        assert!(is_overdue(&written, "2026-11-16"));
+        let neither = doc("");
+        assert_eq!(neither.due(), None);
+        assert_eq!(neither.due_on().as_deref(), Some("2026-11-01"));
+        assert!(is_overdue(&neither, "2026-11-02"));
     }
 
     #[test]

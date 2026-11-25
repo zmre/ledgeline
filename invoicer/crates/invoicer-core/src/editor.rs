@@ -354,7 +354,7 @@ fn header_edits(
         Some(_) => return Err(EditorError::invalid("due_date", "not a date (YYYY-MM-DD)")),
         None => form
             .terms
-            .map(|t| ledgeline_core::reports::add_days(date, i64::from(t))),
+            .map(|t| crate::doc::due_from_terms(date, i64::from(t))),
     };
     text_edit(&mut edits, invoice, "due_date", due.as_deref());
 

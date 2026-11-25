@@ -679,12 +679,7 @@ pub fn booking_of(
             })
         })
         .collect::<Result<_, BooksError>>()?;
-    let due = header.due_date.clone().or_else(|| {
-        header
-            .terms
-            .filter(|t| *t >= 0)
-            .map(|t| ledgeline_core::reports::add_days(&date, t))
-    });
+    let due = header.due().map(String::from);
     let document = tag_text(path.as_str()).ok_or_else(|| invalid("the file has no name"))?;
     let mut tags = vec![(super::spec::DOCUMENT_TAG.to_string(), document)];
     if let Some(due) = &due {

@@ -427,11 +427,7 @@ fn cash(
             }
             continue;
         }
-        let due = doc
-            .header
-            .due_date
-            .clone()
-            .unwrap_or_else(|| date.to_string());
+        let due = doc.header.due_on().map_or_else(|| date.to_string(), String::from);
         let days = days_between(&due, today);
         view.open.push(OpenItem {
             number: Some(number.to_string()),

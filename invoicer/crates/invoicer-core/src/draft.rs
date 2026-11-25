@@ -354,7 +354,7 @@ pub fn render(
                 .map(|t| t.template_path())
         });
     let terms = new.terms.or(customer.terms);
-    let due_date = terms.map(|t| ledgeline_core::reports::add_days(&new.date, i64::from(t)));
+    let due_date = terms.map(|t| crate::doc::due_from_terms(&new.date, i64::from(t)));
 
     let filename = fill_pattern(
         &settings.filename,
