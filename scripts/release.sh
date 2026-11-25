@@ -29,6 +29,12 @@
 #     the next plain `bun install` rewrites it, so it is kept in step here.
 #     (scripts/check-spa-hash.sh knows that such a diff changes no node_modules.)
 #
+# NOT listed, on purpose: both apps' Info.plists (`assets/Info.plist.in`,
+# `assets/invoicer/Info.plist.in`) and the release DMG names
+# (`Ledgeline-<v>-<arch>.dmg`, `LedgelineInvoicer-<v>-arm64.dmg`) take the
+# version from `[workspace.package]` at build time, so there is no literal to
+# keep in step. Keep it that way: a hard-coded version there belongs here.
+#
 # `check` is wired into CI so drift cannot land, and into the release workflow so
 # a tag cannot ship against a tree that disagrees with it.
 set -euo pipefail
@@ -94,6 +100,41 @@ read_lock_version() {
     ' Cargo.lock
 }
 
+# --- the Intel spaNodeModules pin ---------------------------------------------
+# `spaNodeModulesHashes.x86_64-darwin` in flake.nix is the one FOD pin no
+# per-push check can demand (scripts/check-spa-hash.sh skips it: it needs
+# Rosetta). Stale, it fails the release's x86_64 leg after ~45 minutes and so
+# blocks the whole GitHub Release. Checked here because this is what runs
+# before a tag.
+#
+# The test: find the commit that introduced the current pin (pickaxe on the
+# hash itself, which is unique), and diff bun.lock / bunfig.toml from there to
+# the working tree. Any change other than a workspace `"version":` line (a
+# release bump, which moves no node_modules) means the pin predates the tree it
+# has to describe. A pin not in history yet is an uncommitted re-pin: fresh.
+#
+# Prints a reason and returns 1 when stale; returns 2 when it cannot tell.
+intel_pin_staleness() {
+    local pin commit changed
+    pin=$(sed -n '/spaNodeModulesHashes = {/,/};/p' flake.nix |
+        sed -n -E 's/^[[:space:]]*x86_64-darwin = "(sha256-[^"]+)";.*/\1/p')
+    [ -n "$pin" ] || { echo "no x86_64-darwin entry in spaNodeModulesHashes"; return 2; }
+    # A shallow clone (CI's checkout) has one commit, which would "introduce"
+    # every line and make any pin look fresh.
+    if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" != false ]; then
+        echo "shallow or missing git history"
+        return 2
+    fi
+    commit=$(git log -1 --format=%H -S"$pin" -- flake.nix)
+    [ -n "$commit" ] || return 0
+    changed=$(git diff --no-ext-diff --no-color -U0 "$commit" -- bun.lock bunfig.toml |
+        grep -E '^[+-]' | grep -vE '^(\+\+\+|---) ' |
+        grep -vE '^[+-][[:space:]]*"version": "[^"]*",$' || true)
+    [ -z "$changed" ] && return 0
+    echo "bun.lock or bunfig.toml changed since ${commit:0:12}, which set the x86_64-darwin pin"
+    return 1
+}
+
 # --- commands ----------------------------------------------------------------
 
 cmd_current() {
@@ -147,12 +188,31 @@ cmd_check() {
         fi
     fi
 
+    # A hard failure only when checking a tag: CI runs `check` on every PR, and
+    # a bun bump there is fixed by the next release's re-pin, not by that PR.
+    local reason rc=0 pin_stale=0
+    reason=$(intel_pin_staleness) || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        echo "  ok       flake.nix spaNodeModulesHashes.x86_64-darwin"
+    elif [ "$rc" -eq 2 ]; then
+        echo "  skipped  flake.nix spaNodeModulesHashes.x86_64-darwin — $reason"
+    elif [ -n "$expected_tag" ]; then
+        echo "  STALE    flake.nix spaNodeModulesHashes.x86_64-darwin — $reason" >&2
+        echo "           Re-pin before tagging: just repin-spa-hashes (Apple Silicon," >&2
+        echo "           Rosetta) or a release dry run; see docs/development/releasing.md." >&2
+        pin_stale=1
+    else
+        echo "  warning  flake.nix spaNodeModulesHashes.x86_64-darwin — $reason;" >&2
+        echo "           re-pin it before the next tag (just repin-spa-hashes)." >&2
+    fi
+
     if [ "$failures" -gt 0 ]; then
         echo >&2
         echo "$failures version reference(s) disagree with $CARGO_TOML." >&2
         echo "Run: scripts/release.sh set $version" >&2
         exit 1
     fi
+    [ "$pin_stale" -eq 0 ] || exit 1
     echo "All version references agree."
 }
 

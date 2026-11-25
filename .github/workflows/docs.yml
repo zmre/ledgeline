@@ -32,13 +32,19 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Pinned to a release tag so a new mbr can't change the site between two
-  # tags. A tag, not a commit: mbr's CI pushes each release's `#mbr` to the
-  # zmre Cachix, so this substitutes in seconds. The earlier pin was a commit
-  # no cache held, and "Build mbr" compiled it from source (16-27 min).
-  # v0.7.4 contains everything the old pin (98e2263) did. The release's Linux
-  # binary is no shortcut: it links into /nix/store (see the header above).
-  MBR_FLAKE: github:zmre/mbr-markdown-browser/v0.7.4#mbr
+  # Pinned to a RELEASE's commit (tag v0.7.4) so a new mbr can't change the
+  # site between two tags. A release commit, because mbr's CI pushes each
+  # release's `#mbr` to the zmre Cachix, so this substitutes in seconds (the
+  # earlier pin was a commit no cache held, and "Build mbr" compiled it from
+  # source, 16-27 min). The rev rather than the tag name: a tag can be moved,
+  # and this build runs ahead of a deploy with `pages: write`, trusting the
+  # remote flake's nixConfig (--accept-flake-config). Same store path either
+  # way (`nix eval --raw <ref>#mbr.outPath` matches), so the cache hit stays.
+  # To bump: `git ls-remote https://github.com/zmre/mbr-markdown-browser
+  # 'refs/tags/vX.Y.Z^{}'`, and keep the tag in this comment.
+  # The release's Linux binary is no shortcut: it links into /nix/store (see
+  # the header above).
+  MBR_FLAKE: github:zmre/mbr-markdown-browser/82eb596545bb477564b714ff350e947b39096684#mbr # v0.7.4
 
 jobs:
   build:

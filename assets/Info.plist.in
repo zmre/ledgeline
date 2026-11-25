@@ -39,7 +39,7 @@
   <key>NSHighResolutionCapable</key>
   <true/>
   <key>NSHumanReadableCopyright</key>
-  <string>Copyright © 2026 Patrick Walsh. All rights reserved.</string>
+  <string>Copyright © 2026 Patrick Walsh. Licensed under AGPL-3.0-or-later.</string>
   <!-- File associations, split across two types so the handler ranks can differ.
        `.journal`/`.hledger` are hledger-specific, so we claim Owner and become
        the system default for them. `.ledger`/`.j` are shared territory: Ledger

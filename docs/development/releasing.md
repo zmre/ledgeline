@@ -7,16 +7,28 @@ tags: [development]
 
 # Releasing Ledgeline
 
-Tagging `vX.Y.Z` builds, signs, notarizes and publishes a macOS DMG.
+Tagging `vX.Y.Z` builds, signs, notarizes and publishes the macOS DMGs.
 `.github/workflows/release.yml` is the whole pipeline; this document is the part
 that cannot live in a comment — the one-time Apple setup, and what to do when
 notarization says no.
 
 ## What ships
 
-Two DMGs — `Ledgeline-X.Y.Z-arm64.dmg` and `Ledgeline-X.Y.Z-x86_64.dmg` — built
-by a two-leg matrix and attached to one GitHub Release. Each contains a
-`Ledgeline.app` which is:
+Three DMGs, built by a three-leg matrix and attached to one GitHub Release with
+one `SHA256SUMS.txt` covering all of them:
+
+| DMG                                   | App                       | Built from (`flake.nix`) |
+|---------------------------------------|---------------------------|--------------------------|
+| `Ledgeline-X.Y.Z-arm64.dmg`           | `Ledgeline.app`           | `macApp`                 |
+| `Ledgeline-X.Y.Z-x86_64.dmg`          | `Ledgeline.app`           | `macApp`                 |
+| `LedgelineInvoicer-X.Y.Z-arm64.dmg`   | `Ledgeline Invoicer.app`  | `invoicerMacApp`         |
+
+Ledgeline Invoicer ships for Apple Silicon only (invoicer PLAN I18). Both apps
+are assembled by the same `mkMacApp` and signed with the same Developer ID
+certificate and notary key; nothing about signing is per-app. The release job
+fails unless all three DMGs, and their checksums, are there.
+
+Each app is:
 
 - **Self-contained.** Every load command in both Mach-O files resolves against
   the base OS (`/usr/lib/*` and system frameworks). `flake.nix` asserts this at
@@ -34,20 +46,25 @@ download, but it needs both slices on one runner — and the bundle is per-arch
 anyway, `hledger` included. Two independent matrix legs are simpler, and each
 user downloads only what they need.
 
-The matrix is the only place the architecture is named:
+The matrix is the only place the app and the architecture are named:
 
 ```yaml
-runs-on: macos-latest        # BOTH legs
+runs-on: macos-15            # EVERY leg; pinned, as in ci.yml
 matrix:
   include:
-    - {arch: arm64,  nixSystem: aarch64-darwin}
-    - {arch: x86_64, nixSystem: x86_64-darwin}
+    - {app: ledgeline, appName: Ledgeline, exe: ledgeline, flakeAttr: macApp,
+       dmgPrefix: Ledgeline, arch: arm64,  nixSystem: aarch64-darwin}
+    - {app: ledgeline, appName: Ledgeline, exe: ledgeline, flakeAttr: macApp,
+       dmgPrefix: Ledgeline, arch: x86_64, nixSystem: x86_64-darwin}
+    - {app: invoicer, appName: Ledgeline Invoicer, exe: ledgeline-invoicer,
+       flakeAttr: invoicerMacApp, dmgPrefix: LedgelineInvoicer,
+       arch: arm64, nixSystem: aarch64-darwin}
 ```
 
-Everything downstream reads `matrix.arch` / `matrix.nixSystem`, so retiring
-Intel is a one-line deletion.
+Everything downstream reads the matrix entry, so retiring Intel is deleting
+one entry (and its name from the release job's list of expected DMGs).
 
-### Both legs run on Apple Silicon; Intel goes through Rosetta
+### Every leg runs on Apple Silicon; Intel goes through Rosetta
 
 There is no Intel runner, and there cannot be one:
 
@@ -59,7 +76,7 @@ to build for Intel.
 
 `macos-15-intel` still exists as a GitHub runner, but nothing can install Nix
 on it, and this pipeline is `nix build` end to end. So the x86_64 leg runs on
-`macos-latest` with `extra-platforms = x86_64-darwin` in `nix.conf` and Rosetta
+`macos-15` with `extra-platforms = x86_64-darwin` in `nix.conf` and Rosetta
 2 installed, and builds `.#packages.x86_64-darwin.macApp` explicitly.
 
 Two consequences worth internalising:
@@ -72,7 +89,8 @@ Two consequences worth internalising:
   cannot launch for the users it is named after.
 - **The x86_64 leg is slow.** Its rustc runs emulated. Everything from nixpkgs
   substitutes as a prebuilt x86_64-darwin binary, so what is actually emulated
-  is our own crates — bounded, and cached in Cachix afterwards.
+  is our own crates — bounded, and not pushed to Cachix afterwards: nothing
+  else substitutes an Intel closure, and its GBs would evict main's layers.
 
 This is also the arrangement that *outlives* the Intel runner: when GitHub
 retires x86_64 macOS hardware, an arm64 runner can still emit an Intel DMG.
@@ -116,33 +134,37 @@ only be generated on the platform it describes**:
 spaNodeModulesHashes = {
   aarch64-darwin = "sha256-…";   # your Mac, or the arm64 runner
   x86_64-linux   = "sha256-…";   # the CI `build` job
-  x86_64-darwin  = "sha256-…";   # the release matrix, under Rosetta
+  x86_64-darwin  = "sha256-…";   # an Apple Silicon Mac under Rosetta
 };
 ```
 
-The x86_64-darwin entry is stale: the bun workspace (invoicer PLAN 0c) and
-`invoicer/web` joining it (0d) changed the tree, and no release dry run has
-re-pinned it since. Get it from the next dry run, as below. Any change to a
-workspace `package.json` or `bun.lock` invalidates **all three at once**, and you can only fix the one
-you are standing on — the other two come back as failures from CI and from a
-release dry run. Budget for that: a dependency bump is a three-round-trip
-change, not a one-liner.
+Any change to a workspace `package.json` or `bun.lock` invalidates **all three
+at once**. `just repin-spa-hashes` re-pins every one this machine can build: on
+an Apple Silicon Mac that is aarch64-darwin natively and x86_64-darwin under
+Rosetta 2 (`--option extra-platforms x86_64-darwin`, which the Nix daemon only
+honours for a user in `trusted-users`), plus x86_64-linux on a remote Linux
+store. Whatever it cannot build comes back as a failure from CI or a release
+dry run.
 
 Nothing catches a stale entry except building it, which is why the CI `build`
 job builds `linuxDist` and the release matrix builds both Macs. Every system
 with an entry above is built by something.
 
-**Get the x86_64-darwin one from a dry run, never from a tag.** The `release`
-job needs *both* legs, so a hash mismatch there fails the whole release — after
-the arm64 leg has already signed, notarized and stapled, which spends a
-notarization round trip and leaves a tag with no GitHub Release. A
-`workflow_dispatch` run with **dry_run** checked builds and packages both
-architectures and stops before signing, so it surfaces the hash for free:
+**Never find out about the x86_64-darwin one from a tag.** The `release` job
+needs *every* leg, so a hash mismatch there fails the whole release — after
+the arm64 legs have already signed, notarized and stapled, which spends
+notarization round trips and leaves a tag with no GitHub Release.
+`scripts/release.sh check vX.Y.Z` fails when `bun.lock` or `bunfig.toml`
+changed since the commit that set the x86_64-darwin pin (plain `check`, which CI
+runs on every PR, only warns), so run it before tagging. Re-pin locally as above,
+or, without Rosetta, use a dry run: a `workflow_dispatch` run with **dry_run**
+checked builds and packages every leg and stops before signing, so it surfaces
+the hash for free:
 
 1. Actions → Release → Run workflow, `dry_run` checked.
 2. The x86_64 leg fails; copy the `got: sha256-…` value out of its log.
 3. Put it in `spaNodeModulesHashes.x86_64-darwin`, commit, re-run the dry run.
-4. Both legs green → tag for real.
+4. All three legs green → tag for real.
 
 ## Cutting a release
 
@@ -343,14 +365,18 @@ cp -R web/build/. crates/ledgeline-server/spa/
 grep -q "SPA not built" crates/ledgeline-server/spa/index.html \
   && { echo "PLACEHOLDER — do not publish"; exit 1; }
 
-# 3. Publish. Core first; cargo has waited for its own upload to appear in the
-#    index since 1.66, so the second command does not race the first.
+# 3. Publish. One command: cargo (1.90+) packages and verify-builds all three
+#    before uploading any, then uploads core, shell, ledgeline in that order.
 #    `--allow-dirty` because `spa/` is git-ignored by design.
 export CARGO_REGISTRY_TOKEN=<a publish-new token>
-cargo publish -p ledgeline-core --allow-dirty
-cargo publish -p ledgeline-shell --allow-dirty
-cargo publish -p ledgeline --allow-dirty
+cargo publish -p ledgeline-core -p ledgeline-shell -p ledgeline --allow-dirty
 ```
+
+Steps 1–3 are what `scripts/publish-crates.sh` does (it builds the SPA with
+Nix rather than bun), and what CI runs: with `--dry-run` in the release
+workflow's `crates-dry-run` job on every run, dry or tagged, and for real in
+`publish`. `release` needs `crates-dry-run`, so a crate that will not package
+fails before the GitHub Release exists.
 
 Then **revoke the `publish-new` token** at
 <https://crates.io/settings/tokens> and add the `publish-update` one to Actions.
