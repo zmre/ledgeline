@@ -72,11 +72,29 @@ export interface NewInvoiceRequest {
     number?: string | null;
     terms?: number | null;
     reference?: string | null;
+    /** A deposit invoice: one row booked to the deposit account, for the author to fill in. */
+    deposit?: boolean;
 }
 
-/** `POST /api/invoices`: write a new draft; its number. */
-export function createInvoice(request: NewInvoiceRequest): Promise<{path: string; number: string; total: string | null; written: boolean}> {
-    return send("POST", "/api/invoices", (b) => isObject(b) && typeof b.number === "string", request);
+/** What `POST /api/invoices` made: the draft, and anything that went wrong once it was written (a starter template not copied in). */
+export interface CreatedInvoice {
+    path: string;
+    number: string;
+    total: string | null;
+    written: boolean;
+    warnings: string[];
+}
+
+/** `POST /api/invoices`: write a new draft; its number and any warnings (`[]` from a server that sends none). */
+export async function createInvoice(request: NewInvoiceRequest): Promise<CreatedInvoice> {
+    const made = await send<Omit<CreatedInvoice, "warnings"> & {warnings?: unknown}>(
+        "POST",
+        "/api/invoices",
+        (b) => isObject(b) && typeof b.number === "string",
+        request
+    );
+    const warnings = Array.isArray(made.warnings) ? made.warnings.filter((w): w is string => typeof w === "string") : [];
+    return {...made, warnings};
 }
 
 /** `GET /api/invoices/{num}/form`: the form, its revision, and its amounts. */
