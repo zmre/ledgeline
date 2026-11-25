@@ -170,7 +170,8 @@ impl DocumentStatus {
     }
 }
 
-/// A payment-side settlement posting in no link.
+/// A payment-side settlement posting in no settlement link: none, or a
+/// broken one (so it is applied to nothing).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unapplied {
     /// The posting.
@@ -313,6 +314,7 @@ impl Receivables {
             .map(|(name, role, _)| (name, role))
             .collect();
         let types = crate::reports::AccountTypes::new(&crate::reports::account_decls(journal));
+        let index = matching::links(journal);
         let mut out = Self::default();
         // Linked members by link id; then the documents and the unapplied.
         let mut linked: BTreeMap<&str, Vec<Side>> = BTreeMap::new();
@@ -389,7 +391,10 @@ impl Receivables {
                         settlements: Vec::new(),
                         state: PaymentState::Open,
                     });
-                } else if link.is_none() && !invoice_side {
+                } else if !invoice_side && !link.is_some_and(|id| index.is_settlement(id)) {
+                    // No link, or one that settles nothing (broken: a lone
+                    // member, an overpayment, mixed commodities): the
+                    // payment is applied to nothing, so it is unapplied.
                     out.unapplied.push(Unapplied {
                         at,
                         role,
@@ -403,7 +408,7 @@ impl Receivables {
                 }
             }
         }
-        out.settle(journal, &types, &linked);
+        out.settle(journal, &types, &index, &linked);
         out
     }
 
@@ -413,9 +418,9 @@ impl Receivables {
         &mut self,
         journal: &Journal,
         types: &crate::reports::AccountTypes,
+        index: &matching::LinkIndex,
         linked: &BTreeMap<&str, Vec<Side>>,
     ) {
-        let index = matching::links(journal);
         let by_at: FxHashMap<PostingRef, usize> = self
             .documents
             .iter()
@@ -514,7 +519,8 @@ impl Receivables {
         &self.documents
     }
 
-    /// Every payment-side posting in no link, in file order.
+    /// Every payment-side posting in no settlement link (none, or a broken
+    /// one), in file order.
     #[must_use]
     pub fn unapplied(&self) -> &[Unapplied] {
         &self.unapplied
@@ -834,6 +840,50 @@ account expenses  ; type: X
             r.by_number(AccrualRole::Receivable, "1").map(|d| d.state),
             Some(PaymentState::Open)
         );
+        // The overpayment settles nothing, so it is unapplied (RA-1).
+        let amounts: Vec<Dec> = r.unapplied().iter().map(|u| u.amount).collect();
+        assert_eq!(amounts, [Dec::new(110_000, 2), Dec::new(7_500, 2)]);
+    }
+
+    /// RA-1: a payment whose `match:` id names no settlement (a typo, so a
+    /// lone member) is unapplied, so receivables still add up to the
+    /// receivable account's balance.
+    #[test]
+    fn a_payment_in_a_broken_link_is_unapplied() {
+        let text = BOOKS.replace(
+            "$-400.00  ; customer: Acme, match: p1",
+            "$-400.00  ; customer: Acme, match: p11",
+        );
+        let journal = parse_journal(&text, "inline.journal").expect("parses");
+        let links = matching::links(&journal);
+        assert!(links.broken().iter().any(|b| b.id == "p11"));
+        let r = Receivables::build(
+            &journal,
+            &AccrualRoles::of(&journal),
+            &ReceivablesOptions::default(),
+        );
+        let one = r.by_number(AccrualRole::Receivable, "1").expect("1");
+        assert_eq!(one.outstanding, Dec::new(100_000, 2));
+        let unapplied: Vec<(Option<&str>, Dec)> = r
+            .unapplied()
+            .iter()
+            .map(|u| (u.number.as_deref(), u.amount))
+            .collect();
+        assert_eq!(
+            unapplied,
+            [(Some("1"), Dec::new(40_000, 2)), (None, Dec::new(7_500, 2))]
+        );
+        // Open less unapplied is the AR balance: 1000 + 0 + 0 − 400 − 75 on
+        // the receivable side (2 is void, 3 is paid).
+        let open = r
+            .open(AccrualRole::Receivable)
+            .fold(Dec::zero(), |sum, d| sum.add(d.outstanding).expect("adds"));
+        let unapplied = r
+            .unapplied()
+            .iter()
+            .filter(|u| u.role == AccrualRole::Receivable)
+            .fold(Dec::zero(), |sum, u| sum.add(u.amount).expect("adds"));
+        assert_eq!(open.sub(unapplied).expect("subs"), Dec::new(52_500, 2));
     }
 
     #[test]
