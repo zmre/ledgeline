@@ -63,6 +63,7 @@ The top bar has a tab for each part of the app. Most things can be done from the
 - [Budget](budget.md): goals written as hledger `~` rules, and how you're tracking against them.
 - [Projections](projections/index.md): what-if scenarios for cash runway and net worth.
 - [Settings](settings/index.md): [declaring accounts and their types](settings/accounts.md), and [account aliases](settings/account-aliases.md).
+- [Invoicer](invoicer/index.md): Ledgeline Invoicer, the companion app that writes invoices as plain-text notes, books them into your journal and shows what you are owed.
 - [Development](development/index.md): building, releasing, and how the internals work.
 
 Several account tags change how Ledgeline groups and reports accounts, such as `bsgroup:`, `isgroup:`, `holdings:` and `valuation:`. Every page that explains one carries the `account-tags` tag.
