@@ -58,6 +58,16 @@
 
     let rich = $state(false);
     let element: (HTMLElement & {value: string; readonly: boolean}) | null = null;
+    /**
+     * The text MBR's field and the page last agreed on: what it was given or
+     * reported. Not reactive on purpose. MBR's field reports an edit 120 ms
+     * after typing stops (or on blur), and its `value` is the live text, so a
+     * page that re-renders meanwhile (a live reload re-selecting the same
+     * note) hands back the text the field started from; pushing that in would
+     * restart MBR's editor empty and lose the typing. Only a value that
+     * differs from this one is new from outside.
+     */
+    let known = "";
     let textarea = $state<HTMLTextAreaElement | null>(null);
 
     onMount(() => {
@@ -80,11 +90,15 @@
         field.setAttribute("placeholder", placeholder);
         field.setAttribute("catalog-url", "/.mbr/site.json");
         field.setAttribute("link-base", linkBase);
+        known = value;
         field.value = value;
         field.readonly = readonly;
         field.addEventListener("change", (event) => {
             const detail = (event as CustomEvent<{value?: string}>).detail;
-            onChange(detail?.value ?? field.value);
+            // Known before the page hears it, so its echo isn't pushed back
+            // over keys typed since.
+            known = detail?.value ?? field.value;
+            onChange(known);
         });
         node.append(field);
         element = field;
@@ -131,7 +145,10 @@
 
     function append(block: string): void {
         const next = insertBlock(value, block, null);
-        if (element !== null) element.value = next.value;
+        if (element !== null) {
+            known = next.value;
+            element.value = next.value;
+        }
         onChange(next.value);
     }
 
@@ -148,10 +165,13 @@
         append(EMPTY_TABLE);
     }
 
-    // A new value from outside (a reload) reaches the field; its own edits don't loop.
+    // A new value from outside (a reload, Discard) reaches the field; the
+    // page re-asserting the one it had, or echoing the field's own edit, doesn't.
     $effect(() => {
         const next = value;
-        if (element !== null && element.value !== next) element.value = next;
+        if (element === null || next === known) return;
+        known = next;
+        if (element.value !== next) element.value = next;
     });
     $effect(() => {
         if (element !== null) element.readonly = readonly;
