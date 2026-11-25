@@ -132,12 +132,22 @@ fn balancing_a_wide_transaction_does_not_scale_quadratically() {
     // `group_sums` looked each commodity up with a linear scan of the running
     // list, so N distinct commodities cost N²/2 comparisons. Doubling the
     // postings should roughly double the work; quadratic makes it quadruple.
+    //
+    // Each size is timed several times and the fastest run kept. A single
+    // millisecond-scale sample is at the mercy of one preemption on a shared CI
+    // runner (one such run measured 9.6x); the minimum is the run nothing
+    // interrupted, which is the one that reflects the algorithm.
     let time = |n: usize| {
         let text = wide_transaction(n);
-        let start = Instant::now();
-        let journal = parse_journal(&text, "wide.journal").expect("the journal balances");
-        assert_eq!(journal.transactions.len(), 1);
-        start.elapsed()
+        (0..5)
+            .map(|_| {
+                let start = Instant::now();
+                let journal = parse_journal(&text, "wide.journal").expect("the journal balances");
+                assert_eq!(journal.transactions.len(), 1);
+                start.elapsed()
+            })
+            .min()
+            .expect("at least one sample")
     };
 
     // Warm the allocator and the code paths so the first sample is not the one
