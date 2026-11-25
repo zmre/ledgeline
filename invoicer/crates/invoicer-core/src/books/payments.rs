@@ -498,7 +498,7 @@ impl InvoiceBooks {
         // split (pro-rata).
         let by_remainder = candidate.received == owed.remaining
             || index.settings().payment_allocation == PaymentAllocation::MatchRows;
-        let split: Vec<(String, Dec)> = if by_remainder {
+        let mut split: Vec<(String, Dec)> = if by_remainder {
             owed.split
                 .iter()
                 .zip(&owed.paid)
@@ -512,6 +512,9 @@ impl InvoiceBooks {
         } else {
             owed.split.clone()
         };
+        // A row already exactly paid has nothing left; Ledgeline refuses a
+        // zero row.
+        split.retain(|(_, amount)| !amount.is_zero());
         let fingerprint = loaded
             .editor()
             .transaction_fingerprint(tindex)
