@@ -9,6 +9,7 @@
 <script lang="ts">
     import {untrack} from "svelte";
     import {copyPdf, exportPdf, fetchDelivery, openPdf, openPortal, sendInvoice, sharePdf} from "#lib/api.js";
+    import {errorText} from "#lib/labels.js";
     import type {Anchor, Delivery, Destination, Exported} from "#lib/delivery.js";
     import SendPanel from "./SendPanel.svelte";
 
@@ -19,8 +20,6 @@
     let busy = $state(false);
     let error = $state<string | null>(null);
 
-    const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
-
     /** A refresh of the shown delivery is on its way: its state may be stale. */
     let refreshing = $state(false);
     let latest = 0;
@@ -29,10 +28,13 @@
         const mine = ++latest;
         refreshing = delivery !== null;
         fetchDelivery(target)
+            // Only the newest fetch answers: an older one landing late is stale.
             .then((d) => {
-                if (target === number) delivery = d;
+                if (mine === latest && target === number) delivery = d;
             })
-            .catch((e: unknown) => (error = message(e)))
+            .catch((e: unknown) => {
+                if (mine === latest && target === number) error = errorText(e);
+            })
             .finally(() => {
                 if (mine === latest) refreshing = false;
             });
@@ -44,7 +46,7 @@
         try {
             await action();
         } catch (e: unknown) {
-            error = message(e);
+            error = errorText(e);
         } finally {
             busy = false;
         }

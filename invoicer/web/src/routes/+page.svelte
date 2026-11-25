@@ -19,6 +19,7 @@
     import {fetchDashboard, openInLedgeline} from "#lib/api.js";
     import {changes} from "#lib/changes.svelte.js";
     import {paidDaysParam, paidDaysQuery, type Dashboard} from "#lib/dashboard.js";
+    import {errorText} from "#lib/labels.js";
     import DashboardView from "#lib/components/DashboardView.svelte";
     import EmptyState from "#lib/components/EmptyState.svelte";
 
@@ -89,7 +90,7 @@
         opening = true;
         openError = null;
         openInLedgeline()
-            .catch((e: unknown) => (openError = e instanceof Error ? e.message : String(e)))
+            .catch((e: unknown) => (openError = errorText(e)))
             .finally(() => (opening = false));
     }
 

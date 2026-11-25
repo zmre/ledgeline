@@ -109,6 +109,20 @@
         };
     }
 
+    /**
+     * Cmd/Ctrl+S from inside MBR's field: report its live text first. The
+     * field reports only after typing pauses (or on blur), and Cmd+S doesn't
+     * blur, so the page's save (on the window, after this) would otherwise
+     * miss the last keys, or find nothing unsaved.
+     */
+    function flushOnSave(event: KeyboardEvent): void {
+        if (element === null || event.key.toLowerCase() !== "s" || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
+        const live = element.value;
+        if (live === known) return;
+        known = live;
+        onChange(live);
+    }
+
     /** A spreadsheet paste into MBR's field: handed back to it as markdown, which its clipboard reads as a table. */
     function onRichPaste(event: ClipboardEvent): void {
         if (readonly || event.clipboardData === null) return;
@@ -180,7 +194,7 @@
 
 <div class="flex flex-col gap-1">
     {#if rich}
-        <div use:mountField onpastecapture={onRichPaste} data-testid={testid} data-kind="mbr"></div>
+        <div use:mountField onpastecapture={onRichPaste} onkeydowncapture={flushOnSave} data-testid={testid} data-kind="mbr"></div>
     {:else}
         <textarea
             bind:this={textarea}

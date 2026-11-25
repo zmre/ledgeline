@@ -3,11 +3,15 @@
 // note's name and writes `[[Name]]` into the file. The brackets are the
 // file's business, never typed.
 
-/** The note a `[[Target]]` / `[[Target|shown]]` link names; other text as it is. */
+/**
+ * The note a `[[Target]]` / `[[Target|shown]]` / `[[Target#Heading]]` link
+ * names; other text as it is (trimmed). A link naming no note (`[[]]`,
+ * `[[#Heading]]`) is "": the pages never show `[[…]]`.
+ */
 export function linkName(text: string | null | undefined): string {
     const t = (text ?? "").trim();
-    const m = /^\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]$/.exec(t);
-    return m === null ? t : m[1].trim();
+    const inner = /^\[\[([^\]]*)\]\]$/.exec(t)?.[1];
+    return inner === undefined ? t : inner.split("|")[0].split("#")[0].trim();
 }
 
 /** Whether `text` is a whole `[[wikilink]]`. */

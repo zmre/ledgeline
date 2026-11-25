@@ -33,6 +33,12 @@ export interface DismissibleOptions {
     active?: boolean;
     /** Trap Tab inside and focus the first focusable on open. Screen-owning overlays want this; dropdowns do not. */
     trap?: boolean;
+    /**
+     * With `trap`: a selector, inside the node, for what to focus on open
+     * instead of the first focusable (a confirmation's safe choice, after
+     * fields it contains). Falls back to the first focusable.
+     */
+    initial?: string;
     /** Dismiss on a pointerdown outside the node. Dropdowns want this; modals use their backdrop button instead. */
     outside?: boolean;
 }
@@ -54,8 +60,9 @@ function focusables(node: HTMLElement): HTMLElement[] {
  * question that jsdom — which has no layout engine — always answers "hidden",
  * making the trap untestable and, worse, wrong in tests only.
  */
-function focusFirst(node: HTMLElement): void {
-    for (const candidate of focusables(node)) {
+function focusFirst(node: HTMLElement, initial?: string): void {
+    const preferred = initial === undefined ? null : node.querySelector<HTMLElement>(initial);
+    for (const candidate of preferred === null ? focusables(node) : [preferred, ...focusables(node)]) {
         candidate.focus();
         if (document.activeElement === candidate) return;
     }
@@ -122,7 +129,7 @@ export function dismissible(node: HTMLElement, options: DismissibleOptions) {
         document.addEventListener("keydown", onKeyDown);
         document.addEventListener("pointerdown", onPointerDown, true);
         if (isNative()) unregisterNative = addOverlay(() => current.onDismiss());
-        if (current.trap === true) focusFirst(node);
+        if (current.trap === true) focusFirst(node, current.initial);
     }
 
     function detach(): void {

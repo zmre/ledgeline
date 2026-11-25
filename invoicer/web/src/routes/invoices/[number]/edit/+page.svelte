@@ -29,8 +29,8 @@
     import {DEFAULT_WORDS, isDepositTable, totalWords, type EditorForm} from "#lib/editor.js";
     import {fetchDeposits, fetchEditorOptions, fetchFieldValues, rebookInvoice, voidInvoice} from "#lib/editorApi.js";
     import {InvoiceEditor} from "#lib/invoiceEditor.svelte.js";
-    import {localToday, pageUrl, type TemplateEntry} from "#lib/invoices.js";
-    import {friendlyMessage} from "#lib/labels.js";
+    import {localToday, pageUrl, statusLabel, type TemplateEntry} from "#lib/invoices.js";
+    import {errorText, friendlyMessage} from "#lib/labels.js";
     import AddCustomerDialog from "#lib/components/AddCustomerDialog.svelte";
     import BillGrid from "#lib/components/BillGrid.svelte";
     import ConfirmDialog from "#lib/components/ConfirmDialog.svelte";
@@ -161,7 +161,7 @@
                 delivery = await fetchDelivery(editor.number);
                 via = defaultVia(delivery);
             } catch (e) {
-                stepError = e instanceof Error ? e.message : String(e);
+                stepError = errorText(e);
             }
         }
     }
@@ -183,7 +183,7 @@
             await editor.load(editor.number);
             sendReload += 1;
         } catch (e) {
-            stepError = e instanceof Error ? e.message : String(e);
+            stepError = errorText(e);
         } finally {
             stepBusy = false;
         }
@@ -236,7 +236,7 @@
 
     {#if editor.loadError !== null}
         <div class="alert alert-error" role="alert" data-testid="editor-error">
-            Couldn't open invoice {number} for editing: {editor.loadError.message}
+            Couldn't open invoice {number} for editing: {errorText(editor.loadError)}
             <button type="button" class="btn btn-sm" onclick={() => void editor.load(number)}>Try again</button>
         </div>
     {:else if editor.form === null}
@@ -245,7 +245,7 @@
         {@const form = editor.form}
         <header class="flex flex-wrap items-center gap-x-3 gap-y-2">
             <h1 class="text-2xl font-semibold tracking-tight" data-testid="editor-heading">Invoice {editor.number}</h1>
-            <span class="badge badge-sm" data-testid="editor-status">{editor.status}</span>
+            <span class="badge badge-sm" data-testid="editor-status">{statusLabel(editor.status)}</span>
             {#if editor.computed?.total}
                 <span class="text-lg font-semibold tabular-nums {editor.pending ? 'text-base-content/60 italic' : ''}" data-testid="editor-total"
                     >{editor.computed.total}</span

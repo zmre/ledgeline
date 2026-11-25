@@ -241,4 +241,22 @@ describe("COMPONENT AccountInput commit", () => {
 
         expect(committed).toBe(0);
     });
+
+    it("commits once a press on a suggestion ends without a click, and on later blurs", async () => {
+        let committed = 0;
+        const {field} = mount({onCommit: () => (committed += 1)});
+        field.focus();
+        await type(field, "exp");
+        await fireEvent.pointerDown(screen.getAllByRole("option")[0]!);
+        field.blur();
+        expect(committed).toBe(0);
+        window.dispatchEvent(new Event("pointercancel"));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        await tick();
+        expect(committed).toBe(1);
+        expect(screen.queryByRole("listbox")).toBeNull();
+        field.focus();
+        field.blur();
+        expect(committed).toBe(2);
+    });
 });

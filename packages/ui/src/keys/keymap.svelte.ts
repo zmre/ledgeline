@@ -201,6 +201,7 @@ export const keymap = {
      */
     reset(): void {
         layers = [];
+        groupOrder = [];
         helpOpen = false;
         disarm();
     },

@@ -242,4 +242,43 @@ describe("UNIT review saves", () => {
         await new Promise((resolve) => setTimeout(resolve, 0));
         expect(review.similar(2)?.generation).toBe("g2");
     });
+
+    it("drops a similar set requested before a save that lands after it, and keeps the refetch in flight", async () => {
+        let generation = "g1";
+        const late = deferred<void>();
+        const refetch = deferred<void>();
+        const asked: string[] = [];
+        const sibling = (index: number) => reviewTxnWire(txn(index), {fingerprint: `fp-${index}-0`});
+        serveReview({
+            queue: () => page("unknowns", [1, 2, 3], generation),
+            // Card 2's request at g1 answers after the save has landed, while its refetch at g2 is still out.
+            similar: async (index) => {
+                const at = generation;
+                if (index === 2) asked.push(at);
+                if (index === 2 && at === "g1") await late.promise;
+                if (index === 2 && at === "g2") await refetch.promise;
+                return similarWire(index, [sibling(11), sibling(12)], {generation: at});
+            },
+            batch: () => {
+                generation = "g2";
+                return landed([{index: 1}, {index: 11}], "g2", {reviewed: true});
+            },
+        });
+        await review.open("unknowns");
+        await vi.waitFor(() => expect(review.similar(1)).not.toBeNull());
+        expect(await review.save([COFFEE, TAG], [{txn: review.similar(1)!.candidates[0]!, ops: [COFFEE]}])).toEqual({ok: true});
+        await vi.waitFor(() => expect(asked).toEqual(["g1", "g2"]));
+
+        // The g1 answer lands first: it still lists #11, which the save just categorised.
+        late.resolve();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(review.similar(2)).toBeNull();
+        // The refetch is still the one in flight: asking again doesn't send another.
+        void review.loadSimilar(2);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(asked).toEqual(["g1", "g2"]);
+
+        refetch.resolve();
+        await vi.waitFor(() => expect(review.similar(2)?.generation).toBe("g2"));
+    });
 });
