@@ -11,9 +11,12 @@
  * Tailwind's automatic source detection starts at the app (vite's root), and
  * never looks inside node_modules, which is where this package is linked. Name
  * the package's own sources so the classes its components use are generated
- * in every app that imports this stylesheet.
+ * in every app that imports this stylesheet. Not the tests and their probes:
+ * a class only a test names has no place in an app's CSS.
  */
 @source "./";
+@source not "./**/*.test.ts";
+@source not "./testing";
 
 /*
  * Themes: sixteen daisyUI custom themes, one file per family under ./themes/.
