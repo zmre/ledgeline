@@ -140,6 +140,8 @@ pub struct PaymentApplied {
 pub struct PaymentPreview {
     /// The invoice.
     pub number: String,
+    /// The commodity.
+    pub commodity: String,
     /// The deposit, as listed.
     pub deposit: PaymentCandidate,
     /// What it would pay.
@@ -157,6 +159,7 @@ pub struct PaymentPreview {
 /// A chosen deposit and Ledgeline's request for it, before any write.
 struct PlannedPayment {
     candidate: PaymentCandidate,
+    commodity: String,
     /// What was due before it.
     remaining: Dec,
     apply: apply::ApplyPayment,
@@ -552,6 +555,7 @@ impl InvoiceBooks {
             .ok_or(ledgeline_core::accrual::ops::OpsError::Stale)?;
         Ok(PlannedPayment {
             candidate,
+            commodity: owed.booking.commodity.clone(),
             remaining: owed.remaining,
             apply: apply::ApplyPayment {
                 tindex,
@@ -591,6 +595,7 @@ impl InvoiceBooks {
         let plan = apply::plan(loaded.journal(), txn, &planned.apply)?;
         Ok(PaymentPreview {
             number: request.number.clone(),
+            commodity: planned.commodity,
             received: plan.received,
             applied: rendered(&plan.applied),
             partial: plan.partial,
