@@ -65,7 +65,18 @@ fn app_with(native: Option<Arc<dyn super::native::Native>>) -> App {
 
 /// [`app_with`] over the fixture `name` (`accrual`, `cash`).
 pub(super) fn app_on(name: &str, native: Option<Arc<dyn super::native::Native>>) -> App {
+    app_on_prepared(name, native, |_| {})
+}
+
+/// [`app_on`], with `prepare` run on the copied books folder before the
+/// books open (to set file times, say).
+pub(super) fn app_on_prepared(
+    name: &str,
+    native: Option<Arc<dyn super::native::Native>>,
+    prepare: impl FnOnce(&Path),
+) -> App {
     let (dir, journal) = fixture_named(name);
+    prepare(&dir.path().join("books"));
     let books = Arc::new(OpenBooks::open(&journal, false).expect("opens"));
     let app_dirs = AppDirs::under(dir.path().join("config"));
     let state = AppState::with_native(Some(Arc::clone(&books)), app_dirs, native);

@@ -241,7 +241,7 @@ fn ratio(a: Dec, b: Dec) -> Option<String> {
 
 /// Each number filed by exactly one document, and its file: one pass over
 /// the index, so finding an open item's file is a lookup, not a scan.
-fn files_by_number(index: &DocumentIndex) -> HashMap<&str, Option<&VaultPath>> {
+pub(crate) fn files_by_number(index: &DocumentIndex) -> HashMap<&str, Option<&VaultPath>> {
     let mut out: HashMap<&str, Option<&VaultPath>> = HashMap::new();
     for doc in index.docs() {
         if let Some(number) = doc.number() {

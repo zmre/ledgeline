@@ -21,6 +21,7 @@
     "filename": "{date} {customer} Invoice {invoice_num}.md",
     "invoices-dir": "invoices",
     "number-start": "201",
+    "paid-window-days": 30,
     "payment-allocation": "match-rows",
     "pdf-dir": "invoices/pdf",
     "recalc-on-save": "drafts",

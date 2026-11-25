@@ -99,6 +99,82 @@
     ],
     "oldest": "2026-11-17"
   },
+  "paid": {
+    "days": 30,
+    "from": "2026-10-24",
+    "to": "2026-11-22",
+    "commodities": [
+      {
+        "commodity": "$",
+        "amount": "8500.00",
+        "text": "$8,500.00",
+        "count": 3,
+        "unfiled": 0
+      }
+    ]
+  },
+  "recent": [
+    {
+      "number": "201",
+      "path": "invoices/2026-10-20 Contoso Invoice 201.md",
+      "customer": "Contoso",
+      "date": "2026-10-20",
+      "updated": "2026-11-21",
+      "event": "edited",
+      "status": "paid",
+      "total": "$3,000.00"
+    },
+    {
+      "number": "204",
+      "path": "invoices/2026-11-17 Customer X Invoice 204.md",
+      "customer": "Customer X",
+      "date": "2026-11-17",
+      "updated": "2026-11-17",
+      "event": "dated",
+      "status": "draft",
+      "total": "$3,200.00"
+    },
+    {
+      "number": "207",
+      "path": "invoices/2026-11-16 Customer X Invoice 207.md",
+      "customer": "Customer X",
+      "date": "2026-11-16",
+      "updated": "2026-11-16",
+      "event": "sent",
+      "status": "open",
+      "total": "$7,000.00"
+    },
+    {
+      "number": "202",
+      "path": "invoices/2026-11-01 Fabrikam Invoice 202.md",
+      "customer": "Fabrikam",
+      "date": "2026-11-01",
+      "updated": "2026-11-12",
+      "event": "paid",
+      "status": "open",
+      "total": "$2,000.00"
+    },
+    {
+      "number": "206",
+      "path": "invoices/2026-11-01 Customer X Invoice 206.md",
+      "customer": "Customer X",
+      "date": "2026-11-01",
+      "updated": "2026-11-08",
+      "event": "paid",
+      "status": "paid",
+      "total": "$5,000.00"
+    },
+    {
+      "number": "205",
+      "path": "invoices/2026-11-02 Tailspin Invoice 205.md",
+      "customer": "Tailspin",
+      "date": "2026-11-02",
+      "updated": "2026-11-06",
+      "event": "voided",
+      "status": "void",
+      "total": "$800.00"
+    }
+  ],
   "recognition": null,
   "aging_buckets": [
     30,
@@ -106,5 +182,6 @@
     90
   ],
   "dso_days": 90,
+  "paid_window_days": 30,
   "open_ledgeline": false
 }

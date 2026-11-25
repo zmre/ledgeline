@@ -230,7 +230,8 @@ async fn books(State(state): State<AppState>, Query(params): Query<BooksParams>)
 }
 
 /// `GET /api/invoices`' query: the invoice list's URL contract (PLAN 5b,
-/// S1), plus `type`, `open`, `overdue` and `today`. A blank value is no
+/// S1, with R14's `paid_from`/`paid_to`), plus `type`, `open`, `overdue`
+/// and `today`. A blank value is no
 /// filter, so the SPA can pass its URL through as it is.
 #[derive(Debug, Default, Deserialize)]
 struct ListParams {
@@ -249,6 +250,10 @@ struct ListParams {
     from: Option<String>,
     /// Dated on or before.
     to: Option<String>,
+    /// Money received on or after (YYYY-MM-DD; PLAN R14).
+    paid_from: Option<String>,
+    /// Money received on or before.
+    paid_to: Option<String>,
     /// Open and this many days past due: `current`, `31-60`, `91+`.
     aged: Option<String>,
     /// Number, customer, reference or total holding this text.
@@ -300,6 +305,8 @@ impl ListParams {
             overdue: self.overdue,
             from: date("from", self.from.as_ref())?,
             to: date("to", self.to.as_ref())?,
+            paid_from: date("paid_from", self.paid_from.as_ref())?,
+            paid_to: date("paid_to", self.paid_to.as_ref())?,
             aged: given(self.aged.as_ref())
                 .map(|a| views::Aged::parse(a).ok_or_else(|| bad("aged", a)))
                 .transpose()?,

@@ -158,6 +158,7 @@ fn bucket_edges_and_the_dso_window_follow_the_options() {
     let options = DashboardOptions {
         aging_edges: vec![45],
         dso_days: 30,
+        ..DashboardOptions::of(&Settings::default())
     };
     let d = on("accrual", TODAY, Some(options));
     assert_eq!(d.aging_buckets, [45]);
@@ -180,4 +181,114 @@ fn a_later_today_ages_everything() {
     let buckets = texts(&d);
     assert_eq!(buckets[0], row("current", "$0.00", 0));
     assert_eq!(buckets[4].1, d.commodities[0].outstanding.text);
+}
+
+fn with_paid_days(days: u32) -> Option<DashboardOptions> {
+    Some(DashboardOptions {
+        paid_days: days,
+        ..DashboardOptions::of(&Settings::default())
+    })
+}
+
+fn paid(d: &Dashboard) -> (String, String, String, usize) {
+    let usd = &d.paid.commodities[0];
+    (
+        d.paid.from.clone(),
+        d.paid.to.clone(),
+        usd.text.clone(),
+        usd.count,
+    )
+}
+
+#[test]
+fn paid_in_the_last_n_days_counts_money_received_by_its_date() {
+    // Accrual: 102 paid in full on 2026-10-20 ($2,900) and $1,000 of 107 on
+    // 2026-11-05; payments only (credits and voids are not money in).
+    let d = on("accrual", TODAY, None);
+    assert_eq!(d.paid_window_days, 30);
+    assert_eq!(d.paid.days, 30);
+    assert_eq!(
+        paid(&d),
+        ("2026-10-19".into(), TODAY.into(), "$3,900.00".into(), 2)
+    );
+    assert_eq!(d.paid.commodities[0].unfiled, 0);
+    // A year takes in 101 and 104 as well.
+    let d = on("accrual", TODAY, with_paid_days(365));
+    assert_eq!(
+        paid(&d),
+        ("2025-11-18".into(), TODAY.into(), "$16,250.00".into(), 4)
+    );
+    // A week: nothing came in.
+    let d = on("accrual", TODAY, with_paid_days(7));
+    assert!(d.paid.commodities.is_empty(), "{:?}", d.paid);
+    assert_eq!(d.paid.from, "2026-11-11");
+}
+
+#[test]
+fn cash_books_count_the_payments_applied_to_an_invoice() {
+    // 201's Stripe payout ($3,000 of income, a $90 fee kept apart), 202's
+    // $500 wire and 206's $5,000 deposit.
+    let d = on("cash", TODAY, None);
+    assert_eq!(
+        paid(&d),
+        ("2026-10-19".into(), TODAY.into(), "$8,500.00".into(), 3)
+    );
+}
+
+fn recent(d: &Dashboard) -> Vec<(String, String, String, String)> {
+    d.recent
+        .iter()
+        .map(|r| {
+            (
+                r.number.clone().unwrap_or_default(),
+                r.updated.clone(),
+                serde_json::to_value(r.event)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_string))
+                    .unwrap_or_default(),
+                r.status.clone(),
+            )
+        })
+        .collect()
+}
+
+fn r(number: &str, updated: &str, event: &str, status: &str) -> (String, String, String, String) {
+    (number.into(), updated.into(), event.into(), status.into())
+}
+
+#[test]
+fn recently_updated_is_latest_event_first() {
+    // The six latest of seven. A file saved after TODAY doesn't count, and
+    // these fixtures were made after it (2026-11-19 on), so any checkout's
+    // file times are later: the dates the invoices and the books hold
+    // decide. (The router's golden sets file times to test the edited
+    // event.)
+    let d = on("cash", TODAY, None);
+    assert_eq!(
+        recent(&d),
+        [
+            r("204", "2026-11-17", "dated", "draft"),
+            r("207", "2026-11-16", "sent", "open"),
+            r("202", "2026-11-12", "paid", "open"),
+            r("206", "2026-11-08", "paid", "paid"),
+            r("205", "2026-11-06", "voided", "void"),
+            r("203", "2026-11-05", "sent", "open"),
+        ]
+    );
+    let d = on("accrual", TODAY, None);
+    assert_eq!(d.recent.len(), 6, "at most six");
+    assert_eq!(
+        recent(&d)[..4],
+        [
+            r("108", "2026-11-17", "dated", "draft"),
+            r("105", "2026-11-10", "sent", "open"),
+            r("107", "2026-11-05", "paid", "overdue"),
+            r("102", "2026-10-20", "paid", "paid"),
+        ]
+    );
+    let first = &d.recent[0];
+    assert_eq!(
+        (first.customer.as_deref(), first.total.as_deref()),
+        (Some("Customer X"), Some("$13,600.00"))
+    );
 }

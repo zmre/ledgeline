@@ -60,6 +60,21 @@ pub fn overdue_in(states: Option<&BookStates>, doc: &IndexedDoc, today: &str) ->
             .is_some_and(|due| due < today)
 }
 
+/// The days money was received for `doc`: by the books when given (and
+/// they can say: [`BookStates::money_received`]), else by its `paid:`
+/// mirror (a partial payment's days, or the day it was paid in full).
+#[must_use]
+pub fn paid_dates(states: Option<&BookStates>, doc: &IndexedDoc) -> Vec<String> {
+    if let Some(received) = states.and_then(|s| s.money_received(doc)) {
+        return received.into_iter().map(|(date, _)| date).collect();
+    }
+    match &doc.header.paid {
+        Some(Paid::Full { date }) => vec![date.clone()],
+        Some(Paid::Partial { parts }) => parts.iter().map(|p| p.date.clone()).collect(),
+        Some(Paid::No) | None => Vec::new(),
+    }
+}
+
 /// Whether a document is overdue on `today`: open, and due before it.
 #[must_use]
 pub fn is_overdue(header: &Header, today: &str) -> bool {
@@ -131,6 +146,11 @@ pub struct ListQuery {
     pub from: Option<String>,
     /// Only documents dated on or before this day.
     pub to: Option<String>,
+    /// Only documents with money received on or after this day (PLAN R14,
+    /// the dashboard's "paid in the last N days").
+    pub paid_from: Option<String>,
+    /// Only documents with money received on or before this day.
+    pub paid_to: Option<String>,
     /// Only open documents this many days past due.
     pub aged: Option<Aged>,
     /// Only documents whose number, title, customer, reference or total
@@ -182,6 +202,16 @@ impl ListQuery {
         }
         if let Some(to) = &self.to
             && date.is_none_or(|d| d > to.as_str())
+        {
+            return false;
+        }
+        if (self.paid_from.is_some() || self.paid_to.is_some())
+            && !paid_dates(states, doc).iter().any(|d| {
+                self.paid_from
+                    .as_deref()
+                    .is_none_or(|from| d.as_str() >= from)
+                    && self.paid_to.as_deref().is_none_or(|to| d.as_str() <= to)
+            })
         {
             return false;
         }
@@ -1554,6 +1584,44 @@ mod tests {
                 .unwrap_or_default()
         })
         .collect()
+    }
+
+    #[test]
+    fn list_filters_by_the_day_money_came_in() {
+        // The dashboard's "paid in the last N days" (R14): 102 was paid in
+        // full on 2026-10-20, $1,000 of 107 came in on 2026-11-05 (still
+        // open), 104 on 2026-10-08, 101 on 2026-10-05.
+        let session = session("accrual");
+        let paid = |from: Option<&str>, to: Option<&str>| {
+            numbers_for(
+                &session,
+                &ListQuery {
+                    paid_from: from.map(str::to_string),
+                    paid_to: to.map(str::to_string),
+                    ..ListQuery::default()
+                },
+            )
+        };
+        assert_eq!(paid(Some("2026-10-19"), Some("2026-11-17")), ["107", "102"]);
+        assert_eq!(paid(Some("2026-11-05"), Some("2026-11-05")), ["107"]);
+        assert_eq!(paid(None, Some("2026-10-08")), ["104", "101"]);
+        assert!(paid(Some("2026-11-06"), None).is_empty());
+        // Without the books, the `paid:` mirrors say when.
+        let problems = problems(&session);
+        let mirrored: Vec<String> = list(
+            session.index(),
+            None,
+            &problems,
+            &ListQuery {
+                paid_from: Some("2026-10-19".into()),
+                ..ListQuery::default()
+            },
+            "2026-11-17",
+        )
+        .iter()
+        .filter_map(|d| d.header.number.as_ref().map(ToString::to_string))
+        .collect();
+        assert!(mirrored.contains(&"102".to_string()), "{mirrored:?}");
     }
 
     #[test]
