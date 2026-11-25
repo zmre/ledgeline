@@ -11,6 +11,7 @@ import {
     previewUrl,
     settlementText,
     standing,
+    statusLabel,
     templateChoices,
     templateName,
     type TemplateEntry,
@@ -59,6 +60,13 @@ describe("UNIT invoices", () => {
         expect(standing({...sent, open: false})).toEqual({label: "Paid", tone: "success"});
         expect(standing({...sent, paid: {state: "partial", parts: [{date: "2026-11-05", amount: "$1,000"}]}}).label).toBe("Partly paid");
         expect(standing({...sent, status: null}).label).toBe("No status");
+    });
+
+    it("names a status as a word where the standing isn't known", () => {
+        expect(statusLabel("draft")).toBe("Draft");
+        expect(statusLabel("sent")).toBe("Sent");
+        expect(statusLabel("void")).toBe("Void");
+        expect(statusLabel(null)).toBe("No status");
     });
 
     it("reads the paid mirror in words", () => {

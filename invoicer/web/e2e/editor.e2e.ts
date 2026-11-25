@@ -65,7 +65,7 @@ test.describe("the invoice editor over the accrual fixture (:5199)", () => {
         await page.getByTestId("new-create").click();
         await expect(page).toHaveURL(/\/app\/invoices\/2005\/edit$/);
         await expect(page.getByTestId("editor-heading")).toHaveText("Invoice 2005");
-        await expect(page.getByTestId("editor-status")).toHaveText("draft");
+        await expect(page.getByTestId("editor-status")).toHaveText("Draft");
         await expect(page.getByTestId("header-customer")).toHaveValue("Customer X");
         // A new draft's table is only its total: the footer, not a row.
         await expect(page.getByTestId("grid-row")).toHaveCount(0);
@@ -131,7 +131,7 @@ test.describe("the invoice editor over the accrual fixture (:5199)", () => {
         await expect(confirm).toContainText("assets:accounts receivable");
         await page.getByTestId("confirm-send-confirm").click();
         await expect(page.getByTestId("editor-notice")).toContainText("Invoice 2005 is sent.");
-        await expect(page.getByTestId("editor-status")).toHaveText("sent");
+        await expect(page.getByTestId("editor-status")).toHaveText("Sent");
         expect(read(NEW_INVOICE)).toMatch(/^status: sent$/m);
         const journal = read("books.journal");
         expect(journal).toContain("invoice: 2005, document: invoices/2026-11-17 Customer X Invoice 2005.md, due: 2026-12-17");
