@@ -51,6 +51,19 @@ describe("COMPONENT the invoicer's app keys", () => {
         expect(nav.goto).toHaveBeenLastCalledWith("/app/new");
     });
 
+    it("starts a deposit invoice with d (the New menu's second choice), but not when already there", async () => {
+        await press("d");
+        expect(nav.goto).toHaveBeenLastCalledWith("/app/new?deposit=1");
+        nav.goto.mockReset();
+        nav.url = new URL("http://localhost/app/new?deposit=1");
+        await press("d");
+        expect(nav.goto).not.toHaveBeenCalled();
+        // From the plain New invoice page it switches to a deposit invoice.
+        nav.url = new URL("http://localhost/app/new");
+        await press("d");
+        expect(nav.goto).toHaveBeenLastCalledWith("/app/new?deposit=1");
+    });
+
     it("stays put for the section it is on, unless the list is filtered", async () => {
         await press("g");
         await press("i");
@@ -72,6 +85,7 @@ describe("COMPONENT the invoicer's app keys", () => {
         expect(headings).toEqual(["Global", "Go to"]);
         expect(within(sheet).getByText("Leave the field")).toBeTruthy();
         expect(within(sheet).getByText("Go to Catalog")).toBeTruthy();
+        expect(within(sheet).getByText("New deposit invoice")).toBeTruthy();
         expect(within(sheet).getByText("A note.")).toBeTruthy();
         // No search box on the page: `/` is off, and off the sheet.
         expect(within(sheet).queryByText("Search this list")).toBeNull();

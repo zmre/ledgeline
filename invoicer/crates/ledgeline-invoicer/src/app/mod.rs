@@ -245,6 +245,8 @@ mod library_tests;
 #[cfg(test)]
 mod mbr_csp_tests;
 #[cfg(test)]
+mod payments_tests;
+#[cfg(test)]
 mod spa_shell_csp_tests;
 #[cfg(test)]
 mod tests;

@@ -34,6 +34,16 @@ export const COPY = "../../target/e2e-invoicer-accrual";
 export const EMPTY_SERVER_URL = "http://127.0.0.1:5198";
 export const EMPTY_COPY = "../../target/e2e-invoicer-empty";
 
+/**
+ * The third server: `--server` on 5197 over a scratch copy of
+ * invoicer/fixtures/cash with one imported, unapplied deposit appended
+ * (e2e/fixtures/cash-imports.journal), for cash.e2e.ts: Apply payment and New
+ * deposit invoice, in books no other spec reads. Like EMPTY_SERVER_URL, its
+ * spec loads the SPA the server embeds.
+ */
+export const CASH_SERVER_URL = "http://127.0.0.1:5197";
+export const CASH_COPY = "../../target/e2e-invoicer-cash";
+
 const BIN = process.env.LEDGELINE_INVOICER_BIN ?? "../../target/debug/ledgeline-invoicer";
 
 /**
@@ -69,6 +79,13 @@ export default defineConfig({
             url: `${EMPTY_SERVER_URL}/app/`,
             reuseExistingServer: false,
         },
+        {
+            // The cash books, staged fresh with the import appended to the copy only.
+            command: `rm -rf ${CASH_COPY} && mkdir -p ../../target && cp -R ../fixtures/cash ${CASH_COPY} && cat e2e/fixtures/cash-imports.journal >> ${CASH_COPY}/books.journal && exec ${BIN} --server ${CASH_COPY}/books.journal --port 5197`,
+            env: SERVER_ENV,
+            url: `${CASH_SERVER_URL}/app/`,
+            reuseExistingServer: false,
+        },
         {command: "bun run build && bun run preview", port: 4273},
     ],
     // timezoneId matches vitest's pin (vite.config.ts); dark, like Ledgeline's suite.
@@ -97,11 +114,13 @@ export default defineConfig({
     //   7. keyboard.e2e.ts (PLAN 5k) drives the lists by keys, then writes,
     //      sends and exports an invoice for Fabrikam without the mouse; last,
     //      since every figure above would see it.
-    // empty.e2e.ts has its own server and books (5198), so it runs alongside.
+    // empty.e2e.ts has its own server and books (5198), so it runs alongside;
+    // so does cash.e2e.ts (5197, the cash books).
     projects: [
         {name: "dashboard", testMatch: "**/dashboard.e2e.ts"},
         {name: "customers", testMatch: "**/customers.e2e.ts", dependencies: ["dashboard"]},
         {name: "empty", testMatch: "**/empty.e2e.ts"},
+        {name: "cash", testMatch: "**/cash.e2e.ts"},
         {
             name: "pages",
             testIgnore: [
@@ -110,6 +129,7 @@ export default defineConfig({
                 "**/editor.e2e.ts",
                 "**/library.e2e.ts",
                 "**/empty.e2e.ts",
+                "**/cash.e2e.ts",
                 "**/templates.e2e.ts",
                 "**/lists.e2e.ts",
                 "**/keyboard.e2e.ts",

@@ -36,6 +36,12 @@ describe("COMPONENT ConfirmDialog", () => {
         expect(document.activeElement).toBe(confirm);
     });
 
+    it("keeps the confirm button off while confirmDisabled, Cancel on", () => {
+        render(ConfirmDialog, {title: "Apply?", confirmLabel: "Apply", confirmDisabled: true, onConfirm: vi.fn(), onCancel: vi.fn()});
+        expect((screen.getByTestId("confirm-dialog-confirm") as HTMLButtonElement).disabled).toBe(true);
+        expect((screen.getByRole("button", {name: "Cancel"}) as HTMLButtonElement).disabled).toBe(false);
+    });
+
     it("cancels on Escape with focus anywhere", () => {
         const {onCancel} = mount();
         (document.activeElement as HTMLElement | null)?.blur();

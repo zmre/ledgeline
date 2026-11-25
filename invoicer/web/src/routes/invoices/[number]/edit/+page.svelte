@@ -276,6 +276,10 @@
         </header>
 
         {#if notice !== null}<div class="alert text-sm alert-success" role="status" data-testid="editor-notice">{notice}</div>{/if}
+        <!-- What went wrong once New wrote the draft (its starter template not copied in): the draft is here either way. -->
+        {#each page.state.createWarnings ?? [] as warning, i (i)}
+            <div class="alert text-sm alert-warning" role="status" data-testid="editor-create-warning">{errorText(warning)}</div>
+        {/each}
         {#if editor.saveError !== null}<div class="alert text-sm alert-error" role="alert" data-testid="editor-save-error">{editor.saveError}</div>{/if}
         {#if editor.conflict !== null}
             <ConflictNotice

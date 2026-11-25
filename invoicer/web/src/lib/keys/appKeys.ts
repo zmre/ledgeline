@@ -1,4 +1,5 @@
-// The invoicer's app-wide layer (PLAN 5k, Y3): help, search, New invoice and
+// The invoicer's app-wide layer (PLAN 5k, Y3): help, search, New invoice (`n`),
+// New deposit invoice (`d`; Shift+N opens the whole New menu) and
 // the `g` go-to chords, one per sidebar section. Registered once by the root
 // layout. Plain `.ts`: it reads runes-backed state (`page`, `pageSearch`)
 // but declares none.
@@ -22,12 +23,13 @@ import {pageSearch} from "./pageSearch.svelte.js";
 
 type Section = "/" | "/invoices" | "/customers" | "/catalog" | "/snippets" | "/templates" | "/new";
 
-/** Go to a page; already there (the same path and no query), nothing. */
-function to(path: Section): () => void {
+/** Go to a page (with `search`, a query such as `?deposit=1`); already there, nothing. */
+function to(path: Section, search = ""): () => void {
     return () => {
         const target = resolve(path);
-        if (page.url.pathname === target && page.url.search === "") return;
-        void goto(target);
+        if (page.url.pathname === target && page.url.search === search) return;
+        // eslint-disable-next-line svelte/no-navigation-without-resolve -- the path is resolve()d; only the query is added
+        void goto(`${target}${search}`);
     };
 }
 
@@ -47,6 +49,7 @@ export function appLayer(): Layer {
             {keys: "?", label: "Show keyboard shortcuts", group: "Global", run: () => keymap.toggleHelp()},
             {keys: "/", label: "Search this list", group: "Global", enabled: () => pageSearch.present, run: () => pageSearch.focus()},
             {keys: "n", label: "New invoice", group: "Global", run: to("/new")},
+            {keys: "d", label: "New deposit invoice", group: "Global", run: to("/new", "?deposit=1")},
             {keys: "Escape", label: "Leave the field", group: "Global", fields: true, run: leaveField},
             {keys: "g d", label: "Go to Dashboard", group: "Go to", run: to("/")},
             {keys: "g i", label: "Go to Invoices", group: "Go to", run: to("/invoices")},

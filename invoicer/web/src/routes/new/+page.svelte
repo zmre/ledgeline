@@ -5,11 +5,20 @@
      on it. Drafts never touch the books (I2).
 
      The customer field has focus on arrival (`n` brings you here, PLAN 5k):
-     type, Enter to choose, Tab on, Enter on Create draft. -->
+     type, Enter to choose, Tab on, Enter on Create draft.
+
+     New deposit invoice (`d`, the New menu; `?deposit=1`, ARCHITECTURE §4.4)
+     is the same draft with one row booked to the deposit account, so the
+     editor opens on its deposit fields (Deposit for note) to fill in.
+
+     Anything that went wrong once the draft was written (its starter
+     template not copied in) goes to the editor with it (page state), which
+     shows it: the draft exists either way. -->
 <script lang="ts">
     import {onMount} from "svelte";
     import {goto} from "$app/navigation";
     import {resolve} from "$app/paths";
+    import {page} from "$app/state";
     import Combobox from "#ui/components/Combobox.svelte";
     import type {ComboOption} from "#ui/ui/comboMatch.js";
     import DateInput from "#ui/components/DateInput.svelte";
@@ -30,6 +39,9 @@
     let busy = $state(false);
     let error = $state<string | null>(null);
     let adding = $state<string | null>(null);
+
+    const deposit = $derived(page.url.searchParams.get("deposit") === "1");
+    const heading = $derived(deposit ? "New deposit invoice" : "New invoice");
 
     function loadOptions(): void {
         fetchEditorOptions()
@@ -65,8 +77,8 @@
         error = null;
         try {
             const link = chosen?.link ?? toLink(customer, [], true);
-            const made = await createInvoice({customer: link, template: template === "" ? null : template, date});
-            await goto(resolve("/invoices/[number]/edit", {number: made.number}));
+            const made = await createInvoice({customer: link, template: template === "" ? null : template, date, deposit});
+            await goto(resolve("/invoices/[number]/edit", {number: made.number}), {state: {createWarnings: made.warnings}});
         } catch (e) {
             error = errorText(e);
         } finally {
@@ -76,11 +88,11 @@
 </script>
 
 <svelte:head>
-    <title>New invoice · Ledgeline Invoicer</title>
+    <title>{heading} · Ledgeline Invoicer</title>
 </svelte:head>
 
 <div class="mx-auto flex max-w-xl flex-col gap-4">
-    <h1 class="text-2xl font-semibold tracking-tight">New invoice</h1>
+    <h1 class="text-2xl font-semibold tracking-tight" data-testid="new-heading">{heading}</h1>
     <form class="flex flex-col gap-3 rounded-box border border-base-300 p-4" onsubmit={submit} bind:this={formEl} data-testid="new-invoice">
         <label class="flex flex-col gap-1 text-sm"
             >Customer

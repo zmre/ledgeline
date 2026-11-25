@@ -98,11 +98,13 @@
         ];
     });
 
-    // The New button's choices (H20): invoices only among the document
-    // types, since the app creates nothing else yet (estimates and credit
-    // notes are DocType "later"). `?new=1` asks the page to start one.
+    // The New button's choices (H20, ARCHITECTURE §6.3): invoices and deposit
+    // invoices only among the document types, since the app creates nothing
+    // else yet (estimates and credit notes are DocType "later"). `?new=1` asks
+    // the page to start one; `/new?deposit=1` starts a deposit invoice.
     const newChoices: NewChoice[] = [
         {id: "invoice", label: "New invoice", href: resolve("/new")},
+        {id: "deposit-invoice", label: "New deposit invoice", href: `${resolve("/new")}?deposit=1`},
         {id: "customer", label: "New customer", href: resolve("/customers/new")},
         {id: "catalog-item", label: "New catalog item", href: `${resolve("/catalog")}?new=1`},
         {id: "snippet", label: "New snippet", href: `${resolve("/snippets")}?new=1`},

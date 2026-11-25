@@ -34,7 +34,7 @@ mod starters;
 
 use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser, Subcommand};
 use invoicer_core::books::{
-    self, ApplyPayment, BooksError, InvoiceBooks, Rebook, Recognize, Send, UndoRecord, Void,
+    self, ApplyPayment, BooksError, InvoiceBooks, Rebook, Recognize, Send, Void,
 };
 use invoicer_core::doc::{DocType, Status};
 use invoicer_core::draft::{DraftRow, NewInvoice};
@@ -1073,17 +1073,8 @@ fn run_apply_payment(cli: &Cli, args: &ApplyPaymentArgs) -> Result<ExitCode, Fai
     let money = session.index().money().clone();
     let (index, vault) = session.parts_mut();
     let applied = retrying(|| books.apply_payment(index, &request))?;
-    let mut warnings = Vec::new();
-    let undo_file = match books::undo::save(vault, &UndoRecord::of(&applied, &today)) {
-        Ok(path) => Some(path),
-        Err(error) => {
-            warnings.push(format!(
-                "the payment is applied, but its undo record wasn't written ({error}); undo it \
-                 by hand from the deposit's text"
-            ));
-            None
-        }
-    };
+    let (undo_file, warning) = books::undo::keep(vault, &applied, &today);
+    let warnings: Vec<String> = warning.into_iter().collect();
     let mirror = mirror_one(&books, index, &number);
     #[derive(Serialize)]
     struct Out {

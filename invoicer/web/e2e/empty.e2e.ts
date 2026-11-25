@@ -132,14 +132,23 @@ test.describe("empty books (:5198)", () => {
         await toggle.focus();
         await page.keyboard.press("ArrowDown");
         await expect(menu).toBeVisible();
-        await expect(menu.getByRole("menuitem")).toHaveText(["New invoice", "New customer", "New catalog item", "New snippet", "New template"]);
+        await expect(menu.getByRole("menuitem")).toHaveText([
+            "New invoice",
+            "New deposit invoice",
+            "New customer",
+            "New catalog item",
+            "New snippet",
+            "New template",
+        ]);
         await expect(menu.getByRole("menuitem", {name: "New invoice", exact: true})).toBeFocused();
         await page.keyboard.press("Escape");
         await expect(menu).toHaveCount(0);
         await expect(toggle).toBeFocused();
 
-        // New customer.
+        // New customer (past New deposit invoice).
         await page.keyboard.press("ArrowDown");
+        await page.keyboard.press("ArrowDown");
+        await expect(menu.getByRole("menuitem", {name: "New deposit invoice", exact: true})).toBeFocused();
         await page.keyboard.press("ArrowDown");
         await expect(menu.getByRole("menuitem", {name: "New customer", exact: true})).toBeFocused();
         await page.keyboard.press("Enter");
@@ -185,7 +194,7 @@ test.describe("empty books (:5198)", () => {
         expect(box).not.toBeNull();
         expect(box!.x).toBeGreaterThanOrEqual(0);
         expect(box!.x + box!.width).toBeLessThanOrEqual(480);
-        await expect(menu.getByRole("menuitem")).toHaveCount(5);
+        await expect(menu.getByRole("menuitem")).toHaveCount(6);
         // A click outside closes it.
         await page.getByRole("heading", {name: "Invoices", exact: true}).click();
         await expect(menu).toHaveCount(0);
