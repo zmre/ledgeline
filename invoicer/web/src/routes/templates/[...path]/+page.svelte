@@ -257,6 +257,8 @@
         try {
             await deleteTemplate(template, hash);
             deleting = false;
+            // Unsaved edits went with the file: leaving mustn't ask to save them.
+            form = {...original, kinds: [...original.kinds]};
             await goto(resolve("/templates"));
         } catch (e) {
             deleteError = errorText(e);
