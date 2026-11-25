@@ -16,13 +16,21 @@
 //     $1,200.00 · 91+ $3,000.00;
 //   - oldest overdue: 2001, Tailspin, due 2026-07-15, 125 days, $3,000.00;
 //   - DSO 58.9 days over 90; average days to pay 25.3 over 3 invoices;
-//   - one draft (108, $13,600.00); 10 recognition entries due, 1 more closed.
+//   - one draft (108, $13,600.00); 10 recognition entries due, 1 more closed;
+//   - paid in the last 30 days (2026-10-19 to 2026-11-17): $3,900.00 into 2
+//     invoices (102 in full on 10-20, $1,000 of 107 on 11-05); 7 days:
+//     nothing; 365 days: $16,250.00 into 4 (101 and 104 too);
+//   - recently updated, latest first: 108 (dated 11-17, draft), 105 (sent
+//     11-10, open), 107 (paid 11-05, overdue), 102 (paid 10-20), 103 (voided
+//     10-10), 104. The scratch copy's file times are the run's (`cp -R`),
+//     after the clock, so they don't count (R15);
+//   - the bar's axis: 0, 5k … 25k.
 //
 // Screenshots for review (and, in Phase 6, the docs) go to
 // target/e2e-invoicer-shots/ (gitignored): wide and narrow, dark and light.
 //
-// Written with 5a and NOT run by the agent that wrote it (agents never run
-// Playwright); the lead runs it.
+// Written with 5a, reworked with R13–R18; NOT run by the agent that wrote
+// it (agents never run Playwright); the lead runs it.
 
 import {resolve} from "node:path";
 import {expect, test, type Page} from "@playwright/test";
@@ -40,10 +48,16 @@ async function open(page: Page): Promise<void> {
     await expect(page.getByTestId("dashboard")).toBeVisible();
 }
 
+/** The invoice list's rows, by number. */
+const listed = (page: Page) => page.getByTestId("invoice-row").evaluateAll((rows) => rows.map((r) => (r as HTMLElement).dataset.number ?? ""));
+
 test.describe("the dashboard over the accrual fixture (:5199)", () => {
     test("is the app's home and the sidebar's first section", async ({page}) => {
         await open(page);
         await expect(page.getByRole("heading", {name: "Dashboard", exact: true})).toBeVisible();
+        // No New invoice button of its own: the sidebar's New is the one (R13).
+        await expect(page.getByTestId("dashboard-new")).toHaveCount(0);
+        await expect(page.getByTestId("dashboard").getByRole("link", {name: "New invoice", exact: true})).toHaveCount(0);
         const sections = page.getByTestId("sidebar").getByRole("navigation", {name: "Sections"}).getByRole("link");
         // Section names carry their counts for screen readers ("Invoices 2 overdue …"): a prefix match.
         await expect(sections.first()).toHaveText(/^Dashboard/);
@@ -60,8 +74,8 @@ test.describe("the dashboard over the accrual fixture (:5199)", () => {
         await expect(page.getByTestId("dashboard-unfiled")).toContainText("$11,300.00");
         await expect(page.getByTestId("bar-overdue")).toBeVisible();
         await expect(page.getByTestId("bar-not-due")).toBeVisible();
-        // Above $10,000 the bar's scale is the total: no grey rest.
-        await expect(page.getByTestId("bar-rest")).toHaveCount(0);
+        // Above $10,000 the axis runs to the round step past the total.
+        await expect(page.getByTestId("bar-tick")).toHaveText(["0", "5k", "10k", "15k", "20k", "25k"]);
 
         const rows = page.getByTestId("aging-row");
         await expect(rows).toHaveCount(5);
@@ -73,7 +87,25 @@ test.describe("the dashboard over the accrual fixture (:5199)", () => {
         await expect(page.getByTestId("tile-oldest-overdue")).toContainText("No. 2001 · Tailspin · $3,000.00 · due 2026-07-15");
         await expect(page.getByTestId("tile-dso")).toContainText("58.9 days");
         await expect(page.getByTestId("tile-days-to-pay")).toContainText("25.3 days");
-        await expect(page.getByTestId("tile-drafts")).toContainText("$13,600.00");
+        // The funnel: drafts, outstanding, paid in the last 30 days (the setting's default).
+        await expect(page.getByTestId("funnel-drafts-amount")).toHaveText("$13,600.00");
+        await expect(page.getByTestId("funnel-drafts-count")).toHaveText("1 draft");
+        await expect(page.getByTestId("funnel-outstanding-amount")).toHaveText("$22,850.00");
+        await expect(page.getByTestId("funnel-overdue")).toContainText("$12,700.00 overdue");
+        await expect(page.getByTestId("funnel-paid-amount")).toHaveText("$3,900.00");
+        await expect(page.getByTestId("funnel-paid-count")).toHaveText("2 paid");
+        await expect(page.getByTestId("paid-window")).toHaveValue("30");
+        // Recently updated, latest first.
+        const cards = page.getByTestId("recent-card");
+        await expect(cards).toHaveCount(6);
+        await expect
+            .poll(() => cards.evaluateAll((els) => els.map((e) => (e as HTMLElement).dataset.number)))
+            .toEqual(["108", "105", "107", "102", "103", "104"]);
+        // A card's text holds its parts and the band's word; match pieces, not the whole.
+        await expect(cards.first()).toContainText("Customer X");
+        await expect(cards.first()).toContainText("Dated 2026-11-17");
+        await expect(cards.first().getByTestId("recent-status")).toHaveText("Draft");
+        await expect(cards.nth(2).getByTestId("recent-status")).toHaveText("Overdue");
         await expect(page.getByTestId("recognition-due")).toHaveText("10 entries");
         // `--server` has no window: no Open in Ledgeline, the way to post them instead.
         await expect(page.getByTestId("open-ledgeline")).toHaveCount(0);
@@ -87,7 +119,9 @@ test.describe("the dashboard over the accrual fixture (:5199)", () => {
             ["dashboard-not-due", /\/app\/invoices\?aged=current$/],
             ["tile-dso", /\/app\/invoices\?status=open$/],
             ["tile-days-to-pay", /\/app\/invoices\?status=paid$/],
-            ["tile-drafts", /\/app\/invoices\?status=draft$/],
+            ["funnel-drafts", /\/app\/invoices\?status=draft$/],
+            ["funnel-outstanding", /\/app\/invoices\?status=open$/],
+            ["funnel-paid", /\/app\/invoices\?paid_from=2026-10-19&paid_to=2026-11-17$/],
             // 2001 has no invoice file: its customer's overdue invoices.
             ["tile-oldest-overdue", /\/app\/invoices\?status=overdue&customer=Tailspin$/],
         ];
@@ -109,7 +143,7 @@ test.describe("the dashboard over the accrual fixture (:5199)", () => {
     test("its figures filter the list to those invoices (5b's parser)", async ({page}) => {
         // The invoices behind each figure that have a file, on 2026-11-17:
         // 107 is 3 days late, 106 78 days, 105 not yet due (108 is a draft).
-        const numbers = () => page.getByTestId("invoice-row").evaluateAll((rows) => rows.map((r) => (r as HTMLElement).dataset.number ?? ""));
+        const numbers = () => listed(page);
         const cases: [string, RegExp, string[]][] = [
             ["61–90", /\?aged=61-90$/, ["106"]],
             ["1–30", /\?aged=1-30$/, ["107"]],
@@ -139,18 +173,79 @@ test.describe("the dashboard over the accrual fixture (:5199)", () => {
         await expect(page.getByTestId("invoice-list-no-match")).toBeVisible();
     });
 
+    test("the paid figure lists the invoices money came in for, by payment date (R14)", async ({page}) => {
+        await open(page);
+        await page.getByTestId("funnel-paid").click();
+        await expect(page).toHaveURL(/\/app\/invoices\?paid_from=2026-10-19&paid_to=2026-11-17$/);
+        await expect.poll(() => listed(page)).toEqual(["107", "102"]);
+        // The range shows as a chip that removes itself.
+        await expect(page.getByTestId("invoice-filter-paid")).toContainText("Paid 2026-10-19 – 2026-11-17");
+        await page.getByTestId("invoice-filter-paid-remove").click();
+        await expect(page).toHaveURL(/\/app\/invoices$/);
+        await expect(page.getByTestId("invoice-filter-paid")).toHaveCount(0);
+    });
+
+    test("the period selector changes the paid window, in the URL", async ({page}) => {
+        await open(page);
+        const select = page.getByTestId("paid-window");
+        await select.selectOption("365");
+        await expect(page).toHaveURL(/\/app\/\?paid_days=365$/);
+        await expect(page.getByTestId("funnel-paid-amount")).toHaveText("$16,250.00");
+        await expect(page.getByTestId("funnel-paid-count")).toHaveText("4 paid");
+        await expect(page.getByTestId("funnel-paid")).toHaveAttribute("href", /paid_from=2025-11-18&paid_to=2026-11-17$/);
+        await select.selectOption("7");
+        await expect(page).toHaveURL(/\/app\/\?paid_days=7$/);
+        await expect(page.getByTestId("funnel-paid-amount")).toHaveText("Nothing yet");
+        // Back steps to the last window; the setting's own is the bare page.
+        await page.goBack();
+        await expect(page).toHaveURL(/\/app\/\?paid_days=365$/);
+        await expect(select).toHaveValue("365");
+        await select.selectOption("30");
+        await expect(page).toHaveURL(/\/app\/$/);
+        await expect(page.getByTestId("funnel-paid-amount")).toHaveText("$3,900.00");
+        // A link with a window opens on it.
+        await page.goto("/app/?paid_days=90");
+        await expect(page.getByTestId("paid-window")).toHaveValue("90");
+    });
+
+    test("a recently updated card opens its invoice", async ({page}) => {
+        await open(page);
+        await page.locator('[data-testid="recent-card"][data-number="105"]').getByRole("link").click();
+        await expect(page).toHaveURL(/\/app\/invoices\/105$/);
+    });
+
+    test("hovering a bar segment shows its tooltip; so does keyboard focus", async ({page}) => {
+        await open(page);
+        await page.getByTestId("bar-overdue").hover();
+        const tip = page.getByRole("tooltip");
+        await expect(tip).toBeVisible();
+        await expect(tip).toContainText("$12,700.00");
+        await expect(tip).toContainText("Overdue");
+        await expect(tip).toContainText("5 items · 56% of what is owed");
+        await page.mouse.move(0, 0);
+        await expect(tip).toHaveCount(0);
+        await page.getByTestId("bar-not-due").focus();
+        await expect(page.getByRole("tooltip")).toContainText("$10,150.00");
+        await page.keyboard.press("Escape");
+        await expect(page.getByRole("tooltip")).toHaveCount(0);
+    });
+
     test("works from the keyboard", async ({page}) => {
         await open(page);
-        // Every figure is a link: focus the total, Enter follows it.
-        const total = page.getByTestId("dashboard-total");
-        await total.focus();
-        await expect(total).toBeFocused();
-        await page.keyboard.press("Tab");
-        await expect(page.getByTestId("bar-overdue")).toBeFocused();
+        // Every figure is a link: focus a segment, Tab to the next, Enter follows it.
+        const overdue = page.getByTestId("bar-overdue");
+        await overdue.focus();
+        await expect(overdue).toBeFocused();
         await page.keyboard.press("Tab");
         await expect(page.getByTestId("bar-not-due")).toBeFocused();
         await page.keyboard.press("Enter");
         await expect(page).toHaveURL(/\/app\/invoices\?aged=current$/);
+        // The period selector is reachable by Tab from the page's heading.
+        await open(page);
+        await page.getByRole("heading", {name: "Dashboard", exact: true}).click();
+        const select = page.getByTestId("paid-window");
+        for (let i = 0; i < 40 && !(await select.evaluate((el) => el === document.activeElement)); i++) await page.keyboard.press("Tab");
+        await expect(select).toBeFocused();
     });
 
     test("fits a narrow window: one column, nothing wider than the window", async ({page}) => {
@@ -162,6 +257,15 @@ test.describe("the dashboard over the accrual fixture (:5199)", () => {
         const bar = await page.getByTestId("dashboard-bar").boundingBox();
         expect(bar).not.toBeNull();
         expect(bar!.x + bar!.width).toBeLessThanOrEqual(420);
+        // The funnel's cards stack too.
+        const drafts = await page.getByTestId("funnel-drafts").boundingBox();
+        const owed = await page.getByTestId("funnel-outstanding").boundingBox();
+        expect(owed!.x).toBeCloseTo(drafts!.x, 0);
+        expect(owed!.y).toBeGreaterThan(drafts!.y);
+        // Recently updated scrolls sideways in its own box, not the page.
+        const row = page.getByTestId("recent-cards");
+        const scrolls = await row.evaluate((el) => el.scrollWidth > el.clientWidth);
+        expect(scrolls).toBe(true);
         // The tiles stack: each starts where the first does.
         const tiles = page.getByTestId("dashboard-tiles").locator("> li");
         const first = await tiles.nth(0).boundingBox();
@@ -183,6 +287,17 @@ test.describe("the dashboard over the accrual fixture (:5199)", () => {
                 await expect(page.getByTestId("dashboard-total")).toHaveText("$22,850.00");
                 await page.screenshot({path: `${SHOTS}/dashboard-${name}-${scheme}.png`, fullPage: true});
             }
+            // The tooltip, wide.
+            await page.setViewportSize({width: 1280, height: 1000});
+            await open(page);
+            await page.getByTestId("bar-overdue").hover();
+            await expect(page.getByRole("tooltip")).toBeVisible();
+            await page.screenshot({path: `${SHOTS}/dashboard-tooltip-${scheme}.png`});
         }
+        // At 150–200 % scale the container queries see a narrower page: emulate with a mid width.
+        await page.emulateMedia({colorScheme: "light"});
+        await page.setViewportSize({width: 760, height: 1000});
+        await open(page);
+        await page.screenshot({path: `${SHOTS}/dashboard-medium-light.png`, fullPage: true});
     });
 });

@@ -1,6 +1,7 @@
 // The receivables dashboard, mounted on what the server answers for the
-// accrual and cash fixtures (its golden): the hero total, the outstanding bar,
-// aging, the tiles, and every figure a link to the filtered invoice list.
+// accrual and cash fixtures (its golden): the funnel, the hero total, the
+// outstanding bar on its axis, aging, recently updated, the tiles, and every
+// figure a link to the filtered invoice list.
 import {fireEvent, render, screen, within} from "@testing-library/svelte";
 import {describe, expect, it, vi} from "vitest";
 import DashboardView from "./DashboardView.svelte";
@@ -19,33 +20,36 @@ describe("COMPONENT DashboardView", () => {
         expect(total.getAttribute("href")).toBe("/app/invoices?status=open");
         expect(total.className).toContain("text-5xl");
         expect(screen.getByTestId("dashboard-total-count").textContent).toBe("7 items owed");
+        expect(screen.getByTestId("receivables-panel").textContent).toContain("Total outstanding");
     });
 
-    it("draws overdue red and not yet due yellow, each block a link named with its amount", () => {
+    it("has no New invoice button of its own: the sidebar's New is the one (R13)", () => {
+        mount(golden("accrual"));
+        expect(screen.queryByRole("link", {name: "New invoice"})).toBeNull();
+        expect(screen.queryByRole("button", {name: "New invoice"})).toBeNull();
+    });
+
+    it("draws overdue red and not yet due yellow, each segment a link named with its amount and share", () => {
         mount(golden("accrual"));
         const overdue = screen.getByTestId("bar-overdue");
         expect(overdue.className).toContain("bg-error");
         expect(overdue.getAttribute("href")).toBe("/app/invoices?status=overdue");
-        expect(overdue.getAttribute("aria-label")).toBe("Overdue: $12,700.00, 5 items");
+        expect(overdue.getAttribute("aria-label")).toBe("Overdue: $12,700.00, 5 items, 56% of what is owed");
         const notDue = screen.getByTestId("bar-not-due");
         expect(notDue.className).toContain("bg-warning");
         expect(notDue.getAttribute("href")).toBe("/app/invoices?aged=current");
-        // Above $10,000 the scale is the total: no grey rest.
-        expect(screen.queryByTestId("bar-rest")).toBeNull();
-        expect(screen.queryByTestId("dashboard-scale")).toBeNull();
         expect(screen.getByTestId("dashboard-overdue").textContent).toContain("$12,700.00");
         expect(screen.getByTestId("dashboard-not-due").textContent).toContain("$10,150.00");
         // Receivables without an invoice file are explained, since the list can't show them.
         expect(screen.getByTestId("dashboard-unfiled").textContent).toContain("$11,300.00");
     });
 
-    it("draws a small balance against the $10,000 scale, with a grey rest", () => {
+    it("draws a small balance against the $10,000 minimum axis", () => {
         mount(golden("cash"));
         expect(screen.getByTestId("dashboard-total").textContent).toBe("$9,700.00");
         expect(screen.queryByTestId("bar-overdue")).toBeNull();
-        expect(screen.getByTestId("bar-not-due").getAttribute("style")).toContain("97%");
-        expect(screen.getByTestId("bar-rest")).toBeDefined();
-        expect(screen.getByTestId("dashboard-scale").textContent).toContain("$10,000");
+        expect(screen.getByTestId("bar-not-due").getAttribute("style")).toContain("width: 97%");
+        expect(screen.getAllByTestId("bar-tick").map((t) => t.textContent)).toEqual(["0", "2k", "4k", "6k", "8k", "10k"]);
         expect(screen.queryByTestId("dashboard-unfiled")).toBeNull();
     });
 
@@ -66,7 +70,7 @@ describe("COMPONENT DashboardView", () => {
         expect(rows[1].textContent).toContain("$0.00");
     });
 
-    it("shows the tiles: oldest overdue, DSO, days to pay, drafts", () => {
+    it("shows the tiles: oldest overdue, DSO, days to pay (drafts are the funnel's)", () => {
         mount(golden("accrual"));
         const oldest = screen.getByTestId("tile-oldest-overdue");
         expect(oldest.textContent).toContain("130 days");
@@ -81,9 +85,7 @@ describe("COMPONENT DashboardView", () => {
         expect(paid.textContent).toContain("25.3 days");
         expect(paid.textContent).toContain("Over 3 invoices paid in full");
         expect(paid.getAttribute("href")).toBe("/app/invoices?status=paid");
-        const drafts = screen.getByTestId("tile-drafts");
-        expect(drafts.textContent).toContain("$13,600.00 · oldest 2026-11-17");
-        expect(drafts.getAttribute("href")).toBe("/app/invoices?status=draft");
+        expect(screen.queryByTestId("tile-drafts")).toBeNull();
     });
 
     it("opens the oldest overdue invoice itself when it has a file", () => {
@@ -118,11 +120,20 @@ describe("COMPONENT DashboardView", () => {
         expect(screen.getByTestId("tile-oldest-overdue").textContent).toContain("None");
     });
 
-    it("reaches every figure by Tab: the tiles and the bar are links", () => {
+    it("leads with the funnel and shows recently updated invoices", () => {
+        mount(golden("accrual"));
+        const sections = screen.getByTestId("dashboard").children;
+        expect(sections[0].getAttribute("data-testid")).toBe("funnel");
+        expect(screen.getAllByTestId("recent-card")[0].dataset.number).toBe("106");
+    });
+
+    it("reaches every figure by Tab: the funnel, the bar, aging, the cards and the tiles are links", () => {
         mount(golden("accrual"));
         const links = screen.getAllByRole("link");
-        // Total, two bar blocks, two figures, five buckets, four tiles.
-        expect(links).toHaveLength(14);
+        // Three funnel cards, two bar segments, two legend figures, the total,
+        // five buckets, six recent cards, three tiles.
+        expect(links).toHaveLength(22);
         expect(links.every((l) => l.getAttribute("tabindex") !== "-1")).toBe(true);
+        expect(screen.getByTestId("paid-window").tagName).toBe("SELECT");
     });
 });

@@ -1,6 +1,7 @@
 <!-- The invoice list (invoicer PLAN 3b, 5b): `GET /api/invoices` filtered and
      sorted by the server, from the page's URL query (S1: `status`,
-     `customer`, `from`, `to`, `aged`, `q`, `sort`, `dir`). The URL is the
+     `customer`, `from`, `to`, `aged`, `paid_from`, `paid_to`, `q`, `sort`,
+     `dir`). The URL is the
      state: a link opens the same list, a reload keeps it, Back and Forward
      step through it. Again whenever a file changes on disk (live reload). -->
 <script lang="ts">

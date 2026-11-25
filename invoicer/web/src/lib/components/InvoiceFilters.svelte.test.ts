@@ -13,6 +13,20 @@ const customers = ["Contoso", "Customer X", "Wingtip"];
 describe("COMPONENT InvoiceFilters", () => {
     afterEach(() => vi.useRealTimers());
 
+    it("shows the dashboard's paid range as a chip that removes itself", async () => {
+        const onChange = vi.fn();
+        render(InvoiceFilters, {query: query("paid_from=2026-10-24&paid_to=2026-11-22"), customers, onChange, onJump: vi.fn(), onClear: vi.fn()});
+        expect(screen.getByTestId("invoice-filter-paid").textContent).toContain("Paid 2026-10-24 – 2026-11-22");
+        expect(screen.getByTestId("invoice-filters-clear")).toBeDefined();
+        await fireEvent.click(screen.getByRole("button", {name: "Remove the filter: Paid 2026-10-24 – 2026-11-22"}));
+        expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({paidFrom: "", paidTo: ""}), {replace: false});
+    });
+
+    it("has no paid chip without the range", () => {
+        render(InvoiceFilters, {query: query("status=paid"), customers, onChange: vi.fn(), onJump: vi.fn(), onClear: vi.fn()});
+        expect(screen.queryByTestId("invoice-filter-paid")).toBeNull();
+    });
+
     it("shows the URL's filters", () => {
         render(InvoiceFilters, {
             query: query("status=overdue&customer=Wingtip&from=2026-08-01&to=2026-08-31&aged=61-90&q=106"),

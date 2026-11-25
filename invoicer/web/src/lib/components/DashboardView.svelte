@@ -1,17 +1,24 @@
-<!-- The receivables dashboard's body (PLAN 5a), from `GET /api/dashboard`:
-     what is owed per commodity (`ReceivablesPanel`: the hero total, the
-     outstanding bar, aging), then a row of stat tiles: the oldest overdue,
-     days sales outstanding, average days to pay, drafts waiting and, when
-     the books have recognition schedules, the entries due.
+<!-- The receivables dashboard's body (PLAN 5a, R13–R18), from
+     `GET /api/dashboard`, top to bottom:
+     - Getting paid (`PaidFunnel`): Drafts → Outstanding → Paid in the last
+       N days, the headline figures, with the period selector;
+     - what is owed per commodity (`ReceivablesPanel`: the outstanding bar
+       on its axis, the hero total, aging);
+     - Recently updated invoices (`RecentInvoices`);
+     - stat tiles: the oldest overdue, days sales outstanding, average days
+       to pay and, when the books have recognition schedules, the entries
+       due.
 
      Every figure is a link to the invoice list, filtered (`listHref`; the
      parameters are in `#lib/dashboard.ts`). Links arrive resolved, so this
      mounts as is in a component test. The page is a container: tiles go to
-     two columns at `@lg` and to four at `@4xl` of its own width, which
+     two columns at `@lg` and to three at `@4xl` of its own width, which
      follows the UI scale. -->
 <script lang="ts">
     import {count, days, listHref, type Dashboard} from "#lib/dashboard.js";
+    import PaidFunnel from "./PaidFunnel.svelte";
     import ReceivablesPanel from "./ReceivablesPanel.svelte";
+    import RecentInvoices from "./RecentInvoices.svelte";
 
     let {
         dashboard,
@@ -20,6 +27,8 @@
         onOpenLedgeline,
         opening = false,
         openError = null,
+        onPaidDays,
+        loadingPaid = false,
     }: {
         dashboard: Dashboard;
         /** The invoice list's URL, resolved (`/app/invoices`). */
@@ -30,13 +39,16 @@
         onOpenLedgeline?: () => void;
         opening?: boolean;
         openError?: string | null;
+        /** Pick another paid window, in days (the page puts it in its URL). */
+        onPaidDays?: (days: number) => void;
+        /** A new paid window's figures are on their way. */
+        loadingPaid?: boolean;
     } = $props();
 
     const primary = $derived(dashboard.commodities[0] ?? null);
     const oldest = $derived(primary?.oldest_overdue ?? null);
     const dso = $derived(primary?.dso ?? null);
     const paid = $derived(dashboard.average_days_to_pay);
-    const drafts = $derived(dashboard.drafts);
     const recognition = $derived(dashboard.recognition);
 
     // The oldest overdue opens its invoice when it has a file; else (booked
@@ -59,13 +71,15 @@
     );
 
     const tile = "flex min-w-0 flex-col gap-1 rounded-box border border-base-300 bg-base-100 p-4";
-    const tileLink = `${tile} transition-colors hover:border-base-content/30 hover:bg-base-200/50 focus-visible:outline-2 focus-visible:outline-base-content`;
+    const tileLink = `${tile} transition motion-reduce:transition-none motion-reduce:transform-none hover:-translate-y-0.5 hover:border-base-content/30 hover:shadow-md focus-visible:-translate-y-0.5 focus-visible:shadow-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-base-content`;
 </script>
 
 <!-- eslint-disable svelte/no-navigation-without-resolve -- every href is built on listBase or invoiceHref, which the page resolves -->
 <div class="flex flex-col gap-6" data-testid="dashboard">
+    <PaidFunnel {dashboard} {listBase} {onPaidDays} {loadingPaid} />
+
     {#if dashboard.commodities.length === 0}
-        <section class="flex flex-col gap-1" data-testid="dashboard-nothing-owed">
+        <section class="flex flex-col gap-1 rounded-box border border-base-300 bg-base-100 p-4" data-testid="dashboard-nothing-owed">
             <h2 class="text-sm font-medium text-base-content/70">Outstanding</h2>
             <p class="text-5xl font-semibold tracking-tight">Nothing owed</p>
             <p class="text-sm text-base-content/60">Every invoice sent has been paid.</p>
@@ -76,7 +90,11 @@
         {/each}
     {/if}
 
-    <ul class="grid gap-3 @lg:grid-cols-2 @4xl:grid-cols-4" aria-label="Receivables at a glance" data-testid="dashboard-tiles">
+    {#if dashboard.recent.length > 0}
+        <RecentInvoices recent={dashboard.recent} {invoiceHref} />
+    {/if}
+
+    <ul class="grid gap-3 @lg:grid-cols-2 @4xl:grid-cols-3" aria-label="Receivables at a glance" data-testid="dashboard-tiles">
         <li class="flex">
             <a class="{tileLink} flex-1" href={oldestHref} data-testid="tile-oldest-overdue">
                 <span class="text-sm text-base-content/70">Oldest overdue</span>
@@ -113,21 +131,8 @@
                 {/if}
             </a>
         </li>
-        <li class="flex">
-            <a class="{tileLink} flex-1" href={listHref(listBase, {status: "draft"})} data-testid="tile-drafts">
-                <span class="text-sm text-base-content/70">Drafts waiting</span>
-                <span class="text-2xl font-semibold">{drafts.count}</span>
-                <span class="text-xs text-base-content/60">
-                    {#if drafts.count === 0}
-                        Nothing waiting to be sent.
-                    {:else}
-                        {drafts.totals.map((t) => t.text).join(" + ")}{drafts.oldest === null ? "" : ` · oldest ${drafts.oldest}`}
-                    {/if}
-                </span>
-            </a>
-        </li>
         {#if recognition !== null}
-            <li class="flex @lg:col-span-2 @4xl:col-span-4">
+            <li class="flex @lg:col-span-2 @4xl:col-span-3">
                 <section class="{tile} flex-1" aria-labelledby="tile-recognition-title" data-testid="tile-recognition">
                     <div class="flex flex-wrap items-center justify-between gap-3">
                         <div class="flex min-w-0 flex-col gap-1">

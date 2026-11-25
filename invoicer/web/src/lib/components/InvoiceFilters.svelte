@@ -1,5 +1,6 @@
 <!-- The invoice list's filter bar (invoicer PLAN 5b, S1–S3): search, status,
-     customer, a date range and the age of what's late. It shows the URL's
+     customer, a date range and the age of what's late, plus the dashboard's
+     paid-date range (R14) as a removable chip when a link brings one. It shows the URL's
      state (`query`) and asks for a new one (`onChange`); the page owns the
      URL. Choices are a history step each (Back undoes one); the search text is
      debounced and replaces the current step, so typing doesn't fill history.
@@ -84,6 +85,14 @@
 
     const agedKnown = $derived(AGED_BUCKETS.some((b) => b.value === query.aged));
     const filtered = $derived(invoiceFiltered(query));
+    // "Paid 2026-10-24 – 2026-11-22", "Paid from 2026-10-24", "Paid to 2026-11-22".
+    const paidRangeText = $derived(
+        query.paidFrom !== "" && query.paidTo !== ""
+            ? `Paid ${query.paidFrom} – ${query.paidTo}`
+            : query.paidFrom !== ""
+              ? `Paid from ${query.paidFrom}`
+              : `Paid to ${query.paidTo}`
+    );
 </script>
 
 <div role="search" aria-label="Filter invoices" class="flex flex-wrap items-end gap-x-3 gap-y-2" data-testid="invoice-filters">
@@ -167,6 +176,19 @@
             {/if}
         </select>
     </label>
+    {#if query.paidFrom !== "" || query.paidTo !== ""}
+        <!-- The dashboard's paid figure (R14): a range the bar has no control for, shown so it can be seen and removed. -->
+        <span class="flex items-center gap-1 self-end" data-testid="invoice-filter-paid">
+            <span class="badge gap-1 badge-outline text-sm badge-lg whitespace-nowrap">{paidRangeText}</span>
+            <button
+                type="button"
+                class="btn btn-square btn-ghost btn-xs"
+                aria-label="Remove the filter: {paidRangeText}"
+                onclick={() => set({paidFrom: "", paidTo: ""})}
+                data-testid="invoice-filter-paid-remove">✕</button
+            >
+        </span>
+    {/if}
     {#if filtered}
         <button type="button" class="btn btn-ghost btn-sm" onclick={onClear} data-testid="invoice-filters-clear">Clear filters</button>
     {/if}

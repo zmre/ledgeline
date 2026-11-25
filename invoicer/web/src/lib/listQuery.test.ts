@@ -31,12 +31,24 @@ describe("UNIT invoice list URL", () => {
             from: "2026-10-01",
             to: "2026-10-31",
             aged: "31-60",
+            paidFrom: "",
+            paidTo: "",
             q: " PO ",
             sort: "total",
             dir: "asc",
         });
         expect(invoiceQueryString(q)).toBe("status=overdue&customer=Customer+X&from=2026-10-01&to=2026-10-31&aged=31-60&q=PO&sort=total&dir=asc");
         expect(invoiceQueryString(invoices(invoiceQueryString(q)))).toBe(invoiceQueryString(q));
+    });
+
+    it("reads and writes the paid-date range (the dashboard's paid figure, R14)", () => {
+        const q = invoices("paid_to=2026-11-22&paid_from=2026-10-24");
+        expect([q.paidFrom, q.paidTo]).toEqual(["2026-10-24", "2026-11-22"]);
+        expect(invoiceQueryString(q)).toBe("paid_from=2026-10-24&paid_to=2026-11-22");
+        expect(invoiceFiltered(q)).toBe(true);
+        expect(invoiceQueryString({...q, status: "paid"})).toBe("status=paid&paid_from=2026-10-24&paid_to=2026-11-22");
+        expect(invoices("paid_from=last-month").paidFrom).toBe("");
+        expect(clearInvoiceFilters(q)).toMatchObject({paidFrom: "", paidTo: ""});
     });
 
     it("drops what the server wouldn't read, so a bad link shows the whole list", () => {

@@ -92,8 +92,9 @@ export function fetchBooks(today: string = localToday()): Promise<BooksInfo> {
 }
 
 /** `GET /api/dashboard`: the receivables dashboard on `today` (PLAN 5a). */
-export function fetchDashboard(today: string = localToday()): Promise<Dashboard> {
-    return json<Dashboard>("GET", `/api/dashboard?today=${today}`, isDashboard);
+export function fetchDashboard(today: string = localToday(), paidDays: number | null = null): Promise<Dashboard> {
+    const paid = paidDays === null ? "" : `&paid_days=${paidDays}`;
+    return json<Dashboard>("GET", `/api/dashboard?today=${today}${paid}`, isDashboard);
 }
 
 /** `POST /api/ledgeline/open`: these books in Ledgeline (the window, macOS). */

@@ -44,6 +44,10 @@ export interface InvoiceQuery {
     to: string;
     /** Open and this many days past due: `current`, `31-60`, `91+`. */
     aged: string;
+    /** Money received on or after (YYYY-MM-DD; the dashboard's "paid in the last N days", PLAN R14). URL `paid_from`. */
+    paidFrom: string;
+    /** Money received on or before. URL `paid_to`. */
+    paidTo: string;
     /** Number, customer, reference or total holding this text. */
     q: string;
     /** The column; "" is the server's order, newest first (shown as Date, descending). */
@@ -97,6 +101,8 @@ export function parseInvoiceQuery(params: Params): InvoiceQuery {
         to: date("to"),
         // `91-` (the dashboard's first form) reads as `91+`.
         aged: isAged(aged) ? aged.replace(/^(\d+)-$/, "$1+") : "",
+        paidFrom: date("paid_from"),
+        paidTo: date("paid_to"),
         q: params.get("q") ?? "",
         sort,
         dir: sort === "" ? "desc" : param(params, "dir") === "desc" ? "desc" : "asc",
@@ -124,6 +130,8 @@ export function invoiceQueryString(query: InvoiceQuery): string {
     if (query.from !== "") out.set("from", query.from);
     if (query.to !== "") out.set("to", query.to);
     if (query.aged !== "") out.set("aged", query.aged);
+    if (query.paidFrom !== "") out.set("paid_from", query.paidFrom);
+    if (query.paidTo !== "") out.set("paid_to", query.paidTo);
     if (query.q.trim() !== "") out.set("q", query.q.trim());
     if (query.sort !== "") {
         out.set("sort", query.sort);
@@ -148,7 +156,7 @@ export function customerQueryString(query: CustomerQuery): string {
 
 /** Whether any filter (not the sort) narrows the invoice list. */
 export function invoiceFiltered(query: InvoiceQuery): boolean {
-    return [query.status, query.customer.trim(), query.from, query.to, query.aged, query.q.trim()].some((v) => v !== "");
+    return [query.status, query.customer.trim(), query.from, query.to, query.aged, query.paidFrom, query.paidTo, query.q.trim()].some((v) => v !== "");
 }
 
 /** Whether any filter narrows the customer list. */
@@ -158,7 +166,7 @@ export function customerFiltered(query: CustomerQuery): boolean {
 
 /** The invoice list with every filter cleared, the sort kept. */
 export function clearInvoiceFilters(query: InvoiceQuery): InvoiceQuery {
-    return {status: "", customer: "", from: "", to: "", aged: "", q: "", sort: query.sort, dir: query.dir};
+    return {status: "", customer: "", from: "", to: "", aged: "", paidFrom: "", paidTo: "", q: "", sort: query.sort, dir: query.dir};
 }
 
 /** The customer list with every filter cleared, the sort kept. */

@@ -186,9 +186,13 @@ test.describe("empty books (:5198)", () => {
         await page.goto("/app/");
         await expect(page).toHaveURL(/\/app\/$/);
         await expect(page.getByTestId("sidebar").getByRole("link", {name: "Dashboard", exact: true})).toHaveAttribute("aria-current", "page");
-        await expectEmpty(page, "dashboard-empty", "No invoices yet", "New invoice");
+        // No button of its own (R13): the text points at the sidebar's New, the one way to start.
+        const card = page.getByTestId("dashboard-empty");
+        await expect(card.getByRole("heading", {name: "No invoices yet", exact: true})).toBeVisible();
+        await expect(card).toContainText("New at the top of the sidebar");
+        await expect(card.getByRole("link")).toHaveCount(0);
+        await expect(card.getByRole("button")).toHaveCount(0);
         await expect(page.getByTestId("dashboard-new")).toHaveCount(0);
-        await page.getByTestId("dashboard-empty-new").click();
-        await expect(page).toHaveURL(/\/app\/new$/);
+        await expect(page.getByTestId("dashboard-empty-new")).toHaveCount(0);
     });
 });
