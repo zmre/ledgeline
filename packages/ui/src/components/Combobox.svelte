@@ -31,6 +31,7 @@
         chevron = true,
         testid,
         id,
+        passAltArrows = false,
     }: {
         value?: string;
         options: readonly ComboOption[];
@@ -49,6 +50,12 @@
         chevron?: boolean;
         testid?: string;
         id?: string;
+        /**
+         * Leave Alt+↑ / Alt+↓ to the page, untouched (the invoicer's grids
+         * move the row with them, H16). Otherwise Alt+↓ opens the list, as
+         * an ARIA combobox's does.
+         */
+        passAltArrows?: boolean;
     } = $props();
 
     const VISIBLE_ROWS = 8;
@@ -132,6 +139,7 @@
 
     function onKeydown(event: KeyboardEvent): void {
         if (event.isComposing) return;
+        if (passAltArrows && event.altKey && (event.key === "ArrowDown" || event.key === "ArrowUp")) return;
         if (event.key === "Escape") {
             if (open) {
                 event.preventDefault();
