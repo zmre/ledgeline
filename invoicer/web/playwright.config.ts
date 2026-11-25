@@ -84,17 +84,20 @@ export default defineConfig({
     //   3. editor.e2e.ts adds invoice 2005 and expects 108 sent (and the
     //      catalog's ARCH as the fixture has it);
     //   4. library.e2e.ts edits the catalog and the snippets, and puts them
-    //      back after.
+    //      back after;
+    //   5. templates.e2e.ts (4d) creates a template, uses it on 101 and
+    //      deletes it, putting 101 back.
     // empty.e2e.ts has its own server and books (5198), so it runs alongside.
     projects: [
         {name: "customers", testMatch: "**/customers.e2e.ts"},
         {name: "empty", testMatch: "**/empty.e2e.ts"},
         {
             name: "pages",
-            testIgnore: ["**/customers.e2e.ts", "**/editor.e2e.ts", "**/library.e2e.ts", "**/empty.e2e.ts"],
+            testIgnore: ["**/customers.e2e.ts", "**/editor.e2e.ts", "**/library.e2e.ts", "**/empty.e2e.ts", "**/templates.e2e.ts"],
             dependencies: ["customers"],
         },
         {name: "editor", testMatch: "**/editor.e2e.ts", dependencies: ["pages"]},
         {name: "library", testMatch: "**/library.e2e.ts", dependencies: ["editor"]},
+        {name: "templates", testMatch: "**/templates.e2e.ts", dependencies: ["library"]},
     ],
 });

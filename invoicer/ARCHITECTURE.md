@@ -233,7 +233,7 @@ frontmatter.
 | `template`                       | yes      | MBR's per-file template path (`/`-rooted, `.html`). MBR itself renders the styled invoice.                                    |
 | `customer`                       | yes      | Wikilink to the customer note. This is the stable link. The `invoicee_*` fields are a snapshot of what was sent.              |
 | `invoicee_name`, `_email`, `_phone`, `_address` | yes  | A snapshot copied from the customer at creation. Edits to the customer later don't change sent invoices. Use `\|` (literal) for addresses, never `>`, which folds lines. `_phone` is optional (copied when the customer has `phones:`). |
-| `invoicer`, `invoicer_*`         | yes      | The same pattern for your own company.                                                                                        |
+| `invoicer`, `invoicer_*`         | yes      | The same pattern for your own company; `invoicer_logo` (optional) is its note's `logo:`, `/`-rooted (PLAN D16).               |
 | `terms`                          | no       | Net days (integer). The customer's default is copied in.                                                                      |
 | `due_date`                       | no       | Written for grep and templates: `date + terms` unless set by hand. Overdue is always derived from it, never stored.          |
 | `reference`                      | no       | Free text the customer quotes back: `PO #PY75334`. (This was `po_num` in the first sketch.)                                   |
@@ -581,8 +581,18 @@ is the point, since a third party can render our invoices with plain `mbr`.
   frame, B2), by a `<noscript>` rule hiding every child of `<body>` but
   `<main>`; and on paper, by MBR's own print rule doing the same. The
   sheet pins Pico's variables so MBR's stylesheet doesn't restyle it.
-- **Template editor.** The GUI has a code editor with live preview against a
-  sample invoice. This is the "customize templates" path.
+- **Template editor** (PLAN 4d, D1–D12). This is the "customize templates"
+  path. The `{# invoicer: … #}` line is the editor's Name and Kinds fields;
+  the rest of the file (the body) is the code. A new template is a child
+  of the base (that line, then `extends` on line 2) or a copy of a starter
+  or another template, at `templates-dir/<slug>.html`, with the base copied
+  in beside it when missing. The editor shows which of the base's blocks
+  the template overrides and inserts `{% block x %}{{ super() }}{% endblock x %}`
+  for another, previews the unsaved text against a chosen invoice (a page
+  per render, as for the invoice editor), and shows Tera's error in plain
+  words with its line. Starters are read-only until Customize copies one
+  in. A template that invoices or customers name can't be deleted. The
+  writes are `invoicer_core::template_edit`, so the CLI can share them.
 - **App theme vs. invoice look.** The app's theme (purple, catppuccin, …)
   styles the invoicer UI. An invoice's look is whatever its template says,
   because it's customer-facing and must not change with the user's dark mode.
@@ -1202,6 +1212,7 @@ as `srcdoc`: a srcdoc document inherits the SPA's CSP, whose
 | `POST /api/preview`                           | Render an unsaved document to HTML.                                           |
 | `GET/PUT/POST /api/customers…`                | Customers (MBR contact schema + invoicing keys).                              |
 | `GET /api/catalog`, `/api/snippets`, `/api/templates` | The library.                                                          |
+| `GET/PUT/DELETE /api/templates/{path}`, `POST /api/templates`, `…/customize`, `…/preview` | The template editor (PLAN 4d): read, save over the hash, delete unless used, create, copy a starter in, render unsaved text. |
 | `GET /api/receivables`                        | Dashboard: outstanding bar, aging, overdue, DSO.                              |
 | `GET /api/fields/{key}/values`                | Autocomplete for custom frontmatter fields.                                   |
 | `GET /api/books`                              | Basis, accounts, gate, recognition file, closed-through.                       |
@@ -1249,8 +1260,12 @@ scale, container-query breakpoints) and the same native-mode contract.
   fields, open POs, contracts by name, open and all invoices with paid
   state, AR balance, the last payment, and the notes linking it (each
   opening in the app: PLAN J9). **Edit** swaps in the form.
-- **Templates.** A list, plus a code editor with live preview against a
-  chosen invoice.
+- **Templates** (PLAN 4d). A list (name, kinds, the base and its version,
+  the blocks changed, who uses it; starters marked), and an editor: Name
+  and Kinds, the blocks overridden with "Override block", the code
+  (CodeMirror 6, HTML with a Tera overlay, loaded lazily: D2), and a live preview against a chosen invoice, the latest by default.
+  Save and Discard top right, the Save / Discard / Cancel prompt on
+  leaving, Cmd/Ctrl+S.
 
 ### 6.4 CLI
 

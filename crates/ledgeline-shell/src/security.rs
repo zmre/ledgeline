@@ -128,7 +128,10 @@ const CSP_HEAD: &str = "default-src 'self'; script-src 'self'";
 /// Everything after `script-src`, shared by the shell and by every other
 /// response. `connect-src 'self'` is the directive that neutralises the whole
 /// exfiltration class; `style-src` needs `'unsafe-inline'` for the shell's
-/// `style="display: contents"` attribute.
+/// `style="display: contents"` attribute, and for the `<style>` element
+/// CodeMirror's style-mod writes at run time in a document (the invoicer's
+/// template editor; it uses `adoptedStyleSheets` only in a shadow root).
+/// Dropping it would need a per-response nonce passed to `EditorView.cspNonce`.
 const CSP_TAIL: &str = "; style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
 connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; \
 form-action 'none'; frame-ancestors 'none'";

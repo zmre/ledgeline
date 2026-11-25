@@ -100,6 +100,8 @@ export interface BooksInfo {
     /** Catalog items. */
     catalog?: number;
     snippets?: number;
+    /** The templates page's rows: the books' templates and the starters not copied in (4d). */
+    templates?: number;
     nextNumber: string;
     /** The number `nextNumber` follows; null at the start (Phase 4 feedback H19). */
     nextNumberAfter?: string | null;

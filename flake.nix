@@ -384,8 +384,8 @@
       # on EVERY system (macDist on darwin, linuxDist on Linux), so a stale hash
       # here breaks `nix build github:zmre/ledgeline` with no attribute at all.
       spaNodeModulesHashes = {
-        aarch64-darwin = "sha256-9lnNYEBs/WO8QQWOC2F3Bi4+BFFR2VmmXe1qpmnKSUw=";
-        x86_64-linux = "sha256-+MB5IjekDyFJMoBHlre+4OIUIAcAtMJmx/NhmSpLDWo=";
+        aarch64-darwin = "sha256-czIjvHDQC7wUcDT8XhNh0u377rCeiV0o8Pz8Xcqc8vs=";
+        x86_64-linux = "sha256-zu7aNoGw5b8qxuqMpkC6kVuvHF0rOVrcbNYPxAg8A+Y=";
         # Intel Macs, for the x86_64 half of the release matrix. Produced by a
         # release-workflow dry run under Rosetta, which is the only machine that
         # can generate it — see docs/development/releasing.md.

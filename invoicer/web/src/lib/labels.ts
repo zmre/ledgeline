@@ -47,6 +47,7 @@ export const FIELD_LABELS: Readonly<Record<string, string>> = {
     invoicer_email: "Invoicer email",
     invoicer_phone: "Invoicer phone",
     invoicer_address: "Invoicer address",
+    invoicer_logo: "Invoicer logo",
     // Snippets and notes.
     snippet_kind: "Snippet kind",
     aliases: "Aliases",

@@ -69,6 +69,13 @@
                 active: path.startsWith(resolve("/snippets")),
                 counts: total("count", books?.snippets, "snippet", "snippets"),
             },
+            {
+                id: "templates",
+                href: resolve("/templates"),
+                label: "Templates",
+                active: path.startsWith(resolve("/templates")),
+                counts: total("count", books?.templates, "template", "templates"),
+            },
         ];
     });
 
@@ -80,6 +87,7 @@
         {id: "customer", label: "New customer", href: resolve("/customers/new")},
         {id: "catalog-item", label: "New catalog item", href: `${resolve("/catalog")}?new=1`},
         {id: "snippet", label: "New snippet", href: `${resolve("/snippets")}?new=1`},
+        {id: "template", label: "New template", href: `${resolve("/templates")}?new=1`},
     ];
 
     onMount(() => {

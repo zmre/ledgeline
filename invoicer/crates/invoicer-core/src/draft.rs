@@ -419,6 +419,11 @@ pub fn render(
                 .address(labels)
                 .map(|a| ("invoicer_address", block_text(a))),
         );
+        // Rooted, so the page finds it from any folder (MBR serves the books at `/`).
+        fields.extend(
+            customers::company_logo(site, vault, company)
+                .map(|p| ("invoicer_logo", text(&format!("/{}", p.as_str())))),
+        );
     }
     fields.extend(new.extra.iter().map(|(k, v)| (k.as_str(), v.clone())));
     let frontmatter = frontmatter::render_block(&fields)?;

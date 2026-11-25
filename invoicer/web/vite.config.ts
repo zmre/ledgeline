@@ -38,6 +38,10 @@ export default defineConfig({
             version: {pollInterval: 0},
         }),
     ],
+    // CodeMirror (the template editor's code field, PLAN 4d D2) is one lazy
+    // chunk of ~506 kB (175 kB gzipped), fetched only when a template opens;
+    // the limit sits just above it so any other chunk that size still warns.
+    build: {chunkSizeWarningLimit: 520},
     server: {port: 4273, strictPort: true, proxy},
     preview: {port: 4273, strictPort: true, proxy},
     test: {
