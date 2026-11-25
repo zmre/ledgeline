@@ -8,7 +8,9 @@ import {fireEvent, render, screen, waitFor} from "@testing-library/svelte";
 import {describe, expect, it} from "vitest";
 import {flushSync} from "svelte";
 import CodeEditor from "./CodeEditor.svelte";
-import {teraRanges} from "./codeView";
+import {html} from "@codemirror/lang-html";
+import {highlightTree, tags as t} from "@lezer/highlight";
+import {cssRanges, highlight, teraRanges} from "./codeView";
 
 /** The editor's content element, once CodeMirror has loaded. */
 async function content(name = "Template code"): Promise<HTMLElement> {
@@ -139,5 +141,72 @@ describe("UNIT teraRanges", () => {
             ["keyword", "if"],
         ]);
         expect(teraRanges("<p>plain</p>")).toEqual([]);
+    });
+});
+
+describe("UNIT cssRanges", () => {
+    const marks = (text: string): [string, string][] => cssRanges(text).map((r) => [r.kind, text.slice(r.from, r.to)]);
+
+    it("colours a child's theme block as CSS, Tera inside it left to the Tera overlay", () => {
+        const text = [
+            '{% extends "_invoice_base.v1.html" %}',
+            "{% block theme %}",
+            "{{ super() }}",
+            "@page { size: letter; margin: 0.7in; }",
+            "/* the sheet */",
+            '.sheet h1:first-child { color: #1d1d1b; font-family: "Iowan", serif; }',
+            "@media (max-width: 640px) { .sheet { padding: 1.5rem 0; } }",
+            "{% endblock theme %}",
+            "<p>10px is text here</p>",
+        ].join("\n");
+        expect(marks(text)).toEqual([
+            ["atrule", "@page"],
+            ["property", "size"],
+            ["property", "margin"],
+            ["number", "0.7in"],
+            ["comment", "/* the sheet */"],
+            ["selector", ".sheet h1:first-child"],
+            ["property", "color"],
+            ["number", "#1d1d1b"],
+            ["property", "font-family"],
+            ["string", '"Iowan"'],
+            ["atrule", "@media"],
+            ["number", "640px"],
+            ["selector", ".sheet"],
+            ["property", "padding"],
+            ["number", "1.5rem"],
+            ["number", "0"],
+        ]);
+    });
+
+    it("leaves a theme block inside <style> to lang-css, and text without one alone", () => {
+        expect(cssRanges("<style>\n{% block theme %}a { color: red; }{% endblock theme %}\n</style>")).toEqual([]);
+        expect(cssRanges("<p>a { color: red; }</p>")).toEqual([]);
+        // Whitespace-trimming tags, and an unclosed block runs to the end.
+        expect(marks("{%- block theme -%}\n.x { top: 1px")).toEqual([
+            ["selector", ".x"],
+            ["property", "top"],
+            ["number", "1px"],
+        ]);
+    });
+});
+
+describe("UNIT lang-html's nested CSS", () => {
+    /** The highlight classes over each token's text. */
+    function classes(text: string): Map<string, string> {
+        const tree = html({autoCloseTags: false}).language.parser.parse(text);
+        const out = new Map<string, string>();
+        highlightTree(tree, highlight, (from, to, cls) => out.set(text.slice(from, to), cls));
+        return out;
+    }
+    const property = highlight.style([t.propertyName]);
+    const tagName = highlight.style([t.tagName]);
+
+    it("colours CSS in <style> and in style attributes, and HTML around them", () => {
+        const got = classes('<style>.sheet { color: red; }</style>\n<p style="margin: 0">x</p>');
+        expect(property).not.toBeNull();
+        expect(got.get("color")).toBe(property);
+        expect(got.get("margin")).toBe(property);
+        expect(got.get("p")).toBe(tagName);
     });
 });

@@ -11,6 +11,13 @@
 // inside a tag. No @codemirror/legacy-modes (its jinja2 mode would be a
 // further package and still needs mixing with HTML).
 //
+// CSS is coloured three ways. Inside <style> and in `style="…"` attributes
+// lang-html nests lang-css itself (its defaults; the tests check both). A
+// child template's `{% block theme %}`, though, is CSS outside any <style>
+// (the base wraps it), so HTML reads it as text: a second overlay
+// (`cssRanges`) colours it, a small scanner rather than a parser mount,
+// which would need @lezer/common and @codemirror/lang-css declared here.
+//
 // Colours are daisyUI's variables, so the editor follows the app's theme,
 // light or dark, with no JavaScript when the theme changes.
 import {defaultKeymap, history, historyKeymap, indentWithTab} from "@codemirror/commands";
@@ -104,6 +111,107 @@ function teraDecorations(state: EditorState): DecorationSet {
 const teraField = StateField.define<DecorationSet>({
     create: teraDecorations,
     update: (deco, tr) => (tr.docChanged ? teraDecorations(tr.state) : deco),
+    provide: (f) => EditorView.decorations.from(f),
+});
+
+// ---- CSS in the theme block -------------------------------------------------
+
+export type CssKind = "selector" | "atrule" | "property" | "number" | "string" | "comment";
+
+/** `{% block theme %}` and the `{% endblock %}` after it. */
+const THEME_OPEN = /\{%-?\s*block\s+theme\s*-?%\}/g;
+const BLOCK_CLOSE = /\{%-?\s*endblock\b[^%]*%\}/g;
+/** A number with its unit, or a hex colour; not a digit inside a name (`h1`). */
+const CSS_NUMBER = /#[0-9a-fA-F]{3,8}\b|(?<![\w-])-?(?:\d+\.?\d*|\.\d+)(?:[a-zA-Z]+|%)?/g;
+
+/** `text` with `[from, to)` ranges blanked, so offsets stay put. */
+function blank(text: string, ranges: {from: number; to: number}[]): string {
+    let out = text;
+    for (const r of ranges) out = out.slice(0, r.from) + " ".repeat(r.to - r.from) + out.slice(r.to);
+    return out;
+}
+
+/** The CSS marks in `css` (Tera already blanked), offset by `base`. */
+function scanCss(css: string, base: number, out: {from: number; to: number; kind: CssKind}[]): void {
+    // Comments and strings first: marked, then blanked for the rest.
+    const quoted: {from: number; to: number}[] = [];
+    for (const m of css.matchAll(/\/\*[\s\S]*?(?:\*\/|$)|"(?:[^"\\\n]|\\.)*"?|'(?:[^'\\\n]|\\.)*'?/g)) {
+        if (m[0].length === 0) continue;
+        quoted.push({from: m.index, to: m.index + m[0].length});
+        out.push({from: base + m.index, to: base + m.index + m[0].length, kind: m[0].startsWith("/*") ? "comment" : "string"});
+    }
+    const plain = blank(css, quoted);
+    const numbers = (from: number, to: number): void => {
+        for (const m of plain.slice(from, to).matchAll(CSS_NUMBER))
+            out.push({from: base + from + m.index, to: base + from + m.index + m[0].length, kind: "number"});
+    };
+    // Statements end at `{` (a selector or an at-rule's prelude), `;` or `}` (a declaration).
+    let start = 0;
+    for (let i = 0; i <= plain.length; i++) {
+        const ch = plain[i];
+        if (i < plain.length && ch !== "{" && ch !== ";" && ch !== "}") continue;
+        const seg = plain.slice(start, i);
+        const lead = seg.length - seg.trimStart().length;
+        const from = start + lead;
+        const to = start + seg.trimEnd().length;
+        if (to > from) {
+            const at = /^@[\w-]+/.exec(plain.slice(from, to));
+            if (at !== null) {
+                out.push({from: base + from, to: base + from + at[0].length, kind: "atrule"});
+                numbers(from + at[0].length, to);
+            } else if (ch === "{") {
+                out.push({from: base + from, to: base + to, kind: "selector"});
+            } else {
+                const name = /^-{0,2}[a-zA-Z][\w-]*(?=\s*:)/.exec(plain.slice(from, to));
+                if (name !== null) {
+                    out.push({from: base + from, to: base + from + name[0].length, kind: "property"});
+                    numbers(from + name[0].length, to);
+                }
+            }
+        }
+        start = i + 1;
+    }
+}
+
+/**
+ * The CSS marks in a template's `{% block theme %}` bodies (exported for the
+ * tests). A theme block already inside <style> is lang-css's, so it is left
+ * alone; Tera inside the block is the Tera overlay's.
+ */
+export function cssRanges(text: string): {from: number; to: number; kind: CssKind}[] {
+    const out: {from: number; to: number; kind: CssKind}[] = [];
+    const tera = teraRanges(text).filter((r) => r.kind !== "keyword");
+    for (const open of text.matchAll(THEME_OPEN)) {
+        const from = open.index + open[0].length;
+        const before = text.slice(0, open.index);
+        if (before.lastIndexOf("<style") > before.lastIndexOf("</style")) continue;
+        BLOCK_CLOSE.lastIndex = from;
+        const close = BLOCK_CLOSE.exec(text);
+        const to = close === null ? text.length : close.index;
+        const inside = tera.filter((r) => r.to > from && r.from < to).map((r) => ({from: Math.max(r.from, from) - from, to: Math.min(r.to, to) - from}));
+        scanCss(blank(text.slice(from, to), inside), from, out);
+    }
+    return out.sort((a, b) => a.from - b.from || b.to - a.to);
+}
+
+const cssMarks: Record<CssKind, Decoration> = {
+    selector: Decoration.mark({class: "cm-css-selector"}),
+    atrule: Decoration.mark({class: "cm-css-atrule"}),
+    property: Decoration.mark({class: "cm-css-property"}),
+    number: Decoration.mark({class: "cm-css-number"}),
+    string: Decoration.mark({class: "cm-css-string"}),
+    comment: Decoration.mark({class: "cm-css-comment"}),
+};
+
+function cssDecorations(state: EditorState): DecorationSet {
+    const builder = new RangeSetBuilder<Decoration>();
+    for (const r of cssRanges(state.doc.toString())) builder.add(r.from, r.to, cssMarks[r.kind]);
+    return builder.finish();
+}
+
+const cssField = StateField.define<DecorationSet>({
+    create: cssDecorations,
+    update: (deco, tr) => (tr.docChanged ? cssDecorations(tr.state) : deco),
     provide: (f) => EditorView.decorations.from(f),
 });
 
@@ -224,9 +332,17 @@ const theme = EditorView.theme({
     ".cm-tera": {backgroundColor: faint("accent", 10), borderRadius: "0.2rem"},
     ".cm-tera-keyword, .cm-tera-keyword *": {fontWeight: "600"},
     ".cm-tera-comment, .cm-tera-comment *": {color: faint("base-content", 50), fontStyle: "italic"},
+    // The theme block's CSS (`cssRanges`), in the colours lang-css gets below.
+    ".cm-css-selector": {color: ink("info", 65)},
+    ".cm-css-atrule": {color: ink("info", 65)},
+    ".cm-css-property": {color: ink("secondary")},
+    ".cm-css-number": {color: ink("warning", 60)},
+    ".cm-css-string": {color: ink("success", 60)},
+    ".cm-css-comment": {color: faint("base-content", 50), fontStyle: "italic"},
 });
 
-const highlight = HighlightStyle.define([
+/** The HTML, CSS and JavaScript colours (exported for the tests). */
+export const highlight = HighlightStyle.define([
     {tag: [t.tagName, t.standard(t.tagName)], color: ink("primary")},
     {tag: [t.angleBracket, t.processingInstruction, t.documentMeta], color: faint("base-content", 55)},
     {tag: [t.attributeName, t.propertyName], color: ink("secondary")},
@@ -272,6 +388,7 @@ export function createCodeView(parent: HTMLElement, opts: CodeViewOptions): Code
                 // (Shift+Alt+M on a Mac) makes Tab move focus until pressed again.
                 keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
                 teraField,
+                cssField,
                 problemExtension(opts.testid),
                 readOnly.of(readOnlyExt(opts.readonly)),
                 theme,

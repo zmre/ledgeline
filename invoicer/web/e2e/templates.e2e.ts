@@ -2,7 +2,9 @@
 // invoice base, override its `theme` block, see the preview change before
 // saving, save it, and use it on an invoice; a broken template's error in
 // plain words with its line; leaving with unsaved changes; a starter is
-// read-only until customized.
+// read-only until customized. A click anywhere on a list row opens it; the
+// code is coloured (HTML, CSS in <style>, in style attributes and in a
+// child's theme block).
 //
 // Same harness as the other specs: `--server` on :5199 over a scratch copy of
 // invoicer/fixtures/accrual, the SPA's `vite preview` on :4273. It runs last,
@@ -41,6 +43,15 @@ const frame = (page: Page) => page.frameLocator('[data-testid="invoice-frame"]')
 // is read back line by line (`codeText`).
 const code = (page: Page) => page.getByRole("textbox", {name: "Template code", exact: true});
 const codeText = async (page: Page): Promise<string> => (await code(page).locator(".cm-line").allTextContents()).join("\n");
+// Colouring: a token is found by its exact text (lang-css's classes are
+// generated names), its innermost span; the theme block's CSS by the
+// overlay's own classes (`cm-css-*`).
+const plainColour = (page: Page): Promise<string> => code(page).evaluate((el) => getComputedStyle(el).color);
+const tokenColour = (page: Page, token: string): Promise<string> =>
+    code(page)
+        .locator("span", {hasText: new RegExp(`^${token}$`)})
+        .last()
+        .evaluate((el) => getComputedStyle(el).color);
 
 async function open(page: Page): Promise<void> {
     await page.clock.setFixedTime(FIXED_NOW);
@@ -106,6 +117,10 @@ test.describe("the template editor over the accrual fixture (:5199)", () => {
         // Type the rule; the preview follows the unsaved text.
         await code(page).fill(BODY);
         await expect(page.getByTestId("unsaved")).toBeVisible();
+        // The theme block is CSS outside any <style>: coloured all the same.
+        const property = code(page).locator(".cm-css-property", {hasText: /^color$/});
+        await expect(property).toHaveCount(1);
+        expect(await property.evaluate((el) => getComputedStyle(el).color)).not.toBe(await plainColour(page));
         await expect(frame(page).locator(".doc-head h1")).toHaveCSS("color", BLUE, {timeout: 10_000});
         expect(read(FILE)).not.toContain(BLUE);
 
@@ -145,10 +160,20 @@ test.describe("the template editor over the accrual fixture (:5199)", () => {
     test("a broken template says why in plain words, with its line; leaving asks first", async ({page}) => {
         await open(page);
         await templatesSection(page);
-        await page.getByTestId("template-row").filter({hasText: "MyCo default"}).getByTestId("template-link").click();
+        // A click anywhere on a row opens it, not only on the name's link.
+        await page.getByTestId("template-row").filter({hasText: "MyCo default"}).getByTestId("template-usage").click();
         await expect(page.getByTestId("template-heading")).toHaveText("MyCo default");
         await expect(page.getByTestId("block-overridden")).toHaveText(["ready"]);
         const saved = read("invoices/tpl/myco-default.html");
+
+        // CSS is coloured in <style> and in a style attribute (lang-css nested
+        // in lang-html), and so are the HTML tags around it.
+        await code(page).fill(
+            '{% extends "_invoice_base.v1.html" %}\n{% block head %}\n<style>.memo { color: red; }</style>\n{% endblock head %}\n{% block footer %}\n<p style="margin: 0">Thanks</p>\n{% endblock footer %}\n'
+        );
+        const plain = await plainColour(page);
+        for (const token of ["color", "margin", "p"]) expect(await tokenColour(page, token), token).not.toBe(plain);
+        expect(await tokenColour(page, "color")).toBe(await tokenColour(page, "margin"));
 
         await code(page).fill('{% extends "_invoice_base.v1.html" %}\n{% block footer %}\n{{ nope.nope }}\n{% endblock footer %}\n');
         const problem = page.getByTestId("template-problem");
