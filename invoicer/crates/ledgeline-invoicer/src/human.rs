@@ -294,7 +294,7 @@ pub fn show(detail: &DocDetail<'_>) -> String {
 }
 
 /// The frontmatter keys `show` already prints (or that are noise there).
-const STANDARD_KEYS: [&str; 26] = [
+const STANDARD_KEYS: [&str; 27] = [
     "title",
     "type",
     "template",
@@ -314,6 +314,7 @@ const STANDARD_KEYS: [&str; 26] = [
     "invoicer_email",
     "invoicer_phone",
     "invoicer_address",
+    "invoicer_logo",
     "paid",
     "sent_date",
     "sent_via",

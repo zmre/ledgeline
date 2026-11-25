@@ -40,8 +40,8 @@
     variables: `--ink` (text), `--muted`, `--rule` (lines), `--paper` (the
     sheet), `--desk` (around the sheet on screen). `@page` sets paper size
     and margins (`size: A4;`).
-  - `header`: the document's title and number, and its status (Draft,
-    Void, Paid).
+  - `header`: your logo, if you have one, then the document's title and
+    number, and its status (Draft, Void, Paid).
   - `parties`: who it's from and who pays: name, address, email and phone.
   - `details`: the dates (issued, due or valid until), terms, reference,
     and what a deposit is for.
@@ -51,6 +51,16 @@
   What a template sees (MBR's context): `frontmatter` (here also `fm`), the
   rendered `markdown`, and these, set below: `kind` ("Invoice", "Estimate"
   or "Credit note"), `paid` (the `paid:` value as text) and `chrome`.
+
+  Your logo: put `logo: logo.png` (or `logo: "[[logo.png]]"`) on your
+  company's note, naming a PNG, JPEG, GIF, SVG or WebP image beside the
+  note or a path from the books folder (`logo: /assets/logo.png`). A new
+  invoice then carries it as `invoicer_logo` (a path from the books
+  folder, like its copy of your address), and the `header` block shows it
+  above the title, at most 2.5in wide and 0.8in tall, with your company's
+  name as its text for screen readers. Without one, nothing is shown. In
+  your own `header`, write it as the base does:
+  `<img class="logo" src="{{ fm.invoicer_logo | urlencode }}" alt="…">`.
 
   What stays here whatever a template overrides: MBR's chrome when MBR
   serves the page (`server_mode`: sidebar, search, breadcrumbs, previous
@@ -104,6 +114,8 @@
     text-align: left;
   }
   .sheet :is(h1, h2, h3, h4, p, th, td) { color: inherit; font-family: inherit; }
+  /* The logo (`invoicer_logo`): sized for print whatever the theme. */
+  .sheet .logo { display: block; width: auto; height: auto; max-width: 2.5in; max-height: 0.8in; margin: 0 0 1rem; }
 
   /* The books column: last column, italic header. Works in any engine with :has(). */
   table:has(thead th:last-child > em:only-child) :is(th, td):last-child { display: none; }
@@ -188,6 +200,9 @@
 <main class="invoice-main">
 <div class="sheet">
 {% block header %}
+  {%- if fm.invoicer_logo %}
+  <img class="logo" src="{{ fm.invoicer_logo | urlencode }}" alt="{{ fm.invoicer_name | default(value="") }}">
+  {%- endif %}
   <div class="doc-head">
     <h1>{{ kind }} {{ fm.invoice_num }}</h1>
     {%- if fm.status == "void" %}

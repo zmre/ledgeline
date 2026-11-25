@@ -12,7 +12,8 @@
 // back what it changes: invoice 101's file, and its template is deleted.
 // Fixture facts: the books have one template, MyCo default (a child of
 // `_invoice_base.v1.html`), used by every invoice; 101 is Contoso's, paid;
-// the base's header is `.doc-head h1`.
+// the base's header is `.doc-head h1`, under the logo (`img.logo`) that 105
+// and 108 carry.
 //
 // Written in 4d and NOT run by the agent that wrote it (agents never run
 // Playwright); the lead runs it.
@@ -106,6 +107,11 @@ test.describe("the template editor over the accrual fixture (:5199)", () => {
         await expect(page.getByTestId("invoice-frame")).toHaveAttribute("data-mode", "preview");
         await expect(frame(page).locator(".doc-head h1")).toBeVisible();
         await expect(frame(page).locator(".doc-head h1")).not.toHaveCSS("color", BLUE);
+        // The previewed invoice (108, the latest) carries the company's logo
+        // (`invoicer_logo`): the base's header shows it, loaded from the books.
+        const logo = frame(page).locator("img.logo");
+        await expect(logo).toHaveAttribute("alt", "My Company");
+        await expect.poll(() => logo.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
 
         // Override block: theme, with super() kept.
         await page.getByTestId("block-choice").selectOption("theme");

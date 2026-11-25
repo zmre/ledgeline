@@ -63,6 +63,10 @@ test("the embedded SPA and an invoice's frame load with no CSP violations", asyn
     const invoice = page.frameLocator('[data-testid="invoice-frame"]');
     await expect(invoice.getByText("Bill to Customer X")).toBeVisible();
     await expect(invoice.getByText("liabilities:customer-deposits")).toBeHidden();
+    // The company's logo: an image from the books, under MBR's img-src and gate.
+    const logo = invoice.locator("img.logo");
+    await expect(logo).toHaveAttribute("alt", "My Company");
+    await expect.poll(() => logo.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
 
     // A preview frame: a page of its own under MBR's policy (never srcdoc,
     // which would inherit the shell's frame-ancestors 'none').

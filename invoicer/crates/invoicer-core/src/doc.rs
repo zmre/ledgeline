@@ -698,6 +698,7 @@ impl Invoice {
             "invoicer_email",
             "invoicer_phone",
             "invoicer_address",
+            "invoicer_logo",
         ];
         out.extend(scalar_keys.iter().filter_map(|k| {
             match fields.get(*k) {
