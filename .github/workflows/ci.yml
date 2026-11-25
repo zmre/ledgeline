@@ -349,10 +349,19 @@ jobs:
       # cache, which nothing else competes for.
       #
       # Must come AFTER Nix is installed (it merges the restored store DB into
-      # the daemon's). The key changes only when the dependency graph can:
-      # flake.lock (toolchain, nixpkgs, crane) or Cargo.lock. On a miss,
-      # `restore-prefixes-first-match` falls back to the newest snapshot for
-      # this OS/arch, which still holds most of what is needed.
+      # the daemon's). The key changes whenever the deps layers can: the
+      # dependency graph (flake.lock: toolchain, nixpkgs, crane; Cargo.lock)
+      # AND how the layers are built (flake.nix: the layers' cargo commands,
+      # features, profiles; every Cargo.toml: profiles, features, members).
+      # The key must cover the latter too, because on a primary-key HIT the
+      # action does not save ("Cache hit occurred on the primary-key … Not
+      # saving a new cache"): with a lockfile-only key, a flake.nix/Cargo.toml
+      # change that rebuilds the layers left the snapshot frozen with the old
+      # ones and every later run rebuilt them cold (PR #103). flake.nix churns
+      # (~1 in 6 main commits) but a re-save is ~2-3 min in the post step on
+      # main; a cold darwin layer is ~20 min on every run, PRs included. On a
+      # miss, `restore-prefixes-first-match` falls back to the newest snapshot
+      # for this OS/arch, which still holds most of what is needed.
       #
       # Only pushes to main SAVE. Actions caches are ref-scoped, but a PR can
       # restore its base branch's entries, so every PR gets main's snapshot
@@ -371,7 +380,7 @@ jobs:
       - name: Restore Nix store (GitHub Actions cache)
         uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
         with:
-          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'Cargo.lock') }}
+          primary-key: nix-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('flake.lock', 'flake.nix', 'Cargo.lock', '**/Cargo.toml') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-${{ runner.arch }}-
           save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           gc-max-store-size-macos: 8G
@@ -442,12 +451,17 @@ jobs:
             echo "No CACHIX_AUTH_TOKEN (fork or unset) — skipping cache push."
             exit 0
           fi
-          deps=$(nix eval --raw .#cargoArtifacts.outPath)
-          if ! nix path-info "$deps" >/dev/null 2>&1; then
-            echo "Deps layer $deps was not built in this job — nothing to push."
-            exit 0
-          fi
-          cachix push zmre "$deps"
+          # Both layers, like `build`. Pushing only the release one left the
+          # darwin ci layer (what tests/clippy/spaShellCsp reuse) off Cachix,
+          # so every macOS run rebuilt it.
+          for attr in cargoArtifacts cargoArtifactsCi; do
+            deps=$(nix eval --raw ".#$attr.outPath")
+            if ! nix path-info "$deps" >/dev/null 2>&1; then
+              echo "Deps layer $deps was not built in this job — nothing to push."
+              continue
+            fi
+            cachix push zmre "$deps"
+          done
 
       # The darwin twin of `build`'s "Push to Cachix": the user-facing paths,
       # on pushes only, guarded the same way.

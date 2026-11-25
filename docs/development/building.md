@@ -475,9 +475,12 @@ cachix push zmre "$(nix build --no-link --print-out-paths .#cargoArtifacts .#car
 
 The `macos` job also keeps a second-tier cache: `nix-community/cache-nix-action` saves a whole
 `/nix/store` snapshot (GC'd to ~8 GiB, with the deps layer GC-rooted) to the repo's own GitHub
-Actions cache, keyed on `flake.lock` + `Cargo.lock`. Only pushes to `main` save it (and purge
-the older `nix-macOS-*` entries); PRs restore `main`'s copy. It covers the case where Cachix has
-already evicted the darwin deps layer.
+Actions cache, keyed on `flake.lock`, `flake.nix`, `Cargo.lock` and every `Cargo.toml`, which
+is everything that can change a deps layer. Only pushes to `main` save it (and purge the older
+`nix-macOS-*` entries); PRs restore `main`'s copy. It covers the case where Cachix has already
+evicted the darwin deps layers. The action never re-saves a key it restored, so a key built from
+the lockfiles alone kept a snapshot with the old layers after a `flake.nix` change, and every
+later run rebuilt them.
 
 ### Pins (why the cache kept going empty)
 
