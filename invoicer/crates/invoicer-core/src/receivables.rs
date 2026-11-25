@@ -409,11 +409,10 @@ fn cash(
         let Some(paid) = states.paid(doc) else {
             continue;
         };
-        let outstanding = if paid.is_full() {
-            Dec::zero()
-        } else {
-            summary.total.sub(paid.paid()).unwrap_or(summary.total)
-        };
+        let outstanding = summary
+            .total
+            .sub(paid.paid(summary.total))
+            .unwrap_or(summary.total);
         let (owed, billed) = dso
             .entry(summary.commodity.clone())
             .or_insert((Dec::zero(), Dec::zero()));
