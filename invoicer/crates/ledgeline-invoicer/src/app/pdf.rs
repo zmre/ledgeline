@@ -78,6 +78,10 @@ pub(crate) async fn export_invoice(
     } = request;
     let planning = Arc::clone(&books);
     let (plan, pdf) = run_blocking(move || {
+        // A starter an invoice names but the books don't have yet would
+        // print MBR's "not found" page (RA-2). The app copies them in on
+        // open; the CLI's `pdf` opens no app, so copy them here too.
+        planning.install_starters();
         let plan = {
             let session = planning.session();
             filing::plan(&session, &target, output.as_deref(), temp)?

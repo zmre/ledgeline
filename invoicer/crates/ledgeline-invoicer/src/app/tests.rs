@@ -1340,6 +1340,43 @@ async fn send_marks_a_draft_sent_by_portal_and_the_portal_opens() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
+/// RA-2: an export copies in the starter its invoice names when the books
+/// don't have it, as opening the app does (the CLI's `pdf` opens no app).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_export_copies_in_the_starter_its_invoice_names() {
+    let (app, native) = mocked();
+    let root = books_root(&app);
+    let file = root.join(INVOICE_108);
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(
+        &file,
+        text.replace(
+            "template: /invoices/tpl/myco-default.html",
+            "template: /invoices/tpl/modern.html",
+        ),
+    )
+    .unwrap();
+    {
+        let mut session = app.books.session();
+        let (index, vault) = session.parts_mut();
+        let note = vault.vault_path(&file).unwrap();
+        index.refresh(vault, &[note]);
+    }
+    let starter = root.join("invoices/tpl/modern.html");
+    assert!(!starter.exists());
+    let (status, body) = json_of(
+        &app,
+        post_json("/api/invoices/108/pdf", &serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        starter.is_file(),
+        "the starter was copied in before printing"
+    );
+    assert_eq!(native.printed.lock().unwrap().len(), 1);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_failed_print_keeps_nothing() {
     let native = Arc::new(MockNative {
