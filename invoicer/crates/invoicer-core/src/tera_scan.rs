@@ -36,13 +36,15 @@ pub fn tags(source: &str) -> impl Iterator<Item = Tag<'_>> {
             let comment = rest.find("{#");
             match (open, comment) {
                 (_, Some(c)) if open.is_none_or(|o| c < o) => {
-                    let close = rest[c..].find("#}")?;
-                    at += c + close + 2;
+                    // Past the opener, so `{#}` isn't read as a closed comment.
+                    let close = rest[c + 2..].find("#}")?;
+                    at += c + 2 + close + 2;
                 }
                 (Some(o), _) => {
-                    let close = rest[o..].find("%}")?;
+                    // Past the opener: in `{%}` the `%}` overlaps it.
+                    let close = rest[o + 2..].find("%}")?;
                     let start = at + o;
-                    let end = start + close + 2;
+                    let end = start + 2 + close + 2;
                     let inner = source[start + 2..end - 2].trim_matches('-').trim();
                     at = end;
                     let first = inner.split_whitespace().next().unwrap_or_default();
@@ -147,5 +149,22 @@ mod tests {
         assert_eq!(block_body(child, "theme"), None);
         assert_eq!(extends("{% block x %}{% endblock %}"), None);
         assert_eq!(extends("{% extends 'a.html' %}"), Some("a.html"));
+    }
+
+    #[test]
+    fn an_overlapping_opener_and_closer_is_not_a_tag() {
+        assert_eq!(tags("a {%} b").count(), 0);
+        assert_eq!(tags("{#} {% x %}").count(), 0);
+        let found: Vec<_> = tags("{%} {% block a %}").map(|t| t.inner).collect();
+        assert_eq!(found, vec!["} {% block a"]);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn tags_never_panic(source in "[{}%#a -]{0,24}") {
+            for tag in tags(&source) {
+                proptest::prop_assert!(tag.start + 4 <= tag.end);
+            }
+        }
     }
 }

@@ -429,6 +429,38 @@ fn a_cell_that_widens_its_column_realigns_every_row() {
     );
 }
 
+/// RC-4: the catalog matches codes case-insensitively everywhere, so a
+/// row's `arch` books to `ARCH`'s account, not the next default.
+#[test]
+fn the_catalog_default_matches_codes_case_insensitively() {
+    let doc = "\
+| SKU | Description | Qty | Rate | Amount | *Account* |
+|---|---|---|---|---|---|
+| arch | Architect | 1 | $800 | | |
+| Arch | Architect | 1 | $800 | | |
+";
+    let evaluation = bill(doc)
+        .evaluate(&Words::default(), &usd())
+        .expect("evaluates");
+    let defaults = AccountDefaults {
+        catalog: [(
+            ItemCode("ARCH".into()),
+            BooksEntry::Account(account("revenue:architecture")),
+        )]
+        .into_iter()
+        .collect(),
+        settings: Some(account("revenue:general")),
+        ..AccountDefaults::default()
+    };
+    for row in &evaluation.rows {
+        let (entry, source) = resolve(row, &defaults).expect("resolves");
+        assert_eq!(
+            (entry.account().to_string(), source),
+            ("revenue:architecture".to_string(), AccountSource::Catalog)
+        );
+    }
+}
+
 #[test]
 fn blank_accounts_fall_through_the_default_chain() {
     let doc = "\

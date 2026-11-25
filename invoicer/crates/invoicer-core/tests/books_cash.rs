@@ -252,6 +252,52 @@ fn apply_payment_in_full_in_parts_and_undone() {
     }
 }
 
+/// RC-9: a partial payment can leave the largest row exactly paid while a
+/// smaller one still lacks a cent; the last payment's split must leave the
+/// paid row out (Ledgeline refuses a zero row), not send it as zero.
+#[test]
+fn paying_the_rest_after_a_row_is_exactly_paid_skips_that_row() {
+    let dir = scratch("cash", "cash-apply-zero-row");
+    let wires = "
+2026-11-17 * WIRE CUSTOMER X MOST  ; id: wx-1
+    assets:bank:checking   $6,999.99
+    income:unknown        $-6,999.99
+
+2026-11-17 * WIRE CUSTOMER X CENT  ; id: wx-2
+    assets:bank:checking   $0.01
+    income:unknown        $-0.01
+";
+    let start = format!("{}{wires}", read(&dir, "books.journal"));
+    write(&dir, "books.journal", &start);
+    let (books, index) = open(&dir);
+    // 207 lacks $3,000 on consulting and $4,000 on delivery: $6,999.99
+    // truncates consulting to $2,999.99 and delivery takes exactly $4,000.
+    let most = books
+        .payment_candidates(&index, "207", TODAY)
+        .expect("lists")
+        .into_iter()
+        .find(|c| c.description == "WIRE CUSTOMER X MOST")
+        .expect("a candidate");
+    let first = books
+        .apply_payment(&index, &apply("207", &most.reference))
+        .expect("applies");
+    assert_eq!(first.remaining, Dec::new(1, 2));
+    let cent = books
+        .payment_candidates(&index, "207", TODAY)
+        .expect("lists")
+        .into_iter()
+        .find(|c| c.description == "WIRE CUSTOMER X CENT")
+        .expect("a candidate");
+    let last = books
+        .apply_payment(&index, &apply("207", &cent.reference))
+        .expect("the last cent applies");
+    assert_eq!(last.remaining, Dec::zero());
+    assert_eq!(
+        last.applied,
+        [("revenue:consulting".to_string(), "0.01".to_string())]
+    );
+}
+
 #[test]
 fn apply_payment_is_for_sent_invoices_in_cash_books() {
     let dir = scratch("cash", "cash-refusals");

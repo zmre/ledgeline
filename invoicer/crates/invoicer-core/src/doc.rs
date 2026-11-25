@@ -277,6 +277,36 @@ pub struct Header {
     pub deposit_for: Option<String>,
 }
 
+/// The due date `terms` net days give an invoice dated `date`. The draft,
+/// the editor, `set terms=` and [`Header::due`] all use it.
+#[must_use]
+pub fn due_from_terms(date: &str, terms: i64) -> String {
+    ledgeline_core::reports::add_days(date, terms)
+}
+
+impl Header {
+    /// When it is due: `due_date` as written, else `date` + `terms` (see
+    /// [`due_from_terms`]), else nothing. The one rule the books' `due:`
+    /// tag, the views and the receivables use.
+    #[must_use]
+    pub fn due(&self) -> Option<std::borrow::Cow<'_, str>> {
+        if let Some(due) = self.due_date.as_deref() {
+            return Some(due.into());
+        }
+        let date = self.date.as_deref().filter(|d| is_iso_date(d))?;
+        self.terms
+            .filter(|t| *t >= 0)
+            .map(|t| due_from_terms(date, t).into())
+    }
+
+    /// [`Header::due`], else its `date` (no due date and no terms: due on
+    /// receipt). What overdue and aging count from.
+    #[must_use]
+    pub fn due_on(&self) -> Option<std::borrow::Cow<'_, str>> {
+        self.due().or_else(|| self.date.as_deref().map(Into::into))
+    }
+}
+
 /// Where each part of the document is, as byte ranges.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Layout {

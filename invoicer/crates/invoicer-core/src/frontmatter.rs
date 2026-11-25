@@ -37,8 +37,10 @@
 //! splice), which the proptests check too.
 
 use serde_json::{Map, Value};
+use std::collections::HashMap;
 use std::ops::Range;
 use thiserror::Error;
+use yaml_rust2::parser::{Event, Parser};
 use yaml_rust2::{Yaml, YamlLoader};
 
 /// A note's frontmatter fields. Look up key order in [`Frontmatter::order`].
@@ -224,6 +226,12 @@ impl Frontmatter {
 /// Parse a block's YAML into fields plus key order. `first_line` is the
 /// content's first line in the document, for error lines.
 fn parse_yaml(content: &str, first_line: usize) -> Result<(Fields, Vec<String>), FrontmatterError> {
+    if let Some(line) = over_expanded(content) {
+        return Err(FrontmatterError::Yaml {
+            line: first_line + line.saturating_sub(1),
+            message: format!("its aliases expand to more than {MAX_YAML_NODES} values"),
+        });
+    }
     let docs = YamlLoader::load_from_str(content).map_err(|e| FrontmatterError::Yaml {
         line: first_line + e.marker().line().saturating_sub(1),
         message: e.info().to_string(),
@@ -239,6 +247,66 @@ fn parse_yaml(content: &str, first_line: usize) -> Result<(Fields, Vec<String>),
             Ok((fields, order))
         }
         Some(_) => Err(FrontmatterError::NotAMapping { line: first_line }),
+    }
+}
+
+/// The most values a frontmatter block may expand to, each alias counted
+/// at the size of what it names. yaml-rust2 deep-copies an anchored node
+/// for every alias, so a few lines of nested aliases ("billion laughs")
+/// would otherwise expand to billions of values (SEC-4).
+const MAX_YAML_NODES: u64 = 100_000;
+
+/// The 1-based line (within `content`) where its expansion passes
+/// [`MAX_YAML_NODES`], or `None` when it stays under. Syntax errors are left
+/// for the loader to report.
+fn over_expanded(content: &str) -> Option<usize> {
+    // No alias, no expansion: one value per event at most.
+    if !content.contains('*') {
+        return None;
+    }
+    let mut parser = Parser::new_from_str(content);
+    // Expanded sizes of the anchors seen; the open collections' anchors and
+    // sizes so far; every value expanded.
+    let mut anchors: HashMap<usize, u64> = HashMap::new();
+    let mut open: Vec<(usize, u64)> = Vec::new();
+    let mut total: u64 = 0;
+    // A node is complete: remember its size under its anchor, add it to its
+    // collection's.
+    let finish = |anchors: &mut HashMap<usize, u64>, open: &mut Vec<(usize, u64)>, anchor, size| {
+        if anchor != 0 {
+            anchors.insert(anchor, size);
+        }
+        if let Some((_, parent)) = open.last_mut() {
+            *parent = parent.saturating_add(size);
+        }
+    };
+    loop {
+        let (event, mark) = parser.next_token().ok()?;
+        match event {
+            Event::StreamEnd => return None,
+            Event::Scalar(_, _, anchor, _) => {
+                total = total.saturating_add(1);
+                finish(&mut anchors, &mut open, anchor, 1);
+            }
+            Event::Alias(id) => {
+                let size = anchors.get(&id).copied().unwrap_or(1);
+                total = total.saturating_add(size);
+                finish(&mut anchors, &mut open, 0, size);
+            }
+            Event::SequenceStart(anchor, _) | Event::MappingStart(anchor, _) => {
+                total = total.saturating_add(1);
+                open.push((anchor, 1));
+            }
+            Event::SequenceEnd | Event::MappingEnd => {
+                if let Some((anchor, size)) = open.pop() {
+                    finish(&mut anchors, &mut open, anchor, size);
+                }
+            }
+            _ => {}
+        }
+        if total > MAX_YAML_NODES {
+            return Some(mark.line());
+        }
     }
 }
 
@@ -406,7 +474,11 @@ fn decode_key(raw: &str) -> Option<String> {
         return Some(key.to_string())
             .filter(|k| !matches!(k.as_str(), "~" | "null" | "Null" | "NULL"));
     }
-    let docs = YamlLoader::load_from_str(&format!("{raw}: ~\n")).ok()?;
+    let line = format!("{raw}: ~\n");
+    if over_expanded(&line).is_some() {
+        return None;
+    }
+    let docs = YamlLoader::load_from_str(&line).ok()?;
     match docs.into_iter().next()? {
         Yaml::Hash(hash) => hash.keys().next().map(key_text),
         _ => None,

@@ -463,7 +463,7 @@ fn defaults_with(
     for item in catalogs.iter().flat_map(|c| &c.items) {
         if let Some(books) = &item.books {
             catalog
-                .entry(ItemCode(item.code.clone()))
+                .entry(ItemCode(item.code.trim().to_ascii_uppercase()))
                 .or_insert_with(|| books.clone());
         }
     }
@@ -501,6 +501,24 @@ pub fn tag_text(text: &str) -> Option<String> {
 
 /// A table cell as plain text: bold and `&nbsp;` stripped, escaped pipes
 /// unescaped.
+/// `text` as a transaction description Ledgeline will write: `;`, `#`
+/// and control characters become spaces (they would start a comment or not
+/// read back), runs of whitespace one space.
+fn description_text(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if matches!(c, ';' | '#') || c.is_control() {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn cell_text(text: &str) -> String {
     plain(text).replace("\\|", "|")
 }
@@ -667,12 +685,7 @@ pub fn booking_of(
             })
         })
         .collect::<Result<_, BooksError>>()?;
-    let due = header.due_date.clone().or_else(|| {
-        header
-            .terms
-            .filter(|t| *t >= 0)
-            .map(|t| ledgeline_core::reports::add_days(&date, t))
-    });
+    let due = header.due().map(String::from);
     let document = tag_text(path.as_str()).ok_or_else(|| invalid("the file has no name"))?;
     let mut tags = vec![(super::spec::DOCUMENT_TAG.to_string(), document)];
     if let Some(due) = &due {
@@ -691,11 +704,11 @@ pub fn booking_of(
         .invoicee
         .name
         .as_deref()
-        .map(|name| name.split_whitespace().collect::<Vec<_>>().join(" "))
+        .map(description_text)
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| customer.clone());
     Ok(InvoiceBooking {
-        description: format!("{payee} | Invoice {number}"),
+        description: description_text(&format!("{payee} | Invoice {number}")),
         number,
         path: path.clone(),
         date,

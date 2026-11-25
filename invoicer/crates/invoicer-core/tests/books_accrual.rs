@@ -294,8 +294,9 @@ fn send_rebook_and_void_on_accrual_books() {
         replace_once(
             &replace_once(&md_106, "status: sent\n", "status: void\n"),
             "paid: no\n---\n",
-            "paid: no\nvoid_date: 2026-11-17\n---\n"
-        )
+            "void_date: 2026-11-17\n---\n"
+        ),
+        "voiding removes the paid: mirror (P1)"
     );
     let again = books.void(&mut index, &void("106", TODAY));
     assert!(matches!(again, Err(BooksError::Status { .. })), "{again:?}");

@@ -189,6 +189,28 @@ fn header_tags_items_and_the_customer() {
     assert_eq!(tag_text(" , "), None);
 }
 
+/// RC-3: Ledgeline refuses `;` and `#` in a description, so a payee or
+/// number holding one is written without it rather than blocking the send.
+#[test]
+fn a_payee_or_number_with_a_comment_mark_still_books() {
+    let table = "\
+| Description | Qty | Rate   | Amount    |
+|:------------|----:|-------:|----------:|
+| Design      | 1   | $1,000 | $1,000.00 |
+|             |     | **Total due** | **$1,000.00** |
+";
+    let text = invoice("108", "Ann Lee", "", table)
+        .replace("invoice_num: 108", "invoice_num: \"#108\"")
+        .replace(
+            "invoicee_name: Ann Lee",
+            "invoicee_name: \"Studio #9; LLC\"",
+        );
+    let (books, index) = books(&[("invoices/Studio 108.md", &text)], JOURNAL);
+    let preview = books.preview(&index, "#108").expect("previews");
+    assert_eq!(preview.booking.description, "Studio 9 LLC | Invoice 108");
+    assert!(preview.would_book.is_some(), "{preview:?}");
+}
+
 #[test]
 fn what_cannot_be_booked_says_why() {
     let table = |amount: &str, account: &str| {

@@ -629,6 +629,100 @@ fn a_void_stopped_after_the_journal_is_finished_by_void() {
     assert!(findings(&books, &index).is_empty());
 }
 
+fn void_of(number: &str) -> Void {
+    Void {
+        number: number.into(),
+        date: TODAY.into(),
+        today: TODAY.into(),
+        expected: None,
+    }
+}
+
+/// RC-1: a sent invoice whose table was hand-edited (it no longer adds up)
+/// still voids: a field-only write doesn't re-verify a body it doesn't
+/// change.
+#[test]
+fn a_sent_invoice_whose_table_disagrees_still_voids() {
+    let dir = scratch("accrual", "void-bad-table");
+    let md = read(&dir, INV_106);
+    write(
+        &dir,
+        INV_106,
+        &replace_once(&md, "| $1,200.00 | revenue", "| $1,300.00 | revenue"),
+    );
+    let (books, mut index) = open(&dir);
+    let voided = books.void(&mut index, &void_of("106")).expect("voids");
+    assert!(voided.journal_written && voided.markdown_written);
+    let after = read(&dir, INV_106);
+    assert!(after.contains("status: void\n"), "{after}");
+    assert!(
+        after.contains("| $1,300.00 | revenue"),
+        "the table is untouched"
+    );
+    assert!(findings(&books, &index).is_empty());
+}
+
+/// RC-2: a draft whose send stopped after the journal is booked; voiding
+/// it reverses that booking, as voiding a sent invoice does.
+#[test]
+fn voiding_a_booked_draft_reverses_its_booking() {
+    let dir = scratch("accrual", "void-booked-draft");
+    let path = "invoices/2026-11-17 Wingtip Invoice 110.md";
+    write(
+        &dir,
+        path,
+        &wingtip(
+            "110",
+            "2026-11-17",
+            "draft",
+            "| Phase 2 build           | 1   | $4,000 | $4,000.00 | revenue:consulting            |\n",
+            "$4,000.00",
+        ),
+    );
+    let (vault, books, mut index) = hooked(&dir);
+    vault.fail_markdown.store(true, Ordering::SeqCst);
+    let send = Send {
+        number: "110".into(),
+        ..send_108()
+    };
+    assert!(books.send(&mut index, &send).is_err());
+    vault.fail_markdown.store(false, Ordering::SeqCst);
+    assert!(read(&dir, path).contains("status: draft\n"));
+    let voided = books.void(&mut index, &void_of("110")).expect("voids");
+    assert!(voided.journal_written && voided.markdown_written);
+    assert!(voided.reversal.is_some());
+    assert_eq!(
+        read(&dir, "books.journal")
+            .matches("Invoice 110 (void)")
+            .count(),
+        1
+    );
+    assert!(read(&dir, path).contains("status: void\n"));
+    assert!(findings(&books, &index).is_empty());
+}
+
+/// P1: voiding deletes `paid:`; the books say nothing for a void invoice,
+/// so reconcile never writes it back and nothing reports it missing.
+#[test]
+fn a_void_invoice_has_no_paid_mirror_and_reconcile_leaves_it_so() {
+    for (name, number, path) in [
+        ("cash", "203", "invoices/2026-11-05 Wingtip Invoice 203.md"),
+        ("accrual", "106", INV_106),
+    ] {
+        let dir = scratch(name, &format!("void-no-paid-{name}"));
+        let (books, mut index) = open(&dir);
+        assert!(read(&dir, path).contains("paid: no\n"));
+        books.void(&mut index, &void_of(number)).expect("voids");
+        let after = read(&dir, path);
+        assert!(!after.contains("paid:"), "{name}: {after}");
+        assert_eq!(paid_of(&books, &index, number), None, "{name}");
+        let report = run(&books, &mut index, false);
+        assert!(report.changed.is_empty(), "{name}: {:#?}", report.changed);
+        assert_eq!(read(&dir, path), after, "{name}");
+        assert!(findings(&books, &index).is_empty(), "{name}");
+    }
+}
+
 #[test]
 fn a_concurrent_journal_write_is_refused_whole_and_retried_once() {
     let dir = scratch("accrual", "concurrent");

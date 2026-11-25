@@ -354,7 +354,7 @@ pub fn render(
                 .map(|t| t.template_path())
         });
     let terms = new.terms.or(customer.terms);
-    let due_date = terms.map(|t| ledgeline_core::reports::add_days(&new.date, i64::from(t)));
+    let due_date = terms.map(|t| crate::doc::due_from_terms(&new.date, i64::from(t)));
 
     let filename = fill_pattern(
         &settings.filename,
@@ -528,6 +528,35 @@ pub fn save(
     expected: &Revision,
 ) -> Result<Revision, DraftError> {
     verify(text, index.settings(), index.money())?;
+    let written = vault.replace(path, text.as_bytes(), expected)?;
+    index.refresh(vault, std::slice::from_ref(path));
+    Ok(written)
+}
+
+/// Save a frontmatter-only edit of `source`: as [`save`], except that a
+/// document whose body already failed verification (a hand-edited table)
+/// is written without it. The edit makes nothing worse, and
+/// [`frontmatter::edit`](crate::frontmatter::edit) has checked it key by
+/// key with the body byte-identical. `set`, lifecycle steps and the `paid:`
+/// mirror all write this way.
+///
+/// # Errors
+/// As [`save`].
+pub fn save_fields(
+    index: &mut DocumentIndex,
+    vault: &dyn Vault,
+    path: &VaultPath,
+    source: &str,
+    text: &str,
+    expected: &Revision,
+) -> Result<Revision, DraftError> {
+    // The new text verifying is the common case: one check. Only when it
+    // fails does the source decide whether that is this edit's doing.
+    if let Err(error) = verify(text, index.settings(), index.money())
+        && verify(source, index.settings(), index.money()).is_ok()
+    {
+        return Err(error);
+    }
     let written = vault.replace(path, text.as_bytes(), expected)?;
     index.refresh(vault, std::slice::from_ref(path));
     Ok(written)

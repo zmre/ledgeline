@@ -231,14 +231,16 @@ impl BooksPaid {
         matches!(self, Self::Full { .. })
     }
 
-    /// What was paid in all.
+    /// What was paid in all, of an invoice for `total`: all of it when
+    /// paid in full.
     #[must_use]
-    pub fn paid(&self) -> Dec {
+    pub fn paid(&self, total: Dec) -> Dec {
         match self {
+            Self::No => Dec::zero(),
             Self::Partial { parts } => parts
                 .iter()
                 .fold(Dec::zero(), |sum, p| sum.add(p.amount).unwrap_or(sum)),
-            Self::No | Self::Full { .. } => Dec::zero(),
+            Self::Full { .. } => total,
         }
     }
 
@@ -500,9 +502,13 @@ impl BookStates {
 
     /// What the books say `doc`'s `paid:` is, or `None` when they can't say
     /// (no number, a table that doesn't read, accrual books with no
-    /// receivable booked, a void in the books).
+    /// receivable booked, a void in the books) or it has none (a void
+    /// invoice: voiding removes `paid:`).
     #[must_use]
     pub fn paid(&self, doc: &IndexedDoc) -> Option<BooksPaid> {
+        if doc.header.status == Some(Status::Void) {
+            return None;
+        }
         let number = doc.number()?;
         let summary = doc.summary.as_ref()?;
         if summary.total.is_zero() {
@@ -1149,4 +1155,32 @@ pub fn audit(
             .then_with(|| a.message.cmp(&b.message))
     });
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paid_counts_a_full_payment_as_the_total() {
+        let total = Dec::new(100_000, 2);
+        assert_eq!(BooksPaid::No.paid(total), Dec::zero());
+        let full = BooksPaid::Full {
+            date: "2026-11-20".into(),
+        };
+        assert_eq!(full.paid(total), total);
+        let partial = BooksPaid::Partial {
+            parts: vec![
+                PaidAmount {
+                    date: "2026-11-20".into(),
+                    amount: Dec::new(25_000, 2),
+                },
+                PaidAmount {
+                    date: "2026-11-21".into(),
+                    amount: Dec::new(5_000, 2),
+                },
+            ],
+        };
+        assert_eq!(partial.paid(total), Dec::new(30_000, 2));
+    }
 }
