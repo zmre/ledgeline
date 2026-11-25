@@ -1,0 +1,64 @@
+{
+  "created": [
+    {
+      "changed": [
+        "title",
+        "type",
+        "tags",
+        "emails",
+        "addresses",
+        "terms",
+        "revenue_account"
+      ],
+      "hash": "d8-872596c633763eaf",
+      "kind": "organization",
+      "ledger_customer": "Smith, Jones & Co",
+      "line": 2,
+      "link": "[[Smith, Jones & Co]]",
+      "noted": [],
+      "path": "customers/Smith, Jones & Co.md",
+      "text": "---\ntitle: Smith, Jones & Co\ntype: organization\ntags:\n  - customer\nemails:\n  - billing: ap@sj.example\naddresses:\n  - billing: |\n      1 Main St\n      Springfield, CO\nterms: 30\nrevenue_account: revenue:consulting\n---\n",
+      "title": "Smith, Jones & Co",
+      "written": false
+    },
+    {
+      "changed": [
+        "title",
+        "type",
+        "tags",
+        "emails"
+      ],
+      "hash": "72-31d15e4c079bfa03",
+      "kind": "organization",
+      "ledger_customer": "The \"Best\" Bakery",
+      "line": 5,
+      "link": "[[The \"Best\" Bakery]]",
+      "noted": [],
+      "path": "customers/The -Best- Bakery.md",
+      "text": "---\ntitle: The \"Best\" Bakery\ntype: organization\ntags:\n  - customer\nemails:\n  - billing: orders@bakery.example\n---\n",
+      "title": "The \"Best\" Bakery",
+      "written": false
+    },
+    {
+      "changed": [
+        "title",
+        "type",
+        "tags",
+        "emails",
+        "terms"
+      ],
+      "hash": "6a-2d43b66069b0bf22",
+      "kind": "person",
+      "ledger_customer": "Zoë Müller",
+      "line": 6,
+      "link": "[[Zoë Müller]]",
+      "noted": [],
+      "path": "customers/Zoë Müller.md",
+      "text": "---\ntitle: Zoë Müller\ntype: person\ntags:\n  - customer\nemails:\n  - billing: zoe@example.de\nterms: 14\n---\n",
+      "title": "Zoë Müller",
+      "written": false
+    }
+  ],
+  "dry_run": true,
+  "skipped": []
+}
