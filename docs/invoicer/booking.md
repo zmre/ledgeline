@@ -101,7 +101,7 @@ Applying replaces the deposit's income side with the invoice's accounts, each ta
 
 When one payment doesn't cover the whole invoice, the `payment-allocation` [setting](settings.md) decides how it is split over the rows. The default moves each account toward its row's amount, so the payment that settles the invoice leaves every account exactly at its row. `pro-rata` splits each payment in the rows' proportions instead.
 
-Apply payment is a command for now; the app shows the result but has no button for it yet.
+In the app, a sent invoice that isn't paid in full has **Apply payment…** in its Books panel (or press <kbd>a</kbd>). It lists the deposits that might pay it, best match first, and shows how the one you choose would be split and what would still be due before you apply it. To undo an applied payment, use `apply-payment N --undo`.
 
 ## The paid status
 
@@ -142,7 +142,7 @@ Two cases work differently:
 
 ## Deposits
 
-Billing part of a job up front is a separate **deposit invoice**, not a discount. Its one row books to a deposit account:
+Billing part of a job up front is a separate **deposit invoice**, not a discount. Start one from **New → Deposit invoice** (or press <kbd>d</kbd>). Its one row books to a deposit account:
 
 | Description                             | Amount    | *Account*                     |
 |:----------------------------------------|----------:|:------------------------------|

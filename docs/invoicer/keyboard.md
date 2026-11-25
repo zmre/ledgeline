@@ -23,13 +23,14 @@ A capital letter means Shift: <kbd>N</kbd> is <kbd>Shift</kbd>+<kbd>N</kbd>. A s
 
 ## Everywhere
 
-| Keys           | Does                                                          |
-|----------------|---------------------------------------------------------------|
-| <kbd>?</kbd>   | Show the keyboard shortcuts                                   |
-| <kbd>n</kbd>   | New invoice                                                   |
-| <kbd>N</kbd>   | Open the New menu (customer, catalog item, snippet, template) |
-| <kbd>/</kbd>   | Search this list (on pages with a search box)                 |
-| <kbd>Esc</kbd> | Leave the field you are typing in                             |
+| Keys           | Does                                                                           |
+|----------------|--------------------------------------------------------------------------------|
+| <kbd>?</kbd>   | Show the keyboard shortcuts                                                    |
+| <kbd>n</kbd>   | New invoice                                                                    |
+| <kbd>d</kbd>   | New deposit invoice                                                            |
+| <kbd>N</kbd>   | Open the New menu (deposit invoice, customer, catalog item, snippet, template) |
+| <kbd>/</kbd>   | Search this list (on pages with a search box)                                  |
+| <kbd>Esc</kbd> | Leave the field you are typing in                                              |
 
 ## Go to
 
@@ -74,18 +75,19 @@ In the search box, <kbd>Esc</kbd> clears what you typed, and a second <kbd>Esc</
 
 ## The invoice editor
 
-| Keys                        | Does                                  |
-|-----------------------------|---------------------------------------|
-| <kbd>Cmd</kbd>+<kbd>S</kbd> | Save                                  |
-| <kbd>c</kbd>                | Go to the customer field              |
-| <kbd>t</kbd>                | Go to the template field              |
-| <kbd>S</kbd>                | Send… (a draft, once saved)           |
-| <kbd>R</kbd>                | Re-book… (a sent invoice, once saved) |
-| <kbd>V</kbd>                | Void…                                 |
-| <kbd>D</kbd>                | Discard the changes, after asking     |
-| <kbd>P</kbd>                | Export the PDF                        |
+| Keys                        | Does                                                       |
+|-----------------------------|------------------------------------------------------------|
+| <kbd>Cmd</kbd>+<kbd>S</kbd> | Save                                                       |
+| <kbd>c</kbd>                | Go to the customer field                                   |
+| <kbd>t</kbd>                | Go to the template field                                   |
+| <kbd>S</kbd>                | Send… (a draft, once saved)                                |
+| <kbd>R</kbd>                | Re-book… (a sent invoice, once saved)                      |
+| <kbd>V</kbd>                | Void…                                                      |
+| <kbd>a</kbd>                | Apply a payment… (cash books, a sent invoice not yet paid) |
+| <kbd>D</kbd>                | Discard the changes, after asking                          |
+| <kbd>P</kbd>                | Export the PDF                                             |
 
-Send, Re-book, Void and Discard each open a confirmation with the focus on Cancel, so a stray key does nothing until you choose.
+Send, Re-book, Void and Discard each open a confirmation with the focus on Cancel, so a stray key does nothing until you choose. Apply payment opens on the best-matching deposit: <kbd>↑</kbd> and <kbd>↓</kbd> choose another, and the payment is applied only from the Apply payment button, which waits for the preview.
 
 In the customer field, <kbd>↓</kbd> opens the list of customers; <kbd>↑</kbd> and <kbd>↓</kbd> move, <kbd>Enter</kbd> chooses.
 
