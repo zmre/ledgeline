@@ -59,13 +59,16 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
 
+      # Pull-only, like every cachix-action block (ci.yml explains why). A
+      # release's x86_64-darwin closure alone is several GB that nothing else
+      # substitutes, and pushing it evicted main's deps layers from the 5 GB
+      # LRU cache.
       - name: Setup Cachix
         uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: zmre
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           extraPullNames: nix-community
-          pushFilter: "-(source|vendor)$"
+          skipPush: true
 
       - name: Tests
         run: nix build -L .#tests
@@ -99,8 +102,8 @@ jobs:
   #
   # The cost is real: the x86_64 leg runs an x86_64 rustc under emulation.
   # Everything from nixpkgs substitutes as a prebuilt x86_64-darwin binary, so
-  # what is actually emulated is our own crates — bounded, cached in Cachix
-  # afterwards, and paid only on releases.
+  # what is actually emulated is our own crates — bounded, and paid only on
+  # releases. Not pushed to Cachix afterwards (see "Setup Cachix" below).
   #
   # ONE LEG PER APP AND ARCHITECTURE. Ledgeline Invoicer is a third leg, arm64
   # only (invoicer PLAN I18: no Intel build of the invoicer), packaged by the
@@ -192,13 +195,16 @@ jobs:
           extra-conf: |
             extra-platforms = x86_64-darwin
 
+      # Pull-only, like every cachix-action block (ci.yml explains why). A
+      # release's x86_64-darwin closure alone is several GB that nothing else
+      # substitutes, and pushing it evicted main's deps layers from the 5 GB
+      # LRU cache.
       - name: Setup Cachix
         uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: zmre
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           extraPullNames: nix-community
-          pushFilter: "-(source|vendor)$"
+          skipPush: true
 
       # Two distinct failure modes, both caught here by the one script that owns
       # the version (`scripts/release.sh`, which CI also runs on every PR):
@@ -559,6 +565,7 @@ jobs:
         with:
           name: zmre
           extraPullNames: nix-community
+          skipPush: true
 
       - name: cargo publish --dry-run
         run: ./scripts/publish-crates.sh --dry-run
@@ -731,13 +738,16 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/determinate-nix-action@16f94ba7aae399b9f9077c254b6719ec6de7e3e3 # v3.24.2
 
+      # Pull-only, like every cachix-action block (ci.yml explains why). A
+      # release's x86_64-darwin closure alone is several GB that nothing else
+      # substitutes, and pushing it evicted main's deps layers from the 5 GB
+      # LRU cache.
       - name: Setup Cachix
         uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: zmre
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           extraPullNames: nix-community
-          pushFilter: "-(source|vendor)$"
+          skipPush: true
 
       - name: Verify the tag and every version reference
         run: ./scripts/release.sh check "$GITHUB_REF_NAME"

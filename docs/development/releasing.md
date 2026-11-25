@@ -89,7 +89,8 @@ Two consequences worth internalising:
   cannot launch for the users it is named after.
 - **The x86_64 leg is slow.** Its rustc runs emulated. Everything from nixpkgs
   substitutes as a prebuilt x86_64-darwin binary, so what is actually emulated
-  is our own crates — bounded, and cached in Cachix afterwards.
+  is our own crates — bounded, and not pushed to Cachix afterwards: nothing
+  else substitutes an Intel closure, and its GBs would evict main's layers.
 
 This is also the arrangement that *outlives* the Intel runner: when GitHub
 retires x86_64 macOS hardware, an arm64 runner can still emit an Intel DMG.
