@@ -167,10 +167,15 @@ jobs:
           fi
           cachix push zmre "$deps"
 
-  # Build the single binary — proves the GUI deps resolve (webkitgtk on Linux).
-  # `.#ledgeline` embeds a placeholder SPA (see docs/development/building.md);
-  # the distributable step below embeds the real one. Linux only: the macOS
+  # Build the Linux distributable — proves the GUI deps resolve (webkitgtk)
+  # and that what a Linux user installs builds. Linux only: the macOS
   # equivalent (system WebKit, `.#macDist`) is part of the `macos` job.
+  #
+  # The placeholder-SPA `.#ledgeline` is NOT built here (nor in `macos`): it is
+  # a separate derivation from `ledgelineWithSpa` (different preBuild), so it
+  # cost a whole second release-profile LTO compile to prove what linuxDist
+  # already proves, and no user or job consumes it. `nix flake check` still
+  # has it.
   build:
     name: Build (ubuntu-latest)
     needs: format-check
@@ -193,9 +198,6 @@ jobs:
           extraPullNames: nix-community
           skipPush: true
 
-      - name: Build ledgeline
-        run: nix build -L .#ledgeline
-
       # `.#ledgeline` is NOT what a Linux user ends up with. On Linux
       # `packages.default` AND `apps.default` are both `linuxDist` — the
       # real-SPA binary wrapped with the Mesa/EGL vendor paths, plus the
@@ -217,16 +219,16 @@ jobs:
       # Ledgeline Invoicer (`invoicerWithSpa`, its icons and desktop entry), so
       # this is also the Linux build of the invoicer.
       #
-      # NOT free: this is a second full Rust compile (ledgelineWithSpa shares no
-      # artifacts with the placeholder-SPA `.#ledgeline`), plus the invoicer's
-      # (on `.#cargoArtifactsInvoicer`, chained on the release layer), two
+      # NOT free: a full release-profile Rust compile of ledgelineWithSpa, plus
+      # the invoicer's (on `.#cargoArtifactsInvoicer`, chained on the release
+      # layer), two
       # vite builds, and pkgs.mesa's ~1 GiB closure. All cached after the first
       # green run — see the Cachix pin below, which is what keeps it that way.
       - name: Build linuxDist (Linux distributable)
         run: nix build -L --no-link .#linuxDist
 
       # The Linux release-profile deps layer (`.#cargoArtifacts`, reused by
-      # `.#ledgeline`, `.#ledgelineWithSpa` and so `e2e`), and the invoicer's
+      # `.#ledgelineWithSpa` and so `e2e`), and the invoicer's
       # (`.#cargoArtifactsInvoicer`, for linuxDist's invoicer). Pushed here
       # because `tests` now builds only the ci-profile layer. Same rules as the
       # push in `tests`: PRs too, `!cancelled()`, local-store guard, not pinned.
@@ -270,7 +272,7 @@ jobs:
           # because linuxDist WRAPS that binary (makeBinaryWrapper references it
           # by store path, so it IS in the closure — but naming it explicitly
           # keeps the pin below honest and costs nothing).
-          attrs=(.#ledgeline .#linuxDist .#ledgelineWithSpa)
+          attrs=(.#linuxDist .#ledgelineWithSpa)
           nix build --json "${attrs[@]}" | jq -r '.[].outputs | to_entries[].value' | cachix push zmre
 
       # PIN the consumer-facing outputs. The `zmre` cache is on the 5 GB free
@@ -412,10 +414,10 @@ jobs:
       # ONE invocation, so the deps layer is realised once and the rest build
       # in parallel on top of it:
       #   * `.#tests`, `.#clippy` — the old macOS `tests` / `clippy` legs.
-      #   * `.#ledgeline` — proves the GUI deps resolve against system WebKit.
-      #     It embeds a placeholder SPA (see docs/development/building.md).
-      #   * `.#macDist` — because `.#ledgeline` is NOT what a Mac user ends up
-      #     with. On darwin `packages.default` is `macDist` (Ledgeline.app + a
+      #   * `.#macDist` — proves the GUI deps resolve against system WebKit,
+      #     and is what a Mac user ends up with (`.#ledgeline`, the placeholder-SPA
+      #     binary, is not, and is not built here: see `build`).
+      #     On darwin `packages.default` is `macDist` (Ledgeline.app + a
       #     `bin/ledgeline` symlink into it, with the REAL SvelteKit SPA
       #     embedded), reached via spaNodeModules → spaBuild →
       #     ledgelineWithSpa → macApp → macDist. None of that chain is
@@ -438,13 +440,13 @@ jobs:
       # failing test still let clippy report; without it Nix stops scheduling
       # new builds at the first failure.
       - name: Tests, clippy, build (one nix build)
-        run: nix build -L --no-link --keep-going .#tests .#clippy .#ledgeline .#macDist .#spaShellCsp .#invoicerMacApp .#invoicerSpaShellCsp
+        run: nix build -L --no-link --keep-going .#tests .#clippy .#macDist .#spaShellCsp .#invoicerMacApp .#invoicerSpaShellCsp
 
       # GC root for the deps layer, so cache-nix-action's pre-save GC (above)
       # keeps the one path that makes the next run fast. An indirect root: the
       # out-link lives in the workspace, which survives until the post steps.
       # Same `!cancelled()` + local-store guard as the push below.
-      # All three layers: release (`.#cargoArtifacts`, for ledgeline/macDist),
+      # All three layers: release (`.#cargoArtifacts`, for macDist),
       # ci profile (`.#cargoArtifactsCi`, for tests/clippy/spaShellCsp and
       # invoicerSpaShellCsp) and the invoicer's release delta
       # (`.#cargoArtifactsInvoicer`, for invoicerMacApp).
@@ -506,7 +508,7 @@ jobs:
           # `invoicerMacApp` and `invoicerWithSpa` likewise (the bundle copies
           # the binary), so `nix build github:zmre/ledgeline#invoicerMacApp`
           # substitutes too; neither is pinned.
-          attrs=(.#ledgeline .#macDist .#ledgelineWithSpa .#bundledHledger .#invoicerMacApp .#invoicerWithSpa)
+          attrs=(.#macDist .#ledgelineWithSpa .#bundledHledger .#invoicerMacApp .#invoicerWithSpa)
           nix build --json "${attrs[@]}" | jq -r '.[].outputs | to_entries[].value' | cachix push zmre
 
       # The darwin twin of `build`'s pin step — see there for why pins exist

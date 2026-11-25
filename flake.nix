@@ -1278,7 +1278,7 @@
         // realSpaChecks;
 
       # `nix flake check` runs all of these; CI invokes them individually
-      # (`nix build .#{fmt,clippy,tests,ledgeline,spaShellCsp,invoicerSpaShellCsp}`) — the bare attr
+      # (`nix build .#{fmt,clippy,tests,spaShellCsp,invoicerSpaShellCsp}`; `ledgeline` is flake-check only) — the bare attr
       # resolves to the current system automatically.
       checks =
         {

@@ -477,8 +477,8 @@ churn kept evicting the one path that actually saves CI time. Pushes are now exp
 | `.#cargoArtifactsCi` (the ci-profile deps layer) | `tests` (Linux), `macos` | pushes **and** PRs | The 45+ minute part of a cold build; a `Cargo.lock` bump lands on a PR first, and that PR's runs are the cold ones. Not pinned. |
 | `.#cargoArtifacts` (the release-profile deps layer) | `build` (Linux), `macos` | pushes **and** PRs | Same, for the shipped binaries. Not pinned. Two layers per platform is more of the 5 GB LRU than one. |
 | `.#cargoArtifactsInvoicer` (the invoicer's release delta) | `build` (Linux), `macos` | pushes **and** PRs | Same, for the invoicer; holds only what it adds to `.#cargoArtifacts`. Not pinned. |
-| `.#ledgeline`, `.#linuxDist`, `.#ledgelineWithSpa` | `build` (Linux) | pushes to `main` | What a Linux user substitutes (linuxDist holds both apps). Pinned. |
-| `.#ledgeline`, `.#macDist`, `.#ledgelineWithSpa`, `.#bundledHledger` | `macos` | pushes to `main` | What a Mac user substitutes. Pinned. |
+| `.#linuxDist`, `.#ledgelineWithSpa` | `build` (Linux) | pushes to `main` | What a Linux user substitutes (linuxDist holds both apps). Pinned. |
+| `.#macDist`, `.#ledgelineWithSpa`, `.#bundledHledger` | `macos` | pushes to `main` | What a Mac user substitutes. Pinned. |
 | `.#invoicerMacApp`, `.#invoicerWithSpa` | `macos` | pushes to `main` | `nix build …#invoicerMacApp`. Not pinned. |
 
 Both layers are exposed under `packages` for exactly this purpose. Push them by hand with:
@@ -549,9 +549,13 @@ too). Jobs:
 | `format-check` | ubuntu    | `nix build -L .#fmt` (runs first)                                                                                                                                                                   |
 | `clippy`       | ubuntu    | `nix build -L .#clippy`                                                                                                                                                                             |
 | `tests`        | ubuntu    | `nix build -L .#tests`, `.#spaShellCsp`, `.#invoicerSpaShellCsp` (+ pushes the Linux ci-profile deps layer)                                                                                         |
-| `build`        | ubuntu    | `nix build -L .#ledgeline`, `.#linuxDist` (both apps) (+ pushes the Linux release and invoicer deps layers; pushes and pins release artifacts on `main`)                                            |
-| `macos`        | macos-15  | one `nix build -L --no-link --keep-going .#tests .#clippy .#ledgeline .#macDist .#spaShellCsp .#invoicerMacApp .#invoicerSpaShellCsp` (+ pushes the three darwin deps layers; pushes and pins release artifacts on `main`) |
+| `build`        | ubuntu    | `nix build -L .#linuxDist` (both apps) (+ pushes the Linux release and invoicer deps layers; pushes and pins release artifacts on `main`)                                            |
+| `macos`        | macos-15  | one `nix build -L --no-link --keep-going .#tests .#clippy .#macDist .#spaShellCsp .#invoicerMacApp .#invoicerSpaShellCsp` (+ pushes the three darwin deps layers; pushes and pins release artifacts on `main`) |
 | `spa`          | ubuntu    | `bun install --frozen-lockfile`, then `bun run build`, `bun run test:unit`, `bun run check` and `bun run lint` in `web/` and `invoicer/web/`, and `test:unit`, `check` and `lint` in `packages/ui/` |
+
+Neither job builds the placeholder-SPA `.#ledgeline`: it is a separate release-profile
+LTO compile from `ledgelineWithSpa`, and `linuxDist` / `macDist` already prove the GUI deps
+link. `nix flake check` still builds it.
 
 macOS is a single job because GitHub's free macOS runners are slow (an M1 with 3 CPUs and
 7 GB) and three separate macOS jobs each fetched, or rebuilt, the same deps layer. One
@@ -559,7 +563,7 @@ macOS is a single job because GitHub's free macOS runners are slow (an M1 with 3
 
 `clippy`, `tests`, `build`, and `macos` depend on `format-check` and share the crane
 dependency layer (populated once, then pulled from Cachix on later runs). The
-`e2e` job builds `.#ledgeline`, runs the vitest contract suites against it, then
+`e2e` job builds `.#ledgelineWithSpa`, runs the vitest contract suites against it, then
 runs the Playwright specs; `versions`, plus `audit` and `spa-audit` (called from `audit.yml`), round out
 the ten jobs. All of them run on `pull_request`, none is conditional, so all of them gate.
 
