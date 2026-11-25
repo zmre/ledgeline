@@ -494,6 +494,41 @@ async fn an_unsaved_preview_is_a_page_behind_the_gate() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+/// RA-7: a starter that can't be copied in doesn't fail the create: the
+/// draft is written and numbered, so the answer says so, with a warning
+/// (a 500 invited a retry, and a second draft).
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_starter_not_copied_is_a_warning_on_create() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let app = app();
+    let tpl = books_root(&app).join("invoices/tpl");
+    let mode = |m: u32| std::fs::set_permissions(&tpl, std::fs::Permissions::from_mode(m));
+    mode(0o555).unwrap();
+    let (status, created) = json_of(
+        &app,
+        post_json(
+            "/api/invoices",
+            &json!({"customer": "[[Customer X]]", "date": "2026-11-17", "template": "/invoices/tpl/classic.html"}),
+        ),
+    )
+    .await;
+    mode(0o755).unwrap();
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert!(created["number"].is_string(), "{created}");
+    assert_eq!(created["copied"], Value::Null);
+    let warnings = created["warnings"].as_array().expect("warnings");
+    assert_eq!(warnings.len(), 1, "{created}");
+    assert!(
+        warnings[0]
+            .as_str()
+            .is_some_and(|w| w.contains("wasn't copied in")),
+        "{created}"
+    );
+    let path = created["path"].as_str().expect("path");
+    assert!(books_root(&app).join(path).is_file());
+}
+
 /// A starter the editor names is copied in with the base it extends (Q1 =
 /// B): on `new` and on a save, never over a base that is there.
 #[tokio::test(flavor = "multi_thread")]
