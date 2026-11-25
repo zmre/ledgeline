@@ -13,7 +13,7 @@
 // state: `scenarioStore.adopted` is what a page load resets. Within one test,
 // the same graph is reused across mounts, exactly as a tab switch reuses it.
 
-import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
+import {afterEach, beforeAll, beforeEach, describe, expect, it, vi} from "vitest";
 
 // The URL mirror writes through SvelteKit's router, which a bare mount has not
 // started. What the URL says is not under test here.
@@ -168,6 +168,17 @@ async function pageLoad(lastProjectionId: string | null) {
 }
 
 const gets = (path: string) => requests.filter((request) => request === `GET ${path}`).length;
+
+// Compile the page's import graph ONCE, outside every test's 5 s budget.
+// `vi.resetModules` drops evaluated modules but not Vite's transform cache, so
+// the first `import("./+page.svelte")` in a test paid for compiling the page
+// and every component under it (~0.6 s alone, 5 s+ when the full unit run has
+// every worker contending for the one Vite server) and timed out; later
+// imports only re-evaluate (~30 ms). The compile is real work, so it gets a
+// hook with a generous timeout instead of a test's.
+beforeAll(async () => {
+    await import("./+page.svelte");
+}, 60_000);
 
 beforeEach(() => {
     localStorage.clear();
