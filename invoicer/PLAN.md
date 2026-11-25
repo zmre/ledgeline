@@ -1201,19 +1201,89 @@ width and at 150–200 % scale.
   - DSO and average days to pay;
   - drafts waiting;
   - recognition due (a count, plus "Open in Ledgeline").
-- **Invoice list:** filters (status, customer, open/overdue, date range),
-  sort by any column, overdue highlighting, quick jump (MBR search); the
-  filter and sort live in the URL (J15).
-- **Customer list:** sort (name, owed, overdue, last payment) and filter
-  (owes, overdue, person or organization, a text search), in the URL as
-  above (J15).
-- **Open POs on the customer page:** add, edit and close a customer's
-  `open_pos` in the app, written by key (K1); the editor's reference
-  suggestions read them (J16).
+- **Invoice list (built, 5b S1, S3, S4, S8):** filters (status, customer,
+  open/overdue, date range, age), sort by any column, overdue highlighting,
+  quick jump (the index, not MBR search); the filter and sort live in the
+  URL (J15).
+- **Customer list (built, 5b S2):** sort (name, owed, overdue, last
+  payment) and filter (owes, overdue, person or organization, a text
+  search), in the URL as above (J15).
+- **Open POs on the customer page (built, 5b S5–S7):** add, edit and close
+  a customer's `open_pos` in the app, written by key (K1); the editor's
+  reference suggestions read them (J16).
 - **Narrow windows** for every page (J12, a standing requirement).
 - **Charts:** follow the `dataviz` skill and the Ledgeline palette.
 - **Tests:** API goldens on the accrual and cash fixtures, and dashboard
   screenshots for the docs.
+
+## Phase 5b — Lists and open POs (built 2026-11-24)
+
+Built on `2026-11-24-invoicer-lists`: the invoice and customer lists filter
+and sort, all of it in the URL (J15), and a customer's open POs are added,
+edited and closed in the app (J16). The dashboard is Phase 5's other half,
+built alongside; it links into the invoice list with the contract below.
+
+| #  | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+|----|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| S1 | **The invoice list's state is its URL, and the server filters and sorts.** `GET /api/invoices` takes the URL contract below as it is (blank values are no filter), through `views::ListQuery` (`from`, `to`, `aged`, `text`, `sort`, `dir`, `paid`, `with_status`) and `views::query`; the SPA (`lib/listQuery.ts`) parses the page's query, drops what the server wouldn't read (a mistyped link shows the whole list, not an error; the API itself answers `400`), and hands the rest over. One parser, so the dashboard's links, the CLI later and the list agree. Choices are a history step each (Back undoes one); the search is debounced (250 ms) and replaces the step, so typing doesn't fill the history. The default list (Date, newest first, no filter) writes no query: `/app/invoices` stays bare.                                                                                                                                               |
+| S2 | **The customer list likewise** (`GET /api/customers` with `owes`, `overdue`, `kind`, `q`, `sort`, `dir`; `views::CustomerQuery`, `account::query_customers`). Owed sorts by the first commodity's balance (nothing owed is zero); Overdue by the count of overdue invoices, then the older oldest due date; Last payment by date. The list gains an **Overdue** column (the count as the red badge, the oldest due date as its tooltip) so it has a header to sort by; Name, Owed, Overdue and Last payment sort, Billing email and Invoices don't.                                                                                                                                                                                                                                                                                                                                                                                                              |
+| S3 | **Quick jump is the search box's Enter**: the invoice whose number is exactly what was typed (any case), else the only invoice the search leaves; otherwise a line says to pick one below. It asks the index (the same match as the list), not MBR's search: MBR searches prose too and would need a page of its own; later if wanted. Enter in the customer search opens the customer when one is left.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| S4 | **Sorting**: a button in each sortable `<th>` (Tab reaches it, Enter or Space sorts), `aria-sort` on the `<th>`, the arrow only for the eye (`SortHeader.svelte`). A new column starts its own way round (amounts and dates biggest or latest first, names A first, due dates soonest first, status in lifecycle order: draft, open, overdue, paid, void); the same column flips. A missing value (no due date, total or payment) sorts last either way; ties keep the list's own order (newest first; by name).                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| S5 | **Open POs are managed on the customer page** (J16), in the view (Add PO, Edit, Close, each saved at once) and in the form (rows saved with Save). The fields are the ones the core reads: `reference` (required, one per PO, any case), `amount` (money, `Money::read`: the default commodity's style, then each declared one's) and `expires` (YYYY-MM-DD); no note field. **Closing removes the PO from `open_pos`** (no `closed:` key: the key says "open", nothing reads a closed one, and the invoices that quoted it keep their `reference:`); the last one closed removes the key. Written by key (K1) with the note's content hash (K2): only `open_pos` is rewritten; inside it an entry keeps keys the form doesn't know, found by `was` (the reference it had when read), and a value that reads the same keeps its written form (`amount: 40000` stays a number). A `409` offers Reload or Apply my changes, which re-sends the PO list.            |
+| S6 | **What a PO has left** (`customers show`'s new `po_usage`, in `open_pos` order): the sent invoices (not drafts, not void) billed to the customer whose `reference` is the PO's (trimmed, any case: `PO #PY75334, rev. 2` is another PO), their totals added up in the PO's commodity, and the amount less that (negative when over), plus `expired` against `today`. An amount that isn't money, or invoices in another commodity, leave `invoiced`/`remaining` empty rather than guess.                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| S7 | **Reference suggestions follow at once**: the editor and New invoice already fetch `/api/editor/options` again on any change on disk, and the session re-indexes a note it writes; a PO expired by the invoice's date is still offered, last and marked "expired".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| S8 | **The filter bars** (`InvoiceFilters`, `CustomerFilters`): the open/overdue toggle is the Status select's Open and Overdue (one `status` parameter, so a dashboard link shows in the control); the customer is picked by name (the combobox, every customer); the dates are `DateInput` (never WebKit's painted "today"); "Late by" offers Ledgeline's aging buckets, and shows any other `aged` a link brings. The customer bar has "Owes money" and "Overdue" toggle buttons (`aria-pressed`) and a kind select. **Clear filters** shows only while a filter is on and keeps the sort. A count line says "N invoices" or "N invoices match"; an empty filtered list says nothing matches with Clear filters (not H21's first-invoice card), and the New button stays. Overdue invoice rows and customers with something overdue are tinted. Narrow windows (J12): the controls wrap, the search taking its own row below `sm`; tables scroll in their own box. |
+
+**The invoice list's URL** (`/app/invoices?…`), the same parameters as
+`GET /api/invoices` (which also takes `type`, `open`, `overdue` and
+`today`). Unknown values are dropped by the page and refused (`400`) by the
+API; blank values are no filter. Written in this order, defaults omitted:
+
+| Parameter    | Values                                                 | Means                                                                                                                                                                                                                       |
+|--------------|--------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `status`     | `draft`, `sent`, `paid`, `void`, `open`, `overdue`     | `draft`/`sent`/`void`: the `status:` value; `paid`: sent and paid in full; `open`: sent, not paid in full (overdue included); `overdue`: open and past due. The API also takes any other `status:` value (`estimate-open`). |
+| `customer`   | a name                                                 | The customer as the invoice links or names it (`Contoso`, `[[Contoso]]`), any case (`ListFilter::customer`).                                                                                                                |
+| `from`, `to` | YYYY-MM-DD                                             | Dated on or after `from`, on or before `to` (inclusive).                                                                                                                                                                    |
+| `aged`       | `current`, `A-B`, `N+`                                 | Open and A to B days past due (inclusive), or N days or more; `current` is not yet due. Ledgeline's buckets: `current`, `1-30`, `31-60`, `61-90`, `91+` (so a link for "over 90" is `91+`; `90+` includes day 90).          |
+| `q`          | text                                                   | Number, title, customer name or link, `reference` or total holding it, any case.                                                                                                                                            |
+| `sort`       | `number`, `customer`, `date`, `due`, `total`, `status` | The column; absent: Date, newest first (the server's order).                                                                                                                                                                |
+| `dir`        | `asc`, `desc`                                          | Which way; `asc` when absent. Written only with `sort`.                                                                                                                                                                     |
+
+For example `?status=overdue`, `?customer=Contoso`, `?aged=31-60`,
+`?from=2026-10-01&to=2026-10-31`, `?q=PY75334&sort=total&dir=desc`.
+
+**The customer list's URL** (`/app/customers?…`), the same as
+`GET /api/customers` (plus `today`):
+
+| Parameter | Values                                    | Means                                                                         |
+|-----------|-------------------------------------------|-------------------------------------------------------------------------------|
+| `owes`    | `true`                                    | Only customers that owe something (`1` and `yes` read too).                   |
+| `overdue` | `true`                                    | Only customers with an overdue invoice.                                       |
+| `kind`    | `person`, `organization`                  | People or organizations.                                                      |
+| `q`       | text                                      | Title, name in the books, billing name or billing email holding it, any case. |
+| `sort`    | `name`, `owed`, `overdue`, `last-payment` | The column; absent: by name.                                                  |
+| `dir`     | `asc`, `desc`                             | As above.                                                                     |
+
+Routes changed: `GET /api/invoices` and `GET /api/customers` take the
+parameters above; `GET /api/customers/{key}` adds `po_usage` (`reference`,
+`amount`, `expires`, `expired`, `invoices`, `invoiced`, `remaining`) and its
+`form` adds `open_pos` (`reference`, `amount`, `expires`, `was`), which
+`PUT /api/customers/{key}` and `POST /api/customers` take. The CLI's `list`
+and `customers list` don't take the new filters yet (later: flags over the
+same `ListQuery`/`CustomerQuery`).
+
+Later, from this round: MBR's search for quick jump (S3); the inline PO row
+isn't covered by the unsaved-changes prompt (it saves on Enter or Add PO;
+leaving drops what was typed); keyboard list navigation (`j`/`k`, `/` to
+search) is 5k's.
+
+**Pending (the lead):** `just invoicer-e2e`: the new `lists.e2e.ts` (its own
+project after `library`; it relies only on facts the earlier specs leave
+alone, and puts Customer X's `open_pos` back) and the customer list's new
+Overdue column under `customers.e2e.ts` (the badge moved there and reads
+"1 overdue"). In the window: the filter bars at a narrow width and at
+150–200 % scale, Back/Forward through filters in WKWebView, the date filters'
+empty state (DateInput), and Add PO by keyboard.
 
 ## Phase 5k — Keyboard-first (TODO)
 
