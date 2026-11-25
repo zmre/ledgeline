@@ -1140,6 +1140,33 @@ async fn a_draft_goes_to_a_temporary_file_and_writes_nothing() {
         .unwrap()
         .join("2026-11-17 Customer X Invoice 108.pdf");
     assert!(temp.is_file());
+    // RA-12: each temporary export prints into its own staging file, then
+    // is renamed into place.
+    let (status, body) = json_of(
+        &app,
+        post_json("/api/invoices/108/pdf", &serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let outputs: Vec<_> = native
+        .printed
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|job| job.output.clone())
+        .collect();
+    assert_eq!(outputs.len(), 2);
+    assert_ne!(outputs[0], outputs[1]);
+    for output in &outputs {
+        assert_ne!(output, &temp);
+        assert_eq!(output.parent(), temp.parent());
+        assert!(
+            !output.exists(),
+            "{} was renamed into place",
+            output.display()
+        );
+    }
+    assert!(temp.is_file());
 
     // Share… and Copy file name the PDF by destination and file name.
     let share = serde_json::json!({
