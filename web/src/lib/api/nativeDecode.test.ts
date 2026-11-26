@@ -1250,6 +1250,24 @@ describe("UNIT nativeDecode — InsightsReport over the insights golden", () => 
         expect(top.amount).toEqual({m: 566000n, p: 2});
     });
 
+    it("decodes top payees, with a null previous for a payee new this period", () => {
+        const report = decodeInsightsReport(raw);
+        // Card payments (Chase) and the paycheck (Acme Corp) are never payees.
+        expect(report.topPayees.map((row) => row.payee)).not.toContain("Chase");
+        expect(report.topPayees.map((row) => row.payee)).not.toContain("Acme Corp");
+        const rent = report.topPayees[0];
+        expect(rent).toMatchObject({payee: "Oakview Properties", current: {m: 1125000n, p: 2}, previous: {m: 1305000n, p: 2}, delta: {m: -180000n, p: 2}});
+        expect(rent.pct).toBeCloseTo(-13.7931034, 6);
+        const airline = report.topPayees.find((row) => row.payee === "Delta Airlines");
+        expect(airline).toMatchObject({current: {m: 41280n, p: 2}, previous: null, delta: null, pct: null});
+    });
+
+    it("refuses a top payee with no payee name", () => {
+        const base = raw as {topPayees: Record<string, unknown>[]};
+        const nameless = {...base.topPayees[0], payee: undefined};
+        expect(() => decodeInsightsReport({...(raw as object), topPayees: [nameless]})).toThrow(ApiShapeError);
+    });
+
     // Plan 45 Q7, additive: a line standing for a month of recognition entries.
     it("decodes a top transaction's recognition month, null when absent, and refuses a bad one", () => {
         const base = raw as {topTxns: Record<string, unknown>[]};

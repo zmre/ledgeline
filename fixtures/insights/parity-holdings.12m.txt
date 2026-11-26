@@ -220,6 +220,7 @@ InsightsReport {
         },
     ],
     top_txns: [],
+    top_payees: [],
     has_holdings: true,
     meta: None,
 }

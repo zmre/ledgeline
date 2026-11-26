@@ -2515,6 +2515,62 @@ async fn insights_cost_exclude_param_drops_expenses() {
     );
 }
 
+/// Box 11 over `fixtures/insights/top-payees.journal` (its header lists the
+/// expected rows): card payments, the paycheck and — by default — taxes never
+/// appear; mortgage interest does; a refund nets; a new payee has no previous.
+#[tokio::test]
+async fn insights_top_payees_rank_current_spending_by_payee() {
+    let path = fixtures_dir().join("insights").join("top-payees.journal");
+    let text = std::fs::read_to_string(&path).expect("top-payees.journal readable");
+    let journal = parse_journal(&text, &path.to_string_lossy()).expect("top-payees.journal parses");
+
+    let ins = body_ok(&journal, "/api/insights?start=2025-01-01&end=2025-12-31").await;
+    assert_eq!(ins["period"]["currStart"], "2025-07-01");
+    let rows = ins["topPayees"].as_array().expect("topPayees is an array");
+    let summary: Vec<(&str, f64, Option<f64>)> = rows
+        .iter()
+        .map(|row| {
+            (
+                row["payee"].as_str().expect("payee"),
+                wire_dec(&row["current"]),
+                (!row["previous"].is_null()).then(|| wire_dec(&row["previous"])),
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("Wells Fargo", 880.0, Some(900.0)),
+            ("Costco", 700.0, Some(500.0)),
+            ("Whole Foods", 400.0, Some(150.0)),
+            ("Hardware Store", 75.0, None),
+            ("Cafe Roma", 60.0, None),
+        ]
+    );
+    // Costco: +$200 on $500.
+    assert_eq!(wire_dec(&rows[1]["delta"]), 200.0);
+    assert_eq!(rows[1]["pct"], 40.0);
+    // A new payee: nothing to compare against, so no delta and no percent.
+    assert!(rows[3]["delta"].is_null() && rows[3]["pct"].is_null());
+
+    // `exclude=` turns the tax exclusion off: the IRS tops the list.
+    let all = body_ok(
+        &journal,
+        "/api/insights?start=2025-01-01&end=2025-12-31&exclude=",
+    )
+    .await;
+    assert_eq!(all["topPayees"][0]["payee"], "IRS");
+    assert_eq!(wire_dec(&all["topPayees"][0]["current"]), 2500.0);
+    assert!(
+        all["topPayees"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .all(|row| row["payee"] != "Chase" && row["payee"] != "Acme Corp"),
+        "card payments and the paycheck never appear"
+    );
+}
+
 // ===========================================================================
 // Subscriptions — the detector's own fixture, over HTTP
 // ===========================================================================

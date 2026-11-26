@@ -106,7 +106,7 @@ pub use income_statement::{
 };
 pub use insights::{
     ChangeKind, ChangeRow, CostOfLiving, InsightsOpts, InsightsPeriod, InsightsReport,
-    InvestmentPerf, MetricDelta, MoverRow, PerfPoint, RecognitionMonth, TopTxn, insights,
+    InvestmentPerf, MetricDelta, MoverRow, PayeeRow, PerfPoint, RecognitionMonth, TopTxn, insights,
     split_period,
 };
 pub use kpi::{

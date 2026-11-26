@@ -136,7 +136,23 @@ export interface TopTxn {
     recognition: {month: string; count: number} | null;
 }
 
-/** The Insights dashboard: period-over-period core metrics (Boxes 1–6) + list boxes (7–10). */
+/**
+ * One payee's spending in each period (Box 11): the signed sum of its expense
+ * postings (refunds subtracted), base commodity.
+ */
+export interface PayeeRow {
+    /** The payee as written (the description before `|`). */
+    payee: string;
+    current: Dec;
+    /** Null when the payee had no spending in the previous period at all (new). */
+    previous: Dec | null;
+    /** Exact `current − previous`; null for a new payee. */
+    delta: Dec | null;
+    /** Percent change; null for a new payee or a previous total of zero. */
+    pct: number | null;
+}
+
+/** The Insights dashboard: period-over-period core metrics (Boxes 1–6) + list boxes (7–11). */
 export interface InsightsReport {
     period: InsightsPeriod;
     /** Base commodity symbol used for percent changes and headline figures. */
@@ -158,6 +174,8 @@ export interface InsightsReport {
     revenueChanges: ChangeRow[];
     movers: MoverRow[];
     topTxns: TopTxn[];
+    /** The payees that took the most spending this period, most first. */
+    topPayees: PayeeRow[];
     /**
      * Any holdings exist in either period. False hides the Investment
      * Performance box (plans/37 decision 4) rather than showing a $0.00 gain.
