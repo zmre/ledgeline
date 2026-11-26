@@ -101,7 +101,7 @@
                     oninput={(event) => set("date-format", event.currentTarget.value)}
                 />
             {/if}
-            <span class="label-text-alt mt-1 text-xs text-base-content/60">
+            <span class="label-text-alt mt-1 text-xs text-muted">
                 {#if dateFormat === ""}
                     Set this when the import mis-files dates — <code>03/04</code> is March 4th to some banks and April 3rd to others.
                 {:else}
@@ -232,7 +232,7 @@
                 <span class="text-xs font-medium">source</span>
             </div>
             <code class="block text-xs break-all text-base-content/80">{source.value}</code>
-            <p class="mt-2 text-xs text-base-content/60">
+            <p class="mt-2 text-xs text-muted">
                 {#if source.executesShellCommand}
                     This <code>source</code> is a shell command: on <code>hledger import</code>, hledger runs it through your shell and reads what it prints.
                     Ledgeline never runs it, and will not write or change a <code>source</code> line — edit it in a terminal if you need to.

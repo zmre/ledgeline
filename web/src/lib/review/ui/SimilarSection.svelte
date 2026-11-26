@@ -82,26 +82,26 @@
             aria-controls="{testid}-list"
             onclick={() => (open = !open)}
         >
-            <ReviewIcon name={open ? "chevron-down" : "chevron-right"} class="h-3.5 w-3.5 shrink-0 text-base-content/50" />
+            <ReviewIcon name={open ? "chevron-down" : "chevron-right"} class="h-3.5 w-3.5 shrink-0 text-muted" />
             <kbd class="kbd kbd-xs font-normal">s</kbd>
             <!-- Its own box: at a big interface scale it wraps inside it, beside the count, never under the hint. -->
             <span class="min-w-0 leading-tight whitespace-normal">{title}</span>
-            <span class="text-base-content/40">·</span>
+            <span class="text-muted">·</span>
             <span class="tabular-nums" data-testid="{testid}-count">{rows.length}</span>
         </button>
         {#if applying !== ""}
-            <span class="min-w-0 basis-full pl-5 text-xs [overflow-wrap:anywhere] text-base-content/50 sm:basis-auto sm:pl-0"
+            <span class="min-w-0 basis-full pl-5 text-xs [overflow-wrap:anywhere] text-muted sm:basis-auto sm:pl-0"
                 >apply: <span class="text-base-content/80">{applying}</span></span
             >
         {:else}
-            <span class="min-w-0 basis-full pl-5 text-xs text-base-content/40 sm:basis-auto sm:pl-0">change the description or an account to apply it</span>
+            <span class="min-w-0 basis-full pl-5 text-xs text-muted sm:basis-auto sm:pl-0">change the description or an account to apply it</span>
         {/if}
     </div>
     <!-- 0fr → 1fr: the section's height animates without measuring anything. -->
     <div class={["grid transition-[grid-template-rows] duration-120 ease-out motion-reduce:transition-none", open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"]}>
         <div class="min-h-0 overflow-hidden" inert={!open}>
             <div class="border-t border-base-content/10 px-3 pt-2 pb-3" id="{testid}-list">
-                <label class="flex w-fit items-center gap-2 py-1 text-xs text-base-content/60">
+                <label class="flex w-fit items-center gap-2 py-1 text-xs text-muted">
                     <input
                         type="checkbox"
                         class="checkbox checkbox-xs"
@@ -134,7 +134,7 @@
                                     disabled={!canApply}
                                     aria-label="Apply to {row.txn.txn.date} {row.txn.txn.description}"
                                 />
-                                <span class="text-xs text-base-content/55 tabular-nums">{shortDate(row.txn.txn.date)}</span>
+                                <span class="text-xs text-muted tabular-nums">{shortDate(row.txn.txn.date)}</span>
                                 <span class="min-w-0">
                                     <span class="block truncate font-mono text-xs" title={row.txn.txn.description}>{row.txn.txn.description}</span>
                                     {#if row.rename !== null || row.moves.length > 0 || row.inQueue}
@@ -154,7 +154,7 @@
                                         </span>
                                     {/if}
                                 </span>
-                                <span class="text-right font-mono text-xs text-base-content/70 tabular-nums">
+                                <span class="text-right font-mono text-xs text-muted tabular-nums">
                                     {txnFlowAmounts(row.txn.txn)
                                         .map((amount) => formatAmount(amount))
                                         .join(" ")}

@@ -77,7 +77,7 @@
             </button>
         </span>
     </div>
-    <p class="min-w-0 grow text-xs leading-relaxed text-base-content/60">
+    <p class="min-w-0 grow text-xs leading-relaxed text-muted">
         Optional. Categorise, rename and mark transactions reviewed before they're written — nothing is saved until you press <strong
             class="font-medium text-base-content/80">{writeLabel}</strong
         >.

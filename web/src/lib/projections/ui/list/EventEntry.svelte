@@ -38,13 +38,13 @@
                 <span class="min-w-0 font-medium break-words text-base-content">{event.description}</span>
             {/if}
             {#if event.comment !== ""}
-                <span class="min-w-0 truncate font-mono text-xs text-base-content/45 italic">; {event.comment.split("\n").join(" · ")}</span>
+                <span class="min-w-0 truncate font-mono text-xs text-muted italic">; {event.comment.split("\n").join(" · ")}</span>
             {/if}
         </h3>
     {/snippet}
     {#snippet body()}
         {#if attached !== ""}
-            <p class="mt-0.5 pl-3 font-mono text-xs whitespace-pre-wrap text-base-content/50 italic" data-testid="entry-attached">
+            <p class="mt-0.5 pl-3 font-mono text-xs whitespace-pre-wrap text-muted italic" data-testid="entry-attached">
                 {attached
                     .split("\n")
                     .map((line) => `; ${line}`)
@@ -57,7 +57,7 @@
                 <PostingAccount account={posting.account} classes={declared} class="text-base-content/90" />
                 <!-- Neutral, minus or not: a minus is a direction here, not a warning. -->
                 <span class="text-right whitespace-nowrap" data-testid="entry-amount">{amount}</span>
-                <span class="min-w-0 truncate text-xs text-base-content/55 italic {POSTING_NOTES}" title={posting.comment}
+                <span class="min-w-0 truncate text-xs text-muted italic {POSTING_NOTES}" title={posting.comment}
                     >{#if posting.comment !== ""}; {posting.comment.split("\n").join(" · ")}{/if}</span
                 >
             {/each}
@@ -66,7 +66,7 @@
                     account={counter.account ?? ""}
                     classes={declared}
                     dim={counter.inferred}
-                    class="col-span-full text-base-content/50"
+                    class="col-span-full text-muted"
                     testid="entry-counter"
                 >
                     <span aria-hidden="true">→</span><span class="sr-only">balanced against</span>

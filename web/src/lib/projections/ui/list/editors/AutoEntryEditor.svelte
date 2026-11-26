@@ -50,7 +50,7 @@
             onChange={edited}
         />
         {#if unscoped}
-            <div class="flex flex-wrap items-center gap-2 rounded-box bg-base-100/50 px-2 py-1.5 text-xs text-base-content/60">
+            <div class="flex flex-wrap items-center gap-2 rounded-box bg-base-100/50 px-2 py-1.5 text-xs text-muted">
                 <span>Applied here to projected transactions only. Stock <code>hledger --auto</code> would also apply it to recorded ones.</span>
                 <button type="button" class="btn btn-ghost btn-xs" onclick={edited}>Limit to forecasts in the file</button>
             </div>
@@ -59,7 +59,7 @@
         <div class="flex flex-col gap-1" data-testid="auto-locked">
             <p class="flex items-center gap-1.5 text-xs text-warning"><span aria-hidden="true">🔒</span>{locked}</p>
             <pre class="overflow-x-auto rounded-box bg-base-100/60 px-3 py-2 font-mono text-xs text-base-content/75">{rule.raw.trimEnd()}</pre>
-            <p class="text-xs text-base-content/45">Edit this rule in the file. It can still be turned off, moved and commented here.</p>
+            <p class="text-xs text-muted">Edit this rule in the file. It can still be turned off, moved and commented here.</p>
         </div>
     {/if}
 </div>

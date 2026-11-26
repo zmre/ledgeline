@@ -43,7 +43,7 @@
         <li class="grid grid-cols-[1rem_minmax(0,1fr)] items-baseline gap-x-1 leading-snug">
             <span class="sr-only col-span-2">{renameText(rename)}</span>
             <span class="col-span-2 font-mono text-xs break-all" aria-hidden="true">{rename.from}</span>
-            <!-- `opacity-60`, not a `text-base-content/50`: this list renders
+            <!-- `opacity-60`, not a `text-muted`: this list renders
                  inside alerts that set their own foreground colour, and a
                  base-content arrow on a warning alert is the one thing on it
                  that does not match. -->

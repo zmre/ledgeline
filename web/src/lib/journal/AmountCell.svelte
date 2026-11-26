@@ -10,6 +10,6 @@
     {#each amounts as amount (amount.commodity)}
         <div class={["whitespace-nowrap", amount.qty.m < 0n && "text-error"]}>{formatAmount(amount)}</div>
     {:else}
-        <div class="text-base-content/40">&mdash;</div>
+        <div class="text-muted">&mdash;</div>
     {/each}
 </div>

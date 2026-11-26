@@ -51,10 +51,10 @@
             data-testid={id("review-payee")}
         >
             {hero.payee || "(no description)"}
-            {#if hero.note !== ""}<span class="font-normal text-base-content/45">| {hero.note}</span>{/if}
+            {#if hero.note !== ""}<span class="font-normal text-muted">| {hero.note}</span>{/if}
         </h2>
         {#if details === undefined || !detailsBlock || hero.funding !== null}
-            <div class="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-base-content/60">
+            <div class="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
                 {#if details === undefined}
                     <span class="tabular-nums">{longDate(txn.date)}</span>
                 {:else if !detailsBlock}

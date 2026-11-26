@@ -320,13 +320,13 @@
                 {#each hit.length > 0 ? hit : items as item (item.key)}
                     <div class="flex items-center gap-2">
                         <span class="inline-block w-3 shrink-0 border-t-2" style="border-color:{item.color}"></span>
-                        <span class="grow truncate text-base-content/60">{item.label}</span>
+                        <span class="grow truncate text-muted">{item.label}</span>
                         <span class="font-semibold tabular-nums">{formatValue(item.value)}</span>
                     </div>
                 {/each}
                 <div class="mt-0.5 flex items-center gap-2 border-t border-base-content/10 pt-1">
                     <span class="inline-block w-3 shrink-0 border-t-2 border-dashed" style="border-color:{chartColors.flowNet}"></span>
-                    <span class="grow text-base-content/60">{netLabel}</span>
+                    <span class="grow text-muted">{netLabel}</span>
                     <span class="font-semibold tabular-nums">{formatValue(row.net)}</span>
                 </div>
             </div>
@@ -383,7 +383,7 @@
         <ChartHeading {heading} {note} class="mb-1" />
     {/if}
     {#if emptyReason !== null}
-        <p class="py-8 text-center text-sm text-base-content/60" data-testid={testid === undefined ? undefined : `${testid}-empty`}>
+        <p class="py-8 text-center text-sm text-muted" data-testid={testid === undefined ? undefined : `${testid}-empty`}>
             {emptyReason === "no-data" ? empty : tooShort}
         </p>
     {:else}

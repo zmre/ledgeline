@@ -107,7 +107,7 @@ describe("COMPONENT TransactionTable running balance", () => {
         expect(cellOf("Dividend", "running-change").textContent?.trim()).toBe("");
         const carried = cellOf("Dividend", "running-balance").querySelector("[data-carried]") as HTMLElement;
         expect(carried.textContent).toBe("$4,750.00");
-        expect(carried.className).toContain("text-base-content/50");
+        expect(carried.className).toContain("text-muted");
         expect(cellOf("Paycheck", "running-balance").querySelector("[data-carried]")).toBeNull();
     });
 

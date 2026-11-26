@@ -31,7 +31,7 @@
         </div>
     {/if}
     <label class="flex flex-col gap-1">
-        <span class="text-xs text-base-content/60">{comment.style === "section" ? "Title" : "Text"}</span>
+        <span class="text-xs text-muted">{comment.style === "section" ? "Title" : "Text"}</span>
         {#if comment.style === "section" && !comment.text.includes("\n")}
             <input
                 type="text"

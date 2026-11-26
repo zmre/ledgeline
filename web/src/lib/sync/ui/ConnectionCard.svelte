@@ -95,7 +95,7 @@
 <section class="flex flex-col gap-2" aria-label={connection.name} data-testid="sync-connection">
     <header class="flex flex-wrap items-center gap-x-3 gap-y-1">
         <h3 class="font-semibold">{connection.name}</h3>
-        <span class="flex items-center gap-1.5 text-sm text-base-content/70">
+        <span class="flex items-center gap-1.5 text-sm text-muted">
             <span class="status {STATE[connection.state].dot}" aria-hidden="true"></span>
             {STATE[connection.state].label}
         </span>
@@ -142,7 +142,7 @@
     {/if}
 
     {#if elsewhere}
-        <div class="flex flex-wrap items-center justify-between gap-2 text-sm text-base-content/70" data-testid="sync-elsewhere">
+        <div class="flex flex-wrap items-center justify-between gap-2 text-sm text-muted" data-testid="sync-elsewhere">
             <p>Another computer syncs these accounts. New transactions arrive here when the ledger's files do.</p>
             <button type="button" class="btn btn-ghost btn-xs" onclick={() => onReplaceToken(connection.id)}>Sync from this computer too…</button>
         </div>
@@ -153,7 +153,7 @@
     {/each}
 
     {#if note !== null}
-        <p class="text-xs {note.error ? 'text-error' : 'text-base-content/70'}" role={note.error ? "alert" : "status"}>{note.text}</p>
+        <p class="text-xs {note.error ? 'text-error' : 'text-muted'}" role={note.error ? "alert" : "status"}>{note.text}</p>
     {/if}
 
     <ul class="rounded-box border border-base-content/10">
@@ -163,12 +163,12 @@
         {#each unlinked as remote (remote.remoteId)}
             <li class="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-base-content/5 px-3 py-2 last:border-b-0" data-testid="sync-unlinked-row">
                 <span class="font-medium">{remote.label}</span>
-                <span class="text-xs text-base-content/60">→ not linked</span>
+                <span class="text-xs text-muted">→ not linked</span>
                 <button type="button" class="btn ml-auto btn-xs" onclick={() => onLink([remote])}>Link…</button>
             </li>
         {/each}
         {#if accounts.length === 0 && unlinked.length === 0}
-            <li class="px-3 py-2 text-sm text-base-content/60">No accounts linked through this connection.</li>
+            <li class="px-3 py-2 text-sm text-muted">No accounts linked through this connection.</li>
         {/if}
     </ul>
 </section>

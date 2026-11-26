@@ -59,7 +59,7 @@
 
 <section class="flex max-w-3xl flex-col gap-5" data-testid="settings-books">
     {#if status === null}
-        <p class="text-sm text-base-content/60">
+        <p class="text-sm text-muted">
             The revenue and expense recognition helpers appear when the ledger has a deferred-revenue, prepaid, receivable or payable account.
         </p>
     {:else}
@@ -80,12 +80,12 @@
                 />
                 <span>Post due recognition entries automatically</span>
             </label>
-            <p class="text-sm text-base-content/70">
+            <p class="text-sm text-muted">
                 With this on, Ledgeline posts the entries that are due when it opens, once a day, after you save a schedule, and after the journal changes on
                 disk. Entries in closed periods are never posted automatically.
             </p>
             {#if status.file !== null}
-                <p class="text-sm text-base-content/70" data-testid="books-file">
+                <p class="text-sm text-muted" data-testid="books-file">
                     Schedules live in <code>{status.file.path}</code>{status.file.exists ? "" : " (not created yet)"}. Your books don't include it.
                 </p>
             {/if}
@@ -149,7 +149,7 @@
 
         <section class="flex flex-col gap-3">
             <h2 class="text-base font-semibold">Invoice matching</h2>
-            <p class="text-sm text-base-content/70">Ledgeline Invoicer matches payments to invoices with these same settings.</p>
+            <p class="text-sm text-muted">Ledgeline Invoicer matches payments to invoices with these same settings.</p>
             <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
                 <label class="flex flex-wrap items-center gap-3">
                     <span>Look for payments up to</span>
@@ -168,7 +168,7 @@
                             data-testid="books-lookback"
                         />
                         <span>days after the invoice</span>
-                        <span class="text-xs text-base-content/60">{settings.settlementLookbackDays === 0 ? "0 looks back forever" : ""}</span>
+                        <span class="text-xs text-muted">{settings.settlementLookbackDays === 0 ? "0 looks back forever" : ""}</span>
                     </span>
                 </label>
                 {@render matchingPin("settlementLookbackDays", "books-pin-lookback")}

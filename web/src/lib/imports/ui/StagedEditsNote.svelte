@@ -38,10 +38,10 @@
 
 {#if line !== null}
     <div class="flex flex-col gap-2" use:reveal={{arm}} data-testid="imports-review-edits">
-        <p class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-base-content/70">
+        <p class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
             <ReviewIcon name="pencil" class="h-3.5 w-3.5 text-success" />
             <span data-testid="imports-review-edits-count">{line}</span>
-            <span class="text-base-content/50">— applied by this write</span>
+            <span class="text-muted">— applied by this write</span>
             {#if flagged.length > 0}
                 <button
                     type="button"
@@ -65,14 +65,14 @@
                 aria-label="Edits that need another look"
                 data-testid="imports-review-flagged"
             >
-                <p class="text-xs text-base-content/70">
+                <p class="text-xs text-muted">
                     The import changed under these after you edited them, so they may no longer do what you meant. They're still written unless you discard
                     them.
                 </p>
                 <ul class="flex flex-col divide-y divide-base-content/10">
                     {#each flagged as override (refKey(override.ref))}
                         <li class="flex items-start gap-3 py-1.5 text-sm" data-testid="imports-review-flagged-row">
-                            <span class="w-20 shrink-0 text-xs text-base-content/55 tabular-nums">{override.original.txn.date}</span>
+                            <span class="w-20 shrink-0 text-xs text-muted tabular-nums">{override.original.txn.date}</span>
                             <span class="min-w-0 grow">
                                 <span class="block truncate font-mono text-xs" title={override.original.txn.description}
                                     >{override.original.txn.description}</span

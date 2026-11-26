@@ -139,7 +139,7 @@
                  line beside its number and buttons, and the amount (and any
                  assertion) wraps to a second, right-aligned (plan 42). -->
             <div class="flex flex-wrap items-center gap-2 md:flex-nowrap">
-                <kbd class="kbd w-6 shrink-0 justify-center kbd-xs text-base-content/50" title="Press {at + 1} to edit this account">{at + 1}</kbd>
+                <kbd class="kbd w-6 shrink-0 justify-center kbd-xs text-muted" title="Press {at + 1} to edit this account">{at + 1}</kbd>
                 <div
                     class={["relative min-w-0 grow basis-[calc(100%-8rem)] rounded-field md:basis-auto", unknown && "ring-2 ring-warning/70"]}
                     data-review-field="account-{at}"
@@ -182,7 +182,7 @@
                         {#if posting.balanceAssertion !== null}
                             {@const assertion = assertionLabel(posting.balanceAssertion)}
                             <span
-                                class="flex max-w-full items-center gap-0.5 rounded-full border border-base-content/15 py-0.5 pr-0.5 pl-2 font-mono text-xs text-base-content/60"
+                                class="flex max-w-full items-center gap-0.5 rounded-full border border-base-content/15 py-0.5 pr-0.5 pl-2 font-mono text-xs text-muted"
                                 title="Balance assertion: the account's balance after this posting"
                                 data-testid="review-assertion"
                             >
@@ -230,9 +230,7 @@
                             type="button"
                             class={[
                                 "group flex max-w-full min-w-0 flex-wrap items-center gap-1.5 rounded-full border px-3 py-1 text-left text-xs transition-colors",
-                                active
-                                    ? "border-success/60 bg-success/15 text-base-content"
-                                    : "border-base-content/15 text-base-content/70 hover:border-base-content/30",
+                                active ? "border-success/60 bg-success/15 text-base-content" : "border-base-content/15 text-muted hover:border-base-content/30",
                             ]}
                             aria-pressed={active}
                             data-testid="review-chip"
@@ -243,20 +241,20 @@
                             {#if active}
                                 <kbd class="kbd kbd-xs">{acceptKeys}</kbd>
                             {:else}
-                                <ReviewIcon name={chip.source === "recurring" ? "bolt" : "sparkle"} class="h-3 w-3 text-base-content/40" />
+                                <ReviewIcon name={chip.source === "recurring" ? "bolt" : "sparkle"} class="h-3 w-3 text-muted" />
                             {/if}
-                            {#if chips.mode === "usually"}<span class="text-base-content/50">usually</span>{/if}
+                            {#if chips.mode === "usually"}<span class="text-muted">usually</span>{/if}
                             {#if chip.description !== null}
-                                <span class="font-medium">→ {chip.description}</span><span class="text-base-content/40">·</span>
+                                <span class="font-medium">→ {chip.description}</span><span class="text-muted">·</span>
                             {/if}
                             <span class="font-mono">{shortAccount(chip.account)}</span>
                             {#if recurringLabel(chip) !== null}
-                                <span class="text-base-content/40">·</span><span data-testid="review-chip-fill">{recurringLabel(chip)}</span>
+                                <span class="text-muted">·</span><span data-testid="review-chip-fill">{recurringLabel(chip)}</span>
                             {/if}
-                            <span class="text-base-content/45">{why(chip)}</span>
+                            <span class="text-muted">{why(chip)}</span>
                         </button>
                     {/each}
-                    <span class="key-hint text-[0.7rem] text-base-content/40"><kbd class="kbd kbd-xs">Tab</kbd> in the account fills it in</span>
+                    <span class="key-hint text-[0.7rem] text-muted"><kbd class="kbd kbd-xs">Tab</kbd> in the account fills it in</span>
                 </div>
             {/if}
             {#if posting.comment !== "" || revealed.includes(at)}
@@ -265,7 +263,7 @@
                     <GrowingTextarea
                         bind:value={posting.comment}
                         size="xs"
-                        class="textarea-ghost text-base-content/60 focus:text-base-content"
+                        class="textarea-ghost text-muted focus:text-base-content"
                         placeholder="posting comment"
                         aria-label="Comment for posting {at + 1}"
                         autocomplete="off"
@@ -275,7 +273,7 @@
                 </div>
             {/if}
             {#if posting.cost !== null || posting.type !== "regular"}
-                <p class="ml-8 text-xs text-base-content/45">
+                <p class="ml-8 text-xs text-muted">
                     {[
                         posting.cost !== null ? `${posting.cost.kind === "unit" ? "@" : "@@"} ${posting.cost.amount.commodity} cost` : "",
                         posting.type !== "regular" ? `${posting.type} posting` : "",
@@ -295,7 +293,7 @@
     <ul class="mt-2 flex flex-col gap-1 rounded-box border border-dashed border-base-content/15 p-2" aria-label="Added by automatic posting rules">
         {#each generated as posting, at (at)}
             {@const unknown = isUncategorized(posting.account, classes)}
-            <li class="flex items-center gap-2 text-sm text-base-content/60" data-testid="review-generated">
+            <li class="flex items-center gap-2 text-sm text-muted" data-testid="review-generated">
                 <span class={["min-w-0 grow truncate font-mono italic", unknown && "text-warning"]} title={posting.account}>{posting.account}</span>
                 <span class="shrink-0"><AmountCell amounts={posting.amounts} /></span>
                 {#if posting.generated !== undefined}

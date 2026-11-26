@@ -95,7 +95,7 @@
                     spellcheck="false"
                     data-testid="projection-save-name"
                 />
-                <span class="label-text-alt mt-1 text-xs text-base-content/60"> Shown in the picker, and used to build the file name. </span>
+                <span class="label-text-alt mt-1 text-xs text-muted"> Shown in the picker, and used to build the file name. </span>
             </div>
 
             {#if directories.length > 1}
@@ -106,14 +106,12 @@
                             <option value={dir}>{dir === "" ? "(journal folder)" : dir}</option>
                         {/each}
                     </select>
-                    <span class="label-text-alt mt-1 text-xs text-base-content/60">
-                        Only folders that already hold a journal — Ledgeline never creates one.
-                    </span>
+                    <span class="label-text-alt mt-1 text-xs text-muted"> Only folders that already hold a journal — Ledgeline never creates one. </span>
                 </div>
             {/if}
 
             <!-- The path, before the write. -->
-            <p class="mb-3 text-xs text-base-content/70" data-testid="projection-save-path">
+            <p class="mb-3 text-xs text-muted" data-testid="projection-save-path">
                 {#if id === null}
                     <span class="text-warning">No file name yet.</span>
                 {:else}

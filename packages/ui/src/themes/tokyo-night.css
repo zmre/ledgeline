@@ -2,7 +2,9 @@
  * Tokyo Night, the "day" and "night" styles (github.com/folke/tokyonight.nvim).
  * Bases are bg, bg_dark and bg_highlight (day) or bg, bg_dark and bg_dark1
  * (night). Day's foreground is its own blue #3760bf at 4.5:1, so base-content
- * stays below the 7:1 the other themes reach.
+ * stays below the 7:1 the other themes reach. Darkened in OKLab, same hue and
+ * chroma, to #274eab (2026-11-26) so body text clears 4.5:1 on bg_dark and
+ * bg_highlight too (was 3.99 and 3.52; now 5.18 and 4.57; 5.87 on bg).
  *
  * Each variant is a daisyUI custom theme plus its chart block. The chart rules
  * (slot order, the named tokens, how to validate) are in app.css and
@@ -17,7 +19,7 @@
     --color-base-100: #e1e2e7;
     --color-base-200: #d0d5e3;
     --color-base-300: #c4c8da;
-    --color-base-content: #3760bf;
+    --color-base-content: #274eab;
     --color-primary: #2e7de9;
     --color-primary-content: #0c0e14;
     --color-secondary: #7847bd;
@@ -72,7 +74,7 @@
     --chart-other: #757da5;
     --chart-in: #118c74;
     --chart-out: #f32764;
-    --chart-net: #3760bf;
+    --chart-net: #274eab;
 }
 
 @plugin "daisyui/theme" {

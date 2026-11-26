@@ -6,7 +6,7 @@
 </script>
 
 <label class="block w-full max-w-xs">
-    <span class="label-text mb-1 block text-xs text-base-content/70">Account depth</span>
+    <span class="label-text mb-1 block text-xs text-muted">Account depth</span>
     <input type="range" min="1" max={Math.max(1, max)} step="1" bind:value={depth} class="range w-full range-primary range-xs" aria-label="Account depth" />
     <div class="mt-1 flex justify-between px-0.5 font-mono text-[0.65rem] text-base-content/60" aria-hidden="true">
         {#each ticks as t (t)}

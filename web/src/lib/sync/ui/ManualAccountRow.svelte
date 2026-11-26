@@ -60,9 +60,7 @@
     data-stale={view.stale}
 >
     <span class="font-mono text-sm">{account.account}</span>
-    <span class="text-xs {view.stale ? 'text-warning' : 'text-base-content/70'}"
-        >{view.stale ? "⚠ " : ""}{view.line}{account.nudge ? "" : " · No reminders"}</span
-    >
+    <span class="text-xs {view.stale ? 'text-warning' : 'text-muted'}">{view.stale ? "⚠ " : ""}{view.line}{account.nudge ? "" : " · No reminders"}</span>
     {#if editing}
         <form class="flex flex-wrap items-center gap-2" onsubmit={(e) => void save(e)}>
             <input

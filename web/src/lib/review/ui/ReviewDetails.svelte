@@ -45,14 +45,14 @@
 
     const parts = $derived(detailsSummary(form));
     const STATUS = {
-        unmarked: {text: "unmarked", tone: "border-dashed border-base-content/25 text-base-content/50"},
+        unmarked: {text: "unmarked", tone: "border-dashed border-base-content/25 text-muted"},
         pending: {text: "! pending", tone: "border-warning/50 bg-warning/10 text-warning"},
         cleared: {text: "* cleared", tone: "border-success/50 bg-success/10 text-success"},
     } as const;
 </script>
 
 {#snippet key(text: string)}
-    <kbd class="kbd w-5 justify-center kbd-xs font-normal text-base-content/50">{text}</kbd>
+    <kbd class="kbd w-5 justify-center kbd-xs font-normal text-muted">{text}</kbd>
 {/snippet}
 
 {#if mode === "summary"}
@@ -70,7 +70,7 @@
             {#if at > 0}<span aria-hidden="true" class="text-base-content/25">·</span>{/if}
             <span class={part === "pending" ? "text-warning" : ""}>{part}</span>
         {/each}
-        <ReviewIcon name="chevron-down" class="h-3.5 w-3.5 text-base-content/30 group-hover:text-base-content/60" />
+        <ReviewIcon name="chevron-down" class="h-3.5 w-3.5 text-base-content/30 group-hover:text-muted" />
     </button>
 {:else}
     <div class="flex flex-wrap items-center gap-x-4 gap-y-2" data-testid="review-details" role="group" aria-label="Details">
@@ -107,7 +107,7 @@
         </div>
         {#if showDate2}
             <div class="flex items-center gap-1" data-review-field="date2">
-                <span class="mr-0.5 text-xs text-base-content/50">secondary</span>
+                <span class="mr-0.5 text-xs text-muted">secondary</span>
                 <DateInput class="w-36" bind:value={form.date2} aria-label="Secondary date" {disabled} />
                 <button
                     type="button"
@@ -121,14 +121,14 @@
                 </button>
             </div>
         {:else}
-            <button type="button" class="btn gap-1 btn-ghost font-normal text-base-content/55 btn-xs" onclick={onAddDate2} {disabled}>
+            <button type="button" class="btn gap-1 btn-ghost font-normal text-muted btn-xs" onclick={onAddDate2} {disabled}>
                 <span class="text-sm leading-none">+</span> secondary date
             </button>
         {/if}
         {#if canCollapse}
             <button
                 type="button"
-                class="btn ml-auto btn-square btn-ghost text-base-content/40 btn-xs"
+                class="btn ml-auto btn-square btn-ghost text-muted btn-xs"
                 aria-label="Hide the details"
                 title="Hide the details"
                 aria-expanded="true"

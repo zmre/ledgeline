@@ -52,7 +52,7 @@
     {testid}
 />
 {#if stack.omitted.length > 0}
-    <p class="text-xs text-base-content/60" data-testid="{testid}-omitted">
+    <p class="text-xs text-muted" data-testid="{testid}-omitted">
         Charted in {stack.commodity} only; {stack.omitted.join(", ")} not shown.
     </p>
 {/if}

@@ -136,25 +136,25 @@
                 <section class="flex flex-col gap-2 rounded-box border border-base-content/10 p-3" aria-label={title}>
                     <h2 class="text-sm font-semibold tracking-tight">{title}</h2>
                     {#if format === QB_JOURNAL_FORMAT}
-                        <p class="text-xs text-base-content/60" data-testid="qb-export-help">
+                        <p class="text-xs text-muted" data-testid="qb-export-help">
                             From QuickBooks Online: <strong>Reports → Journal</strong> → choose a time frame → optionally <strong>Customize</strong> to add
                             <strong>Vendor</strong>, <strong>Customer</strong> and <strong>Class</strong> → <strong>Export to Excel</strong>. Re-downloading the
                             same or overlapping time frame — including "All Dates" — is safe: transactions already imported are recognized by their QuickBooks
                             id and never duplicated.
                         </p>
                     {:else if format === "qif"}
-                        <p class="text-xs text-base-content/60" data-testid="qb-export-help">
+                        <p class="text-xs text-muted" data-testid="qb-export-help">
                             Export QIF with every account selected (Banktivity: <strong>File → Export → QIF</strong>; Quicken:
                             <strong>File → Export → QIF file</strong>). Accounts, categories, splits, transfers and classes come through; a transfer written in
                             both accounts is kept once. Importing the same file again is safe: each transaction gets an id from its date, account, amount and
                             payee, so ones already imported are skipped.
                         </p>
                     {:else}
-                        <p class="text-xs text-base-content/60" data-testid="qb-export-help">
+                        <p class="text-xs text-muted" data-testid="qb-export-help">
                             Importing the same export again is safe: transactions already imported are recognized by their id and never duplicated.
                         </p>
                     {/if}
-                    <p class="text-sm text-base-content/70" data-testid="qb-summary">
+                    <p class="text-sm text-muted" data-testid="qb-summary">
                         {preview.transactionCount} transaction{preview.transactionCount === 1 ? "" : "s"} from {preview.postingCount} posting{preview.postingCount ===
                         1
                             ? ""
@@ -229,7 +229,7 @@
                     />
                     <span>
                         Update transactions that changed in {bookChangedIn(format)}
-                        <span class="block text-xs text-base-content/60">
+                        <span class="block text-xs text-muted">
                             Already-imported transactions the export now shows differently are replaced with the export's version, keeping their cleared status
                             and notes. Leave this off if you re-categorize imported transactions by hand — those edits would be overwritten.
                         </span>

@@ -66,7 +66,7 @@
                 {#if row.directory !== ""}
                     <!-- Truncated from the END: the folders that differ between two
                          same-named files are the ones nearest the root. -->
-                    <span class="w-full truncate text-xs text-base-content/60">{row.directory}</span>
+                    <span class="w-full truncate text-xs text-muted">{row.directory}</span>
                 {/if}
                 <!-- A tooltip built from `data-tip` is a pseudo-element, so assistive
                      technology never sees it. This keeps the same detail in the

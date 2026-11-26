@@ -14,28 +14,6 @@ tr[data-drop="after"] > td {
     box-shadow: inset 0 -2px 0 var(--color-primary);
 }
 
-/* Muted text (labels, meta lines, defaults) that stays legible: base-content
-   mixed 70% into base-100, or full base-content in the themes where that mix
-   falls under WCAG 4.5:1 on base-100 or base-200 (src/lib/mutedToken.test.ts
-   checks every theme). In solarized-light and tokyo-night-day even the body
-   text is under 4.5:1 on base-200, as published; muted is the body text
-   there. Invoicer-only for now; the customer page uses it. */
-:root,
-[data-theme] {
-    --color-muted: color-mix(in oklab, var(--color-base-content) 70%, var(--color-base-100));
-}
-[data-theme="catppuccin-latte"],
-[data-theme="gruvbox-light"],
-[data-theme="one-dark-pro"],
-[data-theme="solarized-light"],
-[data-theme="solarized-dark"],
-[data-theme="tokyo-night-day"] {
-    --color-muted: var(--color-base-content);
-}
-@utility text-muted {
-    color: var(--color-muted);
-}
-
 /* The customer card's copy buttons: on a wide window with a mouse, shown on
    the row's hover or focus (and their own focus); on touch, and in a narrow
    window, always. */

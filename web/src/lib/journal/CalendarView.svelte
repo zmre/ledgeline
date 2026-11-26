@@ -104,7 +104,7 @@
     });
 
     const DOT = {error: "bg-error", warning: "bg-warning", info: "bg-info"} as const;
-    const TONE = {positive: "text-success", negative: "text-error", neutral: "text-base-content/70"} as const;
+    const TONE = {positive: "text-success", negative: "text-error", neutral: "text-muted"} as const;
 </script>
 
 {#snippet line(item: CalendarItem)}
@@ -147,7 +147,7 @@
         {#if loading}
             <span class="loading loading-xs loading-spinner" aria-label="Loading transactions"></span>
         {:else if total === 0}
-            <span class="text-xs text-base-content/60">No transactions match the current filters.</span>
+            <span class="text-xs text-muted">No transactions match the current filters.</span>
         {/if}
     </div>
 
@@ -157,7 +157,7 @@
          follows the window; the page scrolls for the rest. -->
     <div class="grid grid-cols-7 rounded-lg border border-base-300" style="grid-template-rows: auto repeat({weeks.length}, {WEEK_REM}rem)">
         {#each WEEKDAYS as weekday (weekday)}
-            <div class="border-b border-base-300 bg-base-200 px-2 py-1 text-xs font-semibold text-base-content/70">{weekday}</div>
+            <div class="border-b border-base-300 bg-base-200 px-2 py-1 text-xs font-semibold text-muted">{weekday}</div>
         {/each}
         {#each weeks as week, w (week[0])}
             {#each week as day, d (day)}
@@ -191,7 +191,7 @@
                         {#if fit.more > 0}
                             <button
                                 type="button"
-                                class="h-5 shrink-0 rounded px-1 text-left text-xs leading-5 text-base-content/60 hover:bg-base-200 hover:text-base-content"
+                                class="h-5 shrink-0 rounded px-1 text-left text-xs leading-5 text-muted hover:bg-base-200 hover:text-base-content"
                                 onclick={() => (openDay = day)}
                                 data-testid="calendar-more">{fit.more} more</button
                             >

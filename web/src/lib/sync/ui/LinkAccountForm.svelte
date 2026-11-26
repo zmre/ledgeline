@@ -81,7 +81,7 @@
                 />
             </span>
             {#if compare !== null}
-                <span class="text-xs {compare.matches ? 'text-success' : 'text-base-content/70'}">{compare.text}</span>
+                <span class="text-xs {compare.matches ? 'text-success' : 'text-muted'}">{compare.text}</span>
             {/if}
         </div>
         <div class="flex flex-wrap items-center gap-2">
@@ -118,7 +118,7 @@
                     <DateInput bind:value={draft.newAccount.openingDate} aria-label="Opening balance date" />
                 </span>
             {:else}
-                <span class="text-xs text-base-content/60">{draft.newAccount.name}</span>
+                <span class="text-xs text-muted">{draft.newAccount.name}</span>
             {/if}
         </div>
         <label class="flex items-center gap-2">
@@ -144,7 +144,7 @@
             <span class="w-28">Start syncing</span>
             <DateInput bind:value={draft.startDate} aria-label="Start syncing {remote.label} from" />
             {#if mode === "existing" && remote.suggestion.journalAccount !== null && draft.startDate === remote.suggestion.startDate}
-                <span class="text-xs text-base-content/60">the day after your journal's last transaction in it</span>
+                <span class="text-xs text-muted">the day after your journal's last transaction in it</span>
             {/if}
         </label>
         {#each notes as note (note)}
@@ -185,7 +185,7 @@
                         <button type="button" class="btn btn-ghost btn-xs" onclick={() => (draft.share = "separate")}>Keep separate</button>
                     </div>
                 {:else}
-                    <p class="text-xs text-base-content/70">
+                    <p class="text-xs text-muted">
                         {draft.share === "share" ? "They'll be shared when you press Finish." : "Kept separate: the sync rules start empty."}
                         <button type="button" class="link" onclick={() => (draft.share = "ask")}>Change</button>
                     </p>

@@ -120,7 +120,7 @@
                     />
                 </span>
             </span>
-            <span class="text-xs text-base-content/50">
+            <span class="text-xs text-muted">
                 {#if entry.asOf === null}
                     No activity
                 {:else}

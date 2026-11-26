@@ -163,7 +163,7 @@
 
 <div class="flex flex-col gap-1" data-testid="holdings-pie-panel">
     <div class="flex flex-wrap items-center justify-between gap-2">
-        <label class="flex items-center gap-2 text-xs text-base-content/60">
+        <label class="flex items-center gap-2 text-xs text-muted">
             <span class="sr-only sm:not-sr-only">Divide by</span>
             <select
                 class="select w-auto select-xs"
@@ -178,24 +178,24 @@
             </select>
         </label>
         {#if loading}
-            <span class="flex items-center gap-1 text-xs text-base-content/60" role="status" data-testid="holdings-pie-loading">
+            <span class="flex items-center gap-1 text-xs text-muted" role="status" data-testid="holdings-pie-loading">
                 <span class="loading loading-xs loading-spinner"></span>
                 Classifying holdings…
             </span>
         {:else if failed && profiles !== null}
             <!-- An older answer is still on screen; say it could not be refreshed rather than pass it off as current. -->
-            <span class="flex items-center gap-1 text-xs text-base-content/60" data-testid="holdings-pie-stale">
+            <span class="flex items-center gap-1 text-xs text-muted" data-testid="holdings-pie-stale">
                 Couldn't refresh classifications.
                 <button type="button" class="link" onclick={retry}>Retry</button>
             </span>
         {:else if yahooHint !== null}
-            <span class="text-xs text-base-content/60" data-testid="holdings-pie-yahoo-hint">{yahooHint}</span>
+            <span class="text-xs text-muted" data-testid="holdings-pie-yahoo-hint">{yahooHint}</span>
         {/if}
     </div>
 
     {#if category !== null && profiles === null}
         <!-- No answer yet: hold the pie's own height so nothing below jumps when it lands. -->
-        <div class="flex h-56 w-full flex-col items-center justify-center gap-2 text-sm text-base-content/60 sm:h-64" data-testid="holdings-pie-pending">
+        <div class="flex h-56 w-full flex-col items-center justify-center gap-2 text-sm text-muted sm:h-64" data-testid="holdings-pie-pending">
             {#if failed}
                 <p data-testid="holdings-pie-error">Couldn't load classifications.</p>
                 <button type="button" class="btn btn-ghost btn-xs" onclick={retry}>Retry</button>
@@ -204,10 +204,10 @@
             {/if}
         </div>
     {:else if wedges.length === 0}
-        <p class="py-10 text-center text-sm text-base-content/60">No priced holdings to chart.</p>
+        <p class="py-10 text-center text-sm text-muted">No priced holdings to chart.</p>
     {:else if category !== null && onlyUnclassified}
         <div
-            class="flex h-56 w-full flex-col items-center justify-center gap-1 px-4 text-center text-sm text-base-content/60 sm:h-64"
+            class="flex h-56 w-full flex-col items-center justify-center gap-1 px-4 text-center text-sm text-muted sm:h-64"
             data-testid="holdings-pie-unclassified"
         >
             <p>No holding here has {DIMENSION_LABELS[category].toLowerCase()} data.</p>
@@ -226,10 +226,10 @@
                             <div class="flex flex-col gap-0.5 text-xs">
                                 <div class="flex items-center gap-2">
                                     <span class="inline-block h-2 w-2 rounded-full" style="background:{d.color}"></span>
-                                    <span class="text-base-content/70">{d.name}</span>
+                                    <span class="text-muted">{d.name}</span>
                                     <span class="font-semibold">{d.formatted}</span>
                                 </div>
-                                {#if d.detail !== null}<span class="text-base-content/60">{d.detail}</span>{/if}
+                                {#if d.detail !== null}<span class="text-muted">{d.detail}</span>{/if}
                             </div>
                         {/snippet}
                     </Tooltip.Root>

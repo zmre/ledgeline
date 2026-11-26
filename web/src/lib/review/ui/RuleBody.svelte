@@ -142,7 +142,7 @@
     data-testid="review-rule-body"
     data-locked={rules === null ? "" : undefined}
 >
-    <span class="mt-2 text-[0.65rem] font-semibold tracking-[0.14em] text-base-content/45 uppercase first:mt-0 md:mt-0 md:pt-1.5">Match</span>
+    <span class="mt-2 text-[0.65rem] font-semibold tracking-[0.14em] text-muted uppercase first:mt-0 md:mt-0 md:pt-1.5">Match</span>
     <div class="flex min-w-0 flex-wrap items-center gap-2">
         <select
             class="select w-40 shrink-0 select-sm"
@@ -172,11 +172,11 @@
             class="tooltip tooltip-left shrink-0"
             data-tip="A regular expression, matched case-insensitively anywhere in the field. .* stands for anything in between."
         >
-            <span class="grid h-5 w-5 place-items-center rounded-full border border-base-content/20 text-[0.65rem] text-base-content/50">i</span>
+            <span class="grid h-5 w-5 place-items-center rounded-full border border-base-content/20 text-[0.65rem] text-muted">i</span>
         </span>
     </div>
 
-    <span class="mt-2 text-[0.65rem] font-semibold tracking-[0.14em] text-base-content/45 uppercase md:mt-0 md:pt-0.5">Then set</span>
+    <span class="mt-2 text-[0.65rem] font-semibold tracking-[0.14em] text-muted uppercase md:mt-0 md:pt-0.5">Then set</span>
     <ul class="flex min-w-0 flex-col gap-1.5" data-testid="review-rule-targets">
         {#each targets as target (target.field)}
             <li>
@@ -191,9 +191,9 @@
                         data-testid="review-rule-target"
                         data-field={target.field}
                     />
-                    <span class="shrink-0 font-mono text-xs text-base-content/70">{target.field}</span>
+                    <span class="shrink-0 font-mono text-xs text-muted">{target.field}</span>
                     <ReviewIcon name="arrow-right" class="h-3 w-3 shrink-0 text-base-content/35" />
-                    <span class={["truncate font-mono text-xs", checkedFields.has(target.field) ? "text-success" : "text-base-content/40 line-through"]}
+                    <span class={["truncate font-mono text-xs", checkedFields.has(target.field) ? "text-success" : "text-muted line-through"]}
                         >{target.value}</span
                     >
                 </label>
@@ -211,13 +211,13 @@
 <!-- The live check. -->
 <div class="border-t border-dashed border-base-content/15 px-3 py-2.5 text-xs" aria-live="polite" data-testid="review-rule-check">
     {#if rules === null}
-        <span class="text-base-content/50" data-testid="review-rule-unpicked">Choose a rules file first: what a rule can match depends on the file.</span>
+        <span class="text-muted" data-testid="review-rule-unpicked">Choose a rules file first: what a rule can match depends on the file.</span>
     {:else if spec === null}
-        <span class="text-base-content/50">Give the rule a pattern and something to set.</span>
+        <span class="text-muted">Give the rule a pattern and something to set.</span>
     {:else if check.kind === "idle"}
-        <span class="flex items-center gap-2 text-base-content/50"><span class="loading loading-xs loading-spinner"></span> Checking the rule…</span>
+        <span class="flex items-center gap-2 text-muted"><span class="loading loading-xs loading-spinner"></span> Checking the rule…</span>
     {:else if check.kind === "unavailable"}
-        <span class="text-base-content/50">The live check needs a rules file and a journal chosen for this import.</span>
+        <span class="text-muted">The live check needs a rules file and a journal chosen for this import.</span>
     {:else if check.kind === "error"}
         <span class="text-error" role="alert" data-testid="review-rule-error">Couldn't check this rule: {check.message}</span>
     {:else if !check.preview.ok}
@@ -232,9 +232,9 @@
                 Matches <strong class="text-base-content tabular-nums">{counted.matched}</strong> of
                 <span class="tabular-nums">{counted.total}</span>
                 transactions from <span class="font-mono">{rules.account ?? "this account"}</span>
-                <span class="text-base-content/50">(no statement file found to test against)</span>
+                <span class="text-muted">(no statement file found to test against)</span>
             </span>
-            {#if checking}<span class="loading loading-xs loading-spinner text-base-content/50"></span>{/if}
+            {#if checking}<span class="loading loading-xs loading-spinner text-muted"></span>{/if}
         </div>
         {#if counted.matched === 0}
             <p class="mt-1 text-warning">No transaction from it matches, this one included. Loosen the pattern.</p>
@@ -246,15 +246,15 @@
                 Matches <strong class="text-base-content tabular-nums">{ok.matched}</strong> of
                 <span class="tabular-nums">{ok.total}</span>
                 rows in {ok.file ?? rules.fileLabel}
-                <span class="text-base-content/40">·</span>
+                <span class="text-muted">·</span>
                 <span class="tabular-nums">{ok.alreadyCategorised}</span> already categorised
             </span>
-            {#if checking}<span class="loading loading-xs loading-spinner text-base-content/50"></span>{/if}
+            {#if checking}<span class="loading loading-xs loading-spinner text-muted"></span>{/if}
             <span class="grow"></span>
             {#if ok.changedTotal > 0}
                 <button
                     type="button"
-                    class="flex items-center gap-1 text-base-content/60 hover:text-base-content"
+                    class="flex items-center gap-1 text-muted hover:text-base-content"
                     aria-expanded={showChanges}
                     onclick={() => (showChanges = !showChanges)}
                     data-testid="review-rule-changes-toggle"
@@ -287,7 +287,7 @@
                 {/each}
             </ul>
             {#if ok.changedTotal > Math.min(LISTED, ok.changed.length)}
-                <p class="mt-1 text-base-content/50">…and {ok.changedTotal - Math.min(LISTED, ok.changed.length)} more</p>
+                <p class="mt-1 text-muted">…and {ok.changedTotal - Math.min(LISTED, ok.changed.length)} more</p>
             {/if}
         {/if}
     {/if}

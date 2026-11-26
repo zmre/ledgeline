@@ -22,10 +22,10 @@
     const TINT: Record<typeof kind, string> = {
         oneoff: "bg-accent/12 text-accent",
         auto: "bg-secondary/14 text-secondary",
-        off: "bg-base-content/10 text-base-content/70",
+        off: "bg-base-content/10 text-muted",
         estimated: "bg-warning/10 text-warning/90",
-        section: "bg-base-content/8 text-base-content/55",
-        note: "bg-base-content/8 text-base-content/55",
+        section: "bg-base-content/8 text-muted",
+        note: "bg-base-content/8 text-muted",
     };
 </script>
 

@@ -113,7 +113,7 @@
 >
     {#snippet children(loaded)}
         <div class="flex max-w-3xl flex-col gap-4" data-testid="settings-hledger-conf">
-            <p class="text-sm text-base-content/70">
+            <p class="text-sm text-muted">
                 hledger reads one config file for every command you run: the nearest <code class="break-words">hledger.conf</code> at or above your journal's
                 folder, else
                 <code class="break-words">~/.hledger.conf</code>, else <code class="break-words">~/.config/hledger/hledger.conf</code>. Ledgeline reads the
@@ -180,7 +180,7 @@
                     />
                     <span>
                         Apply automatic postings (<code class="break-words">--auto</code>)
-                        <span class="block text-xs text-base-content/60">
+                        <span class="block text-xs text-muted">
                             The journal's <code class="break-words">= QUERY</code> rules add postings to matching transactions, for every hledger command and in Ledgeline.
                         </span>
                     </span>
@@ -193,9 +193,9 @@
                         <fieldset class="min-w-0 rounded-box border border-base-300 p-3" data-testid={`settings-hledger-conf-depth-${section}`}>
                             <legend class="px-1 text-sm font-medium">
                                 {SECTION_LABELS[section]}
-                                {#if section !== "general"}<code class="text-xs text-base-content/60">[{section}]</code>{/if}
+                                {#if section !== "general"}<code class="text-xs text-muted">[{section}]</code>{/if}
                             </legend>
-                            <p class="mb-2 text-xs text-base-content/60">{SECTION_EFFECT[section]}</p>
+                            <p class="mb-2 text-xs text-muted">{SECTION_EFFECT[section]}</p>
                             <label class="flex flex-wrap items-center gap-2 text-sm">
                                 <span class="w-20">Depth</span>
                                 <input
@@ -208,7 +208,7 @@
                                     oninput={(event) => updateSection(section, {all: event.currentTarget.value})}
                                 />
                                 {#if section !== "general" && loaded.effectiveDepth[section].all !== null}
-                                    <span class="text-xs text-base-content/60">in force: {loaded.effectiveDepth[section].all}</span>
+                                    <span class="text-xs text-muted">in force: {loaded.effectiveDepth[section].all}</span>
                                 {/if}
                             </label>
                             {#each sectionForm.overrides as override, at (at)}

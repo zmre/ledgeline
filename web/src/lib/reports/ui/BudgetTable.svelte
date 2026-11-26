@@ -127,7 +127,7 @@
      * Income has no `over` label, so it can never go red.
      */
     function remainingClass(bar: BudgetBarView): string {
-        if (bar.health === null) return "text-base-content/60";
+        if (bar.health === null) return "text-muted";
         if (bar.labelKind === "over") return "text-error";
         return bar.health === "healthy" ? "text-success" : "text-warning";
     }
@@ -241,10 +241,10 @@
     {#if sections.length === 0}
         <BudgetEmpty />
     {:else}
-        {#if periodLabel !== ""}<span class="-mb-6 text-xs text-base-content/50">{periodLabel}</span>{/if}
+        {#if periodLabel !== ""}<span class="-mb-6 text-xs text-muted">{periodLabel}</span>{/if}
         {#each sections as section (section.kind)}
             <div role="table" aria-label="Budgeted {section.title.toLowerCase()}" class="flex flex-col" data-testid="budget-table-{section.kind}">
-                <div role="row" class="{GRID} border-b border-base-content/15 pb-1 text-xs font-medium tracking-wide text-base-content/60 uppercase">
+                <div role="row" class="{GRID} border-b border-base-content/15 pb-1 text-xs font-medium tracking-wide text-muted uppercase">
                     <span role="columnheader">Budgeted {section.title.toLowerCase()}</span>
                     <span role="columnheader" class="justify-self-end">Budgeted</span>
                     <!-- Folded, the figures above each bar explain themselves ("$170.00 left"): no header line for them. -->

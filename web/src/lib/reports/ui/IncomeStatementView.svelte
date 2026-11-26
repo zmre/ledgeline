@@ -227,7 +227,7 @@
 {#snippet amount(c: AmountCell, size: string)}
     <span class="{size} {c.negative ? 'text-error' : ''}">{c.text}</span>
     {#if c.extras.length > 0}
-        <span class="block text-xs font-normal text-base-content/50">{c.extras.join(" · ")}</span>
+        <span class="block text-xs font-normal text-muted">{c.extras.join(" · ")}</span>
     {/if}
 {/snippet}
 
@@ -252,8 +252,8 @@
     {:else}
         <td class="w-32 text-right align-top font-mono whitespace-nowrap tabular-nums">{@render amount(cell(amounts.current), emphasis)}</td>
         {#if comparing}
-            <td class="w-32 text-right align-top font-mono whitespace-nowrap text-base-content/60 tabular-nums">{@render amount(cell(amounts.prior), "")}</td>
-            <td class="w-20 text-right align-top font-mono whitespace-nowrap text-base-content/60 tabular-nums" data-column="pct">{fmtPct(pct)}</td>
+            <td class="w-32 text-right align-top font-mono whitespace-nowrap text-muted tabular-nums">{@render amount(cell(amounts.prior), "")}</td>
+            <td class="w-20 text-right align-top font-mono whitespace-nowrap text-muted tabular-nums" data-column="pct">{fmtPct(pct)}</td>
         {/if}
     {/if}
 {/snippet}
@@ -313,7 +313,7 @@
 {/snippet}
 
 <div class="flex flex-col gap-4" data-testid="income-statement">
-    <p class="-mb-1 text-xs text-base-content/50">
+    <p class="-mb-1 text-xs text-muted">
         {valuationLabel} for {report.from} to {report.to}{#if report.prior !== null}, against {report.prior.from} to {report.prior.to}{/if}
     </p>
 
@@ -354,7 +354,7 @@
                      headers is a table a screen reader cannot narrate. -->
                             <thead>
                                 <ProjectedHeadRow columns={buckets?.length ?? 0} projectedFrom={edgeAt} {trailing} fixed={grid} compareLabel={band} />
-                                <tr class="text-[0.65rem] text-base-content/40">
+                                <tr class="text-[0.65rem] text-muted">
                                     <th class="{label} font-normal"><span class="sr-only">{box.title} line</span></th>
                                     {@render figureHeads()}
                                 </tr>
@@ -377,7 +377,7 @@
                                                         onclick={() => toggle(row.key)}
                                                     >
                                                         <span
-                                                            class="inline-block w-3 shrink-0 text-[0.65rem] text-base-content/40 transition-transform {row.expanded
+                                                            class="inline-block w-3 shrink-0 text-[0.65rem] text-muted transition-transform {row.expanded
                                                                 ? 'rotate-90'
                                                                 : ''}"
                                                             aria-hidden="true">▶</span
@@ -394,17 +394,17 @@
                                             {:else}
                                                 <!-- Inline padding, not a class: the depth is data, and `ReportTable`
                                          indents its own rows the same way (1rem per level). -->
-                                                <span class="whitespace-nowrap text-base-content/70" style="padding-left: {row.indent}rem" title={row.account}
+                                                <span class="whitespace-nowrap text-muted" style="padding-left: {row.indent}rem" title={row.account}
                                                     >{row.label}</span
                                                 >
                                             {/if}
                                         </th>
-                                        {@render figures(row.amounts, row.pct, row.kind === "group" ? "font-medium" : "text-base-content/70")}
+                                        {@render figures(row.amounts, row.pct, row.kind === "group" ? "font-medium" : "text-muted")}
                                     </tr>
                                 {/each}
                                 {#if box.rows.length === 0}
                                     <tr>
-                                        <th class="{label} font-normal text-base-content/50">No {box.title.toLowerCase()}</th>
+                                        <th class="{label} font-normal text-muted">No {box.title.toLowerCase()}</th>
                                         <td colspan={figureColumns}></td>
                                     </tr>
                                 {/if}
@@ -434,7 +434,7 @@
                             {#if grid}
                                 <thead>
                                     <ProjectedHeadRow columns={buckets?.length ?? 0} projectedFrom={edgeAt} {trailing} fixed compareLabel={band} />
-                                    <tr class="text-[0.65rem] text-base-content/40">
+                                    <tr class="text-[0.65rem] text-muted">
                                         <th class="{label} font-normal"><span class="sr-only">{subtotal.label} line</span></th>
                                         {@render figureHeads()}
                                     </tr>
@@ -475,7 +475,7 @@
                         {@render template()}
                         <thead>
                             <ProjectedHeadRow columns={buckets.length} projectedFrom={edgeAt} {trailing} fixed compareLabel={band} />
-                            <tr class="text-[0.65rem] text-base-content/40">
+                            <tr class="text-[0.65rem] text-muted">
                                 <th class="{label} font-normal"><span class="sr-only">Net income</span></th>
                                 {@render figureHeads()}
                             </tr>
@@ -484,7 +484,7 @@
                             <tr>
                                 <th class="{label} text-sm font-semibold tracking-wide uppercase">
                                     Net income
-                                    <span class="ml-1 text-xs font-normal tracking-normal text-base-content/50 normal-case">(revenue − expenses)</span>
+                                    <span class="ml-1 text-xs font-normal tracking-normal text-muted normal-case">(revenue − expenses)</span>
                                 </th>
                                 {@render figures(summary.netIncome, null, "font-semibold")}
                             </tr>
@@ -498,7 +498,7 @@
                 >
                     <span class="text-sm font-semibold tracking-wide uppercase">
                         Net income
-                        <span class="ml-1 text-xs font-normal tracking-normal text-base-content/50 normal-case">(revenue − expenses)</span>
+                        <span class="ml-1 text-xs font-normal tracking-normal text-muted normal-case">(revenue − expenses)</span>
                     </span>
                     <!-- Current, THEN prior, then the percentage — the same left-to-right order
              as the Amount / Prior / % change columns in every box above, and
@@ -512,12 +512,10 @@
                             {@render amount(cell(summary.netIncome.current), "")}
                         </span>
                         {#if comparing}
-                            <span class="text-right font-mono text-base-content/60 tabular-nums" data-testid="is-net-income-prior">
+                            <span class="text-right font-mono text-muted tabular-nums" data-testid="is-net-income-prior">
                                 {@render amount(cell(summary.netIncome.prior), "")}
                             </span>
-                            <span class="w-20 text-right font-mono text-base-content/60 tabular-nums" data-testid="is-net-income-pct"
-                                >{fmtPct(summary.netPct)}</span
-                            >
+                            <span class="w-20 text-right font-mono text-muted tabular-nums" data-testid="is-net-income-pct">{fmtPct(summary.netPct)}</span>
                         {/if}
                     </span>
                 </div>

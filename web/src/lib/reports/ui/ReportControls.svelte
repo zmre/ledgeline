@@ -25,7 +25,7 @@
 
 {#snippet dateField(label: string, key: DateKey, max?: string)}
     <label class="form-control">
-        <span class="label-text mb-1 block text-xs text-base-content/70">{label}</span>
+        <span class="label-text mb-1 block text-xs text-muted">{label}</span>
         <input type="date" class="input w-40 input-sm" value={params[key]} {max} onchange={(e) => setDate(key, e.currentTarget.value)} aria-label={label} />
     </label>
 {/snippet}
@@ -57,7 +57,7 @@
              flow) — net worth's snapshot columns cannot — or, on the balance
              sheet, where one column is the sheet itself ("Single date"). -->
         <label class="form-control">
-            <span class="label-text mb-1 block text-xs text-base-content/70">Interval</span>
+            <span class="label-text mb-1 block text-xs text-muted">Interval</span>
             <select class="select w-32 select-sm" bind:value={params.interval} aria-label="Interval">
                 {#each config.intervals as interval (interval)}
                     <option value={interval}>{intervalLabel(params.tab, interval)}</option>
@@ -67,7 +67,7 @@
     {/if}
     {#if config.count}
         <label class="form-control">
-            <span class="label-text mb-1 block text-xs text-base-content/70">Periods</span>
+            <span class="label-text mb-1 block text-xs text-muted">Periods</span>
             <input
                 type="number"
                 class="input w-20 input-sm"

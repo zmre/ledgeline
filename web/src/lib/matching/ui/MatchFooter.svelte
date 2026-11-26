@@ -90,7 +90,7 @@
                                     data-testid="match-ignore-{side === 0 ? 'left' : 'right'}"
                                 >
                                     <ReviewIcon name="ban" />
-                                    <span class="min-w-0">Ignore this side <span class="block truncate text-xs text-base-content/55">{label}</span></span>
+                                    <span class="min-w-0">Ignore this side <span class="block truncate text-xs text-muted">{label}</span></span>
                                 </button>
                             </li>
                         {/each}
