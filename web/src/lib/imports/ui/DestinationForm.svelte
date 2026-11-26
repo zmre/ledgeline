@@ -56,9 +56,7 @@
             data-testid="imports-csv-path"
             oninput={(event) => onCsvPath(event.currentTarget.value)}
         />
-        <span class="label-text-alt text-xs text-base-content/50"
-            >Relative to the folder your journal is in. hledger keeps its import state beside this file.</span
-        >
+        <span class="label-text-alt text-xs text-muted">Relative to the folder your journal is in. hledger keeps its import state beside this file.</span>
     </label>
     {#each problems as problem (problem)}
         <p class="text-xs text-error" role="alert">{problem}</p>
@@ -86,7 +84,7 @@
             </p>
         {/if}
         {#each unwritable as journal (journal.id)}
-            <p class="text-xs text-base-content/50">
+            <p class="text-xs text-muted">
                 {journal.label} can't be written to — it isn't a plain file inside the folder your journal is in.
             </p>
         {/each}

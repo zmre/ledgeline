@@ -94,7 +94,7 @@
     <!-- Side by side from sm; on a phone the help would be a sliver beside the
          buttons, so they stack, buttons still at the right. -->
     <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-4">
-        <div class="flex flex-col gap-1 text-xs text-base-content/70" data-testid="account-report-help">
+        <div class="flex flex-col gap-1 text-xs text-muted" data-testid="account-report-help">
             {#each readings as reading (reading)}
                 <p>{READING_HELP[reading]}</p>
             {/each}
@@ -129,7 +129,7 @@
                 <FigureColgroup {periods} total={!comparing} compare={comparing} />
                 <thead>
                     <ProjectedHeadRow columns={periods} projectedFrom={edgeAt} {trailing} fixed compareLabel={comparing ? compareLabel : null} />
-                    <tr class="text-[0.65rem] text-base-content/40">
+                    <tr class="text-[0.65rem] text-muted">
                         <th class="truncate font-normal">Account</th>
                         {#each report.periods as period, i (period.key)}
                             <th class="{projectedEdge(i, edgeAt)} text-right font-normal" title="{period.start} to {period.end}"
@@ -148,9 +148,7 @@
                         <tr class="bg-base-200/60 text-xs font-semibold">
                             <th class="font-semibold">
                                 {section.title}
-                                <span class="ml-1 font-normal text-base-content/50"
-                                    >{section.reading === "balance" ? "balance at period end" : "change in period"}</span
-                                >
+                                <span class="ml-1 font-normal text-muted">{section.reading === "balance" ? "balance at period end" : "change in period"}</span>
                             </th>
                             <td colspan={periods}></td>
                             {#if comparing}
@@ -173,7 +171,7 @@
                                                 onclick={() => toggle(display.row.account)}
                                             >
                                                 <span
-                                                    class="inline-block w-3 shrink-0 text-[0.65rem] text-base-content/40 transition-transform {expanded
+                                                    class="inline-block w-3 shrink-0 text-[0.65rem] text-muted transition-transform {expanded
                                                         ? 'rotate-90'
                                                         : ''}"
                                                     aria-hidden="true">▶</span
@@ -230,7 +228,7 @@
                 {:else}
                     <tbody>
                         <tr>
-                            <th class="font-normal text-base-content/50"
+                            <th class="font-normal text-muted"
                                 >{filtered ? "None of the chosen accounts has anything in these periods" : "No account has anything in these periods"}</th
                             >
                             <td colspan={periods + trailing}></td>

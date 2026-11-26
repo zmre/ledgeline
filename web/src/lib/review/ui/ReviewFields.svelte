@@ -59,7 +59,7 @@
 <!-- Labels sit to the left from `md`; below it (a phone) they go above their
      fields, which then get the whole width (plan 42). -->
 {#snippet label(text: string, key: string)}
-    <span class="mt-2 flex items-center gap-1.5 text-xs font-medium tracking-wide text-base-content/55 uppercase first:mt-0 md:mt-0 md:pt-1.5">
+    <span class="mt-2 flex items-center gap-1.5 text-xs font-medium tracking-wide text-muted uppercase first:mt-0 md:mt-0 md:pt-1.5">
         <kbd class="kbd w-5 justify-center kbd-xs font-normal normal-case">{key}</kbd>{text}
     </span>
 {/snippet}

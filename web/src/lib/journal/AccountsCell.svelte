@@ -118,7 +118,7 @@
     {#if autoCount > 0}
         <button
             type="button"
-            class="badge shrink-0 cursor-pointer border-dashed badge-ghost badge-sm font-normal text-base-content/55 italic hover:badge-outline"
+            class="badge shrink-0 cursor-pointer border-dashed badge-ghost badge-sm font-normal text-muted italic hover:badge-outline"
             title={autoTitle}
             aria-label={autoTitle}
             data-testid="auto-badge"
@@ -143,7 +143,7 @@
                 onclick={() => startEdit(flow.source)}
                 ><AccountLabel name={flow.source} title="Edit category · {flow.source}" maxWidth={chipRooms?.[0]} /></button
             >
-            <span class="shrink-0 text-base-content/50" aria-label="to">&rarr;</span>
+            <span class="shrink-0 text-muted" aria-label="to">&rarr;</span>
             <button
                 type="button"
                 class="badge min-w-0 cursor-pointer badge-ghost badge-sm hover:badge-outline"
@@ -152,7 +152,7 @@
             >
         {:else}
             <span class="badge min-w-0 badge-ghost badge-sm" title={flow.source}><AccountLabel name={flow.source} maxWidth={chipRooms?.[0]} /></span>
-            <span class="shrink-0 text-base-content/50" aria-label="to">&rarr;</span>
+            <span class="shrink-0 text-muted" aria-label="to">&rarr;</span>
             <span class="badge min-w-0 badge-ghost badge-sm" title={flow.dest}><AccountLabel name={flow.dest} maxWidth={chipRooms?.[1]} /></span>
         {/if}
         {@render autoBadge()}

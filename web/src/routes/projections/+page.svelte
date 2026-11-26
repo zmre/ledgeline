@@ -474,7 +474,7 @@
     <div class="flex flex-wrap items-baseline justify-between gap-2">
         <h1 class="text-lg font-semibold">Projections</h1>
         {#if current !== null}
-            <p class="text-sm text-base-content/60">
+            <p class="text-sm text-muted">
                 Actuals run to the last complete period; the first projected period starts {current.actualsEnd}.
             </p>
         {/if}
@@ -571,7 +571,7 @@
             class="flex-wrap items-end gap-x-4 gap-y-2 rounded-box bg-base-200 px-3 py-2"
         >
             <label class="form-control">
-                <span class="label-text mb-1 block text-xs text-base-content/70">Interval</span>
+                <span class="label-text mb-1 block text-xs text-muted">Interval</span>
                 <select class="select w-32 select-sm" bind:value={params.interval} aria-label="Interval">
                     <option value="monthly">Monthly</option>
                     <option value="quarterly">Quarterly</option>
@@ -579,7 +579,7 @@
                 </select>
             </label>
             <label class="form-control {comparing ? 'opacity-50' : ''}" title={comparing ? "Not used while comparing" : undefined}>
-                <span class="label-text mb-1 block text-xs text-base-content/70">Periods</span>
+                <span class="label-text mb-1 block text-xs text-muted">Periods</span>
                 <input
                     type="number"
                     aria-disabled={comparing}
@@ -594,7 +594,7 @@
             <!-- How many full ACTUAL periods the statements show before the
              forecast (plan 28 Decision 6). Zero is allowed: forecast only. -->
             <label class="form-control">
-                <span class="label-text mb-1 block text-xs text-base-content/70">Actuals</span>
+                <span class="label-text mb-1 block text-xs text-muted">Actuals</span>
                 <input
                     type="number"
                     class="input w-20 input-sm"
@@ -619,7 +619,7 @@
                     />
                     Compare vs actuals
                 </label>
-                <span id="projection-compare-hint" class="text-xs text-base-content/60" data-testid="projection-compare-hint">
+                <span id="projection-compare-hint" class="text-xs text-muted" data-testid="projection-compare-hint">
                     {#if params.lookback === 0}
                         Set Actuals to 1 or more to compare
                     {:else if compareFromLabel !== null}
@@ -634,7 +634,7 @@
                 <DepthSlider bind:depth={params.depth} max={maxDepth} />
             {/key}
             {#if canReseed}
-                <div class="flex items-center gap-2 text-xs text-base-content/70" data-testid="projection-reseed">
+                <div class="flex items-center gap-2 text-xs text-muted" data-testid="projection-reseed">
                     <span>The starting rows were seeded at depth {scenarioStore.seedDepth}.</span>
                     <button type="button" class="btn btn-outline btn-xs" onclick={retrySeed}>Re-seed at depth {params.depth}</button>
                 </div>
@@ -643,7 +643,7 @@
     </div>
 
     {#if compareNote !== null}
-        <p class="-mt-4 px-3 text-xs text-base-content/60" data-testid="projection-compare-note">{compareNote}</p>
+        <p class="-mt-4 px-3 text-xs text-muted" data-testid="projection-compare-note">{compareNote}</p>
     {/if}
 
     {#if warnings.length > 0}
@@ -666,7 +666,7 @@
              plus the gap, so the reading jumped a line under the reader. A live
              region that is always present is also the one screen readers
              announce. -->
-        <p class="min-h-4 text-xs text-base-content/60" role="status" aria-live="polite" data-testid="projection-stale">
+        <p class="min-h-4 text-xs text-muted" role="status" aria-live="polite" data-testid="projection-stale">
             {stale ? "Recomputing for your latest edit…" : ""}
         </p>
         <div class={stale ? "opacity-60" : ""} aria-busy={stale}>

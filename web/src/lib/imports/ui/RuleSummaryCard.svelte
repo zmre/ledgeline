@@ -66,7 +66,7 @@
                 ↓
             </button>
         </div>
-        <span class="shrink-0 text-xs text-base-content/60">Rule {position}</span>
+        <span class="shrink-0 text-xs text-muted">Rule {position}</span>
         <!-- The line itself is the control: a separate "edit" button beside a
              row of text is one more thing to aim at, and the text is the thing
              the user is already looking at.

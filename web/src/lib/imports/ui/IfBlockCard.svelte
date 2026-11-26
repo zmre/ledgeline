@@ -176,7 +176,7 @@
                     ↓
                 </button>
             </div>
-            <span class="shrink-0 text-xs text-base-content/60">Rule {position}</span>
+            <span class="shrink-0 text-xs text-muted">Rule {position}</span>
             <span class="grow truncate text-sm font-medium" title={summary}>{summary}</span>
             {#if confirmingRemove}
                 <span class="text-xs">Delete this rule?</span>
@@ -194,10 +194,10 @@
         </div>
 
         <div class="flex flex-col gap-2">
-            <span class="text-xs text-base-content/60">When <strong>any</strong> of these match:</span>
+            <span class="text-xs text-muted">When <strong>any</strong> of these match:</span>
             {#each rule.groups as group, groupAt (groupAt)}
                 {#if groupAt > 0}
-                    <div class="flex items-center gap-2 text-xs font-semibold tracking-wide text-base-content/40 uppercase">
+                    <div class="flex items-center gap-2 text-xs font-semibold tracking-wide text-muted uppercase">
                         <span class="h-px grow bg-base-content/10"></span>
                         or
                         <span class="h-px grow bg-base-content/10"></span>
@@ -209,7 +209,7 @@
                 <div class="flex flex-col gap-2 border-l-2 border-base-content/20 pl-2">
                     {#each group.matchers as matcher, index (index)}
                         {#if index > 0}
-                            <span class="text-xs font-semibold tracking-wide text-base-content/40 uppercase">and</span>
+                            <span class="text-xs font-semibold tracking-wide text-muted uppercase">and</span>
                         {/if}
                         <div class="flex items-center gap-2">
                             <select
@@ -267,7 +267,7 @@
         </div>
 
         <div class="flex flex-col gap-2">
-            <span class="text-xs text-base-content/60">Then set:</span>
+            <span class="text-xs text-muted">Then set:</span>
             {#each rule.assignments as assignment, index (index)}
                 <div class="flex items-center gap-2">
                     <select
@@ -314,7 +314,7 @@
              checkboxes because the three states are exclusive and a select
              cannot express the fourth, impossible one. -->
         <div class="flex items-center gap-2">
-            <span class="shrink-0 text-xs text-base-content/60">And with the row:</span>
+            <span class="shrink-0 text-xs text-muted">And with the row:</span>
             <select
                 class="select w-44 shrink-0 select-xs sm:w-52"
                 {disabled}

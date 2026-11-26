@@ -46,7 +46,7 @@
 
 <section class="flex flex-col gap-3 rounded-box border border-warning/40 p-3" aria-label="Unmapped {sourceLabel} accounts" data-testid="qb-unmapped">
     <h2 class="text-sm font-semibold tracking-tight">Map {sourceLabel} accounts</h2>
-    <p class="text-xs text-base-content/60">
+    <p class="text-xs text-muted">
         These account names come straight from the export. Where Ledgeline can tell what an account is, it fills in a suggestion; check each one, type the
         Ledgeline account it should be, and Ledgeline adds a plain <code>alias</code> for it — the same mapping the Account Aliases tab edits. A mapping on a parent
         account also covers its own sub-accounts.

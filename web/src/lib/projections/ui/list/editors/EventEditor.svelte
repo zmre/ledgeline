@@ -71,11 +71,11 @@
 <div class="flex flex-col gap-4" data-testid="event-editor">
     <div class="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,11rem)_minmax(0,1fr)]">
         <label class="flex flex-col gap-1">
-            <span class="text-xs text-base-content/60">Date</span>
+            <span class="text-xs text-muted">Date</span>
             <input type="date" class="input w-full input-sm" value={event.date} aria-label="Date" onchange={(e) => setDate(e.currentTarget.value)} />
         </label>
         <label class="flex flex-col gap-1">
-            <span class="text-xs text-base-content/60">Description</span>
+            <span class="text-xs text-muted">Description</span>
             <input
                 type="text"
                 class={["input w-full input-sm", noteError !== null && "input-error"]}
@@ -94,10 +94,8 @@
 
     <div class="flex flex-col gap-1.5">
         <div class="flex flex-wrap items-baseline justify-between gap-x-3">
-            <span class="text-xs font-medium text-base-content/70">Postings</span>
-            <span class="text-xs text-base-content/45" data-testid="amount-help"
-                >Amounts as the journal writes them: a minus moves money out of an account.</span
-            >
+            <span class="text-xs font-medium text-muted">Postings</span>
+            <span class="text-xs text-muted" data-testid="amount-help">Amounts as the journal writes them: a minus moves money out of an account.</span>
         </div>
         <ol class="flex flex-col gap-2">
             {#each event.postings as posting, at (at)}
@@ -115,7 +113,7 @@
                             />
                         </div>
                         <label class="input w-40 input-sm">
-                            <span class="text-base-content/50">{posting.amount.commodity}</span>
+                            <span class="text-muted">{posting.amount.commodity}</span>
                             <input
                                 type="text"
                                 class="text-right font-mono"
@@ -137,7 +135,7 @@
                         <TypeBadge account={posting.account} classes={declared} />
                         <input
                             type="text"
-                            class="input w-full input-ghost font-mono text-base-content/70 input-xs"
+                            class="input w-full input-ghost font-mono text-muted input-xs"
                             value={posting.comment}
                             placeholder="; comment on this posting (optional)"
                             aria-label="Comment for {name}"
@@ -155,7 +153,7 @@
 
     <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <label class="flex flex-col gap-1">
-            <span class="text-xs text-base-content/60">Counter-account <span class="text-base-content/40">(takes what the postings leave)</span></span>
+            <span class="text-xs text-muted">Counter-account <span class="text-muted">(takes what the postings leave)</span></span>
             <AccountInput
                 bind:value={() => event.counter ?? "", (next) => (event.counter = next === "" ? null : next)}
                 {accountNames}
@@ -168,11 +166,11 @@
                 }}
             />
             {#if balanced && event.counter === null}
-                <span class="text-xs text-base-content/45" data-testid="counter-not-needed">None needed: the postings balance on their own.</span>
+                <span class="text-xs text-muted" data-testid="counter-not-needed">None needed: the postings balance on their own.</span>
             {/if}
         </label>
         <label class="flex flex-col gap-1">
-            <span class="text-xs text-base-content/60">Header comment</span>
+            <span class="text-xs text-muted">Header comment</span>
             <input
                 type="text"
                 class="input w-full font-mono input-sm"

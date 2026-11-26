@@ -43,8 +43,8 @@
 </script>
 
 <section class="flex flex-col gap-3 rounded-box border border-base-content/10 p-3" aria-label="Statement balance" data-testid="imports-balance">
-    <h2 class="text-sm font-semibold tracking-tight">Statement balance <span class="font-normal text-base-content/50">(optional)</span></h2>
-    <p class="text-xs text-base-content/60">
+    <h2 class="text-sm font-semibold tracking-tight">Statement balance <span class="font-normal text-muted">(optional)</span></h2>
+    <p class="text-xs text-muted">
         {#if prefilled}
             Taken from the statement itself{statement?.balanceAsOf === null || statement?.balanceAsOf === undefined ? "" : `, as of ${statement.balanceAsOf}`}.
             Ledgeline checks it against what your journal plus these transactions comes to, before writing anything.

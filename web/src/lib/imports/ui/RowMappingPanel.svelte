@@ -127,22 +127,22 @@
 
 <div class="flex flex-col gap-3">
     {#if pending}
-        <p class="text-xs text-base-content/60" data-testid="imports-preview-pending">
+        <p class="text-xs text-muted" data-testid="imports-preview-pending">
             Re-reading the data file with the settings you just saved… the sample values below are held back until it answers.
         </p>
     {:else if preview?.available === true}
-        <p class="text-xs text-base-content/60">
+        <p class="text-xs text-muted">
             Sample values are from <code>{preview.dataLabel ?? "the data file"}</code>, split on
             <code>{preview.separator === "\t" ? "TAB" : preview.separator}</code>.
         </p>
     {:else if unavailableReason !== null}
-        <p class="text-xs text-base-content/60" data-testid="imports-no-preview">
+        <p class="text-xs text-muted" data-testid="imports-no-preview">
             No sample rows to show — {unavailableReason}. The columns below are numbered instead.
         </p>
     {/if}
 
     {#if columns === 0}
-        <p class="text-sm text-base-content/70">
+        <p class="text-sm text-muted">
             This file has no <code>fields</code> line, and Ledgeline could not read its data file to guess one. Add the columns from a terminal, or open the CSV and
             come back.
         </p>
@@ -160,9 +160,9 @@
                 <tbody>
                     {#each rows as index (index)}
                         <tr>
-                            <td class="text-base-content/60">{index + 1}</td>
+                            <td class="text-muted">{index + 1}</td>
                             <td class="font-medium">{header(index) || "—"}</td>
-                            <td class="font-mono text-xs text-base-content/70">{sample(index) || "—"}</td>
+                            <td class="font-mono text-xs text-muted">{sample(index) || "—"}</td>
                             <td>
                                 <input
                                     type="text"
@@ -178,7 +178,7 @@
                                     oninput={(event) => setColumn(index, event.currentTarget.value)}
                                     onchange={(event) => setColumn(index, event.currentTarget.value.trim())}
                                 />
-                                <span id="{listId}-hint-{index}" class="block pt-0.5 text-xs text-base-content/50">{columnRoleHint(nameAt(index))}</span>
+                                <span id="{listId}-hint-{index}" class="block pt-0.5 text-xs text-muted">{columnRoleHint(nameAt(index))}</span>
                             </td>
                         </tr>
                     {/each}
@@ -190,11 +190,11 @@
                 <option value={field}></option>
             {/each}
         </datalist>
-        <p class="text-xs text-base-content/60">
+        <p class="text-xs text-muted">
             Every import needs a <code>date</code> and an amount (<code>amount</code>, or <code>amount-in</code> and <code>amount-out</code> for banks that use two
             columns). Leave a column blank to skip it.
         </p>
-        <p class="text-xs text-base-content/60">
+        <p class="text-xs text-muted">
             You are not limited to the suggested names. Any other name simply labels the column so later rules can use it — call one <code>cat</code> and you
             can write <code>comment category:%cat</code>.
         </p>

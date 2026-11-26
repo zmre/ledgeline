@@ -115,7 +115,7 @@
             </button>
             {#if columns.amount && totals.length > 0}
                 <span class="shrink-0 font-mono text-sm whitespace-nowrap tabular-nums">
-                    {totals[0]}{#if totals.length > 1}<span class="text-xs text-base-content/50"> +{totals.length - 1}</span>{/if}
+                    {totals[0]}{#if totals.length > 1}<span class="text-xs text-muted"> +{totals.length - 1}</span>{/if}
                 </span>
             {/if}
         </article>

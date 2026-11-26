@@ -51,7 +51,7 @@
         {#if failure !== null}
             <p class="text-sm text-error" role="alert">{failure.message}</p>
         {:else if preview === null}
-            <p class="flex items-center gap-2 text-sm text-base-content/70" role="status">
+            <p class="flex items-center gap-2 text-sm text-muted" role="status">
                 <span class="loading loading-xs loading-spinner"></span> Checking {fileName(manualRulesId)}…
             </p>
         {:else}
@@ -87,7 +87,7 @@
                 <summary class="cursor-pointer">New {fileName(preview.categoriesId)}</summary>
                 <pre class="mt-1 max-h-64 overflow-auto rounded-box bg-base-200 p-2 text-xs">{preview.diffs.categories}</pre>
             </details>
-            <p class="text-xs text-base-content/60">Nothing is written until you press Finish.</p>
+            <p class="text-xs text-muted">Nothing is written until you press Finish.</p>
         {/if}
         <div class="modal-action">
             <button type="button" class="btn btn-ghost btn-sm" onclick={onCancel}>Cancel</button>

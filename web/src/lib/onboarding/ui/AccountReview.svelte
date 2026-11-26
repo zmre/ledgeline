@@ -20,7 +20,7 @@
 </script>
 
 <div class="flex flex-col gap-2" data-testid="new-ledger-accounts">
-    <p class="text-sm text-base-content/70">
+    <p class="text-sm text-muted">
         {accounts.length} account{accounts.length === 1 ? "" : "s"}. Rename or remove any you won't use. Subaccounts take their parent's type, and you can
         change everything later in Settings → Accounts.
     </p>
@@ -52,7 +52,7 @@
                             {/if}
                         </td>
                         <td class="text-xs whitespace-nowrap">{effectiveTypeName(accounts, account) ?? "—"}</td>
-                        <td class="font-mono text-xs text-base-content/70">{tagSummary(account)}</td>
+                        <td class="font-mono text-xs text-muted">{tagSummary(account)}</td>
                         <td class="text-right">
                             <button
                                 type="button"

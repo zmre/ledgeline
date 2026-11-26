@@ -76,7 +76,7 @@
             oninput={(e) => search(e.currentTarget.value)}
         />
     {/if}
-    <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-base-content/60">
+    <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-muted">
         <p data-testid="forecast-journal-count">
             {#if journal.entries.length === 0}
                 The scenario generates no transactions over these periods.
@@ -99,7 +99,7 @@
         <div class="ll-sticky-col overflow-x-auto rounded-box border border-base-content/10">
             <table class="table table-sm [&_tbody_tr]:border-0">
                 <thead>
-                    <tr class="text-[0.65rem] text-base-content/40">
+                    <tr class="text-[0.65rem] text-muted">
                         <th class="hidden w-28 font-normal sm:table-cell">Date</th>
                         <th class="font-normal"><span class="sm:hidden">Date · </span>Description · account</th>
                         <th class="w-36 text-right font-normal">Amount</th>
@@ -120,7 +120,7 @@
                         {#each entry.txn.postings as posting, p (p)}
                             {@const rule = generatedBy(posting.tags)}
                             <tr
-                                class="[&>td]:py-0.5 {rule === null ? 'text-base-content/80' : 'text-base-content/55 italic'}"
+                                class="[&>td]:py-0.5 {rule === null ? 'text-base-content/80' : 'text-muted italic'}"
                                 data-generated={rule === null ? undefined : "auto"}
                             >
                                 <td class="hidden sm:table-cell"></td>

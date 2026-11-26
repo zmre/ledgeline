@@ -46,7 +46,7 @@
     <span
         class={[
             "w-4 shrink-0 text-center leading-5 select-none",
-            frame.canDrag ? "cursor-grab text-base-content/25 group-hover/entry:text-base-content/60" : "text-transparent",
+            frame.canDrag ? "cursor-grab text-base-content/25 group-hover/entry:text-muted" : "text-transparent",
         ]}
         draggable={frame.canDrag ? "true" : "false"}
         aria-hidden="true"
@@ -81,7 +81,7 @@
                 <span class="sr-only">Section: </span>{title === "" ? "untitled section" : title}
             </h3>
             {#if rest !== ""}
-                <span class="hidden min-w-0 truncate text-xs text-base-content/45 sm:inline">{rest.split("\n").join(" · ")}</span>
+                <span class="hidden min-w-0 truncate text-xs text-muted sm:inline">{rest.split("\n").join(" · ")}</span>
             {/if}
             <span class="h-px min-w-6 grow bg-linear-to-r from-base-content/25 via-base-content/12 to-transparent" aria-hidden="true"></span>
             {@render actions()}
@@ -92,13 +92,13 @@
             <div class="min-w-0 grow">
                 <h3 id={headId} class="sr-only">{comment.style === "block" ? "Comment block" : "Note"}</h3>
                 {#if comment.style === "block"}
-                    <div class="rounded border border-dashed border-base-content/15 px-2 py-1 font-mono text-xs text-base-content/50">
+                    <div class="rounded border border-dashed border-base-content/15 px-2 py-1 font-mono text-xs text-muted">
                         <div class="text-base-content/35">comment</div>
                         <pre class="overflow-x-auto whitespace-pre-wrap">{comment.text}</pre>
                         <div class="text-base-content/35">end comment</div>
                     </div>
                 {:else}
-                    <p class="border-l-2 border-base-content/12 pl-2 font-mono text-xs leading-5 whitespace-pre-wrap text-base-content/55 italic">
+                    <p class="border-l-2 border-base-content/12 pl-2 font-mono text-xs leading-5 whitespace-pre-wrap text-muted italic">
                         {lines.map((line) => `; ${line}`).join("\n")}
                     </p>
                 {/if}

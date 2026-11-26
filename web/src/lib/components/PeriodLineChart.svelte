@@ -255,7 +255,7 @@
         {#if actions !== undefined}{@render actions()}{/if}
     </div>
     {#if nothingToDraw}
-        <p class="py-8 text-center text-sm text-base-content/60">{empty}</p>
+        <p class="py-8 text-center text-sm text-muted">{empty}</p>
     {:else}
         <div class="w-full {height} {onPeriodClick === undefined ? '' : 'cursor-pointer'}" data-testid={testid}>
             <LineChart

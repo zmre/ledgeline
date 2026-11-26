@@ -96,14 +96,14 @@
 <section class="flex flex-col gap-4 rounded-box border border-primary/30 bg-primary/5 p-3" data-testid="imports-create-rules-panel">
     <header class="flex flex-col gap-1">
         <h2 class="text-sm font-semibold tracking-tight">Create a rules file for this statement</h2>
-        <p class="text-xs text-base-content/70">
+        <p class="text-xs text-muted">
             Ledgeline has read your file and guessed how its columns map onto hledger's fields. Check the mapping, say which account the statement is for, and
             it will write the rules file beside your journal. <strong>Nothing is written until you press Create.</strong>
         </p>
     </header>
 
     {#if drafting}
-        <p class="flex items-center gap-2 text-sm text-base-content/70" role="status">
+        <p class="flex items-center gap-2 text-sm text-muted" role="status">
             <span class="loading loading-sm loading-spinner"></span>
             Reading your file…
         </p>
@@ -133,7 +133,7 @@
                     data-testid="imports-create-id"
                     oninput={(event) => onId(event.currentTarget.value)}
                 />
-                <span class="label-text-alt mt-1 text-xs text-base-content/60">
+                <span class="label-text-alt mt-1 text-xs text-muted">
                     Relative to your journal. hledger finds a rules file by name, so <code>bank.csv</code> is read through
                     <code>bank.csv.rules</code> beside it.
                 </span>
@@ -147,7 +147,7 @@
                      `createBlocker`. Said here rather than left silent, since a
                      Create button that enables itself with an empty-looking
                      field above it reads as a bug otherwise. -->
-                <p class="-mt-2 text-xs text-base-content/60" data-testid="imports-create-account1-mapped">
+                <p class="-mt-2 text-xs text-muted" data-testid="imports-create-account1-mapped">
                     A column below is already mapped to <code>account1</code>, so this can stay blank — each row will use its own.
                 </p>
             {/if}
@@ -178,7 +178,7 @@
                     data-testid="imports-create-currency"
                     onchange={(event) => onItems(withSetting(form.items, "currency", event.currentTarget.value.trim()))}
                 />
-                <span class="label-text-alt mt-1 text-xs text-base-content/60">
+                <span class="label-text-alt mt-1 text-xs text-muted">
                     Prepended to every amount. Leave it blank if the amounts in your file already carry a symbol — hledger would otherwise read
                     <code>$-4.50</code> as <code>$$-4.50</code>, a commodity of its own.
                 </span>
@@ -224,7 +224,7 @@
             <div class="flex flex-col gap-1">
                 <h3 class="text-sm font-semibold tracking-tight">What the file will say</h3>
                 <pre class="overflow-x-auto rounded bg-base-200 p-2 font-mono text-xs" data-testid="imports-create-lines">{lines.join("\n")}</pre>
-                <p class="text-xs text-base-content/60">
+                <p class="text-xs text-muted">
                     Rows that no rule matches land in <code>expenses:unknown</code>, which is what makes them easy to find afterwards. Add rules for them in
                     <strong>Edit Rules</strong> once the file exists.
                 </p>

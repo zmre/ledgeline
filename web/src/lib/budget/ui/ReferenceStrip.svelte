@@ -52,9 +52,9 @@
 
 <div class="rounded-box bg-base-200 px-3 py-2" data-testid="reference-strip">
     <div class="mb-1.5 flex items-baseline justify-between gap-2">
-        <span class="text-xs font-medium text-base-content/70">Recent activity</span>
+        <span class="text-xs font-medium text-muted">Recent activity</span>
         {#if reference !== null}
-            <span class="truncate text-xs text-base-content/50">{reference.account}</span>
+            <span class="truncate text-xs text-muted">{reference.account}</span>
         {/if}
     </div>
 
@@ -66,20 +66,20 @@
         <!-- Deliberately quiet. This is a reference figure, not the edit: losing
              it must not stop someone setting a budget they already know they
              want. -->
-        <p class="py-2 text-xs text-base-content/50">Couldn't load recent activity for this account.</p>
+        <p class="py-2 text-xs text-muted">Couldn't load recent activity for this account.</p>
     {:else if periods.length === 0}
-        <p class="py-2 text-xs text-base-content/50">No activity in this account yet.</p>
+        <p class="py-2 text-xs text-muted">No activity in this account yet.</p>
     {:else}
         <dl class="flex flex-wrap items-start gap-x-6 gap-y-2">
             {#each periods as period (period.key)}
                 <div class="flex flex-col">
-                    <dt class="text-xs whitespace-nowrap text-base-content/60">
+                    <dt class="text-xs whitespace-nowrap text-muted">
                         {period.label}
                         <!-- A period still running is labelled, never silently
                              shown as a whole one: a third of a month next to
                              four full ones is a misleading comparison unless it
                              says so. -->
-                        {#if !period.complete}<span class="text-base-content/40">so far</span>{/if}
+                        {#if !period.complete}<span class="text-muted">so far</span>{/if}
                     </dt>
                     <dd class="font-mono text-sm tabular-nums" title={`${period.start} – ${period.end}`}>{fmt(period.total)}</dd>
                 </div>
@@ -91,9 +91,9 @@
                      the periods it summarises rather than before them, so the row
                      still reads left-to-right as history → conclusion. -->
                 <div class="flex flex-col border-l border-base-content/15 pl-6" data-testid="reference-average">
-                    <dt class="text-xs whitespace-nowrap text-base-content/60">
+                    <dt class="text-xs whitespace-nowrap text-muted">
                         Average
-                        <span class="text-base-content/40">of {average.over}</span>
+                        <span class="text-muted">of {average.over}</span>
                     </dt>
                     <dd
                         class="font-mono text-sm font-semibold tabular-nums"

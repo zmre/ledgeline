@@ -67,7 +67,7 @@
     {#if view === null}
         <span class="loading loading-xs loading-spinner" aria-label="Loading invoice candidates"></span>
     {:else if view.proposals.length === 0}
-        <p class="text-xs text-base-content/60">No open invoice matches this payment.</p>
+        <p class="text-xs text-muted">No open invoice matches this payment.</p>
     {:else}
         {#each view.proposals as proposal, at (`${proposal.invoice.index}:${proposal.invoice.posting}:${proposal.payment.index}`)}
             <div class="flex flex-col gap-1 rounded border border-base-content/10 p-2" data-testid="accrual-settle-candidate">
@@ -79,7 +79,7 @@
                     </span>
                     <span class="tabular-nums">{fmt(proposal.invoice.amount.commodity, proposal.invoice.amount.quantity, journal.reportStyles)}</span>
                 </div>
-                <p class="text-xs text-base-content/60">
+                <p class="text-xs text-muted">
                     {proposal.byNumber ? "Same invoice number" : proposal.byParty ? "Same customer" : "Same amount"} · {proposal.gapDays} days later
                     {#if proposal.fit.kind === "short" && proposal.fit.difference !== null}
                         · short {fmt(proposal.invoice.amount.commodity, proposal.fit.difference, journal.reportStyles)} (a fee?)

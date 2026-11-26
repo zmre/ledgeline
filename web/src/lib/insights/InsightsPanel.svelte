@@ -127,7 +127,7 @@
     <div class="collapse-title flex min-h-0 items-center justify-between gap-2 py-3 pr-10">
         <h2 class="text-sm font-semibold tracking-tight">Insights</h2>
         <span class="text-sm">
-            <span class="mr-1 text-base-content/60">{headline.label}</span>
+            <span class="mr-1 text-muted">{headline.label}</span>
             <span class="font-semibold {signClass(toNumber(headline.qty))}">{headline.text}</span>
         </span>
     </div>

@@ -109,7 +109,7 @@
         <header class="flex items-start gap-2">
             <div class="flex flex-col">
                 <h2 id={headingId} class="text-base font-semibold">{account.label}</h2>
-                {#if !account.enabled}<span class="text-xs text-base-content/60">Paused</span>{/if}
+                {#if !account.enabled}<span class="text-xs text-muted">Paused</span>{/if}
             </div>
             <button type="button" class="btn ml-auto btn-square btn-ghost btn-sm" aria-label="Close" onclick={onClose}>✕</button>
         </header>
@@ -156,10 +156,10 @@
                                     <option value={choice.id}>{choice.id}{choice.fits ? "" : " (doesn't read the sync CSV)"}</option>
                                 {/each}
                             </select>
-                            <span class="text-base-content/60">Rules files beside your journal that read a sync CSV.</span>
+                            <span class="text-muted">Rules files beside your journal that read a sync CSV.</span>
                         {:else}
                             <input type="text" class="input w-full font-mono input-sm" bind:value={draftRules} disabled={busy} spellcheck="false" />
-                            <span class="text-base-content/60">A sync rules file, relative to your journal's folder.</span>
+                            <span class="text-muted">A sync rules file, relative to your journal's folder.</span>
                         {/if}
                     </label>
                     <div class="flex gap-2">
@@ -169,18 +169,18 @@
                 </form>
             {:else}
                 <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
-                    <dt class="text-base-content/60">Account</dt>
+                    <dt class="text-muted">Account</dt>
                     <dd class="truncate font-mono">{account.journalAccount}</dd>
-                    <dt class="text-base-content/60">Writes into</dt>
+                    <dt class="text-muted">Writes into</dt>
                     <dd class="truncate font-mono">{account.target}</dd>
-                    <dt class="text-base-content/60">Rules</dt>
+                    <dt class="text-muted">Rules</dt>
                     <dd class="flex items-center gap-2">
                         <span class="truncate font-mono">{account.rules}</span>
                         <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- importsHref resolves the route; the query string is appended -->
                         <button type="button" class="btn btn-ghost btn-xs" onclick={() => void goto(importsHref("rules"))}>Edit</button>
                     </dd>
                     {#if account.categories !== null}
-                        <dt class="text-base-content/60">Categories</dt>
+                        <dt class="text-muted">Categories</dt>
                         <dd class="truncate font-mono" title="Shared with this account's manual imports">{account.categories}</dd>
                     {/if}
                 </dl>
@@ -227,7 +227,7 @@
         <section class="flex flex-col gap-2" aria-label="Recent syncs">
             <h3 class="text-sm font-semibold">Recent syncs</h3>
             {#if account.history.length === 0}
-                <p class="text-sm text-base-content/60">Not synced yet.</p>
+                <p class="text-sm text-muted">Not synced yet.</p>
             {:else}
                 <table class="table table-xs">
                     <thead><tr><th>When</th><th>Result</th><th class="text-right">Added</th><th class="text-right">Held</th></tr></thead>

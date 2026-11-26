@@ -402,7 +402,7 @@
                     <div class="flex flex-col gap-1 text-sm" data-testid="accrual-scheduled">
                         <span><span class="font-mono text-xs">{line.account}</span> · {line.id}</span>
                         {#if schedule === null}
-                            <span class="text-xs text-base-content/60"
+                            <span class="text-xs text-muted"
                                 >{forData === null ? "Loading its schedule…" : "No rule for this schedule in the recognition file."}</span
                             >
                         {:else}
@@ -449,7 +449,7 @@
                             over a term
                         </label>
                         {#if choices.length === 0}
-                            <p class="text-xs text-base-content/60" data-testid="accrual-declare-hint">
+                            <p class="text-xs text-muted" data-testid="accrual-declare-hint">
                                 No {role === "prepaid" ? "prepaid" : "deferred-revenue"} account is declared. Add one to your accounts file:
                                 <code class="block font-mono">{declarationHint(role)}</code>
                             </p>
@@ -485,7 +485,7 @@
                     <div class="flex flex-col gap-1 text-sm" data-testid="accrual-payment">
                         <span>Payment {money(line)} — which invoice does it pay?</span>
                         {#if adding || txn.index <= 0}
-                            <span class="text-xs text-base-content/60">Save the transaction first to match it to an invoice.</span>
+                            <span class="text-xs text-muted">Save the transaction first to match it to an invoice.</span>
                         {:else if line.matched}
                             <span class="text-xs text-success">Linked to its invoice.</span>
                         {:else}
@@ -509,9 +509,7 @@
                                 data-testid="accrual-credit-end">End contract</button
                             >
                         {:else}
-                            <span class="text-xs text-base-content/60"
-                                >A credit to {line.account} with no contract found for {line.party?.name ?? "its customer"}.</span
-                            >
+                            <span class="text-xs text-muted">A credit to {line.account} with no contract found for {line.party?.name ?? "its customer"}.</span>
                         {/if}
                     </div>
                 {/each}
@@ -535,7 +533,7 @@
                             onChange={(draft) => updateDraft(at, draft)}
                         />
                         {#if draftProblem(entry.draft) !== null}
-                            <p class="text-xs text-base-content/60" data-testid="accrual-draft-problem">{draftProblem(entry.draft)}</p>
+                            <p class="text-xs text-muted" data-testid="accrual-draft-problem">{draftProblem(entry.draft)}</p>
                         {:else if preview === undefined}
                             <span class="loading loading-xs loading-spinner" aria-label="Loading the preview"></span>
                         {:else if preview.error !== null}

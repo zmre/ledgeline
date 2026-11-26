@@ -79,7 +79,7 @@
         </span>
     </label>
 
-    <div class="flex flex-col gap-2 text-sm text-base-content/70">
+    <div class="flex flex-col gap-2 text-sm text-muted">
         <p>
             Shortly after Ledgeline starts, and about once an hour while it stays open, it checks your journal for stocks that are missing the latest closing
             price, or that have no price in one of the past weeks above. Only those are fetched from Yahoo Finance, the same source the

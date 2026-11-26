@@ -68,7 +68,7 @@
                 >{/if}
         </p>
     {/if}
-    <p class="text-xs text-base-content/70" data-testid="accrual-total-after">Schedule total after: {money(sum(restatement.totalAfter))}</p>
+    <p class="text-xs text-muted" data-testid="accrual-total-after">Schedule total after: {money(sum(restatement.totalAfter))}</p>
     {#if onApply !== undefined || onCancel !== undefined}
         <div class="flex justify-end gap-2">
             {#if onCancel !== undefined}<button type="button" class="btn btn-ghost btn-xs" disabled={busy} onclick={onCancel}>Cancel</button>{/if}

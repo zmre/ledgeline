@@ -327,7 +327,7 @@
         class="flex-wrap items-end gap-x-4 gap-y-2 rounded-box bg-base-200 px-3 py-2"
     >
         <div class="form-control max-w-full">
-            <span class="label-text mb-1 block text-xs text-base-content/70">Period</span>
+            <span class="label-text mb-1 block text-xs text-muted">Period</span>
             <!-- Wraps when a big interface scale leaves too few rem for the presets on one line. -->
             <div class="join flex-wrap" role="group" aria-label="Budget period">
                 {#each BUDGET_PRESETS as preset (preset.id)}
@@ -343,11 +343,11 @@
             </div>
         </div>
         <label class="form-control">
-            <span class="label-text mb-1 block text-xs text-base-content/70">From</span>
+            <span class="label-text mb-1 block text-xs text-muted">From</span>
             <input type="date" class="input w-40 input-sm" value={params.from} onchange={(e) => setDate("from", e.currentTarget.value)} aria-label="From" />
         </label>
         <label class="form-control">
-            <span class="label-text mb-1 block text-xs text-base-content/70">To</span>
+            <span class="label-text mb-1 block text-xs text-muted">To</span>
             <input type="date" class="input w-40 input-sm" value={params.to} onchange={(e) => setDate("to", e.currentTarget.value)} aria-label="To" />
         </label>
         <!-- Keyed on maxDepth for the reason the reports bar keys it: the slider
@@ -361,7 +361,7 @@
              disagreed about order would be harder to scan than the file order
              this replaces. -->
         <div class="form-control">
-            <span class="label-text mb-1 block text-xs text-base-content/70">Sort by</span>
+            <span class="label-text mb-1 block text-xs text-muted">Sort by</span>
             <div class="flex flex-wrap gap-2">
                 <div class="join" role="group" aria-label="Sort budget goals by">
                     {#each SORT_KEY_LABELS as option (option.id)}

@@ -228,7 +228,7 @@
                     <input type="radio" class="radio mt-1 radio-sm" name="{headingId}-method" value="simplefin" bind:group={method} />
                     <span class="flex flex-col gap-1">
                         <span class="flex flex-wrap justify-between gap-2 font-medium">
-                            Through SimpleFIN Bridge <span class="text-xs font-normal text-base-content/60">Third party · paid subscription</span>
+                            Through SimpleFIN Bridge <span class="text-xs font-normal text-muted">Third party · paid subscription</span>
                         </span>
                         <span class="text-sm text-base-content/80">
                             Works with most US banks. SimpleFIN and its data provider MX can see your transactions; Ledgeline never sees your bank password.
@@ -240,7 +240,7 @@
                     <input type="radio" class="radio mt-1 radio-sm" name="{headingId}-method" value="manual" bind:group={method} />
                     <span class="flex flex-col gap-1">
                         <span class="flex flex-wrap justify-between gap-2 font-medium">
-                            I'll download statements myself <span class="text-xs font-normal text-base-content/60">Nobody else involved</span>
+                            I'll download statements myself <span class="text-xs font-normal text-muted">Nobody else involved</span>
                         </span>
                         <span class="text-sm text-base-content/80">Always works. Ledgeline reminds you when an account is getting stale.</span>
                     </span>
@@ -253,7 +253,7 @@
                     <h3 class="text-base font-semibold" tabindex="-1" bind:this={heading}>
                         {replacing === null ? "Set up SimpleFIN Bridge" : alsoHere ? "Sync from this computer too" : "Paste a new setup token"}
                     </h3>
-                    {#if replacing === null}<span class="text-xs text-base-content/60">About 5 minutes</span>{/if}
+                    {#if replacing === null}<span class="text-xs text-muted">About 5 minutes</span>{/if}
                 </div>
                 {#if alsoHere}
                     <div class="flex flex-col gap-1 rounded-box bg-base-200 p-3 text-sm" data-testid="sync-also-here">
@@ -327,7 +327,7 @@
                         </div>
                     </li>
                 </ol>
-                <p class="text-xs text-base-content/70">
+                <p class="text-xs text-muted">
                     A setup token works once. Ledgeline exchanges it for a private access key and keeps that in your keychain. You can revoke it on SimpleFIN
                     any time.
                 </p>
@@ -360,7 +360,7 @@
         {:else if wizard.step === "preview"}
             <section class="flex flex-col gap-3">
                 <h3 class="text-base font-semibold" tabindex="-1" bind:this={heading}>First sync</h3>
-                <p class="text-sm text-base-content/70">This is what Finish will write. Nothing has been written yet.</p>
+                <p class="text-sm text-muted">This is what Finish will write. Nothing has been written yet.</p>
                 {#each wizard.previews ?? [] as p (p.remoteId)}
                     <div class="flex flex-col gap-1 rounded-box border border-base-content/10 p-3" data-testid="sync-preview-row">
                         <span class="font-medium">{remoteById.get(p.remoteId)?.label ?? p.remoteId}</span>
@@ -368,7 +368,7 @@
                             <span class="text-sm">{previewLine(p)}</span>
                             {#if p.entries !== ""}
                                 <details class="text-sm">
-                                    <summary class="cursor-pointer text-base-content/70">Show the transactions</summary>
+                                    <summary class="cursor-pointer text-muted">Show the transactions</summary>
                                     <pre class="mt-1 max-h-64 overflow-auto rounded-box bg-base-200 p-2 text-xs">{p.entries}</pre>
                                 </details>
                             {/if}
@@ -381,7 +381,7 @@
                     <input type="checkbox" class="toggle mt-0.5 toggle-primary" bind:checked={keepUpToDate} data-testid="sync-keep-up-to-date" />
                     <span class="flex flex-col">
                         <span>Keep these up to date automatically</span>
-                        <span class="text-xs text-base-content/70">
+                        <span class="text-xs text-muted">
                             While Ledgeline is open it syncs once each morning and about every {settings.autoSyncEveryHours} hours, and adds new transactions for
                             you to review.
                         </span>
@@ -392,7 +392,7 @@
             <section class="flex flex-col gap-3">
                 <h3 class="text-base font-semibold" tabindex="-1" bind:this={heading}>Linked</h3>
                 {#if doneToast !== null}<p class="text-sm" data-testid="sync-done-summary">{doneToast.text}</p>{/if}
-                <p class="text-sm text-base-content/70">New transactions are in your journal, marked as not yet reviewed.</p>
+                <p class="text-sm text-muted">New transactions are in your journal, marked as not yet reviewed.</p>
             </section>
         {/if}
 

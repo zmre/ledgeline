@@ -52,7 +52,7 @@
 <section class="flex max-w-2xl flex-col gap-3" data-testid="settings-projections">
     <h2 class="text-base font-semibold">Default scenario</h2>
     {#if !fileStore.available}
-        <p class="text-sm text-base-content/70">This Ledgeline engine has no scenario files to choose from.</p>
+        <p class="text-sm text-muted">This Ledgeline engine has no scenario files to choose from.</p>
     {:else if index === null}
         {#if fileStore.index.error !== null}
             <div class="alert items-start rounded-box py-2 text-sm alert-error" role="alert">{fileStore.index.error.message}</div>
@@ -60,13 +60,11 @@
             <span class="loading loading-sm loading-spinner" aria-label="Loading the scenario files"></span>
         {/if}
     {:else if index.files.length === 0}
-        <p class="text-sm text-base-content/70">
-            Save a scenario from the Projections tab first; then you can choose one here to open whenever you go to that tab.
-        </p>
+        <p class="text-sm text-muted">Save a scenario from the Projections tab first; then you can choose one here to open whenever you go to that tab.</p>
     {:else if !index.defaultSupported}
-        <p class="text-sm text-base-content/70">This Ledgeline engine is too old to set a default scenario.</p>
+        <p class="text-sm text-muted">This Ledgeline engine is too old to set a default scenario.</p>
     {:else}
-        <p class="text-sm text-base-content/70">
+        <p class="text-sm text-muted">
             The Projections tab opens this scenario when Ledgeline starts. Coming back to the tab keeps whatever you had open. You can also set it with the star
             next to the scenario picker.
         </p>
@@ -76,7 +74,7 @@
             </div>
         {/if}
         <label class="form-control">
-            <span class="label-text mb-1 block text-xs text-base-content/70">Default scenario</span>
+            <span class="label-text mb-1 block text-xs text-muted">Default scenario</span>
             <select
                 class="select w-96 max-w-full select-sm"
                 value={defaultId ?? ""}

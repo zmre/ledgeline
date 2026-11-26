@@ -123,7 +123,7 @@
 
 <div class="flex flex-col gap-2 text-xs" data-testid="auto-rule-editor">
     <div class="flex flex-wrap items-center gap-2">
-        <span class="text-base-content/70">When a posting to</span>
+        <span class="text-muted">When a posting to</span>
         <div class="w-64">
             <AccountInput
                 bind:value={form.matchAccount}
@@ -134,10 +134,10 @@
                 onCommit={onChange}
             />
         </div>
-        <span class="text-base-content/70">or one of its subaccounts is {scope === "journal" ? "posted" : "projected"}</span>
+        <span class="text-muted">or one of its subaccounts is {scope === "journal" ? "posted" : "projected"}</span>
         {#if scope === "journal"}
             <label
-                class="flex items-center gap-1 text-base-content/70"
+                class="flex items-center gap-1 text-muted"
                 title="Adds tag:_generated-transaction to the query, so stock hledger applies the rule only to `--forecast` transactions. Ledgeline forecasts nothing in the main journal, so such a rule never fires here."
             >
                 <input
@@ -162,7 +162,7 @@
     </div>
     {#if showAdvanced}
         <label class="flex items-center gap-2">
-            <span class="text-base-content/70" title="hledger query terms, such as desc:acme or amt:>1000, combined with the account as hledger combines them"
+            <span class="text-muted" title="hledger query terms, such as desc:acme or amt:>1000, combined with the account as hledger combines them"
                 >and also</span
             >
             <input
@@ -214,7 +214,7 @@
                             {#if posting.kind === "fixed"}
                                 <input
                                     type="text"
-                                    class="w-10 text-base-content/60"
+                                    class="w-10 text-muted"
                                     value={commodityOf(posting, at)}
                                     aria-label="Commodity for posting {at + 1} of {name}"
                                     onchange={(e) => setCommodity(posting, at, e.currentTarget.value)}
@@ -231,7 +231,7 @@
                                 onchange={(e) => setNumber(posting, at, e.currentTarget.value)}
                             />
                             {#if posting.kind === "percent"}
-                                <span class="text-base-content/50">%</span>
+                                <span class="text-muted">%</span>
                             {/if}
                         </label>
                     </td>
@@ -252,7 +252,7 @@
     <div class="flex flex-wrap items-center gap-2">
         <button type="button" class="btn btn-ghost btn-xs" onclick={addPosting}>+ Add a posting</button>
         <span
-            class="text-base-content/70"
+            class="text-muted"
             title="Takes the opposite of the postings above, so each firing balances. Leave it empty only when the postings balance by themselves."
             >balanced against</span
         >
@@ -275,6 +275,6 @@
         </p>
     {/if}
     {#if preview !== null}
-        <p class="text-base-content/60" data-testid="auto-rule-preview">{preview}</p>
+        <p class="text-muted" data-testid="auto-rule-preview">{preview}</p>
     {/if}
 </div>

@@ -97,7 +97,7 @@
         <span
             class={[
                 "row-span-2 mt-0.5 w-4 shrink-0 text-center leading-5 select-none",
-                canDrag ? "cursor-grab text-base-content/25 group-hover/entry:text-base-content/60" : "text-transparent",
+                canDrag ? "cursor-grab text-base-content/25 group-hover/entry:text-muted" : "text-transparent",
             ]}
             draggable={canDrag ? "true" : "false"}
             aria-hidden="true"

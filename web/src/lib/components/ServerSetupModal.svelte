@@ -44,7 +44,7 @@
 <div class="modal modal-open" role="dialog" aria-labelledby="server-setup-title" aria-modal="true">
     <div class="modal-box max-w-lg">
         <h3 id="server-setup-title" class="text-lg font-bold">Connect to hledger-web</h3>
-        <p class="py-2 text-sm text-base-content/70">
+        <p class="py-2 text-sm text-muted">
             Ledgeline reads your journal from a locally running <code>hledger-web</code> JSON API. Enter its URL to get started.
         </p>
         <form onsubmit={verify}>
@@ -62,7 +62,7 @@
             </label>
 
             <label class="form-control mt-3 w-full">
-                <span class="label-text pb-1 text-sm">Access token <span class="text-base-content/50">(Ledgeline engine at another origin only)</span></span>
+                <span class="label-text pb-1 text-sm">Access token <span class="text-muted">(Ledgeline engine at another origin only)</span></span>
                 <input
                     type="password"
                     class="input-bordered input w-full"
@@ -71,7 +71,7 @@
                     autocomplete="off"
                     disabled={verifying}
                 />
-                <span class="pt-1 text-xs text-base-content/60">
+                <span class="pt-1 text-xs text-muted">
                     The engine prints this at startup, or set <code>LEDGELINE_TOKEN</code> before launching it. The packaged app needs nothing here.
                 </span>
             </label>
@@ -82,7 +82,7 @@
                 </div>
                 {#if unreachable}
                     <div class="mt-3 rounded-lg bg-base-200 p-3">
-                        <p class="pb-2 text-sm text-base-content/70">Is hledger-web running? Launch it with CORS enabled for this page's origin only:</p>
+                        <p class="pb-2 text-sm text-muted">Is hledger-web running? Launch it with CORS enabled for this page's origin only:</p>
                         <p class="pb-2 text-xs text-warning">
                             Never use <code>--cors='*'</code>: it lets any website you visit read — and, with <code>--allow=edit</code>, rewrite — your journal.
                         </p>
