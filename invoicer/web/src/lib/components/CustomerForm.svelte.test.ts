@@ -126,11 +126,11 @@ describe("COMPONENT CustomerForm open POs (PLAN 5b)", () => {
         await fireEvent.input(refs[1], {target: {value: "PO #2"}});
         await fireEvent.input(screen.getAllByTestId("form-po-amount")[1], {target: {value: "$500"}});
         expect(changedFields(original, form).open_pos).toEqual([
-            {reference: "PO #1", amount: "$1,000", expires: null, was: "PO #1"},
-            {reference: "PO #2", amount: "$500", expires: null, was: null},
+            {reference: "PO #1", amount: "$1,000", expires: null, attachment: null, was: "PO #1"},
+            {reference: "PO #2", amount: "$500", expires: null, attachment: null, was: null},
         ]);
         await fireEvent.click(screen.getByRole("button", {name: "Close PO #1"}));
-        expect(changedFields(original, form).open_pos).toEqual([{reference: "PO #2", amount: "$500", expires: null, was: null}]);
+        expect(changedFields(original, form).open_pos).toEqual([{reference: "PO #2", amount: "$500", expires: null, attachment: null, was: null}]);
     });
 
     it("leaves open_pos out of a save when only a blank row was added", async () => {
@@ -139,5 +139,91 @@ describe("COMPONENT CustomerForm open POs (PLAN 5b)", () => {
         render(CustomerForm, {form, templates});
         await fireEvent.click(screen.getByTestId("form-po-add"));
         expect(changedFields(original, form)).toEqual({});
+    });
+});
+
+/** `fetch` answering the picker: the books' files, and the system dialog's choice. */
+function filesApi(picked: unknown): void {
+    const files = {
+        pick: true,
+        open: true,
+        files: [{path: "pos/PO 1.pdf", name: "PO 1.pdf", kind: null, entry: "/pos/PO 1.pdf"}],
+    };
+    vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        const body = url.includes("/api/files/pick") ? {cancelled: false, file: picked} : files;
+        return Promise.resolve(new Response(JSON.stringify(body), {status: 200, headers: {"Content-Type": "application/json"}}));
+    });
+}
+
+describe("COMPONENT CustomerForm PO attachments", () => {
+    it("attaches a file to a PO by name, from the books or outside them, and removes it", async () => {
+        const original = customerX().form;
+        original.open_pos = [{reference: "PO #1", amount: null, expires: null, attachment: null, was: "PO #1"}];
+        const form = $state(cloneForm(original));
+        filesApi({path: "~/Documents/PO 1 signed.pdf", name: "PO 1 signed.pdf", kind: null, entry: "~/Documents/PO 1 signed.pdf", outside: true});
+        render(CustomerForm, {form, templates});
+        const row = within(screen.getByTestId("form-po-attachment"));
+        await fireEvent.click(row.getByRole("button", {name: "Attach a file to PO #1"}));
+        const picker = await screen.findByTestId("contract-picker");
+        // Worded for the PO, not a contract.
+        expect(within(picker).getByRole("heading").textContent).toBe("Attach a file to PO #1");
+        expect(picker.textContent).not.toMatch(/contract/i);
+        await fireEvent.click(await within(picker).findByTestId("contract-candidate"));
+        expect(form.open_pos[0].attachment).toBe("/pos/PO 1.pdf");
+        expect(screen.getByTestId("form-po-attachment-name").textContent).toBe("PO 1.pdf");
+        expect(changedFields(original, form).open_pos).toEqual([{reference: "PO #1", amount: null, expires: null, attachment: "/pos/PO 1.pdf", was: "PO #1"}]);
+
+        // Removed, then chosen with the system's dialog from outside the books.
+        await fireEvent.click(screen.getByRole("button", {name: "Remove the attachment from PO #1"}));
+        expect(form.open_pos[0].attachment).toBeNull();
+        await fireEvent.click(screen.getByRole("button", {name: "Attach a file to PO #1"}));
+        await fireEvent.click(await screen.findByTestId("contract-choose-file"));
+        await vi.waitFor(() => expect(form.open_pos[0].attachment).toBe("~/Documents/PO 1 signed.pdf"));
+        const attached = screen.getByTestId("form-po-attachment");
+        expect(attached.textContent).toContain("PO 1 signed.pdf");
+        expect(attached.textContent).toContain("outside the books");
+        expect(attached.textContent).not.toContain("~/");
+        vi.restoreAllMocks();
+    });
+
+    it("marks a contract outside the books", () => {
+        const form = $state({...cloneForm(customerX().form), contracts: ["file:///Volumes/Share/MSA%202026.pdf"]});
+        render(CustomerForm, {form, templates});
+        const row = screen.getByTestId("contract-row");
+        expect(row.textContent).toContain("MSA 2026.pdf");
+        expect(row.textContent).toContain("outside the books");
+        expect(row.textContent).not.toContain("file:");
+    });
+});
+
+describe("COMPONENT CustomerForm revenue account and notes", () => {
+    it("suggests the books' accounts as you type, revenue first", async () => {
+        const form = $state(emptyForm());
+        render(CustomerForm, {
+            form,
+            creating: true,
+            accounts: ["expenses:consult", "revenue:consulting", "assets:cash"],
+            revenueAccounts: ["revenue:consulting"],
+        });
+        const field = screen.getByRole("combobox", {name: "Revenue account"});
+        await fireEvent.input(field, {target: {value: "consult"}});
+        const list = await screen.findByRole("listbox", {name: "Account suggestions"});
+        const options = within(list)
+            .getAllByRole("option")
+            .map((o) => o.textContent?.trim());
+        expect(options).toEqual(["revenue:consulting", "expenses:consult"]);
+        await fireEvent.keyDown(field, {key: "Enter"});
+        expect(form.revenue_account).toBe("revenue:consulting");
+    });
+
+    it("edits the customer's notes", async () => {
+        const original = customerX().form;
+        const form = $state(cloneForm(original));
+        render(CustomerForm, {form, templates});
+        const notes = screen.getByRole("textbox", {name: "Notes"}) as HTMLTextAreaElement;
+        expect(notes.value).toBe("Fred Smith is the champion.\n");
+        await fireEvent.input(notes, {target: {value: "Fred Smith is the champion.\nLee pays.\n"}});
+        expect(changedFields(original, form)).toEqual({body: "Fred Smith is the champion.\nLee pays.\n"});
     });
 });

@@ -4,7 +4,9 @@
 // each opening inside the app), creating a customer, editing it (only what
 // changed is written; unknown keys and the body stay), adding a contract from
 // the books folder, the Save / Discard / Cancel prompt on leaving, a narrow
-// window, and a save refused because the note changed on disk meanwhile.
+// window, a save refused because the note changed on disk meanwhile, and
+// (2026-11-26) the customer's notes (its body), the revenue account's
+// suggestions and a PO's attachment.
 //
 // Same harness as invoices.e2e.ts: `--server` on :5199 over a scratch copy of
 // invoicer/fixtures/accrual, the SPA's `vite preview` on :4273, the clock at
@@ -28,6 +30,29 @@ import {API_TOKEN, COPY} from "../playwright.config";
 const FIXED_NOW = new Date(2026, 10, 17, 12, 0, 0);
 const BOOKS = resolve(import.meta.dirname, "..", COPY);
 const NEW_NOTE = "customers/Northwind Traders.md";
+
+/**
+ * Replace the customer's notes: MBR's markdown field when it loaded, else
+ * the plain text field (as library.e2e.ts writes a snippet). Its edit is
+ * reported when it loses focus, so focus leaves it after.
+ */
+async function writeNotes(page: Page, text: string): Promise<void> {
+    const rich = await page
+        .waitForFunction(() => customElements.get("mbr-markdown-field") !== undefined, undefined, {timeout: 5_000})
+        .then(() => true)
+        .catch(() => false);
+    const host = page.getByTestId("customer-notes");
+    if (rich) {
+        await expect(host).toHaveAttribute("data-kind", "mbr");
+        const editor = host.locator('.ProseMirror[contenteditable="true"]');
+        await editor.click();
+        await page.keyboard.press("ControlOrMeta+a");
+        await page.keyboard.type(text);
+    } else {
+        await host.fill(text);
+    }
+    await page.getByTestId("customer-heading").click();
+}
 
 const read = (file: string): string => readFileSync(resolve(BOOKS, file), "utf8");
 
@@ -96,6 +121,8 @@ test.describe("customers over the accrual fixture (:5199)", () => {
         await expect(page.getByTestId("view-portal")).toContainText("Coupa");
         await expect(page.getByTestId("customer-title")).toHaveCount(0);
         await expect(page.getByTestId("note-frame")).toHaveCount(0);
+        // The note's body, as its notes.
+        await expect(page.getByTestId("view-notes")).toContainText("Fred Smith is the champion.");
         // Contracts by name, never [[…]] (J6).
         const contracts = page.getByTestId("view-contracts");
         await expect(contracts).toContainText("Customer X MSA 2026");
@@ -144,6 +171,15 @@ test.describe("customers over the accrual fixture (:5199)", () => {
         // Contracts by name in the form too.
         await expect(page.getByTestId("contract-row")).toHaveCount(2);
         await expect(page.getByTestId("contracts")).not.toContainText("[[");
+        // The revenue account suggests the books' accounts, revenue first.
+        const account = page.getByRole("combobox", {name: "Revenue account"});
+        await expect(account).toHaveValue("revenue:consulting");
+        await account.fill("rev");
+        await expect(page.getByRole("listbox", {name: "Account suggestions"}).getByRole("option").first()).toContainText("revenue:");
+        await account.press("Escape");
+        await account.fill("revenue:consulting");
+        // The notes, editable.
+        await expect(page.getByTestId("customer-notes")).toBeVisible();
         await page.getByTestId("cancel-edit").click();
         await expect(page.getByTestId("customer-page")).toHaveAttribute("data-mode", "view");
     });
@@ -278,14 +314,14 @@ test.describe("customers over the accrual fixture (:5199)", () => {
         await page.goto("/app/customers/customers/Northwind%20Traders");
         await expect(page.getByTestId("customer-heading")).toHaveText("Northwind Traders");
         await page.getByTestId("edit-customer").click();
-        await page.getByRole("textbox", {name: /^Revenue account/}).fill("revenue:consulting");
+        await page.getByRole("combobox", {name: "Revenue account"}).fill("revenue:consulting");
 
         // Meanwhile, the note changes on disk.
         const outside = read(NEW_NOTE).replace("Pays by ACH.", "Pays by wire.");
         writeFileSync(resolve(BOOKS, NEW_NOTE), outside);
         await expect(page.getByTestId("customer-stale")).toBeVisible();
         // The form keeps the unsaved change.
-        await expect(page.getByRole("textbox", {name: /^Revenue account/})).toHaveValue("revenue:consulting");
+        await expect(page.getByRole("combobox", {name: "Revenue account"})).toHaveValue("revenue:consulting");
 
         await page.getByTestId("save-customer").click();
         await expect(page.getByTestId("customer-save-error")).toContainText("changed on disk");
@@ -296,5 +332,30 @@ test.describe("customers over the accrual fixture (:5199)", () => {
         const merged = read(NEW_NOTE);
         expect(merged).toContain("revenue_account: revenue:consulting\n");
         expect(merged).toContain("Pays by wire.");
+    });
+
+    test("writes the customer's notes and attaches a file to a PO", async ({page}) => {
+        await open(page);
+        await page.goto("/app/customers/customers/Northwind%20Traders");
+        await expect(page.getByTestId("customer-heading")).toHaveText("Northwind Traders");
+        await page.getByTestId("edit-customer").click();
+        await page.getByTestId("form-po-add").click();
+        await page.getByTestId("form-po-reference").last().fill("PO #77");
+        await page.getByRole("button", {name: "Attach a file to PO #77"}).click();
+        const picker = page.getByTestId("contract-picker");
+        await expect(picker.getByRole("heading")).toHaveText("Attach a file to PO #77");
+        await picker.getByTestId("contract-search").fill("msa 2026");
+        await picker.getByTestId("contract-candidate").filter({hasText: "Customer X MSA 2026"}).click();
+        await expect(page.getByTestId("form-po-attachment-name")).toHaveText("Customer X MSA 2026");
+        await writeNotes(page, "Met Lee at the expo.");
+        await page.getByTestId("save-customer").click();
+        await expect(page.getByTestId("customer-saved")).toContainText("Notes");
+        const text = read(NEW_NOTE);
+        expect(text).toMatch(/- reference: "?PO #77"?\n {4}attachment: "?\[\[Customer X MSA 2026\]\]"?\n/);
+        expect(text.endsWith("---\n\nMet Lee at the expo.\n")).toBe(true);
+        // The view: the PO's attachment by name, opening in the app; the notes.
+        const po = page.locator('[data-testid="po-row"][data-reference="PO #77"]');
+        await expect(po.getByTestId("po-attachment").getByRole("link", {name: "Customer X MSA 2026"})).toBeVisible();
+        await expect(page.getByTestId("view-notes")).toContainText("Met Lee at the expo.");
     });
 });

@@ -6,15 +6,21 @@
     import {goto} from "$app/navigation";
     import {resolve} from "$app/paths";
     import {fetchTemplates} from "#lib/api.js";
+    import {fetchEditorOptions} from "#lib/editorApi.js";
     import {createCustomer, emptyForm, fetchCustomers, newCustomerFields, routeParam} from "#lib/customers.js";
     import {errorText} from "#lib/labels.js";
-    import type {TemplateEntry} from "#lib/invoices.js";
+    import {pageUrl, type TemplateEntry} from "#lib/invoices.js";
     import CustomerForm from "#lib/components/CustomerForm.svelte";
 
     let form = $state(emptyForm());
     let templates = $state<TemplateEntry[]>([]);
     /** Organizations a new person may work for (suggestions for Company). */
     let companies = $state<string[]>([]);
+    /** The books' accounts, and those that are revenue, for the revenue account's suggestions. */
+    let accounts = $state<string[]>([]);
+    let revenueAccounts = $state<string[]>([]);
+    /** Where the note will be, so links in its notes resolve as on its page. */
+    let linkBase = $state("/");
     let saving = $state(false);
     let failure = $state<string | null>(null);
 
@@ -25,6 +31,13 @@
         fetchCustomers()
             .then((rows) => (companies = rows.filter((r) => r.kind === "organization").map((r) => r.title)))
             .catch((e: unknown) => console.warn("customers:", e));
+        fetchEditorOptions()
+            .then((o) => {
+                accounts = o.accounts;
+                revenueAccounts = o.revenue_accounts ?? [];
+                linkBase = pageUrl(`${o.customers_dir.replace(/^\/+|\/+$/g, "")}/new.md`).replace(/[^/]+\/$/, "");
+            })
+            .catch((e: unknown) => console.warn("accounts:", e));
     });
 
     async function create(event: SubmitEvent): Promise<void> {
@@ -59,5 +72,5 @@
     {#if failure !== null}
         <div role="alert" class="alert alert-soft alert-error" data-testid="customer-error">{failure}</div>
     {/if}
-    <CustomerForm bind:form {templates} {companies} creating />
+    <CustomerForm bind:form {templates} {companies} {accounts} {revenueAccounts} {linkBase} creating />
 </form>

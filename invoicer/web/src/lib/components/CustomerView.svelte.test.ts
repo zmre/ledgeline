@@ -57,4 +57,55 @@ describe("COMPONENT CustomerView", () => {
         expect(screen.getByTestId("view-terms").textContent).toContain("The books' default");
         expect(screen.queryByTestId("view-portal")).toBeNull();
     });
+
+    it("marks a contract outside the books, and opens it in the window by its entry", async () => {
+        const outside = customerX({
+            contracts: [
+                {
+                    kind: "outside",
+                    path: "~/Documents/MSA 2026.pdf",
+                    location: "~/Documents/MSA 2026.pdf",
+                    found: "/Users/me/Documents/MSA 2026.pdf",
+                    name: "MSA 2026.pdf",
+                },
+                {kind: "outside", path: "file:///Volumes/Share/SOW.pdf", location: "/Volumes/Share/SOW.pdf", found: null, name: "SOW.pdf"},
+            ],
+        });
+        const onOpenFile = vi.fn();
+        render(CustomerView, {customer: outside, templates, ...hrefs, onOpenFile});
+        const [msa, sow] = screen.getAllByTestId("view-contract");
+        expect(within(msa).getByTestId("contract-outside").textContent).toBe("outside the books");
+        await fireEvent.click(within(msa).getByRole("button", {name: "MSA 2026.pdf"}));
+        expect(onOpenFile).toHaveBeenCalledWith("~/Documents/MSA 2026.pdf");
+        // Missing: said so, with where it was looked for.
+        expect(sow.textContent).toContain("missing");
+        expect(sow.textContent).toContain("/Volumes/Share/SOW.pdf");
+        expect(within(sow).queryByRole("button")).toBeNull();
+        expect(screen.getByTestId("view-contracts").textContent).not.toContain("file:");
+    });
+
+    it("in a browser, an outside contract is its name and place, as text", () => {
+        const outside = customerX({
+            contracts: [{kind: "outside", path: "~/Documents/MSA.pdf", location: "~/Documents/MSA.pdf", found: "/Users/me/Documents/MSA.pdf", name: "MSA.pdf"}],
+        });
+        render(CustomerView, {customer: outside, templates, ...hrefs});
+        const contract = screen.getByTestId("view-contract");
+        expect(within(contract).queryByRole("link")).toBeNull();
+        expect(within(contract).queryByRole("button")).toBeNull();
+        expect(contract.textContent).toContain("MSA.pdf");
+        expect(contract.textContent).toContain("~/Documents/MSA.pdf");
+    });
+
+    it("shows the customer's notes, read-only, or says there are none", () => {
+        const view = render(CustomerView, {customer: customerX(), templates, ...hrefs});
+        const notes = within(screen.getByTestId("view-notes")).getByRole("textbox", {name: "Notes"}) as HTMLTextAreaElement;
+        expect(notes.value).toBe("Fred Smith is the champion.\n");
+        expect(notes.readOnly).toBe(true);
+        expect(screen.queryByTestId("view-notes-text-table")).toBeNull();
+        view.unmount();
+        const bare = customerX();
+        bare.form = {...bare.form, body: "  \n"};
+        render(CustomerView, {customer: bare, templates, ...hrefs});
+        expect(screen.getByTestId("view-notes").textContent).toContain("None yet");
+    });
 });

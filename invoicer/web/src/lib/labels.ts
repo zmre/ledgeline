@@ -24,6 +24,7 @@ export const FIELD_LABELS: Readonly<Record<string, string>> = {
     billing_portal: "Vendor portal",
     open_pos: "Open POs",
     snippets: "Default snippets",
+    body: "Notes",
     // Invoices.
     customer: "Customer",
     invoice_num: "Number",

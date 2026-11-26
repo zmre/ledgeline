@@ -87,6 +87,7 @@ export function customerX(over: Partial<CustomerDetail> = {}): CustomerDetail {
                 instructions: "Upload the PDF under Invoices.\n",
             },
             open_pos: [],
+            body: "Fred Smith is the champion.\n",
         },
         backlinks: [
             {

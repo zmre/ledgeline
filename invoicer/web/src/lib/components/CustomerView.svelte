@@ -5,11 +5,17 @@
      snippets. The page's Edit button swaps in the form.
 
      Names, never syntax (J6): a company or snippet shows its name, not
-     `[[…]]`; a contract its title or file name. A contract note opens in
-     the app's note view; a file in its viewer (the window) or a new tab. -->
+     `[[…]]`; a contract its title or file name (`AttachmentLink`). A
+     contract note opens in the app's note view; a file in its viewer (the
+     window) or a new tab; a file outside the books in its viewer only.
+
+     Notes: the note's markdown body, rendered by MBR's markdown field,
+     read-only (`ProseField`; plain text where that can't load). -->
 <script lang="ts">
-    import {contractName, linkName, type Contract, type CustomerDetail, type Labelled} from "#lib/customers.js";
-    import type {TemplateEntry} from "#lib/invoices.js";
+    import {contractName, entryOf, linkName, type Contract, type CustomerDetail, type Labelled} from "#lib/customers.js";
+    import {pageUrl, type TemplateEntry} from "#lib/invoices.js";
+    import AttachmentLink from "./AttachmentLink.svelte";
+    import ProseField from "./ProseField.svelte";
 
     let {
         customer,
@@ -27,7 +33,7 @@
         noteHref: (path: string) => string;
         /** Where a file in the books opens in a browser tab (MBR serves it). */
         fileHref: (path: string) => string;
-        /** Open a file in its viewer (the window); absent: a link to `fileHref`. */
+        /** Open a file in its viewer (the window): a books path or an outside file's entry; absent: a link to `fileHref`. */
         onOpenFile?: (path: string) => void;
     } = $props();
 
@@ -42,8 +48,12 @@
     const portal = $derived(form.billing_portal);
 
     function contractKey(c: Contract, at: number): string {
-        return `${at}:${c.kind === "note" ? c.link : c.path}`;
+        return `${at}:${entryOf(c)}`;
     }
+
+    const notes = $derived((form.body ?? "").trim());
+    /** The note's folder, so links in its notes resolve as on its page. */
+    const linkBase = $derived(pageUrl(customer.path).replace(/[^/]+\/$/, ""));
 </script>
 
 {#snippet labelled(heading: string, items: Labelled[], testid: string, multiline = false)}
@@ -125,23 +135,20 @@
         {:else}
             <ul class="flex flex-col gap-1 text-sm">
                 {#each customer.contracts as contract, at (contractKey(contract, at))}
-                    <li class="flex flex-wrap items-baseline gap-2" data-testid="view-contract">
-                        {#if contract.found === null}
-                            <span>{contract.name}</span>
-                            <span class="badge badge-sm badge-warning" title="No such note or file in the books folder">missing</span>
-                        {:else if contract.kind === "note"}
-                            <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- the page passes an href built with resolve() -->
-                            <a class="link" href={noteHref(contract.found)}>{contract.name}</a>
-                        {:else if onOpenFile !== undefined}
-                            {@const found = contract.found}
-                            <button type="button" class="link text-left" onclick={() => onOpenFile(found)}>{contract.name}</button>
-                        {:else}
-                            <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- a file MBR serves, in its own tab -->
-                            <a class="link" href={fileHref(contract.found)} target="_blank" rel="noopener">{contract.name}</a>
-                        {/if}
+                    <li class="min-w-0" data-testid="view-contract">
+                        <AttachmentLink attachment={contract} {noteHref} {fileHref} {onOpenFile} testid="contract" />
                     </li>
                 {/each}
             </ul>
+        {/if}
+    </section>
+
+    <section class="rounded-box border border-base-300 p-4" data-testid="view-notes">
+        <h2 class="mb-2 text-sm font-semibold tracking-wide text-base-content/70 uppercase">Notes</h2>
+        {#if notes === ""}
+            <p class="text-sm text-base-content/70">None yet. Edit the customer to add some.</p>
+        {:else}
+            <ProseField value={form.body} label="Notes" readonly {linkBase} onChange={() => {}} testid="view-notes-text" />
         {/if}
     </section>
 
