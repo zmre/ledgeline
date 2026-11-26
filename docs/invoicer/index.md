@@ -71,6 +71,8 @@ The sidebar has six sections:
 
 The **New** button at the top of the sidebar starts a new invoice. Its menu also offers a new customer, catalog item, snippet or template. Press <kbd>?</kbd> anywhere to see the [keyboard shortcuts](keyboard.md) for the page you are on.
 
+Web and email links in notes and invoices open in your browser and mail app.
+
 ## An invoice's life
 
 1. **Draft.** You pick a customer and a template, fill the bill table, and save. The app copies the customer's billing name, address, email and payment terms into the invoice, so later changes to the customer don't change it. Nothing is booked.

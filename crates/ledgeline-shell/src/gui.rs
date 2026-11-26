@@ -726,10 +726,11 @@ pub fn navigation_allowed(base: &str, candidate: &str) -> bool {
     candidate == base.trim_end_matches('/') || candidate.starts_with(base)
 }
 
-pub use crate::security::plain_https;
+pub use crate::security::{plain_https, plain_mailto};
 
-/// Open a page (already vetted by the app's allowlist) in the user's
-/// browser. The URL is one argument to a fixed program — no shell.
+/// Open a URL (already vetted by the app's allowlist) in the user's default
+/// app for it: an https page in the browser, a `mailto:` in the mail app.
+/// The URL is one argument to a fixed program — no shell.
 pub fn open_in_browser(app: &AppIdentity, url: &str) {
     #[cfg(target_os = "macos")]
     let program = "/usr/bin/open";
@@ -873,8 +874,8 @@ pub fn webview_origin(url: &str) -> Result<String, GuiError> {
 ///
 /// Every frame's navigation is confined to `url`'s origin
 /// ([`navigation_allowed`]). A link outside it is offered to `open_external`,
-/// which opens it in the user's browser and returns `true` when the app's
-/// allowlist allows it; the webview itself never leaves. The main frame may
+/// which opens it in the user's default app (browser, mail) and returns
+/// `true` when the app's allowlist allows it; the webview itself never leaves. The main frame may
 /// show only the app's SPA, under [`AppIdentity::spa_base`]: when it commits
 /// to any other page, even one on our origin, the last SPA page it showed is
 /// loaded instead. Pop-ups are always denied. Downloads ask where to save

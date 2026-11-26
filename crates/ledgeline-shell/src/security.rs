@@ -236,6 +236,17 @@ pub fn plain_https(raw: &str) -> Option<url::Url> {
     plain.then_some(url)
 }
 
+/// `raw` re-serialized when it is a `mailto:` URL with an address, such as
+/// `mailto:ap@example.com?subject=Invoice%20108`. Headers (`subject`, `body`,
+/// …) are fine; a bare `mailto:` or one with only headers is refused. The
+/// sibling of [`plain_https`] for an app's "open this in the mail app" links.
+#[must_use]
+pub fn plain_mailto(raw: &str) -> Option<url::Url> {
+    let url = url::Url::parse(raw.trim()).ok()?;
+    let addressed = url.scheme() == "mailto" && !url.path().trim().is_empty();
+    addressed.then_some(url)
+}
+
 /// The process's token together with where it came from. `from_env` is what
 /// SEC-9 keys on: a non-loopback bind is only allowed when the operator chose
 /// the token deliberately.
@@ -781,6 +792,34 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plain_mailto_needs_an_address() {
+        for allowed in [
+            " mailto:ap@example.com ",
+            "mailto:ap@example.com?subject=Invoice%20108&body=Hello",
+            "MAILTO:ap@example.com",
+        ] {
+            assert!(plain_mailto(allowed).is_some(), "{allowed}");
+        }
+        assert_eq!(
+            plain_mailto("mailto:ap@example.com?subject=Invoice 108")
+                .map(String::from)
+                .as_deref(),
+            Some("mailto:ap@example.com?subject=Invoice%20108"),
+            "answered re-serialized"
+        );
+        for refused in [
+            "mailto:",
+            "mailto:?subject=hi",
+            "https://example.com/",
+            "tel:+15551234567",
+            "javascript:alert(1)",
+            "not a url",
+        ] {
+            assert!(plain_mailto(refused).is_none(), "{refused}");
+        }
+    }
 
     #[test]
     fn generated_tokens_are_long_and_unique() {

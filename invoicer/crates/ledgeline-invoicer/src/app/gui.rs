@@ -45,10 +45,6 @@ use super::{APP, AppArgs, AppState, SPA_BASE, Unopened, prefs, router, watch};
 /// How many recent journals File → Open Recent shows.
 const RECENT_MENU_LIMIT: usize = 5;
 
-/// The published docs, the one outside site the window hands to the browser.
-const DOCS_HOST: &str = "zmre.github.io";
-const DOCS_PATH: &str = "/ledgeline/";
-
 /// Events from other threads (the menu handler, the file picker).
 enum UserEvent {
     Menu(MenuEvent),
@@ -179,11 +175,15 @@ struct Context {
     current: PathBuf,
 }
 
-/// A page the window may hand to the system browser: the published docs.
+/// A link the window may hand to the system's default app, re-serialized:
+/// any plain https page (the browser) or addressed `mailto:` (the mail
+/// app). Notes and invoices are the user's own content, so their web and
+/// email links open; everything else (http, ports, credentials, `file:`,
+/// scripts) stays blocked.
 fn external_url(candidate: &str) -> Option<String> {
-    let url = shell::plain_https(candidate)?;
-    (url.host_str() == Some(DOCS_HOST) && url.path().starts_with(DOCS_PATH))
-        .then(|| url.to_string())
+    shell::plain_https(candidate)
+        .or_else(|| shell::plain_mailto(candidate))
+        .map(String::from)
 }
 
 fn open_if_external(candidate: &str) -> bool {
@@ -469,14 +469,36 @@ mod tests {
     use super::external_url;
 
     #[test]
-    fn only_the_docs_site_goes_to_the_system_browser() {
-        assert!(external_url("https://zmre.github.io/ledgeline/invoicer/").is_some());
+    fn plain_https_and_mailto_links_go_to_the_default_apps() {
+        for (link, opened) in [
+            (
+                "https://zmre.github.io/ledgeline/invoicer/",
+                "https://zmre.github.io/ledgeline/invoicer/",
+            ),
+            ("https://example.com", "https://example.com/"),
+            (
+                "mailto:ap@example.com?subject=Invoice 108&body=Hi",
+                "mailto:ap@example.com?subject=Invoice%20108&body=Hi",
+            ),
+        ] {
+            assert_eq!(external_url(link).as_deref(), Some(opened), "{link}");
+        }
+    }
+
+    #[test]
+    fn other_links_stay_blocked() {
         for refused in [
-            "http://zmre.github.io/ledgeline/",
-            "https://zmre.github.io/other/",
-            "https://zmre.github.io.evil.example/ledgeline/",
-            "https://user@zmre.github.io/ledgeline/",
+            "http://example.com/",
+            "https://example.com:8443/",
+            "https://user@example.com/",
+            "https://user:secret@example.com/",
+            "file:///etc/passwd",
             "javascript:alert(1)",
+            "data:text/html,<p>hi</p>",
+            "tel:+15551234567",
+            "mailto:",
+            "mailto:?subject=hi",
+            "not a url",
         ] {
             assert_eq!(external_url(refused), None, "{refused}");
         }
