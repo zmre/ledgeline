@@ -13,9 +13,18 @@
 //! - **`check --full`.** [`DocumentIndex::rebuild_and_diff`] rebuilds from
 //!   scratch and reports every entry the live index has wrong.
 //!
-//! Lists, numbering and `check` read the index, never the files (templates
-//! and contract paths aside, which `check` looks up in the vault).
+//! - **Templates and catalogs too.** The `.html` templates and the
+//!   `type: catalog` notes are read with everything else at open, and again
+//!   only when [`DocumentIndex::refresh`] names them, so a list, show or
+//!   sidebar request reads no file (ARCHITECTURE §5.6; review RA-3).
+//! - **Lookups by number and by customer** are built on first use after
+//!   each refresh (in memory, no file read), so neither `find` nor a
+//!   customer's documents scan every document (review RC-5, RC-15).
+//!
+//! Lists, numbering and `check` read the index, never the files (contract
+//! paths aside, which `check` looks up in the vault).
 
+use crate::catalog::Catalog;
 use crate::customers::{self, Customer, CustomerLookup, is_customer};
 use crate::doc::{DocType, Header, Invoice, InvoiceNumber, Money, Status, TableSummary};
 use crate::notes::{self, Note, OtherFile, ScannedNote, Site, SiteConfig, Stamp};
@@ -23,10 +32,11 @@ use crate::numbering::{self, NumberingError, natural_cmp};
 use crate::par::par_map;
 use crate::problem::{Problem, ProblemCode};
 use crate::settings::Settings;
-use crate::templates;
+use crate::templates::{self, Template};
 use ledgeline_core::vault::{Vault, VaultPath};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
+use std::sync::OnceLock;
 
 /// One document in the index.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -119,6 +129,25 @@ pub struct ListFilter {
     pub customer: Option<String>,
 }
 
+/// A catalog note, parsed, with what is wrong with it.
+#[derive(Debug, Clone)]
+struct ParsedCatalog {
+    catalog: Catalog,
+    problems: Vec<Problem>,
+}
+
+/// Lookups derived from the documents and the site, in memory, built on
+/// first use and dropped by every [`DocumentIndex::refresh`] that changed
+/// anything.
+#[derive(Debug, Clone, Default)]
+struct Lookups {
+    /// Documents by number (trimmed), each list by path.
+    by_number: OnceLock<HashMap<String, Vec<VaultPath>>>,
+    /// Documents by the customer note their `customer:` link resolves to,
+    /// each list newest first ([`DocumentIndex::list`]'s order).
+    by_customer: OnceLock<HashMap<VaultPath, Vec<VaultPath>>>,
+}
+
 /// The index.
 #[derive(Debug, Clone)]
 pub struct DocumentIndex {
@@ -126,6 +155,12 @@ pub struct DocumentIndex {
     money: Money,
     site: Site,
     docs: BTreeMap<VaultPath, IndexedDoc>,
+    /// Every template among the site's `.html` files, by path
+    /// ([`templates::discover`], kept).
+    templates: Vec<Template>,
+    /// Every `type: catalog` note, parsed, by path.
+    catalogs: BTreeMap<VaultPath, ParsedCatalog>,
+    lookups: Lookups,
 }
 
 impl DocumentIndex {
@@ -147,11 +182,35 @@ impl DocumentIndex {
             .into_iter()
             .map(|doc| (doc.path.clone(), doc))
             .collect();
+        let catalogs = site
+            .notes()
+            .zip(sources.iter())
+            .filter(|(note, _)| note.is_type(CATALOG_TYPE))
+            .map(|(note, source)| {
+                (
+                    note.path.clone(),
+                    parse_catalog(&note.path, source, &settings, &money),
+                )
+            })
+            .collect();
+        let candidates: Vec<&VaultPath> = site
+            .others()
+            .iter()
+            .map(|o| &o.path)
+            .filter(|p| templates::is_candidate(p))
+            .collect();
+        let templates = par_map(&candidates, |path| templates::read(vault, path))
+            .into_iter()
+            .flatten()
+            .collect();
         Self {
             settings,
             money,
             site,
             docs,
+            templates,
+            catalogs,
+            lookups: Lookups::default(),
         }
     }
 
@@ -184,13 +243,69 @@ impl DocumentIndex {
         self.docs.get(path)
     }
 
-    /// Documents numbered `number`.
+    /// Documents numbered `number`, by path.
     #[must_use]
     pub fn by_number(&self, number: &str) -> Vec<&IndexedDoc> {
-        self.docs
-            .values()
-            .filter(|d| d.number() == Some(number.trim()))
+        let map = self.lookups.by_number.get_or_init(|| {
+            let mut map: HashMap<String, Vec<VaultPath>> = HashMap::new();
+            for doc in self.docs.values() {
+                if let Some(n) = doc.number() {
+                    map.entry(n.to_string()).or_default().push(doc.path.clone());
+                }
+            }
+            map
+        });
+        self.docs_at(map.get(number.trim()))
+    }
+
+    /// The documents whose `customer:` link resolves to the note at
+    /// `customer`, newest first ([`Self::list`]'s order).
+    #[must_use]
+    pub fn billed_to(&self, customer: &VaultPath) -> Vec<&IndexedDoc> {
+        let map = self.lookups.by_customer.get_or_init(|| {
+            let mut map: HashMap<VaultPath, Vec<VaultPath>> = HashMap::new();
+            for doc in self.list(&ListFilter::default()) {
+                let found = doc
+                    .header
+                    .invoicee
+                    .link
+                    .as_deref()
+                    .and_then(|link| self.site.resolve_wikilink(&doc.path, link));
+                if let Some(note) = found {
+                    map.entry(note.path.clone())
+                        .or_default()
+                        .push(doc.path.clone());
+                }
+            }
+            map
+        });
+        self.docs_at(map.get(customer))
+    }
+
+    fn docs_at(&self, paths: Option<&Vec<VaultPath>>) -> Vec<&IndexedDoc> {
+        paths
+            .into_iter()
+            .flatten()
+            .filter_map(|p| self.docs.get(p))
             .collect()
+    }
+
+    /// Every template in the books folder, by path (what
+    /// [`templates::discover`] finds, as of the last refresh).
+    #[must_use]
+    pub fn templates(&self) -> &[Template] {
+        &self.templates
+    }
+
+    /// Every catalog in the books folder, by path, as of the last refresh.
+    pub fn catalogs(&self) -> impl Iterator<Item = &Catalog> {
+        self.catalogs.values().map(|c| &c.catalog)
+    }
+
+    /// What is wrong with the catalogs (rows that don't read, duplicate
+    /// codes), by catalog path.
+    pub fn catalog_problems(&self) -> impl Iterator<Item = &Problem> {
+        self.catalogs.values().flat_map(|c| c.problems.iter())
     }
 
     /// Every number in use in the files.
@@ -278,6 +393,8 @@ impl DocumentIndex {
                     done.removed.push(path.clone());
                 }
                 self.docs.remove(path);
+                self.catalogs.remove(path);
+                self.set_template(path, None);
                 continue;
             };
             if config.is_other(path) {
@@ -286,6 +403,12 @@ impl DocumentIndex {
                     size: entry.size,
                     modified: entry.modified_time(),
                 });
+                // Read again whatever the stamp says: a template's name and
+                // kinds are in its text.
+                let template = templates::is_candidate(path)
+                    .then(|| templates::read(vault, path))
+                    .flatten();
+                self.set_template(path, template);
                 done.updated.push(path.clone());
                 continue;
             }
@@ -297,6 +420,7 @@ impl DocumentIndex {
             else {
                 done.removed.push(path.clone());
                 self.docs.remove(path);
+                self.catalogs.remove(path);
                 continue;
             };
             let same = self
@@ -313,13 +437,36 @@ impl DocumentIndex {
             } else {
                 self.docs.remove(path);
             }
+            if note.is_type(CATALOG_TYPE) {
+                let parsed = parse_catalog(path, &source, &self.settings, &self.money);
+                self.catalogs.insert(path.clone(), parsed);
+            } else {
+                self.catalogs.remove(path);
+            }
             done.updated.push(path.clone());
             notes_in.push(note);
         }
         if !notes_in.is_empty() || !done.removed.is_empty() {
             self.site.apply(notes_in, &done.removed);
         }
+        if !done.updated.is_empty() || !done.removed.is_empty() {
+            // A new or renamed note can change what any link resolves to.
+            self.lookups = Lookups::default();
+        }
         done
+    }
+
+    /// Put `template` in at `path`, or take out whatever is there.
+    fn set_template(&mut self, path: &VaultPath, template: Option<Template>) {
+        let at = self.templates.binary_search_by(|t| t.path.cmp(path));
+        match (at, template) {
+            (Ok(i), Some(t)) => self.templates[i] = t,
+            (Err(i), Some(t)) => self.templates.insert(i, t),
+            (Ok(i), None) => {
+                self.templates.remove(i);
+            }
+            (Err(_), None) => {}
+        }
     }
 
     /// Rebuild from scratch and report every way the live index differs
@@ -352,6 +499,27 @@ impl DocumentIndex {
                     .map(|p| IndexDrift::Stale { path: (*p).clone() }),
             )
             .collect();
+        // Templates the index has wrong (an `.html` file isn't a note).
+        let kept: HashMap<&VaultPath, &Template> =
+            self.templates.iter().map(|t| (&t.path, t)).collect();
+        let read: HashMap<&VaultPath, &Template> =
+            fresh.templates.iter().map(|t| (&t.path, t)).collect();
+        for (path, template) in &read {
+            match kept.get(path) {
+                None => drift.push(IndexDrift::Missing {
+                    path: (*path).clone(),
+                }),
+                Some(old) if old != template => drift.push(IndexDrift::Changed {
+                    path: (*path).clone(),
+                }),
+                Some(_) => {}
+            }
+        }
+        drift.extend(
+            kept.keys()
+                .filter(|p| !read.contains_key(*p))
+                .map(|p| IndexDrift::Stale { path: (*p).clone() }),
+        );
         drift.sort_by(|a, b| drift_path(a).cmp(drift_path(b)));
         drift
     }
@@ -363,7 +531,7 @@ impl DocumentIndex {
     #[must_use]
     pub fn check(&self, vault: &dyn Vault) -> Vec<Problem> {
         let words = &self.settings.words;
-        let templates = templates::discover(vault, &self.site);
+        let templates = &self.templates;
         let mut customers: HashMap<VaultPath, Result<Customer, CustomerLookup>> = HashMap::new();
         let mut out: Vec<Problem> = Vec::new();
         for doc in self.docs.values() {
@@ -423,7 +591,7 @@ impl DocumentIndex {
                 }
             }
             if let Some(template) = &doc.header.template
-                && templates::find(&templates, template).is_none()
+                && templates::find(templates, template).is_none()
             {
                 let is_base = VaultPath::new(template.trim().trim_start_matches('/'))
                     .is_ok_and(|p| templates::is_partial(&p));
@@ -484,6 +652,19 @@ impl DocumentIndex {
         });
         out
     }
+}
+
+/// The `type:` of a catalog note.
+const CATALOG_TYPE: &str = "catalog";
+
+fn parse_catalog(
+    path: &VaultPath,
+    source: &str,
+    settings: &Settings,
+    money: &Money,
+) -> ParsedCatalog {
+    let (catalog, problems) = Catalog::parse(path.clone(), source, &settings.words, money);
+    ParsedCatalog { catalog, problems }
 }
 
 /// Two index entries with the same content (an mtime alone is no change).

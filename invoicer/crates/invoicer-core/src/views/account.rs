@@ -17,7 +17,7 @@ use crate::session::Session;
 use ledgeline_core::Dec;
 use ledgeline_core::vault::VaultPath;
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 /// The DSO window `receivables` is asked for (unused here, but required).
 const DSO_DAYS: u32 = 90;
@@ -82,9 +82,9 @@ pub fn customer_account(
     let index = session.index();
     let money = index.money();
     let docs = billed_to(index, customer);
-    let paths: Vec<&VaultPath> = docs.iter().map(|d| &d.path).collect();
+    let paths: HashSet<&VaultPath> = docs.iter().map(|d| &d.path).collect();
     let mine = |item: &&OpenItem| {
-        item.path.as_ref().is_some_and(|p| paths.contains(&p))
+        item.path.as_ref().is_some_and(|p| paths.contains(p))
             || item.customer.as_deref() == Some(customer.ledger_customer.as_str())
     };
     let mut owed: BTreeMap<&str, Dec> = BTreeMap::new();

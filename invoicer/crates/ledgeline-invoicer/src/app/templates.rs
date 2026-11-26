@@ -146,7 +146,7 @@ pub(crate) fn templates_in(session: &Session) -> Vec<TemplateEntry> {
 /// them (the sidebar's count, `GET /api/books`).
 pub(crate) fn count_in(session: &Session) -> usize {
     let dir = session.settings().templates_dir.clone();
-    let found = invoicer_core::templates::discover(session.vault(), session.index().site());
+    let found = session.index().templates();
     let starters = starters::STARTERS
         .iter()
         .filter_map(|s| starters::path_in(&dir, s).ok())

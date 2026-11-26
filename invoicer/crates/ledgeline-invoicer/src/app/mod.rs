@@ -235,6 +235,8 @@ async fn spa_page(uri: Uri) -> Response {
 }
 
 #[cfg(test)]
+mod cache_tests;
+#[cfg(test)]
 mod customers_tests;
 #[cfg(test)]
 mod dashboard_tests;
