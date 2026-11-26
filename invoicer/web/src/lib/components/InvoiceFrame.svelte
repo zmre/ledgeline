@@ -16,11 +16,15 @@
      export-ready partial only matters inside a PDF export, which has its own
      webview. The frame grows to its page's height once it loads.
 
-     Links move only the frame, never the app. In the desktop window an
-     outside https or mailto link opens in the default browser or mail app and
-     the frame stays put; in `--server` mode, in a plain browser, it loads in
-     the sandboxed frame. -->
+     Links move only the frame, never the app. Outside links work as in
+     NoteFrame: https through the shell's `frame-src` (the desktop window
+     opens it in the browser and the frame stays put; a plain browser in
+     `--server` mode loads it in the frame), mailto through this window
+     (`handMailtoLinks`, lib/frameLinks.ts), since a sandboxed frame may not
+     load it itself. -->
 <script lang="ts">
+    import {handMailtoLinks} from "../frameLinks";
+
     let {src, title, mode = "page"}: {src?: string; title: string; mode?: "page" | "preview"} = $props();
 
     let frame = $state<HTMLIFrameElement | null>(null);
@@ -30,6 +34,11 @@
         const doc = frame?.contentDocument;
         const measured = doc?.documentElement?.scrollHeight ?? 0;
         if (measured > 0) height = measured;
+    }
+
+    function loaded(): void {
+        fit();
+        if (frame) handMailtoLinks(frame);
     }
 </script>
 
@@ -41,7 +50,7 @@
         sandbox="allow-same-origin"
         class="w-full rounded-box border border-base-300 bg-white"
         style="height: {height}px"
-        onload={fit}
+        onload={loaded}
         data-testid="invoice-frame"
         data-mode={mode}
     ></iframe>

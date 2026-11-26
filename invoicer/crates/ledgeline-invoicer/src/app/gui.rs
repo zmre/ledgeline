@@ -188,10 +188,13 @@ fn external_url(candidate: &str) -> Option<String> {
 
 /// The window's `open_external` ([`shell::build_webview`]): hand an
 /// [`external_url`] to the default app and answer whether it did. The frame
-/// or window the link was clicked in never leaves our origin. Links in note
-/// and invoice frames reach this only because the SPA's CSP lets its frames
-/// navigate to https and mailto (`APP.spa_frame_src`); WebKit would refuse
-/// them before the navigation handler otherwise.
+/// or window the link was clicked in never leaves our origin. From the note
+/// and invoice frames, an https link reaches this as the frame's own
+/// navigation, which the SPA's CSP lets through (`APP.spa_frame_src`;
+/// WebKit would refuse it before the navigation handler otherwise). A
+/// mailto link arrives as a navigation of the main window instead: WebKit
+/// refuses custom protocols from a sandboxed frame, so the SPA cancels the
+/// click there and navigates the main window (`invoicer/web/src/lib/frameLinks.ts`).
 fn open_if_external(candidate: &str) -> bool {
     external_url(candidate)
         .map(|url| shell::open_in_browser(&APP, &url))
