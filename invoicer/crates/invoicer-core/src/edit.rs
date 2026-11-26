@@ -116,7 +116,11 @@ pub enum WriteError {
     Vault(#[from] VaultError),
 }
 
-fn read_text(vault: &dyn Vault, path: &VaultPath) -> Result<(String, Revision), WriteError> {
+/// The document at `path` as text, with the revision it was read at.
+///
+/// # Errors
+/// [`WriteError::Vault`]; [`WriteError::NotText`] when it isn't UTF-8.
+pub fn read_text(vault: &dyn Vault, path: &VaultPath) -> Result<(String, Revision), WriteError> {
     let (bytes, revision) = vault.read_pinned(path, None)?;
     let text = String::from_utf8(bytes).map_err(|_| WriteError::NotText(path.clone()))?;
     Ok((text, revision))
@@ -375,6 +379,42 @@ pub fn recalc_one(
 ) -> Result<Recalculated, WriteError> {
     let (source, revision) = read_text(vault, path)?;
     recalc_source(index, vault, path, &source, &revision, dry_run)
+}
+
+/// The text recalculating `source` would write: `None` when its amounts
+/// already agree (or it has no bill table). Writes nothing: what a caller
+/// checks before [`recalc_at`] writes it (a sent invoice's re-book
+/// pre-flight, RC-7).
+///
+/// # Errors
+/// [`WriteError`] when the table doesn't read or can't be recalculated.
+pub fn recalc_text(index: &DocumentIndex, source: &str) -> Result<Option<String>, WriteError> {
+    let words = &index.settings().words;
+    let invoice = Invoice::parse(source, words);
+    let Some(table) = invoice.bill_table().map_err(Clone::clone)? else {
+        return Ok(None);
+    };
+    let recalc = table.recompute(words, &index.money().for_table(table))?;
+    if recalc.changes.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(apply_edits(source, &recalc.table.edits(source)?)))
+}
+
+/// [`recalc_one`] over `source`, read at `revision` (the save is
+/// conditional on it, so what was checked of `source` is what is
+/// rewritten).
+///
+/// # Errors
+/// As [`recalc_one`].
+pub fn recalc_at(
+    index: &mut DocumentIndex,
+    vault: &dyn Vault,
+    path: &VaultPath,
+    source: &str,
+    revision: &Revision,
+) -> Result<Recalculated, WriteError> {
+    recalc_source(index, vault, path, source, revision, false)
 }
 
 /// [`recalc_one`] over `source`, read at `revision` (the save is

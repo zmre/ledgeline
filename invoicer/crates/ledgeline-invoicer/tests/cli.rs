@@ -1112,8 +1112,8 @@ fn cash_books_end_to_end() {
             "2026-11-17 * WIRE CUSTOMER X  ; id: wx-7\n    assets:bank:checking   $4,000.00\n    \
              income:unknown        $-4,000.00\n",
             "2026-11-17 * WIRE CUSTOMER X  ; id: wx-7, invoice:207\n    assets:bank:checking   \
-             $4,000.00\n    revenue:consulting           $-1714.28  ; customer: Customer X\n    \
-             revenue:consulting:delivery  $-2285.72  ; customer: Customer X\n"
+             $4,000.00\n    revenue:consulting           $-1714.29  ; customer: Customer X\n    \
+             revenue:consulting:delivery  $-2285.71  ; customer: Customer X\n"
         )
     );
     assert_eq!(applied["mirror"]["after"], "partial 2026-11-17 $4,000");

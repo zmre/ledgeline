@@ -960,6 +960,38 @@ impl Loaded {
         create_file: bool,
         expected: Option<&Generation>,
     ) -> Result<(Transaction, SavePlan), OpsError> {
+        let (transaction, request) = self.rebook_request(document, today, create_file, expected)?;
+        let plan = self.save(&request)?;
+        Ok((transaction, plan))
+    }
+
+    /// What [`Loaded::rebook_document`] would write, without writing it:
+    /// every refusal it makes (a closed period, a dropped schedule, a
+    /// restatement or edit that won't apply) is made here too, so a caller
+    /// about to change what the document is built from can ask first.
+    ///
+    /// # Errors
+    /// As [`Loaded::rebook_document`], less the write's own.
+    pub fn preview_rebook_document(
+        mut self,
+        document: &DocumentSpec,
+        today: &str,
+        create_file: bool,
+        expected: Option<&Generation>,
+    ) -> Result<(Transaction, SavePlan), OpsError> {
+        let (transaction, request) = self.rebook_request(document, today, create_file, expected)?;
+        let plan = self.plan_save(&request)?;
+        Ok((transaction, plan))
+    }
+
+    /// The save [`Loaded::rebook_document`] makes, with every check before it.
+    fn rebook_request(
+        &self,
+        document: &DocumentSpec,
+        today: &str,
+        create_file: bool,
+        expected: Option<&Generation>,
+    ) -> Result<(Transaction, SaveRequest), OpsError> {
         self.check_expected(expected)?;
         let number = document.number.as_deref().ok_or_else(|| {
             OpsError::Document(DocumentError::Invalid(
@@ -1024,8 +1056,7 @@ impl Loaded {
             create_file,
             expected: None,
         };
-        let plan = self.save(&request)?;
-        Ok((transaction, plan))
+        Ok((transaction, request))
     }
 
     /// **Void** a booked document (ARCHITECTURE §4.1): a reversing

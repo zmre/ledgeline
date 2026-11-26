@@ -99,7 +99,7 @@ Applying replaces the deposit's income side with the invoice's accounts, each ta
     revenue:consulting:delivery  $-1200.00  ; customer: Contoso
 ```
 
-When one payment doesn't cover the whole invoice, the `payment-allocation` [setting](settings.md) decides how it is split over the rows. The default moves each account toward its row's amount, so the payment that settles the invoice leaves every account exactly at its row. `pro-rata` splits each payment in the rows' proportions instead.
+When one payment doesn't cover the whole invoice, the `payment-allocation` [setting](settings.md) decides how it is split over the rows. The default moves each account toward its row's amount, so the payment that settles the invoice leaves every account exactly at its row. `pro-rata` splits each payment in the rows' proportions instead. Each share is rounded half away from zero, and the largest row takes the cent or two left over, so the shares add up exactly. A discount spread over rows at booking uses the same rule, so both put the odd cent on the same row.
 
 In the app, a sent invoice that isn't paid in full has **Apply payment…** in its Books panel (or press <kbd>a</kbd>). It lists the deposits that might pay it, best match first, and shows how the one you choose would be split and what would still be due before you apply it. To undo an applied payment, use `apply-payment N --undo`.
 
@@ -135,9 +135,12 @@ In cash books, an invoice with a payment applied can't be voided until you undo 
 
 You can edit a sent invoice. Saving it asks to re-book: the invoicer replaces the original transaction with one that matches the file. If a payment was already linked, the link stays and the paid status is worked out again.
 
+Rarely, the file saves but the books can't be written. Another program might change the journal at the same moment, for example. The editor then says the invoice was saved but its books weren't updated. Fix the cause and use **Re-book…**, or run `ledgeline-invoicer rebook N`.
+
 Two cases work differently:
 
 - **The invoice is in a closed period.** If its date, or its booking's date, is on or before your closed-through date, re-booking is refused. Void it and write a new invoice instead.
+- **The edit can't be booked.** Before anything is saved, the invoicer works out what the edited file would book. If that re-booking would be refused, the file stays as it was and the message says why. That happens if you remove a deferred row whose schedule is running, or give a row no account. Recalculate checks the same way.
 - **The file changed outside the app.** If you edit a sent invoice in another editor, the invoicer doesn't re-book it silently. The Books panel in its editor says the books are out of date and shows what re-booking would write, and **Re-book…** does it. `ledgeline-invoicer rebook` does the same, and `ledgeline-invoicer check` lists every invoice in that state.
 
 ## Deposits

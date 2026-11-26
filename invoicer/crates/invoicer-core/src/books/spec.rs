@@ -247,8 +247,9 @@ impl InvoiceBooking {
     }
 }
 
-/// `total` split over `weights` pro rata, exactly, the remainder on the
-/// largest weight (the first of equals).
+/// `total` split over `weights` pro rata, exactly: Ledgeline's
+/// [`pro_rata`](ledgeline_core::decimal::pro_rata) rule, the remainder on
+/// the largest weight (the first of equals), as Apply payment's re-split.
 ///
 /// # Errors
 /// [`BooksError::Overflow`], or weights summing to zero.
@@ -259,24 +260,14 @@ pub(crate) fn scale(
     if weights.is_empty() {
         return Ok(Vec::new());
     }
-    // `allocate` puts the remainder last: move the largest there.
-    let largest = (0..weights.len()).fold(0, |best, at| {
-        if weights[at].1 > weights[best].1 {
-            at
-        } else {
-            best
-        }
-    });
-    let mut order: Vec<usize> = (0..weights.len()).filter(|&at| at != largest).collect();
-    order.push(largest);
-    let ordered: Vec<Dec> = order.iter().map(|&at| weights[at].1).collect();
-    let shares =
-        ledgeline_core::decimal::allocate(total, &ordered).map_err(|_| BooksError::Overflow)?;
-    let mut scaled = weights.to_vec();
-    for (at, share) in order.into_iter().zip(shares) {
-        scaled[at].1 = share;
-    }
-    Ok(scaled)
+    let amounts: Vec<Dec> = weights.iter().map(|(_, w)| *w).collect();
+    let shares = ledgeline_core::decimal::pro_rata(total, &amounts, None)
+        .map_err(|_| BooksError::Overflow)?;
+    Ok(weights
+        .iter()
+        .zip(shares)
+        .map(|((account, _), share)| (account.clone(), share))
+        .collect())
 }
 
 /// What [`booking_of`] reads besides the document: the books folder's

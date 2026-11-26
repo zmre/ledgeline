@@ -345,11 +345,14 @@ impl OpenBooks {
 /// would catch up after its debounce, but the SPA asks again at once. A
 /// no-op when the journal is as the session read it.
 pub(crate) fn reload_after_write(session: &mut Session) {
-    if session.changed_journal_files().is_empty() {
-        return;
-    }
-    if let Err(error) = session.reload_books() {
-        eprintln!("{}: reload after a write skipped: {error}", APP.log_prefix);
+    crate::flows::reload_logged(session);
+}
+
+/// Log what a books write did to `number`'s paid mirror ([`crate::flows`]
+/// refreshed it), as [`reconcile_in`] logs.
+pub(crate) fn log_mirror(report: Option<&Reconciled>) {
+    if let Some(report) = report {
+        log_reconciled(report);
     }
 }
 
@@ -394,6 +397,12 @@ pub(crate) fn reconcile_in(session: &mut Session, only: Option<Vec<String>>) -> 
             dry_run: false,
         },
     );
+    log_reconciled(&report);
+    Some(report)
+}
+
+/// Each mirror a reconcile changed, or couldn't write, on stderr.
+fn log_reconciled(report: &Reconciled) {
     for change in &report.changed {
         eprintln!(
             "{}: {}: paid: {} -> {}",
@@ -409,7 +418,6 @@ pub(crate) fn reconcile_in(session: &mut Session, only: Option<Vec<String>>) -> 
             APP.log_prefix, failure.path, failure.error
         );
     }
-    Some(report)
 }
 
 /// Whether `path` is a markdown note (by extension, as MBR's default).

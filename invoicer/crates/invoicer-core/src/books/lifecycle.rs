@@ -3,7 +3,7 @@
 use super::spec::{DOCUMENT_TAG, InvoiceBooking, receivable_account};
 use super::{BooksError, Document, InvoiceBooks, check_generation};
 use crate::catalog::Catalog;
-use crate::doc::Status;
+use crate::doc::{Invoice, Status};
 use crate::frontmatter::FieldEdit;
 use crate::index::DocumentIndex;
 use crate::settings::CashDeposits;
@@ -16,7 +16,8 @@ use ledgeline_core::accrual::{
 };
 use ledgeline_core::edit::{Fingerprint, format_transaction, render_amount};
 use ledgeline_core::matching::{IdGenerator, MATCH_TAG, NOMATCH_TAG};
-use ledgeline_core::model::{Amount, Tindex, Transaction};
+use ledgeline_core::model::{Amount, Posting, Tindex, Transaction};
+use ledgeline_core::reports::{AccountTypes, account_decls};
 use ledgeline_core::vault::VaultPath;
 use serde::Serialize;
 use serde_json::Value;
@@ -377,6 +378,54 @@ pub(super) fn applied_payments<'j>(loaded: &'j Loaded, number: &str) -> Vec<&'j 
         .collect()
 }
 
+/// The postings of a payment applied to an invoice that say where its money
+/// went: tagged `customer:` (`customer`'s, when given), not generated, and
+/// not on a cash account. A bank leg an importer also tagged `customer:` is
+/// the money arriving, not where it went, so it never counts. The one rule
+/// for "what this invoice received" that Apply payment, open deposits and
+/// the reconciler's paid mirror share (RC-12).
+pub(crate) fn receipt_postings<'t>(
+    txn: &'t Transaction,
+    types: &'t AccountTypes,
+    customer: Option<&'t str>,
+) -> impl Iterator<Item = &'t Posting> + 't {
+    txn.postings.iter().filter(move |posting| {
+        posting.generated.is_none()
+            && !types.is_cash(&posting.account.0)
+            && tag_value(&posting.tags, CUSTOMER_TAG)
+                .is_some_and(|tagged| customer.is_none_or(|c| c == tagged))
+    })
+}
+
+/// Cash books: what the payments applied to invoice `number` put in each
+/// account ([`receipt_postings`] for `customer`, in `commodity`), as
+/// credits: positive where money came in. In the order first seen.
+pub(super) fn received_by_account(
+    loaded: &Loaded,
+    number: &str,
+    customer: &str,
+    commodity: &str,
+) -> Result<Vec<(String, Dec)>, BooksError> {
+    let types = AccountTypes::new(&account_decls(loaded.journal()));
+    let mut out: Vec<(String, Dec)> = Vec::new();
+    for txn in applied_payments(loaded, number) {
+        for posting in receipt_postings(txn, &types, Some(customer)) {
+            for amount in posting
+                .amounts
+                .iter()
+                .filter(|a| a.commodity.0 == commodity)
+            {
+                let credit = amount.quantity.neg().map_err(|_| BooksError::Overflow)?;
+                match out.iter_mut().find(|(a, _)| *a == posting.account.0) {
+                    Some((_, sum)) => *sum = sum.add(credit).map_err(|_| BooksError::Overflow)?,
+                    None => out.push((posting.account.0.clone(), credit)),
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Refuse `date` on or before `[books] closed-through`.
 fn check_open(loaded: &Loaded, number: &str, date: &str) -> Result<(), BooksError> {
     match loaded.config().closed_through.as_deref() {
@@ -663,6 +712,25 @@ fn cash_marker(
     })
 }
 
+/// Whether [`InvoiceBooks::rebook`] writes, or only plans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// Write the journal.
+    Write,
+    /// Make every check and Ledgeline's save plan, writing nothing
+    /// ([`InvoiceBooks::check_rebook`]).
+    DryRun,
+}
+
+/// Refused unless `document` is sent: only a sent invoice is re-booked.
+fn sent_for_rebook(document: &Document) -> Result<(), BooksError> {
+    match document.invoice.header().status {
+        Some(Status::Sent) => Ok(()),
+        Some(Status::Draft) => Err(status_error(document, "a draft isn't booked; send it")),
+        _ => Err(status_error(document, "only a sent invoice is re-booked")),
+    }
+}
+
 impl InvoiceBooks {
     /// What sending `booking` writes in `loaded`'s basis (only called when
     /// [`books_it`]).
@@ -895,26 +963,39 @@ impl InvoiceBooks {
         })
     }
 
-    /// Whether [`InvoiceBooks::rebook`] would refuse `number` for its
-    /// status or its dates, checked without writing anything: so a caller
-    /// about to rewrite a sent invoice's markdown (the app's Recalculate)
-    /// can refuse before the file changes, not after. The checks are
-    /// rebook's own: a sent invoice, and neither its booked date nor its
-    /// own on or before `closed-through` (I8: void and reissue instead).
-    /// Rebook may still refuse for what only the new booking shows (a
-    /// dropped schedule, a zero total with payments linked).
+    /// Whether [`InvoiceBooks::rebook`] would refuse `number` once its file
+    /// says `text`, checked without writing anything: so a caller about to
+    /// rewrite a sent invoice's markdown (the app's editor and Recalculate)
+    /// can refuse before the file changes, not after (RC-7).
+    ///
+    /// `text` is evaluated as the file it will become: the same booking,
+    /// plan and Ledgeline save rebook would make, run in memory. So a
+    /// dropped schedule, a zero total with payments linked, a row with no
+    /// account, or a restatement Ledgeline can't make refuses here too.
+    /// Beyond rebook, the invoice must be sent now (on disk), and neither
+    /// its booked date nor the date `text` gives it may be on or before
+    /// `closed-through` even when the books would not change (I8: void and
+    /// reissue instead).
+    ///
+    /// What it can't foresee is the journal or the file changing between
+    /// this check and the writes.
     ///
     /// # Errors
-    /// As [`InvoiceBooks::rebook`] for those checks.
-    pub fn check_rebook(&self, index: &DocumentIndex, number: &str) -> Result<(), BooksError> {
-        let document = self.document(index, number)?;
-        match document.invoice.header().status {
-            Some(Status::Sent) => {}
-            Some(Status::Draft) => {
-                return Err(status_error(&document, "a draft isn't booked; send it"));
-            }
-            _ => return Err(status_error(&document, "only a sent invoice is re-booked")),
-        }
+    /// As [`InvoiceBooks::rebook`].
+    pub fn check_rebook(
+        &self,
+        index: &DocumentIndex,
+        number: &str,
+        text: &str,
+        today: &str,
+    ) -> Result<(), BooksError> {
+        check_date("today", today)?;
+        let on_disk = self.document(index, number)?;
+        sent_for_rebook(&on_disk)?;
+        let document = Document {
+            invoice: Invoice::parse(text, &index.settings().words),
+            ..on_disk
+        };
         let loaded = self.load()?;
         if let Some(found) = booked(&loaded, number)? {
             check_open(&loaded, number, &found.transaction.date)?;
@@ -922,7 +1003,13 @@ impl InvoiceBooks {
                 check_open(&loaded, number, date)?;
             }
         }
-        Ok(())
+        let request = Rebook {
+            number: number.to_string(),
+            today: today.to_string(),
+            expected: None,
+        };
+        self.rebook_of(index, &document, loaded, &request, Mode::DryRun)
+            .map(drop)
     }
 
     /// **Re-book** (§4.5): replace a sent invoice's transaction with what
@@ -945,16 +1032,24 @@ impl InvoiceBooks {
     pub fn rebook(&self, index: &DocumentIndex, request: &Rebook) -> Result<Rebooked, BooksError> {
         check_date("today", &request.today)?;
         let document = self.document(index, &request.number)?;
-        match document.invoice.header().status {
-            Some(Status::Sent) => {}
-            Some(Status::Draft) => {
-                return Err(status_error(&document, "a draft isn't booked; send it"));
-            }
-            _ => return Err(status_error(&document, "only a sent invoice is re-booked")),
-        }
-        let mut loaded = self.load()?;
+        let loaded = self.load()?;
+        self.rebook_of(index, &document, loaded, request, Mode::Write)
+    }
+
+    /// [`rebook`](Self::rebook) of `document` as given, over `loaded`; in
+    /// [`Mode::DryRun`] every check and Ledgeline's save plan run, and
+    /// nothing is written.
+    fn rebook_of(
+        &self,
+        index: &DocumentIndex,
+        document: &Document,
+        mut loaded: Loaded,
+        request: &Rebook,
+        mode: Mode,
+    ) -> Result<Rebooked, BooksError> {
+        sent_for_rebook(document)?;
         check_generation(&loaded, request.expected.as_ref())?;
-        let booking = self.booking(index, &document, &loaded)?;
+        let booking = self.booking(index, document, &loaded)?;
         let basis = Basis::of(&loaded);
         let mut rebooked = Rebooked {
             number: request.number.clone(),
@@ -1010,9 +1105,19 @@ impl InvoiceBooks {
                 request.number
             ));
         }
-        match &plan {
+        let save = match &plan {
             Plan::Document(spec) if found.settlement.is_some() && !booking.total.is_zero() => {
-                loaded.rebook_document(spec, &request.today, true, None)?;
+                match mode {
+                    Mode::DryRun => {
+                        loaded.preview_rebook_document(spec, &request.today, true, None)?;
+                        rebooked.changed = true;
+                        return Ok(rebooked);
+                    }
+                    Mode::Write => {
+                        loaded.rebook_document(spec, &request.today, true, None)?;
+                    }
+                }
+                None
             }
             Plan::Document(spec) => {
                 // A zero total on either side: replace it here, as
@@ -1036,7 +1141,7 @@ impl InvoiceBooks {
                         request.number
                     )));
                 }
-                loaded.save(&SaveRequest {
+                Some(SaveRequest {
                     source: SourceChange::Replace {
                         tindex: found.tindex,
                         fingerprint: found.fingerprint,
@@ -1046,12 +1151,12 @@ impl InvoiceBooks {
                     today: request.today.clone(),
                     create_file: true,
                     expected: None,
-                })?;
+                })
             }
             Plan::Marker(marker) => {
                 check_open(&loaded, &request.number, &found.transaction.date)?;
                 check_open(&loaded, &request.number, &booking.date)?;
-                loaded.save(&SaveRequest {
+                Some(SaveRequest {
                     source: SourceChange::Replace {
                         tindex: found.tindex,
                         fingerprint: found.fingerprint,
@@ -1061,10 +1166,21 @@ impl InvoiceBooks {
                     today: request.today.clone(),
                     create_file: false,
                     expected: None,
-                })?;
+                })
+            }
+        };
+        rebooked.changed = true;
+        if let Some(save) = save {
+            match mode {
+                Mode::DryRun => {
+                    loaded.preview(&save)?;
+                    return Ok(rebooked);
+                }
+                Mode::Write => {
+                    loaded.save(&save)?;
+                }
             }
         }
-        rebooked.changed = true;
         rebooked.booked = booked_text(&loaded, &request.number);
         Ok(rebooked)
     }

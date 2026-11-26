@@ -31,7 +31,7 @@ use super::ops::OpsError;
 use super::schedule::Party;
 use super::settle::{Fit, SettleSettings, gap_between, has_word, party_of};
 use super::{AccrualRoles, CUSTOMER_TAG, INVOICE_TAG, day_of, tag_value};
-use crate::decimal::{Dec, allocate};
+use crate::decimal::{Dec, pro_rata};
 use crate::edit::{EditOp, Fingerprint};
 use crate::model::{Amount, AmountStyle, Journal, PostingType, Tindex, Transaction};
 use crate::projections::is_generated;
@@ -173,25 +173,12 @@ fn income_side<'t>(
     }
 }
 
-/// `received` split over `weights` pro rata, exactly, the remainder on the
-/// largest weight (the first of equals). A negative weight (a deposit
-/// applied) gets its negative share; the weights sum to more than zero.
-fn pro_rata(received: Dec, weights: &[Dec]) -> Result<Vec<Dec>, OpsError> {
-    let largest = weights.iter().enumerate().fold(
-        0,
-        |best, (at, w)| if *w > weights[best] { at } else { best },
-    );
-    // `allocate` puts the remainder on the LAST weight: move the largest there.
-    let mut order: Vec<usize> = (0..weights.len()).filter(|&at| at != largest).collect();
-    order.push(largest);
-    let ordered: Vec<Dec> = order.iter().map(|&at| weights[at]).collect();
-    let shares = allocate(received, &ordered)
-        .map_err(|_| OpsError::Refused("the split can't be divided exactly".into()))?;
-    let mut out = vec![Dec::zero(); weights.len()];
-    for (at, share) in order.into_iter().zip(shares) {
-        out[at] = share;
-    }
-    Ok(out)
+/// `received` split over `weights` by [`pro_rata`]'s rule (the remainder
+/// on the largest weight). A negative weight (a deposit applied) gets its
+/// negative share; the weights sum to more than zero.
+fn split_pro_rata(received: Dec, weights: &[Dec]) -> Result<Vec<Dec>, OpsError> {
+    pro_rata(received, weights, None)
+        .map_err(|_| OpsError::Refused("the split can't be divided exactly".into()))
 }
 
 /// Plan applying `request` to the deposit `txn` of `journal`.
@@ -267,7 +254,7 @@ pub fn plan(
     };
     let shares: Vec<Dec> = if partial {
         let weights: Vec<Dec> = split.iter().map(|(_, amount)| *amount).collect();
-        pro_rata(received, &weights)?
+        split_pro_rata(received, &weights)?
     } else {
         split.iter().map(|(_, amount)| *amount).collect()
     };

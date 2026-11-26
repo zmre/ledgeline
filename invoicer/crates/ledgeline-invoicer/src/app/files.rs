@@ -53,7 +53,7 @@ const fn yes() -> bool {
 /// `GET /api/files` (`?list=false`: the capabilities alone).
 async fn list(State(state): State<AppState>, Query(params): Query<ListParams>) -> ApiResult {
     let caps = state.native().map(|n| n.capabilities()).unwrap_or_default();
-    with_books(&state, move |books| {
+    with_books(&state, StatusCode::OK, move |books| {
         let session = books.session();
         let files = if params.list {
             customer_edit::contract_candidates(session.index(), session.vault())
@@ -72,7 +72,7 @@ async fn list(State(state): State<AppState>, Query(params): Query<ListParams>) -
 /// The books folder, canonical.
 fn books_root(books: &OpenBooks) -> Result<PathBuf, ApiError> {
     books.vault().root().canonicalize().map_err(|e| {
-        ApiError(
+        ApiError::status(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("the books folder: {e}"),
         )
@@ -113,16 +113,16 @@ pub(crate) fn in_books(root: &FsPath, file: &FsPath) -> Result<VaultPath, String
 async fn pick(State(state): State<AppState>) -> ApiResult {
     let native = native_for(&state, |c| c.pick_file, "Choosing a file")?;
     let books = state.books().ok_or_else(no_books)?;
-    blocking(move || {
+    blocking(StatusCode::OK, move || {
         let root = books_root(&books)?;
         let Some(chosen) = native
             .pick_file(&root, "Choose a contract in the books folder")
-            .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e))?
+            .map_err(|e| ApiError::status(StatusCode::INTERNAL_SERVER_ERROR, e))?
         else {
             return Ok(json!({ "cancelled": true }));
         };
-        let path =
-            in_books(&root, &chosen).map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e))?;
+        let path = in_books(&root, &chosen)
+            .map_err(|e| ApiError::status(StatusCode::UNPROCESSABLE_ENTITY, e))?;
         let session = books.session();
         let index = session.index();
         let note = index.site().note(&path);
@@ -158,11 +158,11 @@ async fn open(
     let Json(body) = body.map_err(|e| ApiError::bad_request(e.body_text()))?;
     let native = native_for(&state, |c| c.open_file, "Opening a file")?;
     let books = state.books().ok_or_else(no_books)?;
-    blocking(move || {
+    blocking(StatusCode::OK, move || {
         let path = VaultPath::new(body.path.trim().trim_start_matches('/'))
             .map_err(|e| ApiError::bad_request(format!("{}: {e}", body.path)))?;
         if !books.vault().is_file(&path) {
-            return Err(ApiError(
+            return Err(ApiError::status(
                 StatusCode::NOT_FOUND,
                 format!("{path} isn't a file in the books folder"),
             ));
@@ -170,7 +170,8 @@ async fn open(
         let root = books_root(&books)?;
         let file = root.join(path.as_str());
         // A link out of the folder is refused like a path out of it.
-        in_books(&root, &file).map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e))?;
+        in_books(&root, &file)
+            .map_err(|e| ApiError::status(StatusCode::UNPROCESSABLE_ENTITY, e))?;
         // SEC-5: only a document opens; anything else (`.command`,
         // `.terminal`, `.app`, a script) is shown in Finder, never run.
         let revealed = !is_document(&file);
@@ -179,7 +180,7 @@ async fn open(
         } else {
             native.open_file(&file)
         }
-        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        .map_err(|e| ApiError::status(StatusCode::INTERNAL_SERVER_ERROR, e))?;
         Ok(json!({ "done": true, "revealed": revealed }))
     })
     .await

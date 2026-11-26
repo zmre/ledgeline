@@ -587,9 +587,174 @@ pub fn allocate(total: Dec, weights: &[Dec]) -> Result<Vec<Dec>, DecError> {
         .collect())
 }
 
+/// Split `total` across `weights` pro rata, the remainder on the largest
+/// weight: the one rule every pro-rata split of an amount over lines uses
+/// (Ledgeline's Apply payment re-split, and the invoicer's booking spreads
+/// and cash re-splits), so the same amount over the same lines always comes
+/// out the same.
+///
+/// - **Rounding.** Each share is rounded half away from zero, as
+///   [`Dec::rounded`] does.
+/// - **The remainder** that rounding leaves goes on the weight of largest
+///   magnitude, the first of equals. So the shares sum to `total` exactly,
+///   and the odd cents land on the same line every time.
+/// - **Scale.** The shares carry `places` (a commodity's precision), or
+///   `total`'s scale when finer. With `None`, [`allocate`]'s: `total`'s, or
+///   a weight's if one is finer. The weights' own scale only sets the
+///   proportion.
+///
+/// Unlike [`allocate`] (truncated shares, the remainder last), no share is
+/// off by more than half a unit before the remainder, and the remainder is
+/// at most half a unit per weight.
+///
+/// # Errors
+/// [`DecError::Overflow`] on overflow, and when `weights` is empty or sums
+/// to zero (there is no proportion to split by).
+pub fn pro_rata(total: Dec, weights: &[Dec], places: Option<u32>) -> Result<Vec<Dec>, DecError> {
+    let weights: Vec<Dec> = weights.iter().map(|w| w.normalized()).collect();
+    let weight_places = weights.iter().map(|w| w.places).max().unwrap_or(0);
+    let places = places.unwrap_or(weight_places).max(total.places);
+    let target = total.rescaled(places)?.mantissa;
+    let scaled: Vec<i128> = weights
+        .iter()
+        .map(|w| w.rescaled(weight_places).map(|w| w.mantissa))
+        .collect::<Result<_, _>>()?;
+    let sum = scaled.iter().try_fold(0i128, |acc, w| {
+        acc.checked_add(*w).ok_or(DecError::Overflow)
+    })?;
+    if sum == 0 {
+        return Err(DecError::Overflow);
+    }
+    let largest = (0..scaled.len()).fold(0, |best, at| {
+        if scaled[at].unsigned_abs() > scaled[best].unsigned_abs() {
+            at
+        } else {
+            best
+        }
+    });
+    let mut shares = scaled
+        .iter()
+        .map(|weight| {
+            target
+                .checked_mul(*weight)
+                .and_then(|product| div_round(product, sum))
+                .ok_or(DecError::Overflow)
+        })
+        .collect::<Result<Vec<i128>, _>>()?;
+    let others = shares
+        .iter()
+        .enumerate()
+        .filter(|(at, _)| *at != largest)
+        .try_fold(0i128, |acc, (_, share)| {
+            acc.checked_add(*share).ok_or(DecError::Overflow)
+        })?;
+    shares[largest] = target.checked_sub(others).ok_or(DecError::Overflow)?;
+    Ok(shares
+        .into_iter()
+        .map(|share| Dec::new(share, places))
+        .collect())
+}
+
+/// `numerator / denominator`, rounded half away from zero, in integers.
+fn div_round(numerator: i128, denominator: i128) -> Option<i128> {
+    let quotient = numerator.checked_div(denominator)?;
+    let remainder = numerator.checked_rem(denominator)?;
+    let away = remainder.unsigned_abs().checked_mul(2)? >= denominator.unsigned_abs();
+    let sign = numerator.signum() * denominator.signum();
+    Some(if away { quotient + sign } else { quotient })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pro_rata_puts_the_remainder_on_the_largest_and_sums_exactly() {
+        // $100.00 over 1:1:1: the odd cent on the first of equals.
+        let shares = pro_rata(Dec::new(10_000, 2), &[Dec::new(1, 0); 3], None).expect("splits");
+        assert_eq!(
+            shares,
+            [Dec::new(3334, 2), Dec::new(3333, 2), Dec::new(3333, 2)]
+        );
+        // -$195 over 1,000 : 500 : 600: each rounded half away from zero
+        // (-92.857 → -92.86, -46.429 → -46.43, -55.714 → -55.71), and the
+        // largest takes what is left, every time.
+        let weights = [Dec::new(1000, 0), Dec::new(500, 0), Dec::new(600, 0)];
+        for _ in 0..3 {
+            let shares = pro_rata(Dec::new(-19_500, 2), &weights, Some(2)).expect("splits");
+            assert_eq!(
+                shares,
+                [Dec::new(-9286, 2), Dec::new(-4643, 2), Dec::new(-5571, 2)]
+            );
+        }
+        // $1.00 over 1:5:1:1: 12.5¢ rounds up to 13¢ thrice, so the largest
+        // gives the 3¢ back: 13 + 61 + 13 + 13.
+        let shares = pro_rata(
+            Dec::new(100, 2),
+            &[
+                Dec::new(1, 0),
+                Dec::new(5, 0),
+                Dec::new(1, 0),
+                Dec::new(1, 0),
+            ],
+            Some(2),
+        )
+        .expect("splits");
+        assert_eq!(
+            shares,
+            [
+                Dec::new(13, 2),
+                Dec::new(61, 2),
+                Dec::new(13, 2),
+                Dec::new(13, 2)
+            ]
+        );
+        // A negative weight (a deposit applied) keeps its own sign, and the
+        // largest magnitude takes the remainder whatever its sign.
+        let shares = pro_rata(
+            Dec::new(1000, 2),
+            &[Dec::new(3, 0), Dec::new(3, 0), Dec::new(-4, 0)],
+            Some(2),
+        )
+        .expect("splits");
+        assert_eq!(
+            shares,
+            [Dec::new(1500, 2), Dec::new(1500, 2), Dec::new(-2000, 2)]
+        );
+        // Weights finer than the money: the shares are still in cents.
+        let shares = pro_rata(
+            Dec::new(1000, 2),
+            &[Dec::new(3333, 3), Dec::new(6667, 3)],
+            Some(2),
+        )
+        .expect("splits");
+        assert_eq!(shares, [Dec::new(333, 2), Dec::new(667, 2)]);
+        assert!(pro_rata(Dec::new(1, 0), &[Dec::new(1, 0), Dec::new(-1, 0)], None).is_err());
+        assert_eq!(div_round(5, 2), Some(3));
+        assert_eq!(div_round(-5, 2), Some(-3));
+        assert_eq!(div_round(4, 3), Some(1));
+        assert_eq!(div_round(-5, -2), Some(3));
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn pro_rata_shares_sum_to_the_total_and_land_deterministically(
+            total in -10_000_000i128..10_000_000,
+            weights in proptest::collection::vec(-100_000i128..100_000, 1..8),
+        ) {
+            let weights: Vec<Dec> = weights.into_iter().map(|w| Dec::new(w, 2)).collect();
+            let total = Dec::new(total, 2);
+            let Ok(shares) = pro_rata(total, &weights, Some(2)) else {
+                let sum = weights.iter().try_fold(Dec::zero(), |a, w| a.add(*w)).unwrap();
+                proptest::prop_assert!(sum.is_zero());
+                return Ok(());
+            };
+            let sum = shares.iter().try_fold(Dec::zero(), |a, s| a.add(*s)).unwrap();
+            proptest::prop_assert_eq!(sum, total);
+            proptest::prop_assert!(shares.iter().all(|s| s.places == 2));
+            proptest::prop_assert_eq!(pro_rata(total, &weights, Some(2)).unwrap(), shares);
+        }
+    }
 
     #[test]
     fn allocated_shares_sum_to_the_total_exactly() {

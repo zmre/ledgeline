@@ -271,7 +271,8 @@ fn paying_the_rest_after_a_row_is_exactly_paid_skips_that_row() {
     write(&dir, "books.journal", &start);
     let (books, index) = open(&dir);
     // 207 lacks $3,000 on consulting and $4,000 on delivery: $6,999.99
-    // truncates consulting to $2,999.99 and delivery takes exactly $4,000.
+    // rounds consulting's $2,999.995 up to exactly $3,000, and delivery (the
+    // largest) takes the rest, $3,999.99.
     let most = books
         .payment_candidates(&index, "207", TODAY)
         .expect("lists")
@@ -294,7 +295,10 @@ fn paying_the_rest_after_a_row_is_exactly_paid_skips_that_row() {
     assert_eq!(last.remaining, Dec::zero());
     assert_eq!(
         last.applied,
-        [("revenue:consulting".to_string(), "0.01".to_string())]
+        [(
+            "revenue:consulting:delivery".to_string(),
+            "0.01".to_string()
+        )]
     );
 }
 
@@ -710,8 +714,8 @@ fn pro_rata_allocation_splits_every_payment_like_the_rows() {
     assert_eq!(
         applied(&first),
         [
-            ("revenue:consulting", "2333.34"),
-            ("revenue:consulting:delivery", "1166.66")
+            ("revenue:consulting", "2333.33"),
+            ("revenue:consulting:delivery", "1166.67")
         ]
     );
     let rest = books
@@ -723,8 +727,8 @@ fn pro_rata_allocation_splits_every_payment_like_the_rows() {
     assert_eq!(
         applied(&second),
         [
-            ("revenue:consulting", "2333.33"),
-            ("revenue:consulting:delivery", "1166.67")
+            ("revenue:consulting", "2333.34"),
+            ("revenue:consulting:delivery", "1166.66")
         ]
     );
     if let Some(out) = hledger(

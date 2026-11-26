@@ -155,10 +155,14 @@ async fn the_api_answers_the_cli_shapes() {
     let (status, _, body) = send(&app.router, authed("/api/invoices/105")).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body.contains("\"number\":\"105\""), "{body}");
-    let (status, _, _) = send(&app.router, authed("/api/invoices/999")).await;
+    // One envelope everywhere (RA-4): `{error, code}`, the code the status's.
+    let (status, missing) = json_of(&app, authed("/api/invoices/999")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, _, _) = send(&app.router, authed("/api/invoices?status=nope")).await;
+    assert_eq!(missing["code"], "not-found", "{missing}");
+    assert!(missing["error"].is_string(), "{missing}");
+    let (status, bad) = json_of(&app, authed("/api/invoices?status=nope")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(bad["code"], "bad-request", "{bad}");
 
     let (status, _, body) = send(&app.router, authed("/api/customers")).await;
     assert_eq!(status, StatusCode::OK, "{body}");

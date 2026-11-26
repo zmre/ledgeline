@@ -16,32 +16,45 @@
 //!
 //! **Recalculate.** A draft's amounts are only arithmetic: rewritten. A sent
 //! invoice's amount is booked, so recalculating it means re-booking it, by
-//! the CLI's rules: refused for a date on or before `closed-through` (I8)
-//! before anything is written, and asked for explicitly (`rebook: true`, the
-//! SPA's confirmation); without it the answer is `409` saying so. A void
-//! invoice is history: `409`.
+//! the CLI's rules, and asked for explicitly (`rebook: true`, the SPA's
+//! confirmation); without it the answer is `409` saying so. Before anything
+//! is written, the text it would write is re-booked in memory
+//! ([`invoicer_core::books::InvoiceBooks::check_rebook`]): a refusal (a date
+//! on or before `closed-through`, I8; a dropped schedule; a row with no
+//! account) is answered then, with the books' code. A void invoice is
+//! history: `409`.
+//!
+//! **Written, not re-booked** (TW-4). What the check can't foresee (the
+//! journal changing twice under the write, a file that can't be written)
+//! can still stop the re-book after the markdown is written. That answers
+//! `422` with code `saved-not-rebooked` (never `changed`), and the body
+//! says what happened: `written: true`, the file's new `revision` and
+//! `path`, `cause` (the books' code, [`BooksError::code`]) and an `error`
+//! saying how to finish (Re-book, or `ledgeline-invoicer rebook N`). The
+//! editor's save answers the same ([`super::editor`]).
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use invoicer_core::books::{Rebook, retry_once};
+use invoicer_core::books::Rebooked;
 use invoicer_core::doc::Status;
 use invoicer_core::edit::{self, WriteError};
 use invoicer_core::frontmatter::FieldEdit;
-use ledgeline_core::vault::VaultError;
+use invoicer_core::session::Session;
+use ledgeline_core::vault::{VaultError, VaultPath};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::AppState;
 use super::api::{ApiError, ApiResult, blocking, no_books, to_value, today};
-use super::books::{reconcile_in, reload_after_write};
+use super::books::log_mirror;
 use super::pdf::books_error;
-use crate::starters;
+use crate::{flows, starters};
 
-/// A write the core refused, as an API error: `409` when the file changed
-/// under it (read it again), `400` for a refused key, else `422` (a fixable
-/// problem in the file).
+/// A write the core refused, as an API error: `409` `changed` when the
+/// file changed under it (read it again), `400` `bad-request` for a
+/// refused key, else `422` `invalid` (a fixable problem in the file).
 pub(crate) fn write_error(error: &WriteError) -> ApiError {
     let changed = matches!(
         error,
@@ -50,15 +63,63 @@ pub(crate) fn write_error(error: &WriteError) -> ApiError {
                 VaultError::Changed { .. }
             ))
     );
-    let status = if changed {
-        StatusCode::CONFLICT
+    if changed {
+        ApiError::new(StatusCode::CONFLICT, "changed", error.to_string())
     } else if matches!(error, WriteError::Protected { .. }) {
-        StatusCode::BAD_REQUEST
+        ApiError::bad_request(error.to_string())
     } else {
-        StatusCode::UNPROCESSABLE_ENTITY
-    };
-    ApiError(status, error.to_string())
+        ApiError::status(StatusCode::UNPROCESSABLE_ENTITY, error.to_string())
+    }
 }
+
+/// Re-book sent invoice `number` after this request rewrote its file at
+/// `path` (`written`; else after it found nothing to rewrite)
+/// ([`flows::rebook`], its mirror logged). A failure after a write leaves
+/// the file written and the books as they were: answered as `422`
+/// `saved-not-rebooked` with the books' `cause`, `written: true` and the
+/// file's new `revision` and `path` (TW-4), so the SPA can take its own
+/// save as saved and offer Re-book, rather than read the write as someone
+/// else's change.
+pub(crate) fn rebook_written(
+    session: &mut Session,
+    number: &str,
+    today: &str,
+    path: &VaultPath,
+    written: bool,
+) -> Result<Rebooked, ApiError> {
+    let (result, _) = flows::rebook(session, number, today);
+    match result {
+        Ok(rebooked) => {
+            log_mirror(rebooked.mirror.as_ref());
+            Ok(rebooked.done)
+        }
+        Err(error) if !written => Err(books_error(&error)),
+        Err(error) => {
+            let revision = session
+                .vault()
+                .read_pinned(path, None)
+                .map(|(_, r)| Value::String(r.token()))
+                .unwrap_or(Value::Null);
+            Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                SAVED_NOT_REBOOKED,
+                format!(
+                    "invoice {number}'s file was saved, but its books weren't updated: {error}. \
+                     The file and the books now disagree: fix that, then Re-book (or run \
+                     `ledgeline-invoicer rebook {number}`)"
+                ),
+            )
+            .with("cause", Value::String(error.code().to_string()))
+            .with("written", Value::Bool(true))
+            .with("path", Value::String(path.to_string()))
+            .with("revision", revision))
+        }
+    }
+}
+
+/// The code of a write that changed a sent invoice's file but couldn't
+/// re-book it ([`rebook_written`]).
+pub(crate) const SAVED_NOT_REBOOKED: &str = "saved-not-rebooked";
 
 /// `POST /api/invoices/{num}/template`'s body.
 #[derive(Debug, Deserialize)]
@@ -77,18 +138,18 @@ pub(crate) async fn use_template(
 ) -> ApiResult {
     let Json(body) = body.map_err(|e| ApiError::bad_request(e.body_text()))?;
     let books = state.books().ok_or_else(no_books)?;
-    blocking(move || {
+    blocking(StatusCode::OK, move || {
         let mut session = books.session();
         let doc = session
             .find(&number)
-            .map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+            .map_err(|e| ApiError::status(StatusCode::NOT_FOUND, e.to_string()))?;
         let (path, doc_type, status) = (doc.path.clone(), doc.header.doc_type, doc.header.status);
         let wanted = format!("/{}", body.template.trim().trim_start_matches('/'));
         let entry = super::templates::templates_in(&session)
             .into_iter()
             .find(|t| t.path == wanted)
             .ok_or_else(|| {
-                ApiError(
+                ApiError::status(
                     StatusCode::UNPROCESSABLE_ENTITY,
                     format!(
                         "{wanted} isn't a template: name one in the books (an .html file \
@@ -99,7 +160,7 @@ pub(crate) async fn use_template(
         if let Some(kind) = doc_type
             && !entry.kinds.iter().any(|k| k == kind.as_str())
         {
-            return Err(ApiError(
+            return Err(ApiError::status(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 format!(
                     "the {} template isn't for {} documents",
@@ -108,10 +169,11 @@ pub(crate) async fn use_template(
                 ),
             ));
         }
-        let (index, vault) = session.parts_mut();
-        let outcome = edit::set(
-            index,
-            vault,
+        // A starter is copied in once the invoice names it (B1), and indexed
+        // so the invoice's `unknown-template` warning goes at once. The
+        // invoice names it either way, so a failed copy is a warning.
+        let done = starters::set(
+            &mut session,
             &path,
             &[FieldEdit::Set(
                 "template".to_string(),
@@ -119,31 +181,12 @@ pub(crate) async fn use_template(
             )],
         )
         .map_err(|e| write_error(&e))?;
-        // A starter is copied in once the invoice names it (B1), and indexed
-        // so the invoice's `unknown-template` warning goes at once.
-        let dir = session.settings().templates_dir.clone();
-        let copied = match starters::install_named(session.vault(), &dir, &wanted) {
-            Ok(Some(done)) if done.written => {
-                let (index, vault) = session.parts_mut();
-                index.refresh(vault, &done.written_files());
-                Some(done.path.to_string())
-            }
-            Ok(_) => None,
-            Err(error) => {
-                return Err(ApiError(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!(
-                        "the invoice names {wanted} now, but the starter wasn't copied in: \
-                         {error}"
-                    ),
-                ));
-            }
-        };
         Ok(json!({
             "template": wanted,
-            "changed": outcome.written,
-            "copied": copied,
+            "changed": done.outcome.written,
+            "copied": done.copied.map(|p| p.to_string()),
             "status": status.map(Status::as_str),
+            "warnings": done.warnings,
         }))
     })
     .await
@@ -175,27 +218,27 @@ pub(crate) async fn recalc(
     };
     let today = today(body.today.as_deref())?;
     let books = state.books().ok_or_else(no_books)?;
-    blocking(move || {
+    blocking(StatusCode::OK, move || {
         let mut session = books.session();
         let doc = session
             .find(&number)
-            .map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+            .map_err(|e| ApiError::status(StatusCode::NOT_FOUND, e.to_string()))?;
         let (path, status) = (doc.path.clone(), doc.header.status);
         let doc_number = doc.number().map(str::to_string);
         match status {
-            Some(Status::Void) => Err(ApiError(
+            Some(Status::Void) => Err(ApiError::status(
                 StatusCode::CONFLICT,
                 format!("invoice {number} is void: its amounts stay as they were booked"),
             )),
             Some(Status::Sent) => {
                 let doc_number = doc_number.ok_or_else(|| {
-                    ApiError(
+                    ApiError::status(
                         StatusCode::UNPROCESSABLE_ENTITY,
                         "it has no `invoice_num`".to_string(),
                     )
                 })?;
                 if !body.rebook {
-                    return Err(ApiError(
+                    return Err(ApiError::status(
                         StatusCode::CONFLICT,
                         format!(
                             "invoice {doc_number} is sent, so its amount is booked: \
@@ -203,37 +246,33 @@ pub(crate) async fn recalc(
                         ),
                     ));
                 }
-                let invoice_books = session.invoice_books();
-                // Refuse before the file changes, not after (closed period).
-                invoice_books
-                    .check_rebook(session.index(), &doc_number)
+                // The text it will write is checked first, as rebook would
+                // book it: a refusal (a closed period, a dropped schedule, …)
+                // comes before the file changes, not after (RC-7).
+                let (source, revision) =
+                    edit::read_text(session.vault(), &path).map_err(|e| write_error(&e))?;
+                let text =
+                    edit::recalc_text(session.index(), &source).map_err(|e| write_error(&e))?;
+                session
+                    .invoice_books()
+                    .check_rebook(
+                        session.index(),
+                        &doc_number,
+                        text.as_deref().unwrap_or(&source),
+                        &today,
+                    )
                     .map_err(|e| books_error(&e))?;
                 let (index, vault) = session.parts_mut();
-                let recalculated =
-                    edit::recalc_one(index, vault, &path, false).map_err(|e| write_error(&e))?;
-                let request = Rebook {
-                    number: doc_number.clone(),
-                    today,
-                    expected: None,
-                };
-                let (result, _) = retry_once(|| invoice_books.rebook(index, &request));
-                reload_after_write(&mut session);
-                let rebooked = result.map_err(|e| {
-                    let failed = books_error(&e);
-                    ApiError(
-                        failed.0,
-                        format!(
-                            "the amounts were rewritten, but re-booking invoice {doc_number} \
-                             failed: {}; fix it, then run `ledgeline-invoicer rebook \
-                             {doc_number}`",
-                            failed.1
-                        ),
-                    )
-                })?;
-                // A new total can move the payment state: refresh `paid:`.
-                if rebooked.changed {
-                    reconcile_in(&mut session, Some(vec![doc_number]));
-                }
+                let recalculated = edit::recalc_at(index, vault, &path, &source, &revision)
+                    .map_err(|e| write_error(&e))?;
+                let rebooked = rebook_written(
+                    &mut session,
+                    &doc_number,
+                    &today,
+                    &path,
+                    recalculated.written,
+                )
+                .map_err(|e| e.with("recalculated", to_value(&recalculated).unwrap_or_default()))?;
                 Ok(json!({
                     "recalculated": to_value(&recalculated)?,
                     "rebooked": to_value(&rebooked)?,

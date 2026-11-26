@@ -17,11 +17,15 @@
 //! | `POST /api/invoices/{num}/payments`     | Cash books: Apply payment (`apply-payment N --txn REF`); `dry_run` previews it. |
 //! | `POST /api/preview/draft`               | Keep unsaved text for the preview frame; its page URL.     |
 //!
-//! Errors are `{"error": "…", "code": "…"}`: `changed` (409, the file
-//! changed since `revision`; the body has the current `revision`),
-//! `confirm-rebook` (409), `void` (409), `refused` (409), `invalid` (422),
-//! `bad-request` (400), `not-found` (404), `exists` (409), and the books
-//! bridge's codes ([`invoicer_core::books::BooksError::code`]).
+//! Errors are the API's one envelope ([`super::api::ApiError`],
+//! `{"error": "…", "code": "…"}`): `changed` (409, the file changed since
+//! `revision`; the body has the current `revision`), `confirm-rebook`
+//! (409), `void` (409), `refused` (409), `invalid` (422), `bad-request`
+//! (400), `not-found` (404), `exists` (409), the books bridge's codes
+//! ([`invoicer_core::books::BooksError::code`]), and
+//! `saved-not-rebooked` (422: a sent invoice's file was written but its
+//! re-book failed; `cause`, `written`, `path` and the file's new
+//! `revision` say so, [`super::edits::rebook_written`]).
 
 use std::collections::BTreeMap;
 
@@ -30,11 +34,8 @@ use axum::Router;
 use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use invoicer_core::books::{
-    self, ApplyPayment, BooksError, Document, PaymentCandidate, Rebook, Void, retry_once,
-};
+use invoicer_core::books::{self, ApplyPayment, Document, PaymentCandidate, Void, retry_once};
 use invoicer_core::customers::ContactKind;
 use invoicer_core::doc::{DocType, Invoice, Status};
 use invoicer_core::draft::{DraftRow, NewInvoice};
@@ -46,17 +47,15 @@ use invoicer_core::table::money::MoneyStyle;
 use invoicer_core::views;
 use ledgeline_core::Dec;
 use ledgeline_core::vault::{Revision, VaultPath};
-use ledgeline_shell::security::no_store_json;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::AppState;
-use super::api::{ApiError, today};
-use super::books::{OpenBooks, reconcile_in, reload_after_write};
-use super::edits::write_error;
-use super::pdf::books_error;
+use super::api::{ApiError, ApiResult, body, to_value, today, with_books};
+use super::books::{log_mirror, reload_after_write};
+use super::edits::{rebook_written, write_error};
 use super::preview::{MAX_SOURCE_BYTES, PREVIEW_PAGE, PreviewRequest};
-use crate::starters;
+use crate::{flows, starters};
 
 /// The editor's routes (state still to be supplied).
 pub(crate) fn routes() -> Router<AppState> {
@@ -76,68 +75,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/preview/draft", post(preview_draft))
 }
 
-/// An editor failure: a status, a stable code, a sentence, and for
-/// `changed` the file's current revision.
-#[derive(Debug)]
-pub(crate) struct Failure {
-    status: StatusCode,
-    code: &'static str,
-    message: String,
-    revision: Option<String>,
-}
-
-impl Failure {
-    fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
-        Self {
-            status,
-            code,
-            message: message.into(),
-            revision: None,
-        }
-    }
-
-    fn bad_request(message: impl Into<String>) -> Self {
-        Self::new(StatusCode::BAD_REQUEST, "bad-request", message)
-    }
-
-    fn not_found(message: impl Into<String>) -> Self {
-        Self::new(StatusCode::NOT_FOUND, "not-found", message)
-    }
-}
-
-impl IntoResponse for Failure {
-    fn into_response(self) -> Response {
-        let mut body = json!({ "error": self.message, "code": self.code });
-        if let Some(revision) = self.revision {
-            body["revision"] = Value::String(revision);
-        }
-        let mut response = no_store_json(body);
-        *response.status_mut() = self.status;
-        response
-    }
-}
-
-impl From<ApiError> for Failure {
-    fn from(ApiError(status, message): ApiError) -> Self {
-        let code = match status {
-            StatusCode::BAD_REQUEST => "bad-request",
-            StatusCode::NOT_FOUND => "not-found",
-            StatusCode::CONFLICT => "conflict",
-            StatusCode::UNPROCESSABLE_ENTITY => "invalid",
-            _ => "internal",
-        };
-        Self::new(status, code, message)
-    }
-}
-
-impl From<&BooksError> for Failure {
-    fn from(error: &BooksError) -> Self {
-        let ApiError(status, message) = books_error(error);
-        Self::new(status, error.code(), message)
-    }
-}
-
-impl From<EditorError> for Failure {
+impl From<EditorError> for ApiError {
     fn from(error: EditorError) -> Self {
         let code = error.code();
         let status = match code {
@@ -146,72 +84,36 @@ impl From<EditorError> for Failure {
             "bad-request" => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        let revision = match &error {
-            EditorError::Changed { current } => Some(current.clone()),
-            _ => None,
-        };
-        Self {
-            status,
-            code,
-            message: error.to_string(),
-            revision,
+        let failure = Self::new(status, code, error.to_string());
+        match error {
+            EditorError::Changed { current } => failure.with("revision", Value::String(current)),
+            _ => failure,
         }
     }
 }
 
-type Answer = Result<Response, Failure>;
-
-/// Run `f` over the open books on the blocking pool, answering its JSON.
-async fn with_books<F>(state: &AppState, f: F) -> Answer
-where
-    F: FnOnce(&OpenBooks) -> Result<Value, Failure> + Send + 'static,
-{
-    let books = state
-        .books()
-        .ok_or_else(|| Failure::from(super::api::no_books()))?;
-    match tokio::task::spawn_blocking(move || f(&books)).await {
-        Ok(result) => result.map(no_store_json),
-        Err(error) => Err(Failure::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            format!("the request failed: {error}"),
-        )),
-    }
-}
-
-fn body<T>(payload: Result<Json<T>, JsonRejection>) -> Result<T, Failure> {
-    payload
-        .map(|Json(body)| body)
-        .map_err(|e| Failure::bad_request(e.body_text()))
-}
-
-fn value(value: impl serde::Serialize) -> Result<Value, Failure> {
-    serde_json::to_value(value)
-        .map_err(|e| Failure::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))
-}
-
 /// The document `number` names (a number or a path), as the session has it.
-fn find(session: &Session, number: &str) -> Result<VaultPath, Failure> {
+fn find(session: &Session, number: &str) -> Result<VaultPath, ApiError> {
     session
         .find(number)
         .map(|doc| doc.path.clone())
-        .map_err(|e| Failure::not_found(e.to_string()))
+        .map_err(|e| ApiError::not_found(e.to_string()))
 }
 
 /// The document at `path`, read now, with its revision.
-fn read(session: &Session, path: &VaultPath) -> Result<(String, Revision), Failure> {
+fn read(session: &Session, path: &VaultPath) -> Result<(String, Revision), ApiError> {
     let (bytes, revision) = session
         .vault()
         .read_pinned(path, Some(MAX_SOURCE_BYTES as u64))
         .map_err(|e| {
             if e.is_not_found() {
-                Failure::not_found(format!("{path}: no such file"))
+                ApiError::not_found(format!("{path}: no such file"))
             } else {
-                Failure::new(StatusCode::INTERNAL_SERVER_ERROR, "storage", e.to_string())
+                ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "storage", e.to_string())
             }
         })?;
     let text = String::from_utf8(bytes).map_err(|_| {
-        Failure::new(
+        ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
             "invalid",
             format!("{path} isn't UTF-8 text"),
@@ -231,8 +133,8 @@ fn kind_name(kind: ContactKind) -> &'static str {
 const LINK_NOTES_LIMIT: usize = 2000;
 
 /// `GET /api/editor/options`.
-async fn options(State(state): State<AppState>) -> Answer {
-    with_books(&state, |books| {
+async fn options(State(state): State<AppState>) -> ApiResult {
+    with_books(&state, StatusCode::OK, |books| {
         let session = books.session();
         let index = session.index();
         let settings = session.settings();
@@ -330,8 +232,8 @@ async fn options(State(state): State<AppState>) -> Answer {
 }
 
 /// `GET /api/fields/{key}/values`: `[{value, count}]`, most used first.
-async fn field_values(State(state): State<AppState>, Path(key): Path<String>) -> Answer {
-    with_books(&state, move |books| {
+async fn field_values(State(state): State<AppState>, Path(key): Path<String>) -> ApiResult {
+    with_books(&state, StatusCode::OK, move |books| {
         let session = books.session();
         let values: Vec<Value> = session
             .index()
@@ -398,12 +300,12 @@ fn deposit_row(session: &Session) -> DraftRow {
 async fn create(
     State(state): State<AppState>,
     payload: Result<Json<CreateBody>, JsonRejection>,
-) -> Answer {
+) -> ApiResult {
     let request = body(payload)?;
     if !is_iso_date(request.date.trim()) {
-        return Err(Failure::bad_request("date: not a date (YYYY-MM-DD)"));
+        return Err(ApiError::bad_request("date: not a date (YYYY-MM-DD)"));
     }
-    with_books(&state, move |books| {
+    with_books(&state, StatusCode::OK, move |books| {
         let mut session = books.session();
         let template = text(request.template);
         let (starter_template, starter) =
@@ -423,10 +325,8 @@ async fn create(
         let booked: Vec<String> = session.booked_numbers().to_vec();
         let booked: Vec<&str> = booked.iter().map(String::as_str).collect();
         let (index, vault) = session.parts_mut();
-        let created = edit::create(index, vault, &new, &booked, false).map_err(|e| {
-            let ApiError(status, message) = write_error(&e);
-            Failure::new(status, "invalid", message)
-        })?;
+        let created =
+            edit::create(index, vault, &new, &booked, false).map_err(|e| write_error(&e))?;
         // The starter it uses is copied in now it is written (B1). The draft
         // exists (and has its number) either way, so a failed copy is a
         // warning, not an error a retry would answer with a second draft
@@ -452,7 +352,7 @@ async fn create(
             }
             None => None,
         };
-        let mut out = value(&created)?;
+        let mut out = to_value(&created)?;
         out["copied"] = json!(copied);
         out["warnings"] = json!(warnings);
         Ok(out)
@@ -468,7 +368,7 @@ fn computed(
     saved: &str,
     text: &str,
     books: bool,
-) -> Result<Value, Failure> {
+) -> Result<Value, ApiError> {
     let settings = session.settings();
     let money = session.index().money();
     let invoice = Invoice::parse(text, &settings.words);
@@ -534,8 +434,8 @@ fn computed(
 
 /// `GET /api/invoices/{num}/form`: `{path, title, number, status, revision,
 /// form, computed}`.
-async fn form(State(state): State<AppState>, Path(number): Path<String>) -> Answer {
-    with_books(&state, move |books| {
+async fn form(State(state): State<AppState>, Path(number): Path<String>) -> ApiResult {
+    with_books(&state, StatusCode::OK, move |books| {
         let session = books.session();
         let path = find(&session, &number)?;
         let (text, revision) = read(&session, &path)?;
@@ -548,7 +448,7 @@ async fn form(State(state): State<AppState>, Path(number): Path<String>) -> Answ
             "number": header.number.as_ref().map(ToString::to_string),
             "status": header.status.map(Status::as_str),
             "revision": revision.token(),
-            "form": value(&form)?,
+            "form": to_value(&form)?,
             "computed": computed(&session, &path, &text, &text, false)?,
         }))
     })
@@ -570,9 +470,9 @@ async fn compute(
     State(state): State<AppState>,
     Path(number): Path<String>,
     payload: Result<Json<ComputeBody>, JsonRejection>,
-) -> Answer {
+) -> ApiResult {
     let request = body(payload)?;
-    with_books(&state, move |books| {
+    with_books(&state, StatusCode::OK, move |books| {
         let session = books.session();
         let path = find(&session, &number)?;
         let (saved, _) = read(&session, &path)?;
@@ -597,19 +497,23 @@ struct SaveBody {
 }
 
 /// `PUT /api/invoices/{num}/form`: `{written, path, number, status,
-/// revision, rebooked, copied}`.
+/// revision, rebooked, copied, warnings}`.
 ///
 /// A sent invoice's amount is booked, so saving it re-books it: only with
-/// `rebook: true`, refused before anything is written when it is dated on
-/// or before `closed-through` (I8), then re-booked by `rebook`'s rules.
+/// `rebook: true`. The text the form makes is re-booked in memory before
+/// anything is written ([`invoicer_core::books::InvoiceBooks::check_rebook`],
+/// RC-7), so a refusal (a date on or before `closed-through`, I8; a
+/// dropped schedule; a row with no account) leaves the file as it was.
+/// Saved, it is re-booked by `rebook`'s rules; a re-book that still fails
+/// answers `saved-not-rebooked` (TW-4, [`super::edits::rebook_written`]).
 async fn save(
     State(state): State<AppState>,
     Path(number): Path<String>,
     payload: Result<Json<SaveBody>, JsonRejection>,
-) -> Answer {
+) -> ApiResult {
     let request = body(payload)?;
-    let today = today(request.today.as_deref()).map_err(Failure::from)?;
-    with_books(&state, move |books| {
+    let today = today(request.today.as_deref())?;
+    with_books(&state, StatusCode::OK, move |books| {
         let mut session = books.session();
         let path = find(&session, &number)?;
         // Read it, and the books, afresh: sent outside the app (the CLI, a
@@ -622,12 +526,23 @@ async fn save(
         let sent = doc.is_some_and(|d| d.header.status == Some(Status::Sent));
         let doc_number = doc.and_then(|d| d.number()).map(str::to_string);
         if sent && request.rebook {
-            // Refuse before the file changes, not after (closed period).
-            let doc_number = doc_number.clone().unwrap_or_default();
-            session
-                .invoice_books()
-                .check_rebook(session.index(), &doc_number)
-                .map_err(|e| Failure::from(&e))?;
+            // Refuse before the file changes, not after: the text this form
+            // makes of the file as the editor read it, re-booked in memory.
+            // (Read at another revision, the save refuses it as `changed`.)
+            let (source, revision) = read(&session, &path)?;
+            if revision.token() == request.revision {
+                let invoice = Invoice::parse(source.as_str(), &session.settings().words);
+                let text = editor::apply(session.index(), &path, &invoice, &request.form)?;
+                session
+                    .invoice_books()
+                    .check_rebook(
+                        session.index(),
+                        doc_number.as_deref().unwrap_or_default(),
+                        &text,
+                        &today,
+                    )
+                    .map_err(|e| ApiError::from(&e))?;
+            }
         }
         let (index, vault) = session.parts_mut();
         let saved = editor::save(
@@ -638,47 +553,22 @@ async fn save(
             &request.revision,
             request.rebook,
         )?;
-        // A starter the form now names is copied in (B1, F9).
+        // A starter the form now names is copied in (B1, F9); the invoice
+        // is saved either way, so a failed copy is a warning.
+        let mut warnings: Vec<String> = Vec::new();
         let copied = match request.form.template.as_deref().map(str::trim) {
             Some(template) if saved.written && !template.is_empty() => {
-                let dir = session.settings().templates_dir.clone();
-                match starters::install_named(session.vault(), &dir, template) {
-                    Ok(Some(done)) if done.written => {
-                        let (index, vault) = session.parts_mut();
-                        index.refresh(vault, &done.written_files());
-                        Some(done.path.to_string())
-                    }
-                    _ => None,
-                }
+                starters::copy_in_named(&mut session, template).unwrap_or_else(|warning| {
+                    warnings.push(warning);
+                    None
+                })
             }
             _ => None,
         };
         let rebooked = if sent && saved.written {
             let number = saved.number.clone().or(doc_number).unwrap_or_default();
-            let invoice_books = session.invoice_books();
-            let request = Rebook {
-                number: number.clone(),
-                today,
-                expected: None,
-            };
-            let (index, _) = session.parts_mut();
-            let (result, _) = retry_once(|| invoice_books.rebook(index, &request));
-            reload_after_write(&mut session);
-            let rebooked = result.map_err(|e| {
-                let failed = Failure::from(&e);
-                Failure {
-                    message: format!(
-                        "the invoice was saved, but re-booking it failed: {}; fix it, then \
-                         Re-book (or `ledgeline-invoicer rebook {number}`)",
-                        failed.message
-                    ),
-                    ..failed
-                }
-            })?;
-            if rebooked.changed {
-                reconcile_in(&mut session, Some(vec![number]));
-            }
-            Some(value(&rebooked)?)
+            let rebooked = rebook_written(&mut session, &number, &today, &saved.path, true)?;
+            Some(to_value(&rebooked)?)
         } else {
             None
         };
@@ -695,7 +585,8 @@ async fn save(
             "status": saved.status.map(Status::as_str),
             "revision": revision,
             "rebooked": rebooked,
-            "copied": copied,
+            "copied": copied.map(|p| p.to_string()),
+            "warnings": warnings,
         }))
     })
     .await
@@ -703,8 +594,8 @@ async fn save(
 
 /// `GET /api/invoices/{num}/deposits`: the customer's open deposits, each
 /// with the row that applies all that is left of it.
-async fn deposits(State(state): State<AppState>, Path(number): Path<String>) -> Answer {
-    with_books(&state, move |books| {
+async fn deposits(State(state): State<AppState>, Path(number): Path<String>) -> ApiResult {
+    with_books(&state, StatusCode::OK, move |books| {
         let session = books.session();
         let path = find(&session, &number)?;
         let doc_number = session
@@ -712,11 +603,11 @@ async fn deposits(State(state): State<AppState>, Path(number): Path<String>) -> 
             .doc(&path)
             .and_then(|d| d.number())
             .map(str::to_string)
-            .ok_or_else(|| Failure::bad_request("it has no `invoice_num`"))?;
+            .ok_or_else(|| ApiError::bad_request("it has no `invoice_num`"))?;
         let open = session
             .invoice_books()
             .open_deposits(session.index(), &doc_number)
-            .map_err(|e| Failure::from(&e))?;
+            .map_err(|e| ApiError::from(&e))?;
         let style = session.index().money().style(Some(&open.commodity));
         let word = session.settings().words.deposit.first().to_string();
         let deposits: Vec<Value> = open
@@ -758,7 +649,7 @@ async fn deposits(State(state): State<AppState>, Path(number): Path<String>) -> 
 }
 
 /// The number of the document `target` names.
-fn number_of(session: &Session, target: &str) -> Result<String, Failure> {
+fn number_of(session: &Session, target: &str) -> Result<String, ApiError> {
     let path = find(session, target)?;
     session
         .index()
@@ -766,7 +657,7 @@ fn number_of(session: &Session, target: &str) -> Result<String, Failure> {
         .and_then(|d| d.number())
         .map(str::to_string)
         .ok_or_else(|| {
-            Failure::new(
+            ApiError::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "invalid",
                 "it has no `invoice_num`",
@@ -787,29 +678,26 @@ async fn void(
     State(state): State<AppState>,
     Path(number): Path<String>,
     payload: Result<Json<VoidBody>, JsonRejection>,
-) -> Answer {
+) -> ApiResult {
     let request = match payload {
         Ok(Json(body)) => body,
         Err(JsonRejection::MissingJsonContentType(_)) => VoidBody::default(),
-        Err(e) => return Err(Failure::bad_request(e.body_text())),
+        Err(e) => return Err(ApiError::bad_request(e.body_text())),
     };
-    let today = today(request.today.as_deref()).map_err(Failure::from)?;
-    with_books(&state, move |books| {
+    let today = today(request.today.as_deref())?;
+    with_books(&state, StatusCode::OK, move |books| {
         let mut session = books.session();
         let number = number_of(&session, &number)?;
-        let invoice_books = session.invoice_books();
         let void = Void {
-            number: number.clone(),
+            number,
             date: text(request.date).unwrap_or_else(|| today.clone()),
             today,
             expected: None,
         };
-        let (index, _) = session.parts_mut();
-        let (result, _) = retry_once(|| invoice_books.void(index, &void));
-        reload_after_write(&mut session);
-        let voided = result.map_err(|e| Failure::from(&e))?;
-        reconcile_in(&mut session, Some(vec![number]));
-        value(&voided)
+        let (result, _) = flows::void(&mut session, &void);
+        let written = result.map_err(|e| ApiError::from(&e))?;
+        log_mirror(written.mirror.as_ref());
+        to_value(&written.done)
     })
     .await
 }
@@ -826,30 +714,20 @@ async fn rebook(
     State(state): State<AppState>,
     Path(number): Path<String>,
     payload: Result<Json<RebookBody>, JsonRejection>,
-) -> Answer {
+) -> ApiResult {
     let request = match payload {
         Ok(Json(body)) => body,
         Err(JsonRejection::MissingJsonContentType(_)) => RebookBody::default(),
-        Err(e) => return Err(Failure::bad_request(e.body_text())),
+        Err(e) => return Err(ApiError::bad_request(e.body_text())),
     };
-    let today = today(request.today.as_deref()).map_err(Failure::from)?;
-    with_books(&state, move |books| {
+    let today = today(request.today.as_deref())?;
+    with_books(&state, StatusCode::OK, move |books| {
         let mut session = books.session();
         let number = number_of(&session, &number)?;
-        let invoice_books = session.invoice_books();
-        let request = Rebook {
-            number: number.clone(),
-            today,
-            expected: None,
-        };
-        let (index, _) = session.parts_mut();
-        let (result, _) = retry_once(|| invoice_books.rebook(index, &request));
-        reload_after_write(&mut session);
-        let rebooked = result.map_err(|e| Failure::from(&e))?;
-        if rebooked.changed {
-            reconcile_in(&mut session, Some(vec![number]));
-        }
-        value(&rebooked)
+        let (result, _) = flows::rebook(&mut session, &number, &today);
+        let written = result.map_err(|e| ApiError::from(&e))?;
+        log_mirror(written.mirror.as_ref());
+        to_value(&written.done)
     })
     .await
 }
@@ -907,16 +785,16 @@ async fn payments(
     State(state): State<AppState>,
     Path(number): Path<String>,
     query: Result<Query<PaymentsQuery>, QueryRejection>,
-) -> Answer {
-    let Query(query) = query.map_err(|e| Failure::bad_request(e.body_text()))?;
-    let today = today(query.today.as_deref()).map_err(Failure::from)?;
-    with_books(&state, move |books| {
+) -> ApiResult {
+    let Query(query) = query.map_err(|e| ApiError::bad_request(e.body_text()))?;
+    let today = today(query.today.as_deref())?;
+    with_books(&state, StatusCode::OK, move |books| {
         let session = books.session();
         let number = number_of(&session, &number)?;
         let options = session
             .invoice_books()
             .payment_options(session.index(), &number, &today)
-            .map_err(|e| Failure::from(&e))?;
+            .map_err(|e| ApiError::from(&e))?;
         let style = session.index().money().style(Some(&options.commodity));
         Ok(json!({
             "number": options.number,
@@ -959,10 +837,10 @@ async fn apply_payment(
     State(state): State<AppState>,
     Path(number): Path<String>,
     payload: Result<Json<PaymentBody>, JsonRejection>,
-) -> Answer {
+) -> ApiResult {
     let request = body(payload)?;
-    let today = today(request.today.as_deref()).map_err(Failure::from)?;
-    with_books(&state, move |books| {
+    let today = today(request.today.as_deref())?;
+    with_books(&state, StatusCode::OK, move |books| {
         let mut session = books.session();
         let path = find(&session, &number)?;
         let number = number_of(&session, &number)?;
@@ -980,7 +858,7 @@ async fn apply_payment(
         if request.dry_run {
             let preview = invoice_books
                 .preview_payment(session.index(), &apply)
-                .map_err(|e| Failure::from(&e))?;
+                .map_err(|e| ApiError::from(&e))?;
             let style = session.index().money().style(Some(&preview.commodity));
             return Ok(json!({
                 "written": false,
@@ -997,9 +875,9 @@ async fn apply_payment(
         let (index, _) = session.parts_mut();
         let (result, _) = retry_once(|| invoice_books.apply_payment(index, &apply));
         reload_after_write(&mut session);
-        let applied = result.map_err(|e| Failure::from(&e))?;
+        let applied = result.map_err(|e| ApiError::from(&e))?;
         let (undo_file, warning) = books::undo::keep(session.vault(), &applied, &today);
-        reconcile_in(&mut session, Some(vec![number]));
+        log_mirror(flows::settle(&mut session, &number).as_ref());
         Ok(json!({
             "written": true,
             "number": applied.number,
@@ -1031,14 +909,14 @@ struct DraftBody {
 async fn preview_draft(
     State(state): State<AppState>,
     payload: Result<Json<DraftBody>, JsonRejection>,
-) -> Answer {
+) -> ApiResult {
     let request = body(payload)?;
     if request.source.len() > MAX_SOURCE_BYTES {
-        return Err(Failure::bad_request(format!(
+        return Err(ApiError::bad_request(format!(
             "source: more than {MAX_SOURCE_BYTES} bytes"
         )));
     }
-    with_books(&state, move |books| {
+    with_books(&state, StatusCode::OK, move |books| {
         let path = find(&books.session(), &request.number)?;
         let id = books
             .drafts()
@@ -1050,7 +928,7 @@ async fn preview_draft(
                 template_source: None,
             })
             .ok_or_else(|| {
-                Failure::new(
+                ApiError::new(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "internal",
                     "no preview id",

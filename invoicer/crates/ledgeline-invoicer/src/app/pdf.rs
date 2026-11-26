@@ -124,13 +124,15 @@ async fn run_blocking<T: std::marker::Send + 'static>(
 impl From<PdfError> for ApiError {
     fn from(error: PdfError) -> Self {
         match error {
-            PdfError::NotFound(m) => Self(StatusCode::NOT_FOUND, m),
-            PdfError::Refused(m) => Self(StatusCode::UNPROCESSABLE_ENTITY, m),
-            PdfError::Failed(m) => Self(StatusCode::BAD_GATEWAY, m),
+            PdfError::NotFound(m) => Self::not_found(m),
+            PdfError::Refused(m) => Self::new(StatusCode::UNPROCESSABLE_ENTITY, "refused", m),
+            PdfError::Failed(m) => Self::status(StatusCode::BAD_GATEWAY, m),
         }
     }
 }
 
+/// A books bridge error as the API answers it: its own code
+/// ([`BooksError::code`]) and the status that code means.
 pub(crate) fn books_error(error: &BooksError) -> ApiError {
     let status = match error.code() {
         "not-found" => StatusCode::NOT_FOUND,
@@ -138,7 +140,13 @@ pub(crate) fn books_error(error: &BooksError) -> ApiError {
         "storage" | "books" | "markdown-not-written" => StatusCode::INTERNAL_SERVER_ERROR,
         _ => StatusCode::UNPROCESSABLE_ENTITY,
     };
-    ApiError(status, error.to_string())
+    ApiError::new(status, error.code(), error.to_string())
+}
+
+impl From<&BooksError> for ApiError {
+    fn from(error: &BooksError) -> Self {
+        books_error(error)
+    }
 }
 
 /// The process's native side, or `503` with why not.
@@ -151,7 +159,7 @@ pub(crate) fn native_for(
         .native()
         .filter(|n| wants(&n.capabilities()))
         .ok_or_else(|| {
-            ApiError(
+            ApiError::status(
                 StatusCode::SERVICE_UNAVAILABLE,
                 format!("{what} isn't available here: it needs the desktop app"),
             )
@@ -282,11 +290,11 @@ fn delivery_of(books: &OpenBooks, number: &str, caps: Capabilities) -> Result<De
     let session = books.session();
     let doc = session
         .find(number)
-        .map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+        .map_err(|e| ApiError::status(StatusCode::NOT_FOUND, e.to_string()))?;
     let number = doc
         .number()
         .ok_or_else(|| {
-            ApiError(
+            ApiError::status(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 format!("{} has no `invoice_num`", doc.path),
             )
@@ -298,7 +306,7 @@ fn delivery_of(books: &OpenBooks, number: &str, caps: Capabilities) -> Result<De
         .ok()
         .and_then(|b| String::from_utf8(b).ok())
         .ok_or_else(|| {
-            ApiError(
+            ApiError::status(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("{} can't be read", doc.path),
             )
@@ -386,7 +394,10 @@ pub(crate) async fn delivery(
 ) -> ApiResult {
     let caps = state.native().map(|n| n.capabilities()).unwrap_or_default();
     let books = state.books().ok_or_else(no_books)?;
-    blocking(move || to_value(delivery_of(&books, &number, caps)?)).await
+    blocking(StatusCode::OK, move || {
+        to_value(delivery_of(&books, &number, caps)?)
+    })
+    .await
 }
 
 /// The body of `POST /api/invoices/{num}/send`.
@@ -423,15 +434,15 @@ pub(crate) async fn send(
     }
     let today = today(body.today.as_deref())?;
     let books = state.books().ok_or_else(no_books)?;
-    blocking(move || {
+    blocking(StatusCode::OK, move || {
         let mut session = books.session();
         let doc_number = session
             .find(&number)
-            .map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?
+            .map_err(|e| ApiError::status(StatusCode::NOT_FOUND, e.to_string()))?
             .number()
             .map(str::to_string)
             .ok_or_else(|| {
-                ApiError(
+                ApiError::status(
                     StatusCode::UNPROCESSABLE_ENTITY,
                     "it has no `invoice_num`".to_string(),
                 )
@@ -463,12 +474,12 @@ pub(crate) async fn open_portal(
     let delivery =
         tokio::task::spawn_blocking(move || delivery_of(&books, &number, Capabilities::default()))
             .await
-            .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+            .map_err(|e| ApiError::status(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
     let url = delivery
         .portal
         .and_then(|portal| portal.url)
         .ok_or_else(|| {
-            ApiError(
+            ApiError::status(
                 StatusCode::NOT_FOUND,
                 "the customer has no billing portal with an https URL".to_string(),
             )
@@ -477,7 +488,7 @@ pub(crate) async fn open_portal(
         Some(native) => {
             native
                 .open_url(&url)
-                .map_err(|e| ApiError(StatusCode::SERVICE_UNAVAILABLE, e))?;
+                .map_err(|e| ApiError::status(StatusCode::SERVICE_UNAVAILABLE, e))?;
             true
         }
         None => false,
@@ -513,7 +524,7 @@ fn exported_file(books: &OpenBooks, body: &FileBody) -> Result<PathBuf, ApiError
         Destination::Kept => {
             let session = books.session();
             let dir = invoicer_core::settings::Settings::vault_path(&session.settings().pdf_dir)
-                .map_err(|e| ApiError(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
+                .map_err(|e| ApiError::status(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
             session.local_path(&dir)
         }
         Destination::Temp => filing::temp_dir().map_err(ApiError::from)?,
@@ -523,7 +534,7 @@ fn exported_file(books: &OpenBooks, body: &FileBody) -> Result<PathBuf, ApiError
     if path.is_file() {
         Ok(path)
     } else {
-        Err(ApiError(
+        Err(ApiError::status(
             StatusCode::NOT_FOUND,
             format!("no exported PDF is called {name:?}"),
         ))
@@ -543,12 +554,12 @@ async fn file_request(
     let anchor = body.anchor;
     let file = tokio::task::spawn_blocking(move || exported_file(&books, &body))
         .await
-        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+        .map_err(|e| ApiError::status(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
     let (reply, done) = oneshot::channel();
     native.submit(request(file, anchor, reply));
     answer(done)
         .await
-        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        .map_err(|e| ApiError::status(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(ledgeline_shell::security::no_store_json(
         serde_json::json!({ "done": true }),
     ))
@@ -601,10 +612,10 @@ pub(crate) async fn open_pdf(
     let books = state.books().ok_or_else(no_books)?;
     let file = tokio::task::spawn_blocking(move || exported_file(&books, &body))
         .await
-        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+        .map_err(|e| ApiError::status(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
     native
         .open_file(&file)
-        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+        .map_err(|e| ApiError::status(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(ledgeline_shell::security::no_store_json(
         serde_json::json!({ "done": true }),
     ))
