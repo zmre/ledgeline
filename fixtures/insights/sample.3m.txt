@@ -495,16 +495,6 @@ InsightsReport {
             ),
         },
         PayeeRow {
-            payee: "vehicle depreciation FY2026",
-            current: Dec {
-                mantissa: 350000,
-                places: 2,
-            },
-            previous: None,
-            delta: None,
-            pct: None,
-        },
-        PayeeRow {
             payee: "Delta Airlines",
             current: Dec {
                 mantissa: 41280,

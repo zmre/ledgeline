@@ -2516,8 +2516,9 @@ async fn insights_cost_exclude_param_drops_expenses() {
 }
 
 /// Box 11 over `fixtures/insights/top-payees.journal` (its header lists the
-/// expected rows): card payments, the paycheck and — by default — taxes never
-/// appear; mortgage interest does; a refund nets; a new payee has no previous.
+/// expected rows): card payments, the paycheck, depreciation and — by default —
+/// taxes never appear; mortgage interest does; a refund nets; `COSTCO` joins
+/// `Costco`; a new payee has no previous.
 #[tokio::test]
 async fn insights_top_payees_rank_current_spending_by_payee() {
     let path = fixtures_dir().join("insights").join("top-payees.journal");
@@ -2541,15 +2542,15 @@ async fn insights_top_payees_rank_current_spending_by_payee() {
         summary,
         [
             ("Wells Fargo", 880.0, Some(900.0)),
-            ("Costco", 700.0, Some(500.0)),
+            ("Costco", 740.0, Some(500.0)),
             ("Whole Foods", 400.0, Some(150.0)),
             ("Hardware Store", 75.0, None),
             ("Cafe Roma", 60.0, None),
         ]
     );
-    // Costco: +$200 on $500.
-    assert_eq!(wire_dec(&rows[1]["delta"]), 200.0);
-    assert_eq!(rows[1]["pct"], 40.0);
+    // Costco (COSTCO included): +$240 on $500.
+    assert_eq!(wire_dec(&rows[1]["delta"]), 240.0);
+    assert_eq!(rows[1]["pct"], 48.0);
     // A new payee: nothing to compare against, so no delta and no percent.
     assert!(rows[3]["delta"].is_null() && rows[3]["pct"].is_null());
 
@@ -2566,8 +2567,10 @@ async fn insights_top_payees_rank_current_spending_by_payee() {
             .as_array()
             .expect("array")
             .iter()
-            .all(|row| row["payee"] != "Chase" && row["payee"] != "Acme Corp"),
-        "card payments and the paycheck never appear"
+            .all(|row| row["payee"] != "Chase"
+                && row["payee"] != "Acme Corp"
+                && row["payee"] != "Car depreciation"),
+        "card payments, the paycheck and depreciation never appear"
     );
 }
 
