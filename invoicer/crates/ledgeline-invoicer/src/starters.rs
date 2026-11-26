@@ -31,9 +31,11 @@
 //! ([`preview_source`]): MBR reads a template's siblings from disk only.
 
 use crate::tera_scan::{blocks, outermost};
-#[cfg(feature = "server")]
+use invoicer_core::edit::{self, SetOutcome, WriteError};
+use invoicer_core::frontmatter::FieldEdit;
 use invoicer_core::session::Session;
 use ledgeline_core::vault::{Vault, VaultError, VaultPath};
+use serde_json::Value;
 
 /// A template shipped in the binary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,19 +234,92 @@ pub(crate) fn fold_into_base(child: &str, base: &str) -> Option<String> {
     Some(out)
 }
 
-/// Copy in the starter `template` names (a `template:` value), if it names
-/// one: [`install`] for it, or `Ok(None)` when it names no starter.
+/// Copy `starter` in once a document that uses it is written, and index
+/// the copies so its `unknown-template` warning goes at once. The one step
+/// `new`, `set template=…`, and the app's New, Use template and save all
+/// take after their write (RA-5).
+///
+/// `Ok(Some(path))` when copied now, `Ok(None)` when a file was already
+/// there.
 ///
 /// # Errors
-/// As [`install`].
-pub(crate) fn install_named(
-    vault: &dyn Vault,
-    dir: &str,
+/// The warning to show: the document is written either way, so a failed
+/// copy is never an error a retry would answer by writing it again (RA-7).
+/// The app copies it in when it next opens the books.
+pub(crate) fn copy_in(
+    session: &mut Session,
+    starter: &Starter,
+) -> Result<Option<VaultPath>, String> {
+    let dir = session.settings().templates_dir.clone();
+    let installed = install(session.vault(), &dir, starter).map_err(|error| {
+        format!(
+            "the {} starter template wasn't copied into {dir}: {error}; the invoice names it, \
+             so copy it in (or choose another) before printing",
+            starter.name
+        )
+    })?;
+    let (index, vault) = session.parts_mut();
+    index.refresh(vault, &installed.written_files());
+    Ok(installed.written.then_some(installed.path))
+}
+
+/// [`copy_in`] for the starter a `template:` value names; `Ok(None)` when it
+/// names none.
+///
+/// # Errors
+/// As [`copy_in`].
+pub(crate) fn copy_in_named(
+    session: &mut Session,
     template: &str,
-) -> Result<Option<Installed>, VaultError> {
-    named(dir, template)
-        .map(|starter| install(vault, dir, starter))
-        .transpose()
+) -> Result<Option<VaultPath>, String> {
+    let dir = session.settings().templates_dir.clone();
+    match named(&dir, template) {
+        Some(starter) => copy_in(session, starter),
+        None => Ok(None),
+    }
+}
+
+/// What [`set`] did.
+#[derive(Debug)]
+pub(crate) struct Set {
+    /// The frontmatter write.
+    pub outcome: SetOutcome,
+    /// The starter copied in now, when a `template:` it sets names one.
+    pub copied: Option<VaultPath>,
+    /// Why a starter wasn't copied ([`copy_in`]).
+    pub warnings: Vec<String>,
+}
+
+/// `set`: write `edits` to the document at `path`, then [`copy_in`] any
+/// starter a `template:` among them names. The CLI's `set` and the app's
+/// Use template.
+///
+/// # Errors
+/// [`WriteError`] from the write (nothing copied).
+pub(crate) fn set(
+    session: &mut Session,
+    path: &VaultPath,
+    edits: &[FieldEdit],
+) -> Result<Set, WriteError> {
+    let (index, vault) = session.parts_mut();
+    let outcome = edit::set(index, vault, path, edits)?;
+    let mut done = Set {
+        outcome,
+        copied: None,
+        warnings: Vec::new(),
+    };
+    for change in edits {
+        if let FieldEdit::Set(key, Value::String(template)) = change
+            && key == "template"
+        {
+            match copy_in_named(session, template) {
+                Ok(Some(path)) => done.copied = Some(path),
+                Ok(None) => {}
+                Err(warning) => done.warnings.push(warning),
+            }
+        }
+    }
+    Ok(done)
 }
 
 /// Copy in every starter the documents at `paths` (or all documents) name

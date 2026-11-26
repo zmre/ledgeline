@@ -20,7 +20,7 @@
 //!   undo too, as long as the deposit hasn't changed since.
 
 use super::deposits::names;
-use super::lifecycle::{BookedTransaction, applied_payments};
+use super::lifecycle::{BookedTransaction, applied_payments, received_by_account};
 use super::spec::{CashBooking, InvoiceBooking, scale};
 use super::{BooksError, InvoiceBooks, check_generation};
 use crate::books::lifecycle::Basis;
@@ -33,7 +33,6 @@ use ledgeline_core::accrual::invoice::money;
 use ledgeline_core::accrual::ops::{Generation, Loaded};
 use ledgeline_core::accrual::schedule::{Party, PartyKind};
 use ledgeline_core::accrual::settle::{Fit, SettleSettings};
-use ledgeline_core::accrual::{CUSTOMER_TAG, tag_value};
 use ledgeline_core::model::Tindex;
 use ledgeline_core::vault::VaultPath;
 use serde::{Deserialize, Serialize};
@@ -178,32 +177,28 @@ fn rendered(shares: &[(String, Dec)]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// What is already paid on `booking`, per row account: the applied
-/// deposits' postings on the split's accounts, tagged with the customer.
+/// What is already paid on `booking`, per row account: what its applied
+/// payments put in the split's accounts ([`received_by_account`]).
 fn paid_so_far(
     loaded: &Loaded,
     booking: &InvoiceBooking,
     split: &[(String, Dec)],
 ) -> Result<Vec<Dec>, BooksError> {
-    let mut paid = vec![Dec::zero(); split.len()];
-    for txn in applied_payments(loaded, &booking.number) {
-        for posting in &txn.postings {
-            let Some(at) = split.iter().position(|(a, _)| *a == posting.account.0) else {
-                continue;
-            };
-            if tag_value(&posting.tags, CUSTOMER_TAG) != Some(booking.customer.as_str()) {
-                continue;
-            }
-            for amount in &posting.amounts {
-                if amount.commodity.0 == booking.commodity {
-                    paid[at] = paid[at]
-                        .sub(amount.quantity)
-                        .map_err(|_| BooksError::Overflow)?;
-                }
-            }
-        }
-    }
-    Ok(paid)
+    let received = received_by_account(
+        loaded,
+        &booking.number,
+        &booking.customer,
+        &booking.commodity,
+    )?;
+    Ok(split
+        .iter()
+        .map(|(account, _)| {
+            received
+                .iter()
+                .find(|(a, _)| a == account)
+                .map_or(Dec::zero(), |(_, d)| *d)
+        })
+        .collect())
 }
 
 /// Cash books, income on receipt: per account, what the deposits a final
@@ -236,7 +231,7 @@ fn deposit_receipts(
             .numbers()
             .filter(|n| *n != booking.number && names(label, n))
             .find_map(|n| {
-                let by_account = received_by_account(loaded, n, booking).ok()?;
+                let by_account = deposit_received(loaded, n, booking).ok()?;
                 (!by_account.is_empty()).then_some(by_account)
             });
         match receipt {
@@ -252,31 +247,13 @@ fn deposit_receipts(
 }
 
 /// What invoice `number`'s applied payments put in each account, for
-/// `booking`'s customer and commodity.
-fn received_by_account(
+/// `booking`'s customer and commodity: where money came in only.
+fn deposit_received(
     loaded: &Loaded,
     number: &str,
     booking: &InvoiceBooking,
 ) -> Result<Vec<(String, Dec)>, BooksError> {
-    let mut out: Vec<(String, Dec)> = Vec::new();
-    for txn in applied_payments(loaded, number) {
-        for posting in &txn.postings {
-            if tag_value(&posting.tags, CUSTOMER_TAG) != Some(booking.customer.as_str()) {
-                continue;
-            }
-            for amount in posting
-                .amounts
-                .iter()
-                .filter(|a| a.commodity.0 == booking.commodity)
-            {
-                let credit = amount.quantity.neg().map_err(|_| BooksError::Overflow)?;
-                match out.iter_mut().find(|(a, _)| *a == posting.account.0) {
-                    Some((_, sum)) => *sum = sum.add(credit).map_err(|_| BooksError::Overflow)?,
-                    None => out.push((posting.account.0.clone(), credit)),
-                }
-            }
-        }
-    }
+    let mut out = received_by_account(loaded, number, &booking.customer, &booking.commodity)?;
     out.retain(|(_, d)| d.mantissa > 0);
     Ok(out)
 }

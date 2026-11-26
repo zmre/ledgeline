@@ -58,7 +58,7 @@ async fn show(State(state): State<AppState>, Query(params): Query<Params>) -> Ap
     let can_open = state
         .native()
         .is_some_and(|n| n.capabilities().open_ledgeline);
-    with_books(&state, move |books| {
+    with_books(&state, StatusCode::OK, move |books| {
         let session = books.session();
         let mut options = dashboard::DashboardOptions::of(session.settings());
         options.utc_offset = utc_offset;
@@ -76,10 +76,10 @@ async fn show(State(state): State<AppState>, Query(params): Query<Params>) -> Ap
 async fn open_ledgeline(State(state): State<AppState>) -> ApiResult {
     let native = native_for(&state, |c| c.open_ledgeline, "Opening Ledgeline")?;
     let books = state.books().ok_or_else(no_books)?;
-    blocking(move || {
+    blocking(StatusCode::OK, move || {
         native
             .open_in_ledgeline(books.journal())
-            .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+            .map_err(|e| ApiError::status(StatusCode::INTERNAL_SERVER_ERROR, e))?;
         Ok(json!({ "done": true }))
     })
     .await

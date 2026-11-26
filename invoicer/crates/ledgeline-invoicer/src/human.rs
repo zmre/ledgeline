@@ -804,7 +804,7 @@ pub fn exported(e: &crate::pdf::Exported) -> String {
 }
 
 /// `void`.
-pub fn voided(v: &Voided) -> String {
+pub fn voided(v: &Voided, mirror: Option<&MirrorChange>) -> String {
     let mut out = format!("Voided invoice {} ({})\n", v.number, v.path);
     match (&v.reversal, v.journal_written) {
         (Some(txn), true) => {
@@ -813,6 +813,7 @@ pub fn voided(v: &Voided) -> String {
         (Some(_), false) => out.push_str("  Already reversed; only its file was finished.\n"),
         (None, _) => out.push_str("  Nothing was booked; only its file changed.\n"),
     }
+    out.push_str(&mirror_line(mirror));
     out
 }
 

@@ -227,84 +227,41 @@ impl Split {
     }
 }
 
-/// `a × b / c`, rounded half away from zero, in integers.
-fn div_round(numerator: i128, denominator: i128) -> Option<i128> {
-    let quotient = numerator.checked_div(denominator)?;
-    let remainder = numerator.checked_rem(denominator)?;
-    let away = remainder.unsigned_abs().checked_mul(2)? >= denominator.unsigned_abs();
-    let sign = numerator.signum() * denominator.signum();
-    Some(if away { quotient + sign } else { quotient })
-}
-
 /// Split `amount` over the non-zero `weights` (indexed by line) in
-/// proportion, each share rounded to `precision`, the remainder on the
-/// largest weight. `None` when the weights sum to zero.
+/// proportion, at `precision`: Ledgeline's
+/// [`pro_rata`](ledgeline_core::decimal::pro_rata) rule (shares rounded
+/// half away from zero, the remainder on the largest weight), the one cash
+/// re-splits use too, so both put the odd cent on the same line. `None` when the weights sum to
+/// zero.
 fn pro_rata(
     amount: Dec,
     weights: &[Dec],
     precision: u32,
 ) -> Result<Option<Vec<(usize, Dec)>>, BookingError> {
-    let overflow = |_| BookingError::Overflow;
-    let scale = weights
+    let nonzero: Vec<(usize, Dec)> = weights
         .iter()
-        .map(|w| w.places)
-        .chain([amount.places, precision])
-        .max()
-        .unwrap_or(precision);
-    let at_scale = |d: Dec| d.rounded(scale).map(|d| d.mantissa).map_err(overflow);
-    let nonzero: Vec<(usize, i128)> = weights
-        .iter()
+        .copied()
         .enumerate()
         .filter(|(_, w)| !w.is_zero())
-        .map(|(i, w)| at_scale(*w).map(|m| (i, m)))
-        .collect::<Result<_, _>>()?;
+        .collect();
     let sum = nonzero
         .iter()
-        .try_fold(0i128, |acc, (_, w)| acc.checked_add(*w))
-        .ok_or(BookingError::Overflow)?;
-    if sum == 0 {
+        .try_fold(Dec::zero(), |acc, (_, w)| acc.add(*w))
+        .map_err(|_| BookingError::Overflow)?;
+    if sum.is_zero() {
         // The caller turns this into `CannotSpread` with the row.
         return Ok(None);
     }
-    let a = at_scale(amount)?;
-    let denominator = 10i128
-        .checked_pow(scale - precision)
-        .and_then(|f| f.checked_mul(sum))
-        .ok_or(BookingError::Overflow)?;
-    let shares: Vec<(usize, Dec)> = nonzero
-        .iter()
-        .map(|(i, w)| {
-            a.checked_mul(*w)
-                .and_then(|n| div_round(n, denominator))
-                .map(|q| (*i, Dec::new(q, precision)))
-                .ok_or(BookingError::Overflow)
-        })
-        .collect::<Result<_, _>>()?;
-    let allocated = shares
-        .iter()
-        .try_fold(Dec::zero(), |acc, (_, s)| acc.add(*s))
-        .map_err(overflow)?;
-    let remainder = amount.sub(allocated).map_err(overflow)?;
-    let largest = nonzero
-        .iter()
-        .enumerate()
-        .fold(None::<(usize, u128)>, |best, (k, (_, w))| match best {
-            Some((_, top)) if top >= w.unsigned_abs() => best,
-            _ => Some((k, w.unsigned_abs())),
-        })
-        .map_or(0, |(k, _)| k);
-    shares
-        .into_iter()
-        .enumerate()
-        .map(|(k, (i, share))| {
-            if k == largest {
-                share.add(remainder).map(|s| (i, s)).map_err(overflow)
-            } else {
-                Ok((i, share))
-            }
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map(Some)
+    let amounts: Vec<Dec> = nonzero.iter().map(|(_, w)| *w).collect();
+    let shares = ledgeline_core::decimal::pro_rata(amount, &amounts, Some(precision))
+        .map_err(|_| BookingError::Overflow)?;
+    Ok(Some(
+        nonzero
+            .into_iter()
+            .zip(shares)
+            .map(|((line, _), share)| (line, share))
+            .collect(),
+    ))
 }
 
 /// Split a computed bill table into booking lines.
@@ -448,18 +405,38 @@ mod tests {
     }
 
     #[test]
+    fn booking_spreads_and_cash_re_splits_put_the_odd_cents_on_the_same_line() {
+        // RC-11: one rule, so a $100 discount over these lines and a cash
+        // re-split of the same rows agree to the cent.
+        let weights = [
+            Dec::new(30_000, 2),
+            Dec::new(70_000, 2),
+            Dec::new(30_000, 2),
+        ];
+        let spread = pro_rata(Dec::new(-10_000, 2), &weights, 2)
+            .expect("splits")
+            .expect("non-zero weights");
+        let named: Vec<(String, Dec)> = weights
+            .iter()
+            .enumerate()
+            .map(|(at, w)| (format!("revenue:{at}"), *w))
+            .collect();
+        let rescaled = crate::books::spec::scale(Dec::new(-10_000, 2), &named).expect("re-splits");
+        assert_eq!(
+            spread.iter().map(|(_, s)| *s).collect::<Vec<_>>(),
+            rescaled.iter().map(|(_, s)| *s).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            spread.iter().map(|(_, s)| *s).collect::<Vec<_>>(),
+            [Dec::new(-2308, 2), Dec::new(-5384, 2), Dec::new(-2308, 2)]
+        );
+    }
+
+    #[test]
     fn weights_summing_to_zero_cannot_be_spread() {
         assert_eq!(
             pro_rata(Dec::new(500, 2), &[Dec::new(10, 0), Dec::new(-10, 0)], 2),
             Ok(None)
         );
-    }
-
-    #[test]
-    fn rounding_is_half_away_from_zero() {
-        assert_eq!(div_round(5, 2), Some(3));
-        assert_eq!(div_round(-5, 2), Some(-3));
-        assert_eq!(div_round(4, 3), Some(1));
-        assert_eq!(div_round(-5, -2), Some(3));
     }
 }

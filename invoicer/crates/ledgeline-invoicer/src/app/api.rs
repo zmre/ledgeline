@@ -31,12 +31,17 @@
 //! | `POST /api/session`         | The cookie MBR's pages need ([`super::mbr`]).  |
 //! | the invoice editor's routes | Form, compute, save, new, void, rebook… (4a): [`super::editor`]. |
 //!
-//! The routes here answer errors as `{"error": "…"}` with a status: `400`
-//! for a bad parameter, `404` for an unknown invoice, `409` when no books
-//! are open, `422` for a page template that can't render (a fixable
-//! problem in the files). The editor's, library's and templates' routes
-//! ([`super::editor`], [`super::library`], [`super::templates`]) add a
-//! `"code"` naming the case; see their module docs.
+//! Every route answers errors in one envelope ([`ApiError`]):
+//! `{"error": "…", "code": "…"}` with a status, plus any detail the case
+//! has (`revision`, `problems`, …). A route that names no case of its own
+//! answers the status's code: `bad-request` (400, a bad parameter),
+//! `not-found` (404, an unknown invoice), `conflict` (409, e.g. no books
+//! open), `invalid` (422, a fixable problem in the files, such as a page
+//! template that can't render), `unavailable` (503), `internal` (500 and
+//! the rest). The editor's, library's and templates' routes
+//! ([`super::editor`], [`super::library`], [`super::templates`]) name more
+//! cases; see their module docs. The books bridge's errors carry
+//! [`invoicer_core::books::BooksError::code`] ([`super::pdf::books_error`]).
 
 use std::sync::Arc;
 
@@ -94,20 +99,76 @@ pub(crate) fn routes() -> Router<AppState> {
         .merge(super::editor::routes())
 }
 
-/// An API failure: a status and a sentence.
+/// An API failure, the one envelope every route under `/api` answers with
+/// (RA-4): `{"error": "…", "code": "…"}` plus any `detail` (`revision`,
+/// `problems`, `customers`, …) merged in, with its status, `no-store`.
+///
+/// `code` is the stable name the SPA branches on. A route that names no
+/// case gets the status's ([`code_for`]), so the same status always comes
+/// back with the same code unless the route says more.
 #[derive(Debug)]
-pub(crate) struct ApiError(pub(crate) StatusCode, pub(crate) String);
+pub(crate) struct ApiError {
+    pub(crate) status: StatusCode,
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
+    detail: Vec<(&'static str, Value)>,
+}
+
+/// The code a status answers with when the route names no case of its own.
+pub(crate) fn code_for(status: StatusCode) -> &'static str {
+    match status {
+        StatusCode::BAD_REQUEST => "bad-request",
+        StatusCode::NOT_FOUND => "not-found",
+        StatusCode::CONFLICT => "conflict",
+        StatusCode::UNPROCESSABLE_ENTITY => "invalid",
+        StatusCode::SERVICE_UNAVAILABLE => "unavailable",
+        _ => "internal",
+    }
+}
 
 impl ApiError {
+    /// A failure with its own code.
+    pub(crate) fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            code,
+            message: message.into(),
+            detail: Vec::new(),
+        }
+    }
+
+    /// A failure with the status's code ([`code_for`]).
+    pub(crate) fn status(status: StatusCode, message: impl Into<String>) -> Self {
+        Self::new(status, code_for(status), message)
+    }
+
     pub(crate) fn bad_request(message: impl Into<String>) -> Self {
-        Self(StatusCode::BAD_REQUEST, message.into())
+        Self::status(StatusCode::BAD_REQUEST, message)
+    }
+
+    pub(crate) fn not_found(message: impl Into<String>) -> Self {
+        Self::status(StatusCode::NOT_FOUND, message)
+    }
+
+    pub(crate) fn internal(message: impl Into<String>) -> Self {
+        Self::status(StatusCode::INTERNAL_SERVER_ERROR, message)
+    }
+
+    /// `key: value` merged into the body (`revision`, `problems`, …).
+    pub(crate) fn with(mut self, key: &'static str, value: Value) -> Self {
+        self.detail.push((key, value));
+        self
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let mut response = no_store_json(json!({ "error": self.1 }));
-        *response.status_mut() = self.0;
+        let mut body = json!({ "error": self.message, "code": self.code });
+        for (key, value) in self.detail {
+            body[key] = value;
+        }
+        let mut response = no_store_json(body);
+        *response.status_mut() = self.status;
         response
     }
 }
@@ -115,49 +176,64 @@ impl IntoResponse for ApiError {
 impl From<UiPrefsError> for ApiError {
     fn from(error: UiPrefsError) -> Self {
         match error {
-            UiPrefsError::BadRequest(m) => Self(StatusCode::BAD_REQUEST, m),
-            UiPrefsError::Conflict(m) => Self(StatusCode::CONFLICT, m),
-            UiPrefsError::Internal(m) => Self(StatusCode::INTERNAL_SERVER_ERROR, m),
+            UiPrefsError::BadRequest(m) => Self::status(StatusCode::BAD_REQUEST, m),
+            UiPrefsError::Conflict(m) => Self::status(StatusCode::CONFLICT, m),
+            UiPrefsError::Internal(m) => Self::internal(m),
         }
+    }
+}
+
+impl From<PreviewError> for ApiError {
+    fn from(error: PreviewError) -> Self {
+        let (status, message) = error.status_and_message();
+        Self::status(status, message)
     }
 }
 
 pub(crate) type ApiResult = Result<Response, ApiError>;
 
 /// Run `f` over the open books on the blocking pool (it locks the session
-/// and may read files), answering its JSON.
-pub(crate) async fn with_books<F>(state: &AppState, f: F) -> ApiResult
+/// and may read files), answering its JSON with `status`: the one helper
+/// every route that reads the books uses. `409` when no books are open.
+pub(crate) async fn with_books<F>(state: &AppState, status: StatusCode, f: F) -> ApiResult
 where
     F: FnOnce(&OpenBooks) -> Result<Value, ApiError> + Send + 'static,
 {
     let books = state.books().ok_or_else(no_books)?;
-    blocking(move || f(&books)).await
+    blocking(status, move || f(&books)).await
 }
 
 pub(crate) fn no_books() -> ApiError {
-    ApiError(
+    ApiError::status(
         StatusCode::CONFLICT,
-        "no books are open; choose File → Open".to_string(),
+        "no books are open; choose File → Open",
     )
 }
 
-/// Run `f` on the blocking pool, answering its JSON.
-pub(crate) async fn blocking<F>(f: F) -> ApiResult
+/// Run `f` on the blocking pool, answering its JSON with `status`.
+pub(crate) async fn blocking<F>(status: StatusCode, f: F) -> ApiResult
 where
     F: FnOnce() -> Result<Value, ApiError> + Send + 'static,
 {
     match tokio::task::spawn_blocking(f).await {
-        Ok(result) => result.map(no_store_json),
-        Err(error) => Err(ApiError(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("the request failed: {error}"),
-        )),
+        Ok(result) => result.map(|value| {
+            let mut response = no_store_json(value);
+            *response.status_mut() = status;
+            response
+        }),
+        Err(error) => Err(ApiError::internal(format!("the request failed: {error}"))),
     }
 }
 
+/// A request body, or `400` saying why it doesn't read.
+pub(crate) fn body<T>(payload: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> {
+    payload
+        .map(|Json(body)| body)
+        .map_err(|e| ApiError::bad_request(e.body_text()))
+}
+
 pub(crate) fn to_value(value: impl serde::Serialize) -> Result<Value, ApiError> {
-    serde_json::to_value(value)
-        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    serde_json::to_value(value).map_err(|e| ApiError::internal(e.to_string()))
 }
 
 /// `?today=` (YYYY-MM-DD), else the local date (as the CLI, PLAN C5).
@@ -193,11 +269,11 @@ struct BooksParams {
 /// with what it follows (`nextNumberAfter`, `nextNumberSource`).
 async fn books(State(state): State<AppState>, Query(params): Query<BooksParams>) -> ApiResult {
     let today = today(params.today.as_deref())?;
-    with_books(&state, move |books| {
+    with_books(&state, StatusCode::OK, move |books| {
         let session = books.session();
         let next = session
             .explain_next_number()
-            .map_err(|e| ApiError(StatusCode::CONFLICT, e.to_string()))?;
+            .map_err(|e| ApiError::status(StatusCode::CONFLICT, e.to_string()))?;
         let index = session.index();
         let states = Some(session.book_states());
         let invoices: Vec<_> = index
@@ -339,7 +415,7 @@ impl ListParams {
 async fn invoices(State(state): State<AppState>, Query(params): Query<ListParams>) -> ApiResult {
     let today = today(params.today.as_deref())?;
     let mut query = params.query()?;
-    with_books(&state, move |books| {
+    with_books(&state, StatusCode::OK, move |books| {
         let session = books.session();
         // The dashboard links a customer by the books' name (R5).
         if let Some(name) = &query.filter.customer {
@@ -373,17 +449,17 @@ async fn invoice(
     Query(params): Query<TodayParam>,
 ) -> ApiResult {
     let today = today(params.today.as_deref())?;
-    with_books(&state, move |books| {
+    with_books(&state, StatusCode::OK, move |books| {
         let session = books.session();
         let doc = session
             .find(&number)
-            .map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+            .map_err(|e| ApiError::status(StatusCode::NOT_FOUND, e.to_string()))?;
         let mut problems = views::document_problems(&session);
         if let Some(number) = doc.number() {
             problems.extend(views::books_problems(&session, Some(&[number.to_string()])));
         }
         let detail = views::show(&session, doc, &problems, &today)
-            .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            .map_err(|e| ApiError::status(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         to_value(detail)
     })
     .await
@@ -392,25 +468,14 @@ async fn invoice(
 /// `GET /api/invoices/{number}/books`: the Books panel (what the journal
 /// holds under the invoice's number), by number or path.
 async fn invoice_books(State(state): State<AppState>, Path(number): Path<String>) -> ApiResult {
-    with_books(&state, move |books| {
+    with_books(&state, StatusCode::OK, move |books| {
         let session = books.session();
         let doc = session
             .find(&number)
-            .map_err(|e| ApiError(StatusCode::NOT_FOUND, e.to_string()))?;
+            .map_err(|e| ApiError::status(StatusCode::NOT_FOUND, e.to_string()))?;
         to_value(views::invoice_books(&session, doc))
     })
     .await
-}
-
-impl From<PreviewError> for ApiError {
-    fn from(error: PreviewError) -> Self {
-        match error {
-            PreviewError::BadRequest(m) => Self(StatusCode::BAD_REQUEST, m),
-            PreviewError::NotFound(m) => Self(StatusCode::NOT_FOUND, m),
-            PreviewError::Template(m) => Self(StatusCode::UNPROCESSABLE_ENTITY, m),
-            PreviewError::Internal(m) => Self(StatusCode::INTERNAL_SERVER_ERROR, m),
-        }
-    }
 }
 
 /// `POST /api/preview`: render an invoice (unsaved text, or the saved file)
@@ -424,7 +489,7 @@ async fn preview(
     let rendered = tokio::task::spawn_blocking(move || preview::render(&books, request))
         .await
         .map_err(|e| {
-            ApiError(
+            ApiError::status(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("the request failed: {e}"),
             )
@@ -484,7 +549,7 @@ async fn events(State(state): State<AppState>) -> Result<Response, ApiError> {
 
 /// `GET /api/ui-prefs`: the effective theme and scale. Reads only.
 async fn ui_prefs(State(state): State<AppState>) -> ApiResult {
-    blocking(move || to_value(prefs::current(&state))).await
+    blocking(StatusCode::OK, move || to_value(prefs::current(&state))).await
 }
 
 /// `PATCH /api/ui-prefs`: save the named keys, as Ledgeline does (in the
@@ -496,7 +561,10 @@ async fn patch_ui_prefs(
 ) -> ApiResult {
     let Json(body) = payload.map_err(|e| ApiError::bad_request(e.body_text()))?;
     let patch = Patch::from_json(&prefs::SCHEMA, &body)?;
-    blocking(move || to_value(prefs::apply(&state, &patch)?)).await
+    blocking(StatusCode::OK, move || {
+        to_value(prefs::apply(&state, &patch)?)
+    })
+    .await
 }
 
 /// `POST /api/session`: the cookie MBR's pages need.

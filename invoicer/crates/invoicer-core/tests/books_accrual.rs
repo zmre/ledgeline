@@ -252,6 +252,37 @@ fn send_rebook_and_void_on_accrual_books() {
         "re-booked in place, keeping its schedule id"
     );
 
+    // RC-7: the check a caller runs before writing the file evaluates the
+    // text it will write. Dropping the deferred row would drop its schedule:
+    // refused, and nothing is written. Another hour is fine, and is still
+    // only checked.
+    let dropped: String = edited
+        .lines()
+        .filter(|line| !line.starts_with("| SAAS-Y"))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    let dropped = recalculated(&dropped, &books);
+    let more = recalculated(
+        &replace_once(
+            &edited,
+            "| Senior architect hours        | 3   |",
+            "| Senior architect hours        | 4   |",
+        ),
+        &books,
+    );
+    let (books, index) = reopen(books);
+    let journal = read(&dir, "books.journal");
+    let rules = read(&dir, "recognition.journal");
+    let checked = books.check_rebook(&index, "108", &dropped, TODAY);
+    assert!(
+        matches!(&checked, Err(BooksError::Ops(OpsError::Refused(why))) if why.contains("drop its schedule")),
+        "{checked:?}"
+    );
+    assert!(books.check_rebook(&index, "108", &more, TODAY).is_ok());
+    assert_eq!(read(&dir, "books.journal"), journal);
+    assert_eq!(read(&dir, "recognition.journal"), rules);
+    assert_eq!(read(&dir, INV_108), edited);
+
     // Void 108: it has a deferred line, so Ledgeline refuses; nothing moves.
     let journal = read(&dir, "books.journal");
     let (books, mut index) = reopen(books);
@@ -311,14 +342,18 @@ fn send_rebook_and_void_on_accrual_books() {
     let (books, index) = reopen(books);
     let journal = read(&dir, "books.journal");
     // The check a caller runs before rewriting the markdown says so first.
-    let checked = books.check_rebook(&index, "102");
+    let checked = books.check_rebook(&index, "102", &edited_102, TODAY);
     assert!(
         matches!(&checked, Err(BooksError::Refused(why)) if why.contains("closed-through 2026-09-30")),
         "{checked:?}"
     );
-    assert!(books.check_rebook(&index, "105").is_ok());
+    assert!(
+        books
+            .check_rebook(&index, "105", &read(&dir, INV_105), TODAY)
+            .is_ok()
+    );
     assert!(matches!(
-        books.check_rebook(&index, "106"),
+        books.check_rebook(&index, "106", &read(&dir, INV_106), TODAY),
         Err(BooksError::Status { .. })
     ));
     let refused = books.rebook(&index, &rebook("102"));

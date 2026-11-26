@@ -68,7 +68,7 @@ fn customer_error(error: &CustomerError) -> ApiError {
         | CustomerError::Changed { .. } => StatusCode::CONFLICT,
         CustomerError::Vault(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
-    ApiError(status, error.to_string())
+    ApiError::status(status, error.to_string())
 }
 
 /// `GET /api/customers`' query: the customer list's URL contract (PLAN
@@ -118,7 +118,7 @@ impl ListParams {
 async fn list(State(state): State<AppState>, Query(params): Query<ListParams>) -> ApiResult {
     let today = today(params.today.as_deref())?;
     let query = params.query()?;
-    with_books(&state, move |books| {
+    with_books(&state, StatusCode::OK, move |books| {
         let rows = account::customer_accounts(&books.session(), &today);
         to_value(account::query_customers(rows, &query))
     })
@@ -134,7 +134,7 @@ async fn create(
 ) -> Result<Response, ApiError> {
     let Json(fields) = body.map_err(|e| ApiError::bad_request(e.body_text()))?;
     let books = state.books().ok_or_else(no_books)?;
-    let mut response = blocking(move || {
+    let mut response = blocking(StatusCode::OK, move || {
         let mut session = books.session();
         let (index, vault) = session.parts_mut();
         let saved = customer_edit::create(index, vault, &fields).map_err(|e| customer_error(&e))?;
@@ -158,7 +158,7 @@ fn find(session: &Session, key: &str) -> Result<VaultPath, ApiError> {
         .find_map(|p| index.site().note(&p));
     if let Some(note) = by_path {
         if !is_customer(note, words) {
-            return Err(ApiError(
+            return Err(ApiError::status(
                 StatusCode::NOT_FOUND,
                 format!(
                     "{} isn't a customer: a person or organization note tagged `{}`",
@@ -171,11 +171,11 @@ fn find(session: &Session, key: &str) -> Result<VaultPath, ApiError> {
     views::find_customer(index, trimmed)
         .map(|c| c.contact.path)
         .map_err(|e| match e {
-            CustomerLookup::NotFound => ApiError(
+            CustomerLookup::NotFound => ApiError::status(
                 StatusCode::NOT_FOUND,
                 format!("no customer is called {key:?}"),
             ),
-            CustomerLookup::NotACustomer(path) => ApiError(
+            CustomerLookup::NotACustomer(path) => ApiError::status(
                 StatusCode::NOT_FOUND,
                 format!(
                     "{path} isn't a person or organization tagged `{}`",
@@ -283,7 +283,7 @@ async fn detail(
         let site = books.mbr_site();
         let _ = tokio::time::timeout(SCAN_WAIT, site.repo().wait_for_scan()).await;
     }
-    with_books(&state, move |books| {
+    with_books(&state, StatusCode::OK, move |books| {
         let path = {
             let mut session = books.session();
             let path = find(&session, &key)?;
@@ -296,14 +296,12 @@ async fn detail(
         let mut links = backlinks(books, &path);
         let session = books.session();
         describe(&session, &mut links);
-        let note: Note = session
-            .index()
-            .site()
-            .note(&path)
-            .cloned()
-            .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("{path}: no such note")))?;
-        let customer = Customer::from_note(&note)
-            .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("{path}: not a contact")))?;
+        let note: Note = session.index().site().note(&path).cloned().ok_or_else(|| {
+            ApiError::status(StatusCode::NOT_FOUND, format!("{path}: no such note"))
+        })?;
+        let customer = Customer::from_note(&note).ok_or_else(|| {
+            ApiError::status(StatusCode::NOT_FOUND, format!("{path}: not a contact"))
+        })?;
         let problems = views::document_problems(&session);
         let detail = views::customer_detail(&session, &customer, &problems, &today);
         let open = account::open_items(&session, &today);
@@ -349,7 +347,7 @@ async fn update(
     let Json(body) = body.map_err(|e| ApiError::bad_request(e.body_text()))?;
     let day = today(body.today.as_deref())?;
     let books = state.books().ok_or_else(no_books)?;
-    blocking(move || {
+    blocking(StatusCode::OK, move || {
         let mut session = books.session();
         let path = find(&session, &key)?;
         let (index, vault) = session.parts_mut();

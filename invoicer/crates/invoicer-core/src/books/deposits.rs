@@ -29,7 +29,7 @@
 //! [`InvoiceBooks::apply_deposit`] writes that row into a draft, above its
 //! final total, and recomputes the table.
 
-use super::lifecycle::{Basis, applied_payments};
+use super::lifecycle::{Basis, received_by_account};
 use super::spec::deposit_account;
 use super::{BooksError, Document, InvoiceBooks, customer_of};
 use crate::doc::Status;
@@ -456,32 +456,18 @@ impl InvoiceBooks {
     }
 }
 
-/// Cash books: what the payments applied to invoice `number` brought in —
-/// their postings tagged with the customer, in `commodity`, negated.
+/// Cash books: what the payments applied to invoice `number` brought in,
+/// for `customer` in `commodity` ([`received_by_account`], summed).
 fn received_on(
     loaded: &ledgeline_core::accrual::ops::Loaded,
     number: &str,
     customer: &str,
     commodity: &str,
 ) -> Result<Dec, BooksError> {
-    let mut received = Dec::zero();
-    for txn in applied_payments(loaded, number) {
-        for posting in &txn.postings {
-            if tag_value(&posting.tags, CUSTOMER_TAG) != Some(customer) {
-                continue;
-            }
-            for amount in posting
-                .amounts
-                .iter()
-                .filter(|a| a.commodity.0 == commodity)
-            {
-                received = received
-                    .sub(amount.quantity)
-                    .map_err(|_| BooksError::Overflow)?;
-            }
-        }
-    }
-    Ok(received)
+    received_by_account(loaded, number, customer, commodity)?
+        .into_iter()
+        .try_fold(Dec::zero(), |sum, (_, d)| sum.add(d))
+        .map_err(|_| BooksError::Overflow)
 }
 
 fn save(

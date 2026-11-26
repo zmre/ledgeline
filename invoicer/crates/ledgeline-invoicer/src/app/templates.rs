@@ -43,8 +43,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::AppState;
+use super::api::{ApiError, ApiResult, body, to_value, with_books};
 use super::books::OpenBooks;
-use super::library::{Answer, Failure, body, run, to_json};
 use super::preview::{self, PREVIEW_PAGE, PreviewError, PreviewRequest};
 use crate::starters;
 
@@ -155,7 +155,7 @@ pub(crate) fn count_in(session: &Session) -> usize {
     found.len() + starters
 }
 
-impl From<TemplateError> for Failure {
+impl From<TemplateError> for ApiError {
     fn from(error: TemplateError) -> Self {
         let message = error.to_string();
         match error {
@@ -186,28 +186,15 @@ impl From<TemplateError> for Failure {
     }
 }
 
-impl From<PreviewError> for Failure {
-    fn from(error: PreviewError) -> Self {
-        let (status, message) = error.status_and_message();
-        let code = match status {
-            StatusCode::BAD_REQUEST => "bad-request",
-            StatusCode::NOT_FOUND => "not-found",
-            StatusCode::UNPROCESSABLE_ENTITY => "invalid",
-            _ => "internal",
-        };
-        Self::new(status, code, message)
-    }
-}
-
 /// The template `key` names: a path in the books folder, `.html`.
-fn template_path(key: &str) -> Result<VaultPath, Failure> {
-    preview::template_path(key).map_err(Failure::from)
+fn template_path(key: &str) -> Result<VaultPath, ApiError> {
+    preview::template_path(key).map_err(ApiError::from)
 }
 
 /// `GET /api/templates`.
-async fn list(State(state): State<AppState>) -> Answer {
-    run(&state, StatusCode::OK, |books| {
-        to_json(templates_in(&books.session()))
+async fn list(State(state): State<AppState>) -> ApiResult {
+    with_books(&state, StatusCode::OK, |books| {
+        to_value(templates_in(&books.session()))
     })
     .await
 }
@@ -245,8 +232,8 @@ fn parent_blocks(vault: &dyn Vault, path: &VaultPath, parent: Option<&str>) -> V
 }
 
 /// `GET /api/templates/{path}`.
-async fn one(State(state): State<AppState>, Path(key): Path<String>) -> Answer {
-    run(&state, StatusCode::OK, move |books| {
+async fn one(State(state): State<AppState>, Path(key): Path<String>) -> ApiResult {
+    with_books(&state, StatusCode::OK, move |books| {
         let path = template_path(&key)?;
         let session = books.session();
         let vault = session.vault();
@@ -285,7 +272,7 @@ async fn one(State(state): State<AppState>, Path(key): Path<String>) -> Answer {
                 }
             }
         };
-        to_json(detail)
+        to_value(detail)
     })
     .await
 }
@@ -307,16 +294,16 @@ struct CreateBody {
 
 /// The text of the template `from` names: the file in the books, else a
 /// starter's shipped text.
-fn source_of(session: &Session, from: &str) -> Result<String, Failure> {
+fn source_of(session: &Session, from: &str) -> Result<String, ApiError> {
     let path = template_path(from)?;
     match template_edit::read(session.index(), session.vault(), &path) {
         Ok(_) => session
             .vault()
             .read_to_string(&path)
-            .map_err(|e| Failure::from(TemplateError::from(e))),
+            .map_err(|e| ApiError::from(TemplateError::from(e))),
         Err(TemplateError::NotFound(_)) => starters::named(&session.settings().templates_dir, from)
             .map(|s| s.source.to_string())
-            .ok_or_else(|| Failure::from(TemplateError::NotFound(path))),
+            .ok_or_else(|| ApiError::from(TemplateError::NotFound(path))),
         Err(other) => Err(other.into()),
     }
 }
@@ -325,9 +312,9 @@ fn source_of(session: &Session, from: &str) -> Result<String, Failure> {
 async fn create(
     State(state): State<AppState>,
     payload: Result<Json<CreateBody>, JsonRejection>,
-) -> Answer {
+) -> ApiResult {
     let request = body(payload)?;
-    run(&state, StatusCode::CREATED, move |books| {
+    with_books(&state, StatusCode::CREATED, move |books| {
         let mut session = books.session();
         let from = request
             .from
@@ -335,7 +322,7 @@ async fn create(
             .map(|f| source_of(&session, f))
             .transpose()?;
         let (index, vault) = session.parts_mut();
-        to_json(template_edit::create(
+        to_value(template_edit::create(
             index,
             vault,
             &NewTemplate {
@@ -363,20 +350,20 @@ struct CustomizeBody {
 async fn customize(
     State(state): State<AppState>,
     payload: Result<Json<CustomizeBody>, JsonRejection>,
-) -> Answer {
+) -> ApiResult {
     let request = body(payload)?;
-    run(&state, StatusCode::OK, move |books| {
+    with_books(&state, StatusCode::OK, move |books| {
         let mut session = books.session();
         let dir = session.settings().templates_dir.clone();
         let starter = starters::named(&dir, &request.template).ok_or_else(|| {
-            Failure::new(
+            ApiError::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "not-a-starter",
                 format!("{} isn't one of the starters", request.template.trim()),
             )
         })?;
         let installed = starters::install(session.vault(), &dir, starter)
-            .map_err(|e| Failure::from(TemplateError::from(e)))?;
+            .map_err(|e| ApiError::from(TemplateError::from(e)))?;
         let written = installed.written_files();
         if !written.is_empty() {
             let (index, vault) = session.parts_mut();
@@ -406,13 +393,13 @@ async fn save(
     State(state): State<AppState>,
     Path(key): Path<String>,
     payload: Result<Json<SaveBody>, JsonRejection>,
-) -> Answer {
+) -> ApiResult {
     let request = body(payload)?;
-    run(&state, StatusCode::OK, move |books| {
+    with_books(&state, StatusCode::OK, move |books| {
         let path = template_path(&key)?;
         let mut session = books.session();
         let (index, vault) = session.parts_mut();
-        to_json(template_edit::save(
+        to_value(template_edit::save(
             index,
             vault,
             &path,
@@ -437,9 +424,9 @@ async fn remove(
     State(state): State<AppState>,
     Path(key): Path<String>,
     payload: Result<Json<DeleteBody>, JsonRejection>,
-) -> Answer {
+) -> ApiResult {
     let request = body(payload)?;
-    run(&state, StatusCode::OK, move |books| {
+    with_books(&state, StatusCode::OK, move |books| {
         let path = template_path(&key)?;
         let mut session = books.session();
         let (index, vault) = session.parts_mut();
@@ -476,15 +463,15 @@ pub(crate) struct TemplateProblem {
 async fn preview_template(
     State(state): State<AppState>,
     payload: Result<Json<PreviewBody>, JsonRejection>,
-) -> Answer {
+) -> ApiResult {
     let request = body(payload)?;
-    run(&state, StatusCode::OK, move |books| {
+    with_books(&state, StatusCode::OK, move |books| {
         render_body(books, request)
     })
     .await
 }
 
-fn render_body(books: &OpenBooks, request: PreviewBody) -> Result<Value, Failure> {
+fn render_body(books: &OpenBooks, request: PreviewBody) -> Result<Value, ApiError> {
     let rendered = preview::render(
         books,
         PreviewRequest {
@@ -498,7 +485,7 @@ fn render_body(books: &OpenBooks, request: PreviewBody) -> Result<Value, Failure
     match rendered {
         Ok(page) => {
             let id = books.drafts().put_page(&page).ok_or_else(|| {
-                Failure::new(
+                ApiError::new(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "internal",
                     "no preview id",

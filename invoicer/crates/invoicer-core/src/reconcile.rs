@@ -41,7 +41,7 @@
 //! rest of the file byte for byte, conditional on the revision read.
 
 use crate::books::spec::{DOCUMENT_TAG, tag_text};
-use crate::books::{Basis, BooksError, InvoiceBooks, StepCheck};
+use crate::books::{Basis, BooksError, InvoiceBooks, StepCheck, receipt_postings};
 use crate::doc::{Paid, Status};
 use crate::frontmatter::FieldEdit;
 use crate::index::{DocumentIndex, IndexedDoc};
@@ -54,7 +54,7 @@ use ledgeline_core::accrual::receivables::{
     PaymentState, Receivables, ReceivablesOptions, SettlementKind,
 };
 use ledgeline_core::accrual::{
-    AccrualRole, AccrualRoles, CUSTOMER_TAG, INVOICE_TAG, VOID_TAG, is_recognition_entry, tag_value,
+    AccrualRole, AccrualRoles, INVOICE_TAG, VOID_TAG, is_recognition_entry, tag_value,
 };
 use ledgeline_core::model::{Journal, Tindex};
 use ledgeline_core::projections::is_generated;
@@ -409,13 +409,7 @@ impl BookStates {
                     }
                     let mut amount = Dec::zero();
                     let mut commodity: Option<String> = None;
-                    for posting in &txn.postings {
-                        if posting.generated.is_some()
-                            || types.is_cash(&posting.account.0)
-                            || tag_value(&posting.tags, CUSTOMER_TAG).is_none()
-                        {
-                            continue;
-                        }
+                    for posting in receipt_postings(txn, &types, None) {
                         for a in &posting.amounts {
                             if commodity.as_deref().is_none_or(|c| c == a.commodity.0) {
                                 commodity = Some(a.commodity.0.clone());

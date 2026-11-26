@@ -324,24 +324,8 @@ async fn a_save_reads_sent_from_the_file_not_a_stale_index() {
     let app = app();
     let root = books_root(&app);
     let journal = || std::fs::read_to_string(root.join("books.journal")).unwrap();
-    {
-        // Another process sends 108; this app's index still says draft.
-        let mut cli = invoicer_core::session::Session::open_local(&root.join("books.journal"))
-            .expect("opens");
-        let books = cli.invoice_books();
-        let (index, _) = cli.parts_mut();
-        books
-            .send(
-                index,
-                &invoicer_core::books::Send {
-                    number: "108".to_string(),
-                    today: "2026-11-17".to_string(),
-                    sent_via: None,
-                    expected: None,
-                },
-            )
-            .expect("sent");
-    }
+    // Another process sends 108; this app's index still says draft.
+    send_108(&root);
     let state = state_of(&app, "108").await;
     assert_eq!(state["status"], "sent");
     let mut form = state["form"].clone();
@@ -360,6 +344,117 @@ async fn a_save_reads_sent_from_the_file_not_a_stale_index() {
         journal().contains("reference: PO #PY75334 rev. 2"),
         "{}",
         journal()
+    );
+}
+
+/// Sends 108 (a deferred row) as another process would.
+fn send_108(root: &std::path::Path) {
+    let mut cli =
+        invoicer_core::session::Session::open_local(&root.join("books.journal")).expect("opens");
+    let books = cli.invoice_books();
+    let (index, _) = cli.parts_mut();
+    books
+        .send(
+            index,
+            &invoicer_core::books::Send {
+                number: "108".to_string(),
+                today: "2026-11-17".to_string(),
+                sent_via: None,
+                expected: None,
+            },
+        )
+        .expect("sent");
+}
+
+/// RC-7: the save's pre-flight re-books the text the form makes, so a save
+/// that would fail to re-book (here: dropping the deferred row's schedule)
+/// is refused before the file is written, and the books stay as they were.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_save_that_wont_rebook_is_refused_before_the_file_changes() {
+    let app = app();
+    let root = books_root(&app);
+    send_108(&root);
+    let file = root.join("invoices/2026-11-17 Customer X Invoice 108.md");
+    let (journal, rules, before) = (
+        std::fs::read_to_string(root.join("books.journal")).unwrap(),
+        std::fs::read_to_string(root.join("recognition.journal")).unwrap(),
+        std::fs::read_to_string(&file).unwrap(),
+    );
+    let state = state_of(&app, "108").await;
+    let mut form = state["form"].clone();
+    let rows: Vec<Value> = form["table"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row[0] != "SAAS-Y")
+        .cloned()
+        .collect();
+    form["table"]["rows"] = Value::Array(rows);
+    let (status, refused) = json_of(
+        &app,
+        put_json(
+            "/api/invoices/108/form",
+            &json!({"form": form, "revision": state["revision"], "rebook": true, "today": "2026-11-17"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert_eq!(refused["code"], "refused", "{refused}");
+    assert!(
+        refused["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("drop its schedule")),
+        "{refused}"
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+    assert_eq!(
+        std::fs::read_to_string(root.join("books.journal")).unwrap(),
+        journal
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("recognition.journal")).unwrap(),
+        rules
+    );
+}
+
+/// TW-4: a re-book that fails after the file was written answers its own
+/// code, never `changed`, with the file's new revision and what to do.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_written_file_that_wasnt_rebooked_says_so() {
+    let app = app();
+    let root = books_root(&app);
+    let file = root.join("invoices/2026-11-17 Customer X Invoice 108.md");
+    let path =
+        ledgeline_core::vault::VaultPath::new("invoices/2026-11-17 Customer X Invoice 108.md")
+            .unwrap();
+    // 108 is a draft: the books refuse to re-book it, as they would refuse
+    // a sent one whose journal write failed after its file was saved.
+    let failure = {
+        let mut session = app.books.session();
+        super::super::edits::rebook_written(&mut session, "108", "2026-11-17", &path, true)
+            .expect_err("a draft isn't re-booked")
+    };
+    let response = axum::response::IntoResponse::into_response(failure);
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(body["code"], "saved-not-rebooked", "{body}");
+    assert_eq!(body["cause"], "status", "{body}");
+    assert_eq!(body["written"], true, "{body}");
+    assert_eq!(body["path"], path.as_str(), "{body}");
+    let text = std::fs::read(&file).unwrap();
+    assert_eq!(
+        body["revision"],
+        ledgeline_core::vault::Revision::of_bytes(&text).token(),
+        "{body}"
+    );
+    let error = body["error"].as_str().unwrap();
+    assert!(
+        error.contains("was saved, but its books weren't updated")
+            && error.contains("ledgeline-invoicer rebook 108"),
+        "{error}"
     );
 }
 

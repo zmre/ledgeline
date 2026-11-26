@@ -28,19 +28,17 @@
 #[cfg(feature = "server")]
 mod app;
 mod customers;
+mod flows;
 mod human;
 mod pdf;
 mod starters;
 
 use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser, Subcommand};
-use invoicer_core::books::{
-    self, ApplyPayment, BooksError, InvoiceBooks, Rebook, Recognize, Send, Void,
-};
+use invoicer_core::books::{self, ApplyPayment, BooksError, InvoiceBooks, Recognize, Send, Void};
 use invoicer_core::doc::{DocType, Status};
 use invoicer_core::draft::{DraftRow, NewInvoice};
 use invoicer_core::edit::{self, WriteError};
 use invoicer_core::frontmatter::FieldEdit;
-use invoicer_core::index::DocumentIndex;
 use invoicer_core::index::ListFilter;
 use invoicer_core::reconcile::{self, MirrorChange, ReconcileOptions};
 use invoicer_core::session::Session;
@@ -51,7 +49,6 @@ use invoicer_core::views::{self, ListQuery};
 use ledgeline_core::vault::VaultPath;
 use ledgeline_shell::AppDirs;
 use serde::Serialize;
-use serde_json::Value;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -364,7 +361,11 @@ fn books_failure(error: BooksError) -> Failure {
 
 /// Run a books write, retried once when the files changed under it.
 fn retrying<T>(op: impl FnMut() -> Result<T, BooksError>) -> Result<T, Failure> {
-    let (result, retried) = books::retry_once(op);
+    retried(books::retry_once(op))
+}
+
+/// A retried write's result, saying so when it was retried.
+fn retried<T>((result, retried): (Result<T, BooksError>, bool)) -> Result<T, Failure> {
     if retried {
         eprintln!(
             "ledgeline-invoicer: the books or the file changed while writing (nothing was \
@@ -386,26 +387,10 @@ fn number_of(session: &Session, target: &str) -> Result<String, Failure> {
 }
 
 /// Refresh one invoice's `paid:` mirror after a write that moved its
-/// payments (the books read afresh). `None` when nothing changed or the
-/// books can't say.
-fn mirror_one(
-    books: &InvoiceBooks,
-    index: &mut DocumentIndex,
-    number: &str,
-) -> Option<MirrorChange> {
-    let loaded = books.load().ok()?;
-    reconcile::reconcile(
-        books,
-        index,
-        &loaded,
-        &ReconcileOptions {
-            only: Some(vec![number.to_string()]),
-            dry_run: false,
-        },
-    )
-    .changed
-    .into_iter()
-    .next()
+/// payments ([`flows::settle`]). `None` when nothing changed or the books
+/// can't say.
+fn mirror_one(session: &mut Session, number: &str) -> Option<MirrorChange> {
+    flows::settle(session, number).and_then(|report| report.changed.into_iter().next())
 }
 
 /// Where the journal came from, for the note printed when it was a guess.
@@ -607,17 +592,14 @@ fn run_new(cli: &Cli, args: &NewArgs, matches: Option<&ArgMatches>) -> Result<Ex
     let created = edit::create(index, vault, &new, &booked, args.dry_run)?;
     // The starter it uses is copied in now that the invoice is written
     // (first use; an existing file is never replaced), and indexed so
-    // `check` knows the template at once.
+    // `check` knows the template at once. The invoice exists either way, so
+    // a failed copy is a warning (RA-7).
+    let mut warnings = Vec::new();
     let copied = match starter.filter(|_| !args.dry_run) {
-        Some(starter) => {
-            let dir = session.settings().templates_dir.clone();
-            let installed = starters::install(session.vault(), &dir, starter).map_err(|e| {
-                Failure(format!("copying the {} template: {e}", starter.name), None)
-            })?;
-            let (index, vault) = session.parts_mut();
-            index.refresh(vault, &installed.written_files());
-            installed.written.then_some(installed.path)
-        }
+        Some(starter) => starters::copy_in(&mut session, starter).unwrap_or_else(|warning| {
+            warnings.push(warning);
+            None
+        }),
         None => None,
     };
     let problems: Vec<_> = if args.dry_run {
@@ -636,6 +618,9 @@ fn run_new(cli: &Cli, args: &NewArgs, matches: Option<&ArgMatches>) -> Result<Ex
         /// The starter template this invoice uses, copied in on first use.
         #[serde(skip_serializing_if = "Option::is_none")]
         template_copied: Option<&'a VaultPath>,
+        /// Why the starter wasn't copied in.
+        #[serde(skip_serializing_if = "<[String]>::is_empty")]
+        warnings: &'a [String],
     }
     emit(
         cli.json,
@@ -643,11 +628,15 @@ fn run_new(cli: &Cli, args: &NewArgs, matches: Option<&ArgMatches>) -> Result<Ex
             created: &created,
             problems,
             template_copied: copied.as_ref(),
+            warnings: &warnings,
         },
         |out| {
             let mut text = human::created(out.created, &out.problems);
             if let Some(path) = out.template_copied {
                 text.push_str(&format!("  copied the starter template to {path}\n"));
+            }
+            for warning in out.warnings {
+                text.push_str(&format!("  warning: {warning}\n"));
             }
             text
         },
@@ -725,25 +714,9 @@ fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
                 .map(|a| edit::assignment(a).map(|(k, v)| FieldEdit::Set(k, v)))
                 .chain(args.unset.iter().map(|k| Ok(FieldEdit::Remove(k.clone()))))
                 .collect::<Result<_, WriteError>>()?;
-            let (index, vault) = session.parts_mut();
-            let outcome = edit::set(index, vault, &path, &edits)?;
             // A `template:` naming a starter copies it in on first use (B1),
             // as `new` does; never over a file already there.
-            let dir = session.settings().templates_dir.clone();
-            let mut copied = None;
-            for change in &edits {
-                if let FieldEdit::Set(key, Value::String(template)) = change
-                    && key == "template"
-                {
-                    let installed = starters::install_named(session.vault(), &dir, template)
-                        .map_err(|e| Failure(format!("copying the starter template: {e}"), None))?;
-                    if let Some(done) = installed.filter(|d| d.written) {
-                        let (index, vault) = session.parts_mut();
-                        index.refresh(vault, &done.written_files());
-                        copied = Some(done.path);
-                    }
-                }
-            }
+            let done = starters::set(&mut session, &path, &edits)?;
             #[derive(Serialize)]
             struct Out<'a> {
                 #[serde(flatten)]
@@ -751,17 +724,24 @@ fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
                 /// The starter template it now names, copied in on first use.
                 #[serde(skip_serializing_if = "Option::is_none")]
                 template_copied: Option<&'a VaultPath>,
+                /// Why the starter wasn't copied in.
+                #[serde(skip_serializing_if = "<[String]>::is_empty")]
+                warnings: &'a [String],
             }
             emit(
                 cli.json,
                 &Out {
-                    outcome: &outcome,
-                    template_copied: copied.as_ref(),
+                    outcome: &done.outcome,
+                    template_copied: done.copied.as_ref(),
+                    warnings: &done.warnings,
                 },
                 |out| {
                     let mut text = human::set(out.outcome);
                     if let Some(path) = out.template_copied {
                         text.push_str(&format!("  copied the starter template to {path}\n"));
+                    }
+                    for warning in out.warnings {
+                        text.push_str(&format!("  warning: {warning}\n"));
                     }
                     text
                 },
@@ -995,7 +975,6 @@ fn export_pdf(
 fn run_void(cli: &Cli, args: &VoidArgs) -> Result<ExitCode, Failure> {
     let mut session = open(cli)?;
     let number = number_of(&session, &args.document)?;
-    let books = session.invoice_books();
     let today = today(cli)?;
     let request = Void {
         number,
@@ -1003,9 +982,22 @@ fn run_void(cli: &Cli, args: &VoidArgs) -> Result<ExitCode, Failure> {
         today,
         expected: None,
     };
-    let (index, _) = session.parts_mut();
-    let voided = retrying(|| books.void(index, &request))?;
-    emit(cli.json, &voided, human::voided);
+    let written = retried(flows::void(&mut session, &request))?;
+    let mirror = written.mirror_change();
+    #[derive(Serialize)]
+    struct Out {
+        #[serde(flatten)]
+        voided: books::Voided,
+        mirror: Option<MirrorChange>,
+    }
+    emit(
+        cli.json,
+        &Out {
+            voided: written.done,
+            mirror,
+        },
+        |o| human::voided(&o.voided, o.mirror.as_ref()),
+    );
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1022,19 +1014,9 @@ fn run_rebook(cli: &Cli, args: &RebookArgs) -> Result<ExitCode, Failure> {
         });
         return Ok(ExitCode::SUCCESS);
     }
-    let request = Rebook {
-        number: number.clone(),
-        today: today(cli)?,
-        expected: None,
-    };
-    let (index, _) = session.parts_mut();
-    let rebooked = retrying(|| books.rebook(index, &request))?;
-    // A new total can move the payment state (accrual: a link to check).
-    let mirror = if rebooked.changed {
-        mirror_one(&books, index, &number)
-    } else {
-        None
-    };
+    let written = retried(flows::rebook(&mut session, &number, &today(cli)?))?;
+    let mirror = written.mirror_change();
+    let rebooked = written.done;
     #[derive(Serialize)]
     struct Out {
         #[serde(flatten)]
@@ -1075,7 +1057,7 @@ fn run_apply_payment(cli: &Cli, args: &ApplyPaymentArgs) -> Result<ExitCode, Fai
     let applied = retrying(|| books.apply_payment(index, &request))?;
     let (undo_file, warning) = books::undo::keep(vault, &applied, &today);
     let warnings: Vec<String> = warning.into_iter().collect();
-    let mirror = mirror_one(&books, index, &number);
+    let mirror = mirror_one(&mut session, &number);
     #[derive(Serialize)]
     struct Out {
         #[serde(flatten)]
@@ -1112,7 +1094,7 @@ fn undo_payment(
     number: &str,
     txn: Option<&str>,
 ) -> Result<ExitCode, Failure> {
-    let (index, vault) = session.parts_mut();
+    let (_, vault) = session.parts_mut();
     let records: Vec<_> = books::undo::records(vault, number)
         .into_iter()
         .filter(|(_, r)| txn.is_none_or(|t| r.reference.starts_with(t.trim())))
@@ -1158,7 +1140,7 @@ fn undo_payment(
     if let Err(error) = books::undo::remove(vault, &file) {
         warnings.push(format!("the undo record {file} wasn't removed: {error}"));
     }
-    let mirror = mirror_one(books, index, number);
+    let mirror = mirror_one(session, number);
     #[derive(Serialize)]
     struct Out {
         number: String,

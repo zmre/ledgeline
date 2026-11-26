@@ -25,19 +25,17 @@
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use invoicer_core::catalog_edit::{self, CatalogError};
 use invoicer_core::editor::GridForm;
 use invoicer_core::snippet_edit::{self, SnippetError, SnippetFields};
 use ledgeline_core::vault::VaultPath;
-use ledgeline_shell::security::no_store_json;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::AppState;
-use super::api::{ApiError, no_books};
+use super::api::{ApiError, ApiResult, body, to_value, with_books};
 use super::books::OpenBooks;
 
 /// The catalog and snippet routes (state still to be supplied).
@@ -52,58 +50,7 @@ pub(crate) fn routes() -> Router<AppState> {
         )
 }
 
-/// A refusal: a status, a stable code, a sentence and any detail
-/// (`revision`, `problems`, `customers`) merged into the body.
-/// Shared with the template editor ([`super::templates`]).
-#[derive(Debug)]
-pub(crate) struct Failure {
-    status: StatusCode,
-    code: &'static str,
-    message: String,
-    detail: Vec<(&'static str, Value)>,
-}
-
-impl Failure {
-    pub(crate) fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
-        Self {
-            status,
-            code,
-            message: message.into(),
-            detail: Vec::new(),
-        }
-    }
-
-    pub(crate) fn with(mut self, key: &'static str, value: Value) -> Self {
-        self.detail.push((key, value));
-        self
-    }
-}
-
-impl IntoResponse for Failure {
-    fn into_response(self) -> Response {
-        let mut body = json!({ "error": self.message, "code": self.code });
-        for (key, value) in self.detail {
-            body[key] = value;
-        }
-        let mut response = no_store_json(body);
-        *response.status_mut() = self.status;
-        response
-    }
-}
-
-impl From<ApiError> for Failure {
-    fn from(ApiError(status, message): ApiError) -> Self {
-        let code = match status {
-            StatusCode::BAD_REQUEST => "bad-request",
-            StatusCode::NOT_FOUND => "not-found",
-            StatusCode::CONFLICT => "conflict",
-            _ => "internal",
-        };
-        Self::new(status, code, message)
-    }
-}
-
-impl From<CatalogError> for Failure {
+impl From<CatalogError> for ApiError {
     fn from(error: CatalogError) -> Self {
         let message = error.to_string();
         match error {
@@ -129,7 +76,7 @@ impl From<CatalogError> for Failure {
     }
 }
 
-impl From<SnippetError> for Failure {
+impl From<SnippetError> for ApiError {
     fn from(error: SnippetError) -> Self {
         let message = error.to_string();
         match error {
@@ -156,42 +103,8 @@ impl From<SnippetError> for Failure {
     }
 }
 
-pub(crate) type Answer = Result<Response, Failure>;
-
-/// Run `f` over the open books on the blocking pool, answering its JSON
-/// with `status`.
-pub(crate) async fn run<F>(state: &AppState, status: StatusCode, f: F) -> Answer
-where
-    F: FnOnce(&OpenBooks) -> Result<Value, Failure> + Send + 'static,
-{
-    let books = state.books().ok_or_else(|| Failure::from(no_books()))?;
-    match tokio::task::spawn_blocking(move || f(&books)).await {
-        Ok(result) => result.map(|value| {
-            let mut response = no_store_json(value);
-            *response.status_mut() = status;
-            response
-        }),
-        Err(error) => Err(Failure::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            format!("the request failed: {error}"),
-        )),
-    }
-}
-
-pub(crate) fn body<T>(payload: Result<Json<T>, JsonRejection>) -> Result<T, Failure> {
-    payload
-        .map(|Json(body)| body)
-        .map_err(|e| Failure::new(StatusCode::BAD_REQUEST, "bad-request", e.body_text()))
-}
-
-pub(crate) fn to_json(value: impl serde::Serialize) -> Result<Value, Failure> {
-    serde_json::to_value(value)
-        .map_err(|e| Failure::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))
-}
-
 /// The note `key` names: its path in the books folder, `.md` optional.
-fn note_path(books: &OpenBooks, key: &str) -> Result<VaultPath, Failure> {
+fn note_path(books: &OpenBooks, key: &str) -> Result<VaultPath, ApiError> {
     let trimmed = key.trim().trim_start_matches('/');
     let session = books.session();
     let site = session.index().site();
@@ -200,7 +113,7 @@ fn note_path(books: &OpenBooks, key: &str) -> Result<VaultPath, Failure> {
         .filter_map(|p| VaultPath::new(&p).ok())
         .find(|p| site.note(p).is_some())
         .ok_or_else(|| {
-            Failure::new(
+            ApiError::new(
                 StatusCode::NOT_FOUND,
                 "not-found",
                 format!("{trimmed}: no such note"),
@@ -209,11 +122,11 @@ fn note_path(books: &OpenBooks, key: &str) -> Result<VaultPath, Failure> {
 }
 
 /// `GET /api/catalog`.
-async fn catalogs(State(state): State<AppState>) -> Answer {
-    run(&state, StatusCode::OK, |books| {
+async fn catalogs(State(state): State<AppState>) -> ApiResult {
+    with_books(&state, StatusCode::OK, |books| {
         let session = books.session();
         Ok(json!({
-            "catalogs": to_json(catalog_edit::list(session.index(), session.vault()))?,
+            "catalogs": to_value(catalog_edit::list(session.index(), session.vault()))?,
             "path": session.settings().catalog,
         }))
     })
@@ -221,11 +134,11 @@ async fn catalogs(State(state): State<AppState>) -> Answer {
 }
 
 /// `POST /api/catalog`: the empty catalog at `[invoicer] catalog`.
-async fn create_catalog(State(state): State<AppState>) -> Answer {
-    run(&state, StatusCode::CREATED, |books| {
+async fn create_catalog(State(state): State<AppState>) -> ApiResult {
+    with_books(&state, StatusCode::CREATED, |books| {
         let mut session = books.session();
         let (index, vault) = session.parts_mut();
-        to_json(catalog_edit::create(index, vault)?)
+        to_value(catalog_edit::create(index, vault)?)
     })
     .await
 }
@@ -245,13 +158,13 @@ async fn save_catalog(
     State(state): State<AppState>,
     Path(key): Path<String>,
     payload: Result<Json<CatalogBody>, JsonRejection>,
-) -> Answer {
+) -> ApiResult {
     let request = body(payload)?;
-    run(&state, StatusCode::OK, move |books| {
+    with_books(&state, StatusCode::OK, move |books| {
         let path = note_path(books, &key)?;
         let mut session = books.session();
         let (index, vault) = session.parts_mut();
-        to_json(catalog_edit::save(
+        to_value(catalog_edit::save(
             index,
             vault,
             &path,
@@ -263,10 +176,10 @@ async fn save_catalog(
 }
 
 /// `GET /api/snippets`.
-async fn snippets(State(state): State<AppState>) -> Answer {
-    run(&state, StatusCode::OK, |books| {
+async fn snippets(State(state): State<AppState>) -> ApiResult {
+    with_books(&state, StatusCode::OK, |books| {
         let session = books.session();
-        to_json(snippet_edit::list(session.index(), session.vault()))
+        to_value(snippet_edit::list(session.index(), session.vault()))
     })
     .await
 }
@@ -275,12 +188,12 @@ async fn snippets(State(state): State<AppState>) -> Answer {
 async fn create_snippet(
     State(state): State<AppState>,
     payload: Result<Json<SnippetFields>, JsonRejection>,
-) -> Answer {
+) -> ApiResult {
     let fields = body(payload)?;
-    run(&state, StatusCode::CREATED, move |books| {
+    with_books(&state, StatusCode::CREATED, move |books| {
         let mut session = books.session();
         let (index, vault) = session.parts_mut();
-        to_json(snippet_edit::create(index, vault, &fields)?)
+        to_value(snippet_edit::create(index, vault, &fields)?)
     })
     .await
 }
@@ -300,13 +213,13 @@ async fn update_snippet(
     State(state): State<AppState>,
     Path(key): Path<String>,
     payload: Result<Json<SnippetBody>, JsonRejection>,
-) -> Answer {
+) -> ApiResult {
     let request = body(payload)?;
-    run(&state, StatusCode::OK, move |books| {
+    with_books(&state, StatusCode::OK, move |books| {
         let path = note_path(books, &key)?;
         let mut session = books.session();
         let (index, vault) = session.parts_mut();
-        to_json(snippet_edit::update(
+        to_value(snippet_edit::update(
             index,
             vault,
             &path,
@@ -333,9 +246,9 @@ async fn delete_snippet(
     State(state): State<AppState>,
     Path(key): Path<String>,
     payload: Result<Json<DeleteBody>, JsonRejection>,
-) -> Answer {
+) -> ApiResult {
     let request = body(payload)?;
-    run(&state, StatusCode::OK, move |books| {
+    with_books(&state, StatusCode::OK, move |books| {
         let path = note_path(books, &key)?;
         let mut session = books.session();
         let (index, vault) = session.parts_mut();
