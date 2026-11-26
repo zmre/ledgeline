@@ -208,7 +208,7 @@ ledgeline-invoicer customers new "Northwind Traders" --email ap@northwind.exampl
 | `--revenue-account ACCOUNT`                                                                                                       | The revenue account for this customer's lines                                      |
 | `--invoice-template PATH`                                                                                                         | The customer's invoice template, such as `/invoices/tpl/x.html`                    |
 | `--ledger-customer NAME`                                                                                                          | The name the books use, when it differs                                            |
-| `--contract LINK\|PATH`                                                                                                           | A contract; repeat for more                                                        |
+| `--contract LINK\|PATH`                                                                                                           | A contract: a note link, a path in the books, or a file outside them (`~/…`, `file:///…`); repeat for more |
 | `--portal-name`, `--portal-url`, `--portal-login`, `--portal-supplier-id`, `--portal-requires-reference`, `--portal-instructions` | The billing portal. The login is a username, never a password                      |
 
 A name any note already has is refused, whatever its case, and an existing file is never overwritten. `--dry-run` prints the note without writing it.
