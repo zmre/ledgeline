@@ -656,17 +656,19 @@ jobs:
       # prove the shipped shell boots under its own CSP. This is the same
       # derivation `linuxDist` wraps, so the `build` job pushes and pins it.
       #
-      # `invoicerWithSpa` likewise (linuxDist wraps it too), for the invoicer's
-      # suite. ONE invocation, so Nix schedules both compiles on top of the
+      # `linuxDist` for the invoicer's suite: its `bin/ledgeline-invoicer` is
+      # `invoicerWithSpa` wrapped with Mesa's EGL/GBM paths, which WebKitGTK
+      # needs to render the PDF export under Xvfb (below); the bare binary
+      # aborts in EGL on a stock runner. ONE invocation, so Nix schedules both compiles on top of the
       # shared release layer in parallel; the out-links are made afterwards
       # (instant, both are in the store) so neither depends on the
       # `result`/`result-1` numbering of a multi-installable build.
       - name: Build ledgeline and ledgeline-invoicer (real SPAs embedded)
         id: bins
         run: |
-          nix build -L --no-link .#ledgelineWithSpa .#invoicerWithSpa
+          nix build -L --no-link .#ledgelineWithSpa .#linuxDist
           nix build --out-link result .#ledgelineWithSpa
-          nix build --out-link result-invoicer .#invoicerWithSpa
+          nix build --out-link result-linux .#linuxDist
 
       # Same pin as the `spa` job's, for the same reason.
       - name: Setup Bun
@@ -744,6 +746,11 @@ jobs:
       # which load the SPA the server embeds, fail on a placeholder instead of
       # skipping.
       #
+      # Under Xvfb: on Linux the PDF export is a WebKitGTK webview, which
+      # needs a display (without one the server turns export off and the
+      # three PDF specs fail with 503). `xvfb-run` comes from the flake's own
+      # nixpkgs (`--inputs-from .`), so it is pinned with everything else.
+      #
       # Runs even when Ledgeline's contract tests or e2e failed, so one red
       # suite does not hide the other; but not when the binaries or the
       # browser never arrived, where it could only fail for the same reason.
@@ -751,9 +758,12 @@ jobs:
         if: ${{ !cancelled() && steps.bins.outcome == 'success' && steps.browsers.outcome == 'success' }}
         working-directory: invoicer/web
         env:
-          LEDGELINE_INVOICER_BIN: ${{ github.workspace }}/result-invoicer/bin/ledgeline-invoicer
+          LEDGELINE_INVOICER_BIN: ${{ github.workspace }}/result-linux/bin/ledgeline-invoicer
           REQUIRE_REAL_SPA: "1"
-        run: bun run test:e2e
+        run: >-
+          nix shell --inputs-from . nixpkgs#xvfb-run --command
+          xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24"
+          bun run test:e2e
 
       # Neither playwright.config.ts sets a `reporter`, so there is no
       # playwright-report/ to collect — but a failing spec still drops its
