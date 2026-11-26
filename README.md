@@ -16,6 +16,8 @@
 
 A fast, local, privacy-centric desktop app for [hledger](https://hledger.org) / [ledger](https://ledger-cli.org) plain-text accounting. It is 100% compatible with hledger, but adds graphical views, enhanced reports, forecasts, and expanded import capabilities in a keyboard-first UI.
 
+This repository also ships [Ledgeline Invoicer](#invoicer), a separate app that keeps invoices as plain-text notes beside your books and records them in the same hledger journal.
+
 ## Why
 
 I built this because I was dissatisfied with existing GUIs. They often hard code expectations for where files are and how they link. Or they're ugly. They rarely handle stocks well. If they allow editing, it's limited and buggy. 
@@ -114,7 +116,7 @@ The most important thing to know though is that <kbd>?</kbd> will show you the c
 
 It has a bill table that does its own discounts, subtotals, tax and deposits; PDF export through templates you can [customize](https://zmre.github.io/ledgeline/invoicer/templates/) without writing a whole page; a receivables [dashboard](https://zmre.github.io/ledgeline/invoicer/dashboard/) with aging, DSO and what was paid recently; Ledgeline's keyboard shortcuts; and a [command line](https://zmre.github.io/ledgeline/invoicer/cli/) that does nearly everything the app does, with JSON output for [scripts](https://zmre.github.io/ledgeline/invoicer/scripting/). It shares Ledgeline's themes and settings file.
 
-Download `LedgelineInvoicer-<version>-arm64.dmg` from the [latest GitHub release](https://github.com/zmre/ledgeline/releases/latest) (Apple silicon only). The Nix package installs it beside Ledgeline on macOS and Linux. It isn't on crates.io; see [Getting it](https://zmre.github.io/ledgeline/invoicer/#getting-it) for running it from source.
+You don't need the invoicer to use Ledgeline. [Install](#install) covers getting it.
 
 ## Documentation
 
@@ -129,7 +131,13 @@ The [install section of the manual](https://zmre.github.io/ledgeline/) has detai
 
 **macOS.** Download the `.dmg` for your Mac from the [latest GitHub release](https://github.com/zmre/ledgeline/releases/latest): `arm64` for Apple silicon, `x86_64` for Intel. The app is signed and notarized and bundles its own `hledger`. Drag it to Applications.
 
-**Nix (macOS and Linux).** Point at the flake (details below).
+The invoicer has its own download on the same release page, `LedgelineInvoicer-<version>-arm64.dmg`. It runs on Apple silicon only, is signed and notarized too, and doesn't need hledger because it reads and writes the journal itself.
+
+**Nix (macOS and Linux).** Point at the flake (details below). The default package holds both apps, so this installs Ledgeline and the invoicer:
+
+```sh
+nix profile install --accept-flake-config github:zmre/ledgeline
+```
 
 **Cargo (anywhere Rust builds).** Install from [crates.io](https://crates.io/crates/ledgeline):
 
@@ -140,6 +148,8 @@ cargo install ledgeline --no-default-features --features watcher,external-tools 
 
 The headless build prints a `http://127.0.0.1:PORT/#token=…` address to open in your browser. Imports need hledger 1.40 or newer on your `PATH` (or point Ledgeline at one in settings).
 
+The invoicer isn't on crates.io. To build it from source, see [Getting it](https://zmre.github.io/ledgeline/invoicer/#getting-it) in the manual.
+
 If there's demand, I can add homebrew support and possibly support for other Linux repos (eg, AUR).
 
 **To run it directly in Nix**:
@@ -148,24 +158,35 @@ If there's demand, I can add homebrew support and possibly support for other Lin
 nix run --accept-flake-config github:zmre/ledgeline -- ~/finance/2026.journal   # opens the desktop window on the specified journal (or don't specify and you can open from inside the app)
 ```
 
+`nix run` starts Ledgeline only. To run the invoicer without installing it:
+
+```sh
+nix shell --accept-flake-config github:zmre/ledgeline --command ledgeline-invoicer ~/books/books.journal
+```
+
 `--accept-flake-config` opts you into our [binary cache](#nix-binary-cache-skip-the-build) so this
 downloads rather than compiles. Drop it if you'd rather build everything yourself.
 
 ### Linux notes
 
+The default package puts `ledgeline` and `ledgeline-invoicer` in `bin/`, with a desktop entry and icons for each. Both apps use the same window code, so the notes below apply to both.
+
 The window opens with **no title bar and no menu bar**: the app draws its own header, and an in-window GTK menu bar is out of place under a tiling Wayland
 compositor. Press <kbd>F10</kbd> to bring both back (and again to dismiss them). You'll need the menu bar if you want to use the mouse to open a file. Alternately just use <kbd>Ctrl</kbd>+<kbd>O</kbd> to pick a ledger file to open.
 
-The Linux package wraps the binary so that nixpkgs' Mesa is available as a **last-resort** EGL driver, appended to the search path and never substituted for it, so your host driver still wins wherever there is one. Without it, WebKitGTK aborts its web process on any non-NixOS host and you get a blank window. This is also why `.#ledgeline` (the bare, unwrapped binary that CI builds) is not the thing to install.
+The Linux package wraps both binaries so that nixpkgs' Mesa is available as a **last-resort** EGL driver, appended to the search path and never substituted for it, so your host driver still wins wherever there is one. Without it, WebKitGTK aborts its web process on any non-NixOS host and you get a blank window. This is also why `.#ledgeline` and `.#invoicerWithSpa` (the bare, unwrapped binaries) are not the things to install.
 
 ### Mac Nix Notes
 
-**Build the macOS app bundle** to open or drag into `/Applications`:
+**Build the macOS app bundles** to open or drag into `/Applications`:
 
 ```sh
-nix build github:zmre/ledgeline        # or, in a local checkout: nix build
-open result/Applications/Ledgeline.app # macOS — real UI embedded
+nix build github:zmre/ledgeline                    # or, in a local checkout: nix build
+open result/Applications/Ledgeline.app             # macOS — real UI embedded
+open "result/Applications/Ledgeline Invoicer.app"
 ```
+
+The same build also links the command-line entry points, `result/bin/ledgeline` and `result/bin/ledgeline-invoicer`.
 
 ### Nix binary cache (skip the build)
 
@@ -186,7 +207,7 @@ or, on NixOS / nix-darwin, the equivalent `nix.settings.{extra-substituters,extr
 > `ignoring untrusted flake configuration setting 'extra-substituters'` and builds from source,
 > which is fine, but slower.
 
-CI pushes the Linux and macOS `ledgeline` binaries, the macOS distributable (`.#macDist` → `Ledgeline.app`) and the crane dependency layer. Coverage is best-effort.  Cachix garbage-collects, so an older revision will be evicted.
+CI pushes the Linux and macOS `ledgeline` binaries, the macOS distributable (`.#macDist`, which holds `Ledgeline.app` and `Ledgeline Invoicer.app`) and the crane dependency layer. Coverage is best-effort.  Cachix garbage-collects, so an older revision will be evicted.
 
 ## Development (or if you don't have nix)
 
@@ -216,6 +237,8 @@ Three layers:
 - **`ledgeline-core`**: the product. Journal storage behind a `Vault` trait, parsing, safe in-place edits, and every report and view (exact decimals throughout). No platform code, no HTTP.
 - **`ledgeline-server`**: a tokio/axum API over core, with immutable journal snapshots and injected app directories. Cargo features add the desktop window (`gui`), a file watcher (`watcher`) and the `hledger` subprocess (`external-tools`).
 - **Hosts**: the desktop app opens the native OS webview (via wry, part of the tauri project) on a loopback port and shows the embedded Svelte app; `--server` runs the same API headless; `ledgeline-ffi` runs the router in-process for a future iOS app.
+
+The invoicer adds two crates under `invoicer/crates/`. `invoicer-core` holds the invoice model, booking into the journal (through `ledgeline-core`) and payment reconciliation. `ledgeline-invoicer` is its command line and desktop app. It boots through `ledgeline-shell`, the same window, token and CSP code Ledgeline uses, and uses [mbr](https://github.com/zmre/mbr-markdown-browser/) to render the invoice and note pages and to export PDFs. See [Invoicer code layout](https://zmre.github.io/ledgeline/development/invoicer/).
 
 The Svelte app only presents what the API computes. All assets are built into the single binary, which is pretty snappy. See [Architecture](https://zmre.github.io/ledgeline/development/architecture/) in the manual for the details.
 
