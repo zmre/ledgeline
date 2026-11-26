@@ -23,14 +23,28 @@ Every invoice is a markdown file in your books folder, and so is every customer.
 
 ## Getting it
 
-The invoicer isn't in a release download yet. It builds from the [Ledgeline repository](https://github.com/zmre/ledgeline) inside its Nix development shell:
+**macOS.** Download `LedgelineInvoicer-<version>-arm64.dmg` from the [latest GitHub release](https://github.com/zmre/ledgeline/releases/latest), open it and drag **Ledgeline Invoicer** to Applications. It is signed and notarized. It runs on Apple silicon Macs only; there is no Intel build.
+
+**Nix (macOS and Linux).** Installing Ledgeline from the flake installs the invoicer too, as the app and the `ledgeline-invoicer` command:
+
+```sh
+nix profile install --accept-flake-config github:zmre/ledgeline
+```
+
+To run it without installing:
+
+```sh
+nix run --accept-flake-config github:zmre/ledgeline#invoicerWithSpa -- ~/books/books.journal
+```
+
+The invoicer isn't on crates.io. Without Nix, build it from the [Ledgeline repository](https://github.com/zmre/ledgeline) inside its development shell:
 
 ```sh
 just build-invoicer                                   # the app's screens
 cargo run -p ledgeline-invoicer -- ~/books/books.journal
 ```
 
-It runs on Apple silicon Macs and on Linux. There is no Intel Mac build.
+It doesn't need hledger installed: it reads and writes the journal itself.
 
 ## Opening your books
 
