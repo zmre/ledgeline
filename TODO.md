@@ -65,3 +65,9 @@
 ### Front end
 
 The default filter is last-90-days, which is what hides journal-size problems; the cliff is the user's first click on "All time".
+
+## Invoicer (deferred from the 6c review, 2026-11-25)
+
+- perf: **preview frames reload more than needed** (TW-14). Each draft preview gets a new URL *and* a `{#key}` remount, so after every 400 ms typing pause the frame resets to 1100 px, flashes white and changes height. On the view page every change event reloads the invoice frame and re-fetches detail, books and delivery, even for an unrelated note, though MBR's own live reload already covers the frame. Fix: drop the `{#key}` remount, keep the height across reloads, and filter change events by path.
+- fix: **the watcher's outside-journal folders are fixed at startup** (RA-11). A `ledgeline.toml` change rebuilds the session without restarting the watcher, so an `include` added later that points outside the books folder is never watched. Fix: recompute the watched set on `reload_changed`.
+- refactor: **Combobox is mostly a copy of AccountInput** (TS-5, `packages/ui/src/components`). Both carry the same popup placement, portal, keyboard handling and listbox markup, and have drifted (AccountInput has Home/End, `onCancel`, `autofocus`; Combobox has the chevron and add-new). Fix: one shared listbox core that both wrap.
