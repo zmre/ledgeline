@@ -613,26 +613,33 @@ pub fn no_store_json<T: serde::Serialize>(body: T) -> Response {
 /// (JSON, static assets, errors).
 #[must_use]
 pub fn base_csp() -> HeaderValue {
-    csp_value("")
+    csp_value(CSP_TAIL)
 }
 
 /// The policy for one rendering of the SPA shell: the base policy plus a
-/// `'sha256-…'` source for each inline `<script>` the shell actually contains.
+/// `'sha256-…'` source for each inline `<script>` the shell actually contains,
+/// and the app's `frame-src` when it has one ([`AppIdentity::spa_frame_src`]).
 ///
 /// Computed from the served bytes rather than baked in, so it stays correct
 /// across SPA rebuilds (SvelteKit's bootstrap script changes every build) and
 /// across the token we inject into it.
 #[must_use]
-pub fn shell_csp(html: &str) -> HeaderValue {
+pub fn shell_csp(app: &AppIdentity, html: &str) -> HeaderValue {
     let hashes = inline_script_hashes(html)
         .iter()
         .map(|hash| format!(" '{hash}'"))
         .collect::<String>();
-    csp_value(&hashes)
+    let frames = app
+        .spa_frame_src
+        .map(|sources| format!("; frame-src {sources}"))
+        .unwrap_or_default();
+    csp_value(&format!("{hashes}{CSP_TAIL}{frames}"))
 }
 
-fn csp_value(script_sources: &str) -> HeaderValue {
-    HeaderValue::from_str(&format!("{CSP_HEAD}{script_sources}{CSP_TAIL}"))
+/// [`CSP_HEAD`] followed by `rest` (the script hashes, [`CSP_TAIL`], and any
+/// per-app directives), or [`FALLBACK_CSP`] if that is no header value.
+fn csp_value(rest: &str) -> HeaderValue {
+    HeaderValue::from_str(&format!("{CSP_HEAD}{rest}"))
         .unwrap_or_else(|_| HeaderValue::from_static(FALLBACK_CSP))
 }
 
@@ -940,6 +947,7 @@ mod tests {
         token_global: "__LEDGELINE_TOKEN__",
         embedded_global: "__LEDGELINE_EMBEDDED__",
         spa_base: "/",
+        spa_frame_src: None,
     };
 
     const UNDER_APP: AppIdentity = AppIdentity {
@@ -950,6 +958,7 @@ mod tests {
         token_global: "__LEDGELINE_TOKEN__",
         embedded_global: "__LEDGELINE_EMBEDDED__",
         spa_base: "/app/",
+        spa_frame_src: Some("'self' https: mailto:"),
     };
 
     #[test]
@@ -1127,13 +1136,70 @@ mod tests {
     #[test]
     fn shell_csp_carries_every_inline_hash_and_the_exfiltration_guard() {
         let html = "<head><script>a</script></head><body><script>b</script></body>";
-        let csp = shell_csp(html);
-        let csp = csp.to_str().expect("ascii");
-        assert!(csp.contains(&format!("'{}'", csp_sha256("a"))));
-        assert!(csp.contains(&format!("'{}'", csp_sha256("b"))));
-        assert!(csp.contains("connect-src 'self'"));
-        assert!(csp.contains("frame-ancestors 'none'"));
-        assert!(!csp.contains("unsafe-eval"));
+        for app in [&WHOLE_ORIGIN, &UNDER_APP] {
+            let csp = shell_csp(app, html);
+            let csp = csp.to_str().expect("ascii");
+            assert!(csp.contains(&format!("'{}'", csp_sha256("a"))));
+            assert!(csp.contains(&format!("'{}'", csp_sha256("b"))));
+            assert!(csp.contains("connect-src 'self'"));
+            assert!(csp.contains("frame-ancestors 'none'"));
+            assert!(!csp.contains("unsafe-eval"));
+        }
+    }
+
+    /// An app without `spa_frame_src` (Ledgeline) gets exactly the shared
+    /// policy, byte for byte: no `frame-src`, so `default-src 'self'` rules.
+    #[test]
+    fn shell_csp_has_no_frame_src_unless_the_app_asks() {
+        let html = "<script>a</script>";
+        let hash = csp_sha256("a");
+        assert_eq!(
+            shell_csp(&WHOLE_ORIGIN, html).to_str().expect("ascii"),
+            format!(
+                "default-src 'self'; script-src 'self' '{hash}'; \
+                 style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
+                 connect-src 'self'; font-src 'self'; object-src 'none'; \
+                 base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+            )
+        );
+        assert_eq!(
+            base_csp().to_str().expect("ascii"),
+            "default-src 'self'; script-src 'self'; \
+             style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
+             connect-src 'self'; font-src 'self'; object-src 'none'; \
+             base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        );
+    }
+
+    #[test]
+    fn shell_csp_appends_the_apps_frame_src() {
+        let html = "<script>a</script>";
+        let with = shell_csp(&UNDER_APP, html);
+        let without = shell_csp(&WHOLE_ORIGIN, html);
+        assert_eq!(
+            with.to_str().expect("ascii"),
+            format!(
+                "{}; frame-src 'self' https: mailto:",
+                without.to_str().expect("ascii")
+            )
+        );
+        assert!(
+            !base_csp().to_str().expect("ascii").contains("frame-src"),
+            "only the shell carries the app's frame-src"
+        );
+    }
+
+    /// A per-app directive that cannot be a header value fails closed.
+    #[test]
+    fn a_bad_frame_src_falls_back_to_the_tighter_policy() {
+        let broken = AppIdentity {
+            spa_frame_src: Some("'self'\n"),
+            ..UNDER_APP
+        };
+        assert_eq!(
+            shell_csp(&broken, "").to_str().expect("ascii"),
+            FALLBACK_CSP
+        );
     }
 
     fn sample_token() -> AccessToken {

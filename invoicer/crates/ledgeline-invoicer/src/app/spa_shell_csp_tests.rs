@@ -45,3 +45,37 @@ async fn spa_shell_csp_admits_exactly_the_inline_scripts_it_serves() {
         );
     }
 }
+
+/// The note and invoice frames' links must reach the desktop window's
+/// navigation handler: the shell lets its frames navigate to https and
+/// mailto (and our own origin), and nothing else. Responses that are not the
+/// shell keep the shared policy, with no `frame-src`.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_spa_shell_lets_its_frames_reach_https_and_mailto() {
+    let app = app();
+    for (path, expected) in [
+        ("/app/", vec!["'self'", "https:", "mailto:"]),
+        ("/app/invoices/105", vec!["'self'", "https:", "mailto:"]),
+        ("/api/invoices", vec![]),
+    ] {
+        let request = Request::get(path)
+            .header(header::HOST, HOST)
+            .body(Body::empty())
+            .expect("request");
+        let (_, headers, _) = send(&app.router, request).await;
+        let csp = headers
+            .get(header::CONTENT_SECURITY_POLICY)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_else(|| panic!("{path}: a CSP"));
+        assert_eq!(
+            oracle::directive(csp, "frame-src"),
+            expected,
+            "{path}: {csp}"
+        );
+        assert_eq!(
+            csp.matches("frame-src").count(),
+            usize::from(!expected.is_empty()),
+            "{path}: one frame-src at most: {csp}"
+        );
+    }
+}

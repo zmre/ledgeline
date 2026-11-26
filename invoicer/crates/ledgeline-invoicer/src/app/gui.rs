@@ -186,6 +186,12 @@ fn external_url(candidate: &str) -> Option<String> {
         .map(String::from)
 }
 
+/// The window's `open_external` ([`shell::build_webview`]): hand an
+/// [`external_url`] to the default app and answer whether it did. The frame
+/// or window the link was clicked in never leaves our origin. Links in note
+/// and invoice frames reach this only because the SPA's CSP lets its frames
+/// navigate to https and mailto (`APP.spa_frame_src`); WebKit would refuse
+/// them before the navigation handler otherwise.
 fn open_if_external(candidate: &str) -> bool {
     external_url(candidate)
         .map(|url| shell::open_in_browser(&APP, &url))

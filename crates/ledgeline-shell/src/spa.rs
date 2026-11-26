@@ -104,7 +104,7 @@ pub fn injected_index<E: RustEmbed>(app: &AppIdentity) -> String {
 /// credential and are the whole reason that cache exists.
 fn shell_response<E: RustEmbed>(app: &AppIdentity) -> Response {
     let html = injected_index::<E>(app);
-    let csp = security::shell_csp(&html);
+    let csp = security::shell_csp(app, &html);
     let mut response = Html(html).into_response();
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_SECURITY_POLICY, csp);
@@ -184,6 +184,7 @@ mod tests {
         token_global: "__LEDGELINE_TOKEN__",
         embedded_global: "__LEDGELINE_EMBEDDED__",
         spa_base: "/",
+        spa_frame_src: None,
     };
 
     /// Ledgeline's SPA reads exactly this; the bytes are part of its CSP.
@@ -218,7 +219,7 @@ mod tests {
     #[test]
     fn shell_csp_hashes_the_injected_marker_script() {
         let html = injected_index::<TestSpa>(&APP);
-        let csp = security::shell_csp(&html);
+        let csp = security::shell_csp(&APP, &html);
         let csp = csp.to_str().expect("ascii policy");
         for script in inline_scripts(&html) {
             let hash = security::csp_sha256(script);

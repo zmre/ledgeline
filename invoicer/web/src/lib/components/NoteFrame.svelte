@@ -2,8 +2,12 @@
      feedback J9). By URL, never `srcdoc` (Phase 3 feedback F1), sandboxed
      with `allow-same-origin` only, as the invoice frame is (PLAN B2): no
      script in the page runs, so nothing in a note can reach this window's
-     token, and its links can move only the frame, never the app. `height`
-     in pixels; 0 fills the space left (at least 24rem). -->
+     token, and its links can move only the frame, never the app. In the
+     desktop window an outside https or mailto link opens in the default
+     browser or mail app and the frame stays put (the shell's CSP lets frames
+     navigate there only so the window's navigation handler sees it); in
+     `--server` mode, in a plain browser, it loads in the sandboxed frame.
+     `height` in pixels; 0 fills the space left (at least 24rem). -->
 <script lang="ts">
     let {src, title, height = 520}: {src: string; title: string; height?: number} = $props();
 </script>

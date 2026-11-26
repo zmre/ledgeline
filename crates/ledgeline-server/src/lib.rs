@@ -132,6 +132,8 @@ pub static APP: AppIdentity = AppIdentity {
     // The SPA is the whole origin: everything else on it is `/api`, behind
     // the token. No other content shares it.
     spa_base: "/",
+    // Ledgeline frames nothing: `default-src 'self'` governs frames.
+    spa_frame_src: None,
 };
 
 /// Environment variable holding a caller-chosen token. Set it when a

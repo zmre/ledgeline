@@ -14,7 +14,12 @@
      while the page still loads MBR's assets with the session cookie and stays
      readable for sizing. A template needs no script to show an invoice; MBR's
      export-ready partial only matters inside a PDF export, which has its own
-     webview. The frame grows to its page's height once it loads. -->
+     webview. The frame grows to its page's height once it loads.
+
+     Links move only the frame, never the app. In the desktop window an
+     outside https or mailto link opens in the default browser or mail app and
+     the frame stays put; in `--server` mode, in a plain browser, it loads in
+     the sandboxed frame. -->
 <script lang="ts">
     let {src, title, mode = "page"}: {src?: string; title: string; mode?: "page" | "preview"} = $props();
 

@@ -73,6 +73,13 @@ pub(crate) static APP: AppIdentity = AppIdentity {
     // `SPA_BASE` with its trailing slash: MBR's pages share the origin, so
     // the window shows, and the token reaches, only the SPA under `/app/`.
     spa_base: "/app/",
+    // A link clicked in a note or invoice frame must reach the desktop
+    // window's navigation handler, which opens https and mailto links in the
+    // default app (`gui::external_url`) and keeps the frame where it is.
+    // Without these WebKit refuses the navigation first, silently. In
+    // `--server` mode (a plain browser) such a link loads in the sandboxed
+    // frame.
+    spa_frame_src: Some("'self' https: mailto:"),
 };
 
 /// `--server`'s default port. Ledgeline's e2e uses 5099 and 4173, so the
