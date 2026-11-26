@@ -99,6 +99,10 @@ pub struct ApplyPayment {
     pub reference: String,
     /// Today: candidates are looked for within the lookback before it.
     pub today: String,
+    /// How candidates are matched: the user's effective settings (shared
+    /// with Ledgeline, RC-10), as [`InvoiceBooks::payment_options`] listed
+    /// them, so the deposit chosen is still among them.
+    pub settle: SettleSettings,
     /// Refuse unless the books are still as listed.
     pub expected: Option<Generation>,
 }
@@ -374,7 +378,12 @@ impl InvoiceBooks {
         })
     }
 
-    fn candidates_of(loaded: &Loaded, owed: &Owed, today: &str) -> Vec<(Tindex, PaymentCandidate)> {
+    fn candidates_of(
+        loaded: &Loaded,
+        owed: &Owed,
+        settle: &SettleSettings,
+        today: &str,
+    ) -> Vec<(Tindex, PaymentCandidate)> {
         if owed.remaining.mantissa <= 0 {
             return Vec::new();
         }
@@ -387,12 +396,7 @@ impl InvoiceBooks {
             date: owed.booking.date.clone(),
             due: money(loaded.journal(), &owed.booking.commodity, owed.remaining),
         };
-        let found = apply::candidates(
-            loaded.journal(),
-            &invoice,
-            &SettleSettings::default(),
-            today,
-        );
+        let found = apply::candidates(loaded.journal(), &invoice, settle, today);
         let tindices: Vec<Tindex> = found.iter().map(|c| c.tindex).collect();
         found
             .into_iter()
@@ -418,7 +422,11 @@ impl InvoiceBooks {
     }
 
     /// The deposits that might pay sent invoice `number` (cash books), best
-    /// first; none once it is paid.
+    /// first; none once it is paid. `settle` is how far back to look and how
+    /// early a payment may come: the user's effective `settlementLookbackDays`
+    /// and `settlementLeadDays`, shared with Ledgeline's matcher (RC-10). Its
+    /// `tolerance_bps` changes nothing here: a deposit short of what is due
+    /// is offered as a part payment whatever it is.
     ///
     /// # Errors
     /// [`BooksError::Status`] for an invoice not sent;
@@ -428,9 +436,12 @@ impl InvoiceBooks {
         &self,
         index: &DocumentIndex,
         number: &str,
+        settle: &SettleSettings,
         today: &str,
     ) -> Result<Vec<PaymentCandidate>, BooksError> {
-        Ok(self.payment_options(index, number, today)?.candidates)
+        Ok(self
+            .payment_options(index, number, settle, today)?
+            .candidates)
     }
 
     /// What is due on sent invoice `number` (cash books) and the deposits
@@ -442,11 +453,12 @@ impl InvoiceBooks {
         &self,
         index: &DocumentIndex,
         number: &str,
+        settle: &SettleSettings,
         today: &str,
     ) -> Result<PaymentOptions, BooksError> {
         let loaded = self.load()?;
         let owed = self.owed(index, number, &loaded)?;
-        let candidates = Self::candidates_of(&loaded, &owed, today)
+        let candidates = Self::candidates_of(&loaded, &owed, settle, today)
             .into_iter()
             .map(|(_, c)| c)
             .collect();
@@ -472,7 +484,7 @@ impl InvoiceBooks {
         loaded: &Loaded,
     ) -> Result<PlannedPayment, BooksError> {
         let owed = self.owed(index, &request.number, loaded)?;
-        let candidates = Self::candidates_of(loaded, &owed, &request.today);
+        let candidates = Self::candidates_of(loaded, &owed, &request.settle, &request.today);
         let wanted = request.reference.trim();
         let exact = candidates.iter().position(|(_, c)| c.reference == wanted);
         let by_prefix: Vec<usize> = candidates

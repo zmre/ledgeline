@@ -10,6 +10,7 @@ use books_common::*;
 use invoicer_core::books::{ApplyPayment, Basis, BooksError, Send, Void};
 use ledgeline_core::Dec;
 use ledgeline_core::accrual::ops::OpsError;
+use ledgeline_core::accrual::settle::SettleSettings;
 
 const TODAY: &str = "2026-11-17";
 const INV_203: &str = "invoices/2026-11-05 Wingtip Invoice 203.md";
@@ -41,6 +42,7 @@ fn apply(number: &str, reference: &str) -> ApplyPayment {
         number: number.into(),
         reference: reference.into(),
         today: TODAY.into(),
+        settle: SettleSettings::default(),
         expected: None,
     }
 }
@@ -87,7 +89,7 @@ fn apply_payment_in_full_in_parts_and_undone() {
 
     // 203 ($1,200, Wingtip): the ACH pays it exactly and ranks first.
     let candidates = books
-        .payment_candidates(&index, "203", TODAY)
+        .payment_candidates(&index, "203", &SettleSettings::default(), TODAY)
         .expect("lists");
     let best = &candidates[0];
     assert_eq!(best.description, "ACH WINGTIP PAYMENTS");
@@ -120,7 +122,7 @@ fn apply_payment_in_full_in_parts_and_undone() {
     // Paid: no more candidates.
     assert!(
         books
-            .payment_candidates(&index, "203", TODAY)
+            .payment_candidates(&index, "203", &SettleSettings::default(), TODAY)
             .expect("lists")
             .is_empty()
     );
@@ -161,7 +163,7 @@ fn apply_payment_in_full_in_parts_and_undone() {
     // consulting $8,000 − $5,000 = $3,000, delivery $4,000.
     // The $9,000 wire is more than is due: never a candidate.
     let candidates = books
-        .payment_candidates(&index, "207", TODAY)
+        .payment_candidates(&index, "207", &SettleSettings::default(), TODAY)
         .expect("lists");
     let names: Vec<&str> = candidates.iter().map(|c| c.description.as_str()).collect();
     assert_eq!(
@@ -194,7 +196,7 @@ fn apply_payment_in_full_in_parts_and_undone() {
     );
     // The rest: each row's remainder; it is paid.
     let rest = books
-        .payment_candidates(&index, "207", TODAY)
+        .payment_candidates(&index, "207", &SettleSettings::default(), TODAY)
         .expect("lists");
     assert_eq!(rest.len(), 1);
     assert!(rest[0].exact);
@@ -214,7 +216,7 @@ fn apply_payment_in_full_in_parts_and_undone() {
     );
     assert!(
         books
-            .payment_candidates(&index, "207", TODAY)
+            .payment_candidates(&index, "207", &SettleSettings::default(), TODAY)
             .expect("lists")
             .is_empty()
     );
@@ -274,7 +276,7 @@ fn paying_the_rest_after_a_row_is_exactly_paid_skips_that_row() {
     // rounds consulting's $2,999.995 up to exactly $3,000, and delivery (the
     // largest) takes the rest, $3,999.99.
     let most = books
-        .payment_candidates(&index, "207", TODAY)
+        .payment_candidates(&index, "207", &SettleSettings::default(), TODAY)
         .expect("lists")
         .into_iter()
         .find(|c| c.description == "WIRE CUSTOMER X MOST")
@@ -284,7 +286,7 @@ fn paying_the_rest_after_a_row_is_exactly_paid_skips_that_row() {
         .expect("applies");
     assert_eq!(first.remaining, Dec::new(1, 2));
     let cent = books
-        .payment_candidates(&index, "207", TODAY)
+        .payment_candidates(&index, "207", &SettleSettings::default(), TODAY)
         .expect("lists")
         .into_iter()
         .find(|c| c.description == "WIRE CUSTOMER X CENT")
@@ -306,14 +308,14 @@ fn paying_the_rest_after_a_row_is_exactly_paid_skips_that_row() {
 fn apply_payment_is_for_sent_invoices_in_cash_books() {
     let dir = scratch("cash", "cash-refusals");
     let (books, index) = open(&dir);
-    let draft = books.payment_candidates(&index, "204", TODAY);
+    let draft = books.payment_candidates(&index, "204", &SettleSettings::default(), TODAY);
     assert!(matches!(draft, Err(BooksError::Status { .. })), "{draft:?}");
-    let void = books.payment_candidates(&index, "205", TODAY);
+    let void = books.payment_candidates(&index, "205", &SettleSettings::default(), TODAY);
     assert!(matches!(void, Err(BooksError::Status { .. })), "{void:?}");
 
     let dir = scratch("accrual", "accrual-apply");
     let (books, index) = open(&dir);
-    let accrual = books.payment_candidates(&index, "106", TODAY);
+    let accrual = books.payment_candidates(&index, "106", &SettleSettings::default(), TODAY);
     assert!(
         matches!(accrual, Err(BooksError::Refused(_))),
         "{accrual:?}"
@@ -329,7 +331,7 @@ fn preview_payment_shows_what_apply_payment_writes() {
     write(&dir, "books.journal", &start);
     let (books, index) = open(&dir);
     let candidates = books
-        .payment_candidates(&index, "207", TODAY)
+        .payment_candidates(&index, "207", &SettleSettings::default(), TODAY)
         .expect("lists");
     let half = apply("207", &candidates[0].reference);
 
@@ -354,7 +356,7 @@ fn preview_payment_shows_what_apply_payment_writes() {
     assert!(matches!(again, Err(BooksError::Refused(_))), "{again:?}");
     // The last one pays the rest: not partial.
     let rest = books
-        .payment_candidates(&index, "207", TODAY)
+        .payment_candidates(&index, "207", &SettleSettings::default(), TODAY)
         .expect("lists");
     let last = books
         .preview_payment(&index, &apply("207", &rest[0].reference))
@@ -438,7 +440,7 @@ fn a_deposit_is_income_on_receipt_and_a_covered_final_books_a_zero_marker() {
     // The wire is income the day it arrives: Wingtip has no revenue_account,
     // so `[invoicer] revenue-account` takes it, not the deposit liability.
     let wire = books
-        .payment_candidates(&index, "208", TODAY)
+        .payment_candidates(&index, "208", &SettleSettings::default(), TODAY)
         .expect("lists")
         .into_iter()
         .next()
@@ -493,7 +495,7 @@ fn a_deposit_is_income_on_receipt_and_a_covered_final_books_a_zero_marker() {
     );
     assert!(
         books
-            .payment_candidates(&index, "209", TODAY)
+            .payment_candidates(&index, "209", &SettleSettings::default(), TODAY)
             .expect("lists")
             .is_empty()
     );
@@ -626,7 +628,7 @@ fn deposit_then_final(
     };
     books.send(&mut index, &send("208")).expect("sends 208");
     let wire = books
-        .payment_candidates(&index, "208", TODAY)
+        .payment_candidates(&index, "208", &SettleSettings::default(), TODAY)
         .expect("lists")
         .into_iter()
         .next()
@@ -668,7 +670,7 @@ fn pay_209(
     );
     let (books, index) = reopen(books);
     let wire = books
-        .payment_candidates(&index, "209", TODAY)
+        .payment_candidates(&index, "209", &SettleSettings::default(), TODAY)
         .expect("lists")
         .into_iter()
         .find(|c| c.description.ends_with(id))
@@ -706,7 +708,7 @@ fn pro_rata_allocation_splits_every_payment_like_the_rows() {
     );
     let (books, index) = open(&dir);
     let candidates = books
-        .payment_candidates(&index, "207", TODAY)
+        .payment_candidates(&index, "207", &SettleSettings::default(), TODAY)
         .expect("lists");
     let first = books
         .apply_payment(&index, &apply("207", &candidates[0].reference))
@@ -719,7 +721,7 @@ fn pro_rata_allocation_splits_every_payment_like_the_rows() {
         ]
     );
     let rest = books
-        .payment_candidates(&index, "207", TODAY)
+        .payment_candidates(&index, "207", &SettleSettings::default(), TODAY)
         .expect("lists");
     let second = books
         .apply_payment(&index, &apply("207", &rest[0].reference))
@@ -908,4 +910,104 @@ fn liability_until_final_books_a_covered_final_against_the_liability() {
     if let Some(out) = hledger(&dir, &["books.journal"], &["-s", "check"]) {
         assert_eq!(out, "");
     }
+}
+
+/// RC-10: the matcher takes the user's settings (shared with Ledgeline),
+/// not the built-in defaults. 203 is $1,200 to Wingtip, dated 2026-11-05.
+#[test]
+fn the_matcher_uses_the_lookback_and_lead_it_is_given_not_the_tolerance() {
+    let dir = scratch("cash", "cash-settle-settings");
+    let imports = "
+2026-11-16 * ACH WINGTIP PAYMENTS  ; id: ach-41
+    assets:bank:checking  $1,200.00
+    income:unknown
+";
+    write(
+        &dir,
+        "books.journal",
+        &format!("{}{imports}", read(&dir, "books.journal")),
+    );
+    let (books, index) = open(&dir);
+    let found = |settle: SettleSettings, today: &str| {
+        books
+            .payment_candidates(&index, "203", &settle, today)
+            .expect("lists")
+            .iter()
+            .any(|c| c.description == "ACH WINGTIP PAYMENTS")
+    };
+    let lookback = |days| SettleSettings {
+        lookback_days: days,
+        ..SettleSettings::default()
+    };
+    // 200 days after the payment: missed at the default 180, found at 365
+    // or with no limit (0).
+    let later = "2027-06-04";
+    assert!(found(lookback(180), TODAY));
+    assert!(!found(lookback(180), later));
+    assert!(found(lookback(365), later));
+    assert!(found(lookback(0), later));
+
+    // A payment 2.5% short is a partial payment in cash books, whatever the
+    // tolerance: Ledgeline's cash matcher (`apply::candidates`) offers any
+    // deposit up to what is due, and the tolerance is its accrual
+    // settlement's (a fee written off), which Apply payment never writes.
+    let short = scratch("cash", "cash-settle-tolerance");
+    write(
+        &short,
+        "books.journal",
+        &format!(
+            "{}{}",
+            read(&short, "books.journal"),
+            imports.replace("$1,200.00", "$1,170.00")
+        ),
+    );
+    let (books, index) = open(&short);
+    let partial = |bps| {
+        books
+            .payment_candidates(
+                &index,
+                "203",
+                &SettleSettings {
+                    tolerance_bps: bps,
+                    ..SettleSettings::default()
+                },
+                TODAY,
+            )
+            .expect("lists")
+            .iter()
+            .any(|c| c.description == "ACH WINGTIP PAYMENTS" && !c.exact)
+    };
+    assert!(partial(300));
+    assert!(partial(0));
+
+    // A payment three days before the invoice: within the default 4 days'
+    // lead, not within 2.
+    let early = scratch("cash", "cash-settle-lead");
+    write(
+        &early,
+        "books.journal",
+        &format!(
+            "{}{}",
+            read(&early, "books.journal"),
+            imports.replace("2026-11-16", "2026-11-02")
+        ),
+    );
+    let (books, index) = open(&early);
+    let found = |days| {
+        books
+            .payment_candidates(
+                &index,
+                "203",
+                &SettleSettings {
+                    lead_days: days,
+                    ..SettleSettings::default()
+                },
+                TODAY,
+            )
+            .expect("lists")
+            .iter()
+            .any(|c| c.description == "ACH WINGTIP PAYMENTS")
+    };
+    assert!(found(4));
+    assert!(!found(2));
 }

@@ -7,9 +7,9 @@ use std::sync::Arc;
 use ledgeline_shell::AppDirs;
 use ledgeline_shell::security::{self, ProcessToken, SecurityPlan};
 
-use super::books::OpenBooks;
+use super::books::{OpenBooks, OpenFailure};
 use super::native::Native;
-use super::{APP, AppArgs, AppState, DEFAULT_SERVER_PORT, SPA_BASE, router, watch};
+use super::{APP, AppArgs, AppState, DEFAULT_SERVER_PORT, SPA_BASE, Unopened, router, watch};
 
 /// Mint the token and decide the bind posture (Ledgeline's SEC-9): a
 /// loopback bind gets the token and a Host guard pinned to the port; any
@@ -110,12 +110,35 @@ async fn serve(setup: Setup, native: Option<Arc<dyn Native>>) -> Result<(), Stri
         process_token,
         app_dirs,
     } = setup;
-    let books = OpenBooks::open(&journal, false)?;
-    books.install_starters();
-    books.reconcile_all();
-    let books = Arc::new(books);
+    // Books whose `ledgeline.toml` keeps them from opening are still
+    // served: every route answers `409` saying why, and the Settings page
+    // reads the file and shows the problem.
+    let (books, unopened) = match OpenBooks::open(&journal, false) {
+        Ok(books) => {
+            books.install_starters();
+            books.reconcile_all();
+            (Some(Arc::new(books)), None)
+        }
+        Err(OpenFailure {
+            message,
+            in_settings: Some(problem),
+        }) => {
+            eprintln!("{}: the books didn't open: {message}", APP.log_prefix);
+            (
+                None,
+                Some(Unopened {
+                    journal: journal.clone(),
+                    problem,
+                }),
+            )
+        }
+        Err(failure) => return Err(failure.message),
+    };
     // Never recorded in recents: `--server` runs over fixtures (e2e).
-    let state = AppState::with_native(Some(Arc::clone(&books)), app_dirs, native);
+    let state = AppState::with_native(books.clone(), app_dirs, native);
+    if let Some(unopened) = unopened {
+        state.set_unopened(unopened);
+    }
     let addr = format!("{host}:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
@@ -129,20 +152,24 @@ async fn serve(setup: Setup, native: Option<Arc<dyn Native>>) -> Result<(), Stri
          {prefix}: access token: {token}\n\
          {prefix}: send it as `Authorization: Bearer <token>` on every /api request{origin}",
         prefix = APP.log_prefix,
-        journal = books.journal().display(),
+        journal = books
+            .as_ref()
+            .map_or_else(|| journal.display(), |b| b.journal().display()),
         origin = if process_token.from_env {
             format!(" (from ${})", APP.token_env)
         } else {
             format!(" (set ${} to choose it yourself)", APP.token_env)
         },
     );
-    let _watcher = match watch::spawn(Arc::clone(&books)) {
-        Ok(watcher) => Some(watcher),
-        Err(error) => {
-            eprintln!("{}: live reconcile disabled: {error}", APP.log_prefix);
-            None
-        }
-    };
+    let _watcher = books
+        .as_ref()
+        .and_then(|books| match watch::spawn(Arc::clone(books)) {
+            Ok(watcher) => Some(watcher),
+            Err(error) => {
+                eprintln!("{}: live reconcile disabled: {error}", APP.log_prefix);
+                None
+            }
+        });
     let app = router(state, security, process_token.token.clone(), bound);
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())

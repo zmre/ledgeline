@@ -316,3 +316,126 @@ fn filenames_are_cleaned() {
     );
     assert_eq!(fill_pattern("{invoice_num}  x", "", "", "9"), "9 x");
 }
+
+/// Books with a customer who names no terms or template, a second
+/// template, an estimate-only one, and `[invoicer]` set to `toml`.
+fn defaults_vault(toml: &str) -> MemVault {
+    vault()
+        .with_file("ledgeline.toml", toml)
+        .with_file(
+            "customers/Solo.md",
+            "---\ntitle: Solo\ntype: organization\ntags: [customer]\n---\n",
+        )
+        .with_file(
+            "invoices/tpl/plain.html",
+            "{# invoicer: name=\"Plain\" #}\n{{ frontmatter.invoice_num }}",
+        )
+        .with_file(
+            "invoices/tpl/quote.html",
+            "{# invoicer: name=\"Quote\" kinds=\"estimate\" #}\n{{ frontmatter.invoice_num }}",
+        )
+}
+
+fn field<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    text.lines()
+        .find_map(|line| line.strip_prefix(&format!("{key}: ")))
+}
+
+#[test]
+fn terms_come_from_the_invoice_then_the_customer_then_the_default() {
+    let vault = defaults_vault("[invoicer]\ndefault-terms = 14\n");
+    let index = index(&vault);
+    let draft = |customer: &str, terms: Option<u32>| {
+        let mut new = NewInvoice::new(customer, "2026-11-01");
+        new.terms = terms;
+        render(&index, &vault, &new, &[]).expect("renders")
+    };
+    let own = draft("[[Solo]]", Some(7));
+    assert_eq!(field(&own.text, "terms"), Some("7"));
+    assert_eq!(field(&own.text, "due_date"), Some("2026-11-08"));
+    // Customer X's own terms (30) win over the default.
+    assert_eq!(
+        field(&draft("[[Customer X]]", None).text, "terms"),
+        Some("30")
+    );
+    let defaulted = draft("[[Solo]]", None);
+    assert_eq!(field(&defaulted.text, "terms"), Some("14"));
+    assert_eq!(field(&defaulted.text, "due_date"), Some("2026-11-15"));
+    assert!(defaulted.warnings.is_empty());
+    // No default: no terms, no due date.
+    let bare = defaults_vault("[invoicer]\n");
+    let bare_index = self::index(&bare);
+    let none = render(
+        &bare_index,
+        &bare,
+        &NewInvoice::new("[[Solo]]", "2026-11-01"),
+        &[],
+    )
+    .expect("renders");
+    assert_eq!(field(&none.text, "terms"), None);
+    assert_eq!(field(&none.text, "due_date"), None);
+}
+
+#[test]
+fn the_template_comes_from_the_invoice_then_the_customer_then_the_default() {
+    let vault = defaults_vault("[invoicer]\ndefault-template = \"/invoices/tpl/plain.html\"\n");
+    let index = index(&vault);
+    let draft = |customer: &str, template: Option<&str>| {
+        let mut new = NewInvoice::new(customer, "2026-11-01");
+        new.template = template.map(str::to_string);
+        render(&index, &vault, &new, &[]).expect("renders")
+    };
+    assert_eq!(
+        field(&draft("[[Solo]]", Some("/x.html")).text, "template"),
+        Some("/x.html")
+    );
+    assert_eq!(
+        field(&draft("[[Customer X]]", None).text, "template"),
+        Some("/invoices/tpl/myco.html")
+    );
+    let defaulted = draft("[[Solo]]", None);
+    assert_eq!(
+        field(&defaulted.text, "template"),
+        Some("/invoices/tpl/plain.html")
+    );
+    assert!(defaulted.warnings.is_empty());
+    // Without a default: the first template for invoices (myco, by path).
+    let bare = defaults_vault("[invoicer]\n");
+    let bare_index = self::index(&bare);
+    let first = render(
+        &bare_index,
+        &bare,
+        &NewInvoice::new("[[Solo]]", "2026-11-01"),
+        &[],
+    )
+    .expect("renders");
+    assert_eq!(
+        field(&first.text, "template"),
+        Some("/invoices/tpl/myco.html")
+    );
+}
+
+#[test]
+fn a_missing_default_template_falls_back_and_says_so() {
+    for (default, says) in [
+        ("/invoices/tpl/gone.html", "isn't in the books"),
+        ("/invoices/tpl/quote.html", "isn't for invoices"),
+    ] {
+        let vault = defaults_vault(&format!("[invoicer]\ndefault-template = \"{default}\"\n"));
+        let index = index(&vault);
+        let draft = render(
+            &index,
+            &vault,
+            &NewInvoice::new("[[Solo]]", "2026-11-01"),
+            &[],
+        )
+        .expect("renders");
+        assert_eq!(
+            field(&draft.text, "template"),
+            Some("/invoices/tpl/myco.html"),
+            "{default}"
+        );
+        assert_eq!(draft.warnings.len(), 1, "{default}");
+        assert!(draft.warnings[0].contains(says), "{}", draft.warnings[0]);
+    }
+}

@@ -67,6 +67,9 @@ describe("UNIT uiPrefs", () => {
             "syncKeepSourceDays",
             "manualRemindDays",
             "autoRecognize",
+            "settlementLookbackDays",
+            "settlementToleranceBps",
+            "settlementLeadDays",
         ]);
         expect(isThemeId("tokyo-night-day")).toBe(true);
         expect(isThemeId("Nord")).toBe(false);

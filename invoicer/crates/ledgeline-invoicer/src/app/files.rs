@@ -6,13 +6,14 @@
 //! |-------------------------|---------------------------------------------------------------|
 //! | `GET /api/files[?list=false]` | `{pick, open, files}`: the notes and documents a contract may name (`ContractCandidate`), and whether this process can show the open dialog (`pick`) and open a file (`open`). |
 //! | `POST /api/files/pick`  | The system's open dialog at the books folder (the window, macOS): `{cancelled: true}`, or `{cancelled: false, file: ContractCandidate}`; `422` for a file outside the books folder. |
-//! | `POST /api/files/open`  | `{path}`: open a document in the books folder in its default viewer, or show any other file in Finder (the window, macOS). |
+//! | `POST /api/files/open`  | `{path}`: open a document in the books folder in its default viewer, or show any other file in Finder (the window, macOS). `ledgeline.toml` works even when it keeps the books from opening (the Settings page's "Open the settings file"). |
 //!
 //! A contract is stored relative to the books folder (`/customers/contracts/SOW.pdf`)
 //! or as a `[[Title]]` link for a note, never as a path outside it: the
 //! books folder is what moves between machines.
 
 use std::path::{Path as FsPath, PathBuf};
+use std::sync::Arc;
 
 use axum::Json;
 use axum::Router;
@@ -21,12 +22,13 @@ use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use invoicer_core::customer_edit::{self, ContractCandidate};
-use ledgeline_core::vault::VaultPath;
+use ledgeline_core::ledger_file;
+use ledgeline_core::vault::{Vault, VaultPath};
 use serde::Deserialize;
 use serde_json::json;
 
 use super::AppState;
-use super::api::{ApiError, ApiResult, blocking, no_books, to_value, with_books};
+use super::api::{ApiError, ApiResult, blocking, to_value, with_books};
 use super::books::OpenBooks;
 use super::pdf::native_for;
 
@@ -71,7 +73,12 @@ async fn list(State(state): State<AppState>, Query(params): Query<ListParams>) -
 
 /// The books folder, canonical.
 fn books_root(books: &OpenBooks) -> Result<PathBuf, ApiError> {
-    books.vault().root().canonicalize().map_err(|e| {
+    root_of(&**books.vault())
+}
+
+/// A vault's folder, canonical.
+fn root_of(vault: &dyn Vault) -> Result<PathBuf, ApiError> {
+    vault.root().canonicalize().map_err(|e| {
         ApiError::status(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("the books folder: {e}"),
@@ -112,7 +119,7 @@ pub(crate) fn in_books(root: &FsPath, file: &FsPath) -> Result<VaultPath, String
 /// `POST /api/files/pick`.
 async fn pick(State(state): State<AppState>) -> ApiResult {
     let native = native_for(&state, |c| c.pick_file, "Choosing a file")?;
-    let books = state.books().ok_or_else(no_books)?;
+    let books = state.open_books()?;
     blocking(StatusCode::OK, move || {
         let root = books_root(&books)?;
         let Some(chosen) = native
@@ -157,17 +164,28 @@ async fn open(
 ) -> ApiResult {
     let Json(body) = body.map_err(|e| ApiError::bad_request(e.body_text()))?;
     let native = native_for(&state, |c| c.open_file, "Opening a file")?;
-    let books = state.books().ok_or_else(no_books)?;
+    let path = VaultPath::new(body.path.trim().trim_start_matches('/'))
+        .map_err(|e| ApiError::bad_request(format!("{}: {e}", body.path)))?;
+    // The books' settings file opens even while it keeps them from opening
+    // (an invalid `[invoicer]`): the Settings page's way to fix it.
+    let vault: Arc<dyn Vault> = match state.books() {
+        Some(books) => Arc::clone(books.vault()),
+        None if path.as_str() == ledger_file::LEDGER_FILE => super::settings::place(&state)?.vault,
+        None => {
+            return Err(state
+                .open_books()
+                .err()
+                .unwrap_or_else(|| ApiError::internal("no books")));
+        }
+    };
     blocking(StatusCode::OK, move || {
-        let path = VaultPath::new(body.path.trim().trim_start_matches('/'))
-            .map_err(|e| ApiError::bad_request(format!("{}: {e}", body.path)))?;
-        if !books.vault().is_file(&path) {
+        if !vault.is_file(&path) {
             return Err(ApiError::status(
                 StatusCode::NOT_FOUND,
                 format!("{path} isn't a file in the books folder"),
             ));
         }
-        let root = books_root(&books)?;
+        let root = root_of(&*vault)?;
         let file = root.join(path.as_str());
         // A link out of the folder is refused like a path out of it.
         in_books(&root, &file)

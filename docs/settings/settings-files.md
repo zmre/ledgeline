@@ -6,15 +6,17 @@ order: 40
 
 # Settings files
 
-Ledgeline keeps its own settings in TOML files. You can edit any of them by hand.
+Ledgeline keeps its own settings in TOML files, and so does [Ledgeline Invoicer](../invoicer/settings.md). You can edit any of them by hand.
 
-| File | Where | Written by | Holds |
-| --- | --- | --- | --- |
-| `prefs.toml` | Ledgeline's config folder | The hledger path field on the Imports screen | `hledgerPath`, the hledger program Ledgeline runs |
-| `ui-prefs.toml` | Ledgeline's config folder | Ledgeline, as you use it, and you | Your view settings, for every ledger |
-| `ledgeline.toml` | The folder of your main journal | You, or Ledgeline when you ask it to [keep a setting for one ledger](#keeping-a-setting-for-one-ledger), [link a bank account](../imports/bank-sync.md) or [close the books through a date](#books) | One ledger's own view settings, overriding `ui-prefs.toml`, its bank sync links, and its `[books]` settings |
+| File             | Where                           | Written by                                                                                                                                                                                                                                                   | Holds                                                                                                                                            |
+| ---------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `prefs.toml`     | Ledgeline's config folder       | The hledger path field on the Imports screen                                                                                                                                                                                                                 | `hledgerPath`, the hledger program Ledgeline runs                                                                                                |
+| `ui-prefs.toml`  | Ledgeline's config folder       | Ledgeline, as you use it, and you                                                                                                                                                                                                                            | Your view settings, for every ledger                                                                                                             |
+| `ledgeline.toml` | The folder of your main journal | You, or Ledgeline when you ask it to [keep a setting for one ledger](#keeping-a-setting-for-one-ledger), [link a bank account](../imports/bank-sync.md) or [close the books through a date](#books), or the invoicer when you [save its settings](#invoicer) | One ledger's own view settings, overriding `ui-prefs.toml`, its bank sync links, its `[books]` settings and the invoicer's `[invoicer]` settings |
 
 View settings are the choices Ledgeline remembers as you work: the theme and interface scale, which journal columns show, which panels are open, the Review and Find Matches numbers, the benchmark lines on the Stocks chart, and the like.
+
+Ledgeline Invoicer reads and writes the same `ui-prefs.toml` for the settings it shares with Ledgeline: the theme, the interface scale and the three invoice matching settings.
 
 The list of recently opened journals stays in `recent.json`, in the same config folder.
 
@@ -48,17 +50,19 @@ So a `ledgeline.toml` only ever holds the keys someone put in it. Changing the t
 
 The journal columns are decided one column at a time. A change to the Status column is saved in `ledgeline.toml` only if its `[ui.columns]` table already has `status`. The other columns still go to `ui-prefs.toml`.
 
-Opening the app and looking around writes nothing. Ledgeline creates `ui-prefs.toml` the first time you change a view setting. It creates `ledgeline.toml` only when you ask it to keep a setting for one ledger, or link a bank account.
+Opening the app and looking around writes nothing. Ledgeline creates `ui-prefs.toml` the first time you change a view setting. It creates `ledgeline.toml` only when you ask it to keep a setting for one ledger, link a bank account, or close the books through a date. Ledgeline Invoicer creates it only when you save its Settings page and confirm that it should.
 
 ## Keeping a setting for one ledger
 
-The theme, the interface scale and the automatic price updates can be kept for one ledger from inside the app, so you can tell your business books from your personal ones at a glance, or let only your real books fetch prices. Tick "Use for this ledger only" next to the setting:
+The theme, the interface scale, the automatic price updates and the invoice matching settings can be kept for one ledger from inside the app, so you can tell your business books from your personal ones at a glance, or let only your real books fetch prices. Tick "Use for this ledger only" next to the setting:
 
 - Ledgeline writes the setting's current value into the `[ui]` table of the open ledger's `ledgeline.toml`. If the ledger has no `ledgeline.toml` yet, Ledgeline creates it. This is the only time Ledgeline creates that file, and it only happens because you asked.
 - From then on, changing that setting while this ledger is open saves it in `ledgeline.toml`. Other ledgers keep using `ui-prefs.toml`.
 - Untick the box to go back to the shared value. Ledgeline removes the key from `[ui]`, along with any comment lines directly above it. The rest of the file stays, and Ledgeline never deletes the file, even if nothing is left in it.
 
-Only `theme`, `uiScale`, `autoPrices`, `autoPricesWeeks`, the five sync keys and `autoRecognize` can be kept this way from the app. The Prices tab keeps its two keys together, and the Sync tab keeps `autoSync`, `autoSyncEveryHours`, `syncSourceDir`, `syncKeepSourceDays` and `manualRemindDays` together. The Books tab keeps `autoRecognize`. For any other key, add it to `ledgeline.toml` by hand.
+Only `theme`, `uiScale`, `autoPrices`, `autoPricesWeeks`, the five sync keys, `autoRecognize` and the three invoice matching keys can be kept this way from the app. The Prices tab keeps its two keys together, and the Sync tab keeps `autoSync`, `autoSyncEveryHours`, `syncSourceDir`, `syncKeepSourceDays` and `manualRemindDays` together. The Books tab keeps `autoRecognize`, and each of `settlementLookbackDays`, `settlementLeadDays` and `settlementToleranceBps` on its own, with a box under each. For any other key, add it to `ledgeline.toml` by hand.
+
+Ledgeline Invoicer offers the same box, labelled "Use for these books only", for the theme, the text size and the same three matching keys. Its choice and Ledgeline's are one: a key kept for a ledger in either app is kept for it in both.
 
 Ledgeline won't write to a `ledgeline.toml` that is a symbolic link, is larger than 64 KiB, or isn't valid TOML. In that case the box can't be ticked, and a notice says why. The checkbox isn't offered when [view settings are kept in the browser](#keeping-view-settings-in-the-browser).
 
@@ -106,7 +110,7 @@ Every key you list there overrides `ui-prefs.toml` in this ledger, and changes y
 - `[sync]` holds [bank sync](../imports/bank-sync.md#where-things-are-kept) connections and account links. Linking an account writes there, and creates the file if the ledger has none.
 - `[books]` holds the [revenue and expense recognition](../journal/accrual-recognition.md) settings described below.
 
-The rest of the file is left for later per-ledger settings.
+Ledgeline Invoicer adds a third, `[invoicer]`, described [below](#invoicer). The rest of the file is left for later per-ledger settings.
 
 To stop overriding a key, delete its line. The ledger then follows `ui-prefs.toml` for it again.
 
@@ -134,13 +138,26 @@ Ledgeline checks each value the way it checks `[ui]`: a date that isn't one, a `
 
 Settings → Books shows the closed-through date, **Close books through…** and **Reopen…**, and the recognition and invoice matching preferences listed under [The keys](#the-keys).
 
+### `[invoicer]`
+
+[Ledgeline Invoicer](../invoicer/index.md) keeps its settings for these books under `[invoicer]`, with its word lists under `[invoicer.words]`. Ledgeline doesn't read them. [Invoicer settings](../invoicer/settings.md#in-the-settings-file) lists every key.
+
+The invoicer writes this table only when you press Save on its Settings page:
+
+- It writes only the keys you changed, and removes a key when you choose "Use the default", with the comment lines directly above it.
+- It adds the `[invoicer]` table after the file's other tables when the file has none.
+- When the ledger has no `ledgeline.toml`, Save asks before it creates one. The new file starts with a comment saying which app's settings it holds.
+- It never writes a file that is a symbolic link, larger than 64 KiB, or not valid TOML, or one whose `[invoicer]` table has a problem. Its Settings page turns read-only and says why.
+
+Your comments, the order of the keys, `[ui]`, `[books]`, `[sync]` and keys it doesn't know stay as they are.
+
 ### It travels with the ledger
 
 If your books are in a git repository or a shared folder, `ledgeline.toml` goes wherever the journal goes. Since Ledgeline never writes keys you didn't put there, the file only changes when someone changes one of its own settings. That makes it reasonable to commit, so everyone who opens the ledger gets the same layout.
 
 A file somebody else wrote is treated as untrusted:
 
-- It can only hold view settings and bank sync links. Ledgeline never reads the hledger path, a server address or an access token from it. Bank sync keeps its access keys in your keychain, and the paths a link names must be inside the journal's folder. If one of those keys is there, Ledgeline ignores it and says so.
+- It can only hold view settings, bank sync links and the books' own settings (`[books]` and `[invoicer]`). Ledgeline never reads the hledger path, a server address or an access token from it. Bank sync keeps its access keys in your keychain, and the paths a link names must be inside the journal's folder. If one of those keys is there, Ledgeline ignores it and says so.
 - Every value is checked. A number outside its range is clamped. A choice that isn't one of the allowed values, or a value of the wrong type, is ignored, and that key falls back to `ui-prefs.toml` or the default. A change you make to that key in the app replaces the bad value.
 - Unknown keys are ignored, and kept when Ledgeline saves.
 - A file larger than 64 KiB, a file that isn't valid TOML, and a symbolic link are ignored. Ledgeline won't save to any of them, so your changes go to `ui-prefs.toml` until you fix or remove the file.

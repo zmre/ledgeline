@@ -82,6 +82,25 @@ pub struct OpenDeposits {
     pub deposits: Vec<OpenDeposit>,
 }
 
+/// A deposit received in cash books that no finished final invoice has used
+/// up yet ([`InvoiceBooks::deposits_awaiting_final`]): changing
+/// `cash-deposits` now would count it twice or never (settings plan D5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaitingDeposit {
+    /// The deposit invoice's number.
+    pub number: String,
+    /// Its customer, as the books name them (`customer:`).
+    pub customer: String,
+    /// The deposit invoice's date.
+    pub date: String,
+    /// What is still waiting, in the invoice's money style (`$1,500.00`).
+    pub waiting: String,
+    /// Where its payments actually booked (the revenue account, or the
+    /// deposit account), whatever the setting says now.
+    pub booked_to: Vec<String>,
+}
+
 /// **Apply deposit**: write a row applying `deposit` to draft `number`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplyDeposit {
@@ -290,33 +309,7 @@ impl InvoiceBooks {
         }
         for used in &uses {
             balance = balance.sub(used.amount).map_err(|_| BooksError::Overflow)?;
-            let mut left = used.amount;
-            let named = deposits.iter().position(|d| {
-                d.remaining.mantissa > 0
-                    && d.number
-                        .as_deref()
-                        .is_some_and(|n| names(&used.description, n))
-            });
-            let order: Vec<usize> = named.into_iter().chain(0..deposits.len()).collect();
-            for at in order {
-                if left.mantissa <= 0 {
-                    break;
-                }
-                let deposit = &mut deposits[at];
-                if deposit.remaining.mantissa <= 0 {
-                    continue;
-                }
-                let take = if deposit.remaining < left {
-                    deposit.remaining
-                } else {
-                    left
-                };
-                deposit.remaining = deposit
-                    .remaining
-                    .sub(take)
-                    .map_err(|_| BooksError::Overflow)?;
-                left = left.sub(take).map_err(|_| BooksError::Overflow)?;
-            }
+            use_up(&mut deposits, used)?;
         }
         deposits.retain(|d| d.remaining.mantissa > 0);
         Ok(OpenDeposits {
@@ -326,6 +319,136 @@ impl InvoiceBooks {
             balance,
             deposits,
         })
+    }
+
+    /// The deposits cash books received that no finished final invoice has
+    /// used up yet (settings plan D5): changing `cash-deposits` while any
+    /// is waiting would count it twice (revenue at receipt, then again at
+    /// the final invoice) or never. Empty in accrual books.
+    ///
+    /// Read from where each deposit's payments actually booked
+    /// ([`received_by_account`]), never from the setting, which may already
+    /// have been edited by hand. A final invoice is finished once it is
+    /// sent and paid in full by the books (`states`); a draft or an unpaid
+    /// final invoice that applies a deposit still waits on it.
+    ///
+    /// # Errors
+    /// When the books can't be loaded.
+    pub fn deposits_awaiting_final(
+        &self,
+        index: &DocumentIndex,
+        states: &crate::reconcile::BookStates,
+    ) -> Result<Vec<WaitingDeposit>, BooksError> {
+        let loaded = self.load()?;
+        if Basis::of(&loaded) != Basis::Cash {
+            return Ok(Vec::new());
+        }
+        let account = deposit_account(index.settings(), loaded.journal());
+        let note_of = |doc: &crate::index::IndexedDoc| {
+            doc.header
+                .invoicee
+                .link
+                .as_deref()
+                .and_then(|l| index.site().resolve_wikilink(&doc.path, l))
+                .map(|note| note.path.clone())
+        };
+        let usable = |doc: &&crate::index::IndexedDoc| {
+            doc.header.status != Some(Status::Void)
+                && doc.number().is_some_and(|n| index.by_number(n).len() == 1)
+        };
+        let mut received: Vec<Received> = Vec::new();
+        for doc in index.docs().filter(usable) {
+            let (Some(number), Some(summary)) = (doc.number(), doc.summary.as_ref()) else {
+                continue;
+            };
+            let deposited = summary
+                .booked
+                .iter()
+                .filter(|r| r.account == account && r.amount.mantissa > 0)
+                .try_fold(Dec::zero(), |sum, r| sum.add(r.amount))
+                .map_err(|_| BooksError::Overflow)?;
+            if deposited.mantissa <= 0 {
+                continue;
+            }
+            let Some(customer_note) = note_of(doc) else {
+                continue;
+            };
+            let Ok(customer) = customer_of(index, &doc.path, doc.header.invoicee.link.as_deref())
+            else {
+                continue;
+            };
+            let by_account = received_by_account(
+                &loaded,
+                number,
+                &customer.ledger_customer,
+                &summary.commodity,
+            )?;
+            let total = by_account
+                .iter()
+                .try_fold(Dec::zero(), |sum, (_, d)| sum.add(*d))
+                .map_err(|_| BooksError::Overflow)?;
+            if total.mantissa <= 0 {
+                continue;
+            }
+            received.push(Received {
+                number: number.to_string(),
+                customer_note,
+                customer: customer.ledger_customer,
+                date: doc.header.date.clone().unwrap_or_default(),
+                commodity: summary.commodity.clone(),
+                left: if total < deposited { total } else { deposited },
+                booked_to: by_account.into_iter().map(|(a, _)| a).collect(),
+            });
+        }
+        if received.is_empty() {
+            return Ok(Vec::new());
+        }
+        received.sort_by(|a, b| a.date.cmp(&b.date));
+        // What finished final invoices used, oldest first.
+        let mut uses: Vec<(VaultPath, Use)> = Vec::new();
+        for doc in index.docs().filter(usable) {
+            let Some(summary) = doc.summary.as_ref() else {
+                continue;
+            };
+            if doc.header.status != Some(Status::Sent) || states.is_open(doc) {
+                continue;
+            }
+            let Some(note) = note_of(doc) else { continue };
+            for row in summary
+                .booked
+                .iter()
+                .filter(|r| r.account == account && r.amount.mantissa < 0)
+            {
+                uses.push((
+                    note.clone(),
+                    Use {
+                        date: doc.header.date.clone().unwrap_or_default(),
+                        description: row.description.clone(),
+                        amount: row.amount.neg().map_err(|_| BooksError::Overflow)?,
+                    },
+                ));
+            }
+        }
+        uses.sort_by(|a, b| a.1.date.cmp(&b.1.date));
+        for (note, used) in &uses {
+            let mut mine: Vec<&mut Received> = received
+                .iter_mut()
+                .filter(|r| r.customer_note == *note)
+                .collect();
+            use_up(&mut mine, used)?;
+        }
+        let money = index.money();
+        Ok(received
+            .into_iter()
+            .filter(|r| r.left.mantissa > 0)
+            .map(|r| WaitingDeposit {
+                waiting: money.style(Some(r.commodity.as_str())).format(r.left),
+                number: r.number,
+                customer: r.customer,
+                date: r.date,
+                booked_to: r.booked_to,
+            })
+            .collect())
     }
 
     /// **Apply deposit** (§4.4): write a `Less deposit (Invoice N)` row
@@ -458,6 +581,79 @@ impl InvoiceBooks {
 
 /// Cash books: what the payments applied to invoice `number` brought in,
 /// for `customer` in `commodity` ([`received_by_account`], summed).
+/// A deposit an application uses up ([`use_up`]).
+trait Pot {
+    /// The deposit invoice's number, when it has one.
+    fn number(&self) -> Option<&str>;
+    /// What is left of it.
+    fn remaining(&mut self) -> &mut Dec;
+}
+
+impl<T: Pot> Pot for &mut T {
+    fn number(&self) -> Option<&str> {
+        (**self).number()
+    }
+
+    fn remaining(&mut self) -> &mut Dec {
+        (**self).remaining()
+    }
+}
+
+impl Pot for OpenDeposit {
+    fn number(&self) -> Option<&str> {
+        self.number.as_deref()
+    }
+
+    fn remaining(&mut self) -> &mut Dec {
+        &mut self.remaining
+    }
+}
+
+/// Take `used` from `pots` (oldest first): the deposit its description
+/// names (as a whole word) first, then the oldest with something left.
+fn use_up<P: Pot>(pots: &mut [P], used: &Use) -> Result<(), BooksError> {
+    let mut left = used.amount;
+    let named = pots.iter_mut().position(|d| {
+        d.remaining().mantissa > 0 && d.number().is_some_and(|n| names(&used.description, n))
+    });
+    let order: Vec<usize> = named.into_iter().chain(0..pots.len()).collect();
+    for at in order {
+        if left.mantissa <= 0 {
+            break;
+        }
+        let remaining = pots[at].remaining();
+        if remaining.mantissa <= 0 {
+            continue;
+        }
+        let take = if *remaining < left { *remaining } else { left };
+        *remaining = remaining.sub(take).map_err(|_| BooksError::Overflow)?;
+        left = left.sub(take).map_err(|_| BooksError::Overflow)?;
+    }
+    Ok(())
+}
+
+/// A deposit received in cash books, while [`InvoiceBooks::deposits_awaiting_final`]
+/// counts what finished final invoices used of it.
+struct Received {
+    number: String,
+    customer_note: VaultPath,
+    customer: String,
+    date: String,
+    commodity: String,
+    left: Dec,
+    booked_to: Vec<String>,
+}
+
+impl Pot for Received {
+    fn number(&self) -> Option<&str> {
+        Some(&self.number)
+    }
+
+    fn remaining(&mut self) -> &mut Dec {
+        &mut self.left
+    }
+}
+
 fn received_on(
     loaded: &ledgeline_core::accrual::ops::Loaded,
     number: &str,

@@ -30,6 +30,7 @@ mod app;
 mod customers;
 mod flows;
 mod human;
+mod matching;
 mod pdf;
 mod starters;
 
@@ -46,6 +47,7 @@ use invoicer_core::table::books::is_iso_date;
 use invoicer_core::templates;
 use invoicer_core::tera_scan;
 use invoicer_core::views::{self, ListQuery};
+use ledgeline_core::accrual::settle::SettleSettings;
 use ledgeline_core::vault::VaultPath;
 use ledgeline_shell::AppDirs;
 use serde::Serialize;
@@ -204,6 +206,17 @@ struct RebookArgs {
 struct ApplyPaymentArgs {
     /// A number (`207`) or a file in the books folder.
     document: String,
+    /// Look for deposits this many days back from today; 0 looks back
+    /// forever. Default: the matching settings shared with Ledgeline (these
+    /// books' `ledgeline.toml [ui]` settlementLookbackDays, else
+    /// `ui-prefs.toml`'s, else 180).
+    #[arg(long, value_name = "DAYS", value_parser = clap::value_parser!(u32).range(0..=3650))]
+    lookback_days: Option<u32>,
+    /// How many days before the invoice a payment may come (a draw, then
+    /// its bill). Default: settlementLeadDays, shared as --lookback-days
+    /// (4).
+    #[arg(long, value_name = "DAYS", value_parser = clap::value_parser!(u32).range(0..=60))]
+    lead_days: Option<u32>,
     /// The deposit to apply (a candidate's reference, or its first 6+
     /// characters). Without it, the candidates are listed. With --undo, the
     /// applied deposit to undo.
@@ -548,7 +561,19 @@ fn starter_for_new(
     };
     match template.map(str::to_string).or(customer.invoice_template) {
         Some(value) => (None, starters::named(dir, &value)),
+        // `[invoicer] default-template`: a starter not copied in yet is
+        // named outright, so the draft uses it and it is copied in; one in
+        // the books the draft finds itself. One that is neither, the draft
+        // reports and falls back from, as below.
         None => {
+            if let Some(default) = &session.settings().default_template {
+                if let Some(starter) = starters::named(dir, default) {
+                    return (starters::template_value(dir, starter), Some(starter));
+                }
+                if templates::find(session.index().templates(), default).is_some() {
+                    return (None, None);
+                }
+            }
             let has_one = templates::discover(session.vault(), session.index().site())
                 .iter()
                 .any(|t| t.supports(DocType::Invoice));
@@ -594,7 +619,7 @@ fn run_new(cli: &Cli, args: &NewArgs, matches: Option<&ArgMatches>) -> Result<Ex
     // (first use; an existing file is never replaced), and indexed so
     // `check` knows the template at once. The invoice exists either way, so
     // a failed copy is a warning (RA-7).
-    let mut warnings = Vec::new();
+    let mut warnings = created.warnings.clone();
     let copied = match starter.filter(|_| !args.dry_run) {
         Some(starter) => starters::copy_in(&mut session, starter).unwrap_or_else(|warning| {
             warnings.push(warning);
@@ -799,10 +824,27 @@ fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
         Command::Config => {
             let session = open(cli)?;
             let view = views::config(&session);
+            // The payment matcher's settings, shared with Ledgeline (RC-10):
+            // what `apply-payment` uses without its flags.
+            let matching =
+                human::Matching::of(&matching::settle_settings(&AppDirs::from_env(), &session));
             if cli.json {
-                emit(true, &view, |_| String::new());
+                #[derive(Serialize)]
+                struct Out<'a> {
+                    #[serde(flatten)]
+                    view: &'a views::ConfigView<'a>,
+                    matching: &'a human::Matching,
+                }
+                emit(
+                    true,
+                    &Out {
+                        view: &view,
+                        matching: &matching,
+                    },
+                    |_| String::new(),
+                );
             } else {
-                out(&human::config(&view)?);
+                out(&human::config(&view, &matching)?);
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -1029,8 +1071,22 @@ fn run_rebook(cli: &Cli, args: &RebookArgs) -> Result<ExitCode, Failure> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// The matcher's settings for `apply-payment`: each flag given, else the
+/// effective setting the app uses too (RC-10). The tolerance has no flag: the
+/// matcher offers a short deposit as a part payment whatever it is, so it
+/// passes through as Ledgeline has it.
+fn settle_for(session: &Session, args: &ApplyPaymentArgs) -> SettleSettings {
+    let effective = matching::settle_settings(&AppDirs::from_env(), session);
+    SettleSettings {
+        lookback_days: args.lookback_days.unwrap_or(effective.lookback_days),
+        tolerance_bps: effective.tolerance_bps,
+        lead_days: args.lead_days.unwrap_or(effective.lead_days),
+    }
+}
+
 fn run_apply_payment(cli: &Cli, args: &ApplyPaymentArgs) -> Result<ExitCode, Failure> {
     let mut session = open(cli)?;
+    let settle = settle_for(&session, args);
     let number = number_of(&session, &args.document)?;
     let books = session.invoice_books();
     let today = today(cli)?;
@@ -1039,7 +1095,7 @@ fn run_apply_payment(cli: &Cli, args: &ApplyPaymentArgs) -> Result<ExitCode, Fai
     }
     let Some(reference) = &args.txn else {
         let options = books
-            .payment_options(session.index(), &number, &today)
+            .payment_options(session.index(), &number, &settle, &today)
             .map_err(books_failure)?;
         emit(cli.json, &options, |o| {
             human::payment_options(o, session.index().money())
@@ -1050,6 +1106,7 @@ fn run_apply_payment(cli: &Cli, args: &ApplyPaymentArgs) -> Result<ExitCode, Fai
         number: number.clone(),
         reference: reference.clone(),
         today: today.clone(),
+        settle,
         expected: None,
     };
     let money = session.index().money().clone();

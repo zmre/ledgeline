@@ -18,6 +18,7 @@ vi.mock("$app/paths", () => ({resolve: (path: string) => `/app${path}`}));
 
 import KeyHelp from "#ui/keys/KeyHelp.svelte";
 import {keymap} from "#ui/keys/keymap.svelte.js";
+import {DEDUPE_MS, resetZoomForTests, setScaleSink} from "#ui/theme/zoom.svelte.js";
 import KeysProbe from "#ui/testing/fixtures/KeysProbe.svelte";
 import ConfirmDialog from "#lib/components/ConfirmDialog.svelte";
 import InvoiceFilters from "#lib/components/InvoiceFilters.svelte";
@@ -42,6 +43,7 @@ describe("COMPONENT the invoicer's app keys", () => {
             ["k", "/app/catalog"],
             ["s", "/app/snippets"],
             ["t", "/app/templates"],
+            [",", "/app/settings"],
         ]) {
             await press("g");
             await press(letter);
@@ -49,6 +51,36 @@ describe("COMPONENT the invoicer's app keys", () => {
         }
         await press("n");
         expect(nav.goto).toHaveBeenLastCalledWith("/app/new");
+    });
+
+    it("opens Settings with Cmd/Ctrl+, from a field too", async () => {
+        const field = document.createElement("input");
+        document.body.append(field);
+        await press(",", field, {ctrlKey: true});
+        expect(nav.goto).toHaveBeenLastCalledWith("/app/settings");
+        field.remove();
+    });
+
+    it("zooms with Cmd/Ctrl + and − and resets with 0, saving the scale where the sink says", async () => {
+        const saved: number[] = [];
+        let scale = 100;
+        setScaleSink(
+            (percent) => {
+                scale = percent;
+                saved.push(percent);
+            },
+            () => scale
+        );
+        try {
+            for (const key of ["=", "-", "0"]) {
+                await press(key, document.body, {ctrlKey: true});
+                // One press per step (the zoom's de-dupe window).
+                await new Promise((r) => setTimeout(r, DEDUPE_MS + 5));
+            }
+        } finally {
+            resetZoomForTests();
+        }
+        expect(saved).toEqual([110, 100, 100]);
     });
 
     it("starts a deposit invoice with d (the New menu's second choice), but not when already there", async () => {
@@ -86,6 +118,9 @@ describe("COMPONENT the invoicer's app keys", () => {
         expect(within(sheet).getByText("Leave the field")).toBeTruthy();
         expect(within(sheet).getByText("Go to Catalog")).toBeTruthy();
         expect(within(sheet).getByText("New deposit invoice")).toBeTruthy();
+        expect(within(sheet).getByText("Go to Settings")).toBeTruthy();
+        expect(within(sheet).getByText("Open Settings")).toBeTruthy();
+        expect(within(sheet).getAllByText("Zoom in")).toHaveLength(1);
         expect(within(sheet).getByText("A note.")).toBeTruthy();
         // No search box on the page: `/` is off, and off the sheet.
         expect(within(sheet).queryByText("Search this list")).toBeNull();

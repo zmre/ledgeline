@@ -18,7 +18,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::AppState;
-use super::api::{ApiError, ApiResult, blocking, no_books, to_value, today, with_books};
+use super::api::{ApiError, ApiResult, blocking, to_value, today, with_books};
 use super::pdf::native_for;
 
 /// The dashboard routes (state still to be supplied).
@@ -75,7 +75,7 @@ async fn show(State(state): State<AppState>, Query(params): Query<Params>) -> Ap
 /// `POST /api/ledgeline/open`: the open books in Ledgeline.
 async fn open_ledgeline(State(state): State<AppState>) -> ApiResult {
     let native = native_for(&state, |c| c.open_ledgeline, "Opening Ledgeline")?;
-    let books = state.books().ok_or_else(no_books)?;
+    let books = state.open_books()?;
     blocking(StatusCode::OK, move || {
         native
             .open_in_ledgeline(books.journal())

@@ -641,19 +641,28 @@ when a snippet does. A customer note can name default snippets, for example
 There are no new config files. This follows the rules in
 [Settings files are TOML] and plan 43's precedent for `[sync]`.
 
-| Setting                                                                                         | Where                              | Written by                                                              |
-|-------------------------------------------------------------------------------------------------|------------------------------------|-------------------------------------------------------------------------|
-| `invoices-dir`, `customers-dir`, `templates-dir`, `catalog`, `company`                          | `ledgeline.toml [invoicer]`        | Hand, or the first-run setup action (an explicit action, like `[sync]`) |
-| `receivable-account`, `revenue-account`, `deposit-account`, `discount-account`                  | `ledgeline.toml [invoicer]`        | Hand / first-run setup                                                  |
-| `cash-deposits`, `payment-allocation` (accounting policy; PLAN "Configurable accounting flows") | `ledgeline.toml [invoicer]`        | Hand                                                                    |
-| `recalc-on-save` (`drafts` or `never`; PLAN F10)                                                | `ledgeline.toml [invoicer]`        | Hand                                                                    |
-| `aging-buckets` (`[30, 60, 90]`), `dso-days` (`90`): the dashboard (PLAN R4, R6)                | `ledgeline.toml [invoicer]`        | Hand                                                                    |
-| `paid-window-days` (`30`): the dashboard's "paid in the last N days" (PLAN R14)                 | `ledgeline.toml [invoicer]`        | Hand                                                                    |
-| `filename`, `number-start`, `pdf-dir`                                                           | `ledgeline.toml [invoicer]`        | Hand                                                                    |
-| Recognized words (below)                                                                        | `ledgeline.toml [invoicer.words]`  | Hand                                                                    |
-| `basis`, `closed-through`, `recognition-file`                                                   | `ledgeline.toml [books]` (plan 45) | Shared with Ledgeline                                                   |
-| theme, uiScale                                                                                  | `ui-prefs.toml` + `[ui]` pin       | Shared with Ledgeline                                                   |
-| invoicer UI prefs (default template, list sort…)                                                | `ui-prefs.toml [invoicer]`         | Settings screen                                                         |
+| Setting                                                                                                                                   | Where                              | Written by                                                                                     |
+|-------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------|------------------------------------------------------------------------------------------------|
+| `invoices-dir`, `customers-dir`, `templates-dir`, `catalog`, `pdf-dir`, `company`                                                         | `ledgeline.toml [invoicer]`        | Hand, or the Settings page's Save                                                              |
+| `filename`, `number-start`                                                                                                                | `ledgeline.toml [invoicer]`        | Hand, or Save                                                                                  |
+| `default-terms` (net days, 0–3650), `default-template` (a `template:` value): a new invoice's, when neither it nor its customer names one | `ledgeline.toml [invoicer]`        | Hand, or Save                                                                                  |
+| `receivable-account`, `revenue-account`, `deposit-account`, `discount-account`                                                            | `ledgeline.toml [invoicer]`        | Hand, or Save (after a confirmation naming the effect)                                         |
+| `cash-deposits`, `payment-allocation` (accounting policy; PLAN "Configurable accounting flows")                                           | `ledgeline.toml [invoicer]`        | Hand, or Save (confirmed; `cash-deposits` refused while a deposit waits for its final invoice) |
+| `recalc-on-save` (`drafts` or `never`; PLAN F10)                                                                                          | `ledgeline.toml [invoicer]`        | Hand, or Save                                                                                  |
+| `aging-buckets` (`[30, 60, 90]`), `dso-days` (`90`), `paid-window-days` (`30`): the dashboard (PLAN R4, R6, R14)                          | `ledgeline.toml [invoicer]`        | Hand, or Save                                                                                  |
+| Recognized words (below)                                                                                                                  | `ledgeline.toml [invoicer.words]`  | Hand, or Save                                                                                  |
+| `basis`, `closed-through`, `recognition-file`                                                                                             | `ledgeline.toml [books]` (plan 45) | Shared with Ledgeline (read-only on the page)                                                  |
+| theme, uiScale                                                                                                                            | `ui-prefs.toml` + `[ui]` pin       | Shared with Ledgeline; instant                                                                 |
+| `settlementLookbackDays`, `settlementToleranceBps`, `settlementLeadDays`: the payment matcher (RC-10)                                     | `ui-prefs.toml` + `[ui]` pin       | Shared with Ledgeline; `apply-payment` flags override                                          |
+| invoicer-only UI prefs                                                                                                                    | `ui-prefs.toml [invoicer]`         | Reserved, empty                                                                                |
+
+The Settings page (`/api/settings`, `app/settings.rs`) writes only on an
+explicit Save: the keys that changed, through `invoicer_core::settings_edit`
+(toml_edit, so comments, order and other tables stay byte for byte) and
+Ledgeline's pinned `ledgeline.toml` writer under the prefs lock. "Use the
+default" removes a key with the comment lines above it. A missing file is
+created only after the user agrees, and an unusable file or an invalid
+`[invoicer]` is never written. Its revision hashes `[invoicer]` alone.
 
 Unset accounts are inferred the same way plan 45's gate does it: by declared
 type or `kpi:` first, and by name only as a fallback. `deposit-account`

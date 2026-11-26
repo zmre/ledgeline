@@ -18,6 +18,11 @@ thiserror = { workspace = true }
 # `[invoicer.words]` is read out of `ledgeline.toml`. toml 0.9 is already in
 # Cargo.lock (through the server's build graph), so this adds no crate.
 toml = "0.9"
+# The Settings page writes `[invoicer]` through toml_edit's document model
+# (`settings_edit`), so comments, key order and other tables come back byte
+# for byte, as Ledgeline's own `ledgeline.toml` writers do. The version
+# ledgeline-core uses, so this adds no crate.
+toml_edit = "0.25"
 # Column alignment by display width, so a CJK or emoji description still
 # lines up in a monospace editor. Already in Cargo.lock.
 unicode-width = "0.2"

@@ -173,7 +173,13 @@ Prints the number the next invoice gets: one more than the highest in your files
 
 ### config
 
-Prints the books' `[books]` settings and every `[invoicer]` setting as the app uses them, defaults included, in the same form as `ledgeline.toml`. See [Settings](settings.md).
+Prints the books' `[books]` settings and every `[invoicer]` setting as the app uses them, defaults included, in the same form as `ledgeline.toml`: `default-terms` and `default-template` too, once set. Under them, as comments, it prints the two payment-matching settings in use, `settlementLookbackDays` and `settlementLeadDays`. Those are shared with Ledgeline, so they come from `ui-prefs.toml`, or from `[ui]` in these books' `ledgeline.toml` when the books keep their own. See [In the settings file](settings.md#in-the-settings-file).
+
+```sh
+ledgeline-invoicer config
+```
+
+The Settings page in the app changes the same settings; `config` shows what it saved.
 
 ### customers
 
@@ -266,13 +272,18 @@ Cash books only.
 ledgeline-invoicer apply-payment 207
 ledgeline-invoicer apply-payment 207 --txn REF
 ledgeline-invoicer apply-payment 207 --undo
+ledgeline-invoicer apply-payment 207 --lookback-days 365
 ```
 
-| Option      | Does                                                                                                                                   |
-|-------------|----------------------------------------------------------------------------------------------------------------------------------------|
-| (none)      | List the deposits in the books that might pay the invoice, best first, each with its reference.                                        |
-| `--txn REF` | Apply that deposit. Its first six or more characters are enough.                                                                       |
-| `--undo`    | Undo a payment applied to this invoice, restoring the deposit exactly as it was. With `--txn`, the one to undo when there are several. |
+| Option                 | Does                                                                                                                                   |
+|------------------------|----------------------------------------------------------------------------------------------------------------------------------------|
+| (none)                 | List the deposits in the books that might pay the invoice, best first, each with its reference.                                        |
+| `--txn REF`            | Apply that deposit. Its first six or more characters are enough.                                                                       |
+| `--undo`               | Undo a payment applied to this invoice, restoring the deposit exactly as it was. With `--txn`, the one to undo when there are several. |
+| `--lookback-days DAYS` | How many days back to look for deposits, 0 to 3650. 0 looks back forever.                                                              |
+| `--lead-days DAYS`     | How many days before the invoice a payment may come, 0 to 60.                                                                          |
+
+Without the last two, `apply-payment` uses the same [payment-matching settings](settings.md#payment-matching-shared-with-ledgeline) as the app and Ledgeline: these books' own, else the shared ones, else 180 days and 4 days. A deposit short of the invoice is always offered as a part payment. A flag changes them for that one run and saves nothing.
 
 Applying writes an undo record under `.ledgeline-invoicer/undo/` in the books folder and refreshes the invoice's paid status. See [Getting paid](booking.md#cash-books).
 

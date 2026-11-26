@@ -4,7 +4,7 @@
 //!
 //! | Route                                   | Does                                                      |
 //! |-----------------------------------------|-----------------------------------------------------------|
-//! | `GET /api/editor/options`               | What the editor's pickers offer: customers (with open POs), the catalog, the journal's accounts, custom field keys, the table words. |
+//! | `GET /api/editor/options`               | What the editor's pickers offer: customers (with open POs), the catalog, the journal's accounts, custom field keys, the table words, and the default terms and template. |
 //! | `GET /api/fields/{key}/values`          | Autocomplete for a custom frontmatter field.              |
 //! | `POST /api/invoices`                    | `new`: a draft for a customer (snapshot, terms, snippets). `deposit`: a deposit invoice. |
 //! | `GET /api/invoices/{num}/form`          | The document as the editor's form, with its revision and its computed amounts. |
@@ -50,11 +50,11 @@ use ledgeline_core::vault::{Revision, VaultPath};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::AppState;
 use super::api::{ApiError, ApiResult, body, to_value, today, with_books};
 use super::books::{log_mirror, reload_after_write};
 use super::edits::{rebook_written, write_error};
 use super::preview::{MAX_SOURCE_BYTES, PREVIEW_PAGE, PreviewRequest};
+use super::{AppState, prefs};
 use crate::{flows, starters};
 
 /// The editor's routes (state still to be supplied).
@@ -226,6 +226,11 @@ async fn options(State(state): State<AppState>) -> ApiResult {
             "next_number_after": next.as_ref().and_then(|n| n.after.clone()),
             "next_number_source": next.as_ref().map(|n| n.source.as_str()),
             "customers_dir": settings.customers_dir,
+            // A new invoice's terms and template when neither it nor its
+            // customer names any (`[invoicer] default-terms`,
+            // `default-template`).
+            "default_terms": settings.default_terms,
+            "default_template": settings.default_template,
         }))
     })
     .await
@@ -331,7 +336,7 @@ async fn create(
         // exists (and has its number) either way, so a failed copy is a
         // warning, not an error a retry would answer with a second draft
         // (RA-7).
-        let mut warnings: Vec<String> = Vec::new();
+        let mut warnings: Vec<String> = created.warnings.clone();
         let copied = match starter {
             Some(starter) => {
                 let dir = session.settings().templates_dir.clone();
@@ -788,12 +793,15 @@ async fn payments(
 ) -> ApiResult {
     let Query(query) = query.map_err(|e| ApiError::bad_request(e.body_text()))?;
     let today = today(query.today.as_deref())?;
+    let prefs_state = state.clone();
     with_books(&state, StatusCode::OK, move |books| {
+        // The matcher's settings (RC-10), read before the session is locked.
+        let settle = prefs::settle_settings(&prefs_state);
         let session = books.session();
         let number = number_of(&session, &number)?;
         let options = session
             .invoice_books()
-            .payment_options(session.index(), &number, &today)
+            .payment_options(session.index(), &number, &settle, &today)
             .map_err(|e| ApiError::from(&e))?;
         let style = session.index().money().style(Some(&options.commodity));
         Ok(json!({
@@ -840,7 +848,9 @@ async fn apply_payment(
 ) -> ApiResult {
     let request = body(payload)?;
     let today = today(request.today.as_deref())?;
+    let prefs_state = state.clone();
     with_books(&state, StatusCode::OK, move |books| {
+        let settle = prefs::settle_settings(&prefs_state);
         let mut session = books.session();
         let path = find(&session, &number)?;
         let number = number_of(&session, &number)?;
@@ -853,6 +863,7 @@ async fn apply_payment(
             number: number.clone(),
             reference: request.reference,
             today: today.clone(),
+            settle,
             expected: None,
         };
         if request.dry_run {

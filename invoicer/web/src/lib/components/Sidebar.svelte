@@ -8,9 +8,13 @@
      Invoices shows two exclusive ones: overdue in red, then open and not yet
      due; drafts are in neither (the link's tooltip says so).
 
+     Settings sits last, at the foot above the books (one link, pushed down;
+     so it is also the last stop on Tab).
+
      Narrow windows (below `md`, a container query that follows the UI
      scale): the sidebar becomes a bar across the top, its sections in a
-     row that wraps, the books' name and the New button beside the app's. -->
+     row that wraps (Settings the last of them), the books' name and the
+     New button beside the app's. -->
 <script lang="ts" module>
     /** One count beside a section ("2 overdue"). */
     export interface SidebarCount {
@@ -40,7 +44,12 @@
     import type {BooksInfo} from "#lib/invoices.js";
     import NewMenu, {type NewChoice} from "./NewMenu.svelte";
 
-    let {links, books, newChoices = []}: {links: SidebarLink[]; books: BooksInfo | null; newChoices?: NewChoice[]} = $props();
+    let {
+        links,
+        books,
+        newChoices = [],
+        settings = null,
+    }: {links: SidebarLink[]; books: BooksInfo | null; newChoices?: NewChoice[]; settings?: SidebarLink | null} = $props();
 
     const booksName = $derived(books === null ? null : (books.title ?? "").trim() || books.journal || "Books");
 </script>
@@ -55,8 +64,8 @@
             <div class="ml-auto md:ml-0 md:w-full"><NewMenu choices={newChoices} /></div>
         {/if}
     </div>
-    <nav aria-label="Sections">
-        <ul class="menu menu-horizontal w-full flex-wrap gap-0.5 px-2 py-1 md:menu-vertical md:flex-nowrap md:py-2">
+    <nav aria-label="Sections" class="md:flex md:min-h-0 md:flex-1 md:flex-col">
+        <ul class="menu menu-horizontal w-full flex-wrap gap-0.5 px-2 py-1 md:menu-vertical md:flex-1 md:flex-nowrap md:py-2">
             {#each links as link (link.id)}
                 <li>
                     <!-- eslint-disable svelte/no-navigation-without-resolve -- the layout resolves every link -->
@@ -84,9 +93,21 @@
                     <!-- eslint-enable svelte/no-navigation-without-resolve -->
                 </li>
             {/each}
+            {#if settings !== null}
+                <li class="md:mt-auto">
+                    <!-- eslint-disable svelte/no-navigation-without-resolve -- the layout resolves it -->
+                    <a
+                        href={settings.href}
+                        class={settings.active ? "menu-active" : ""}
+                        aria-current={settings.active ? "page" : undefined}
+                        data-testid="sidebar-{settings.id}">{settings.label}</a
+                    >
+                    <!-- eslint-enable svelte/no-navigation-without-resolve -->
+                </li>
+            {/if}
         </ul>
     </nav>
-    <div class="mt-auto hidden border-t border-base-300 px-4 py-3 text-xs text-base-content/70 md:block" data-testid="sidebar-books">
+    <div class="hidden border-t border-base-300 px-4 py-3 text-xs text-base-content/70 md:block" data-testid="sidebar-books">
         {#if books === null}
             <span>No books open</span>
         {:else}

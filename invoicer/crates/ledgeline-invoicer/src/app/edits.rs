@@ -47,7 +47,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::AppState;
-use super::api::{ApiError, ApiResult, blocking, no_books, to_value, today};
+use super::api::{ApiError, ApiResult, blocking, to_value, today};
 use super::books::log_mirror;
 use super::pdf::books_error;
 use crate::{flows, starters};
@@ -137,7 +137,7 @@ pub(crate) async fn use_template(
     body: Result<Json<TemplateBody>, JsonRejection>,
 ) -> ApiResult {
     let Json(body) = body.map_err(|e| ApiError::bad_request(e.body_text()))?;
-    let books = state.books().ok_or_else(no_books)?;
+    let books = state.open_books()?;
     blocking(StatusCode::OK, move || {
         let mut session = books.session();
         let doc = session
@@ -217,7 +217,7 @@ pub(crate) async fn recalc(
         Err(e) => return Err(ApiError::bad_request(e.body_text())),
     };
     let today = today(body.today.as_deref())?;
-    let books = state.books().ok_or_else(no_books)?;
+    let books = state.open_books()?;
     blocking(StatusCode::OK, move || {
         let mut session = books.session();
         let doc = session

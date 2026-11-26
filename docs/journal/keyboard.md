@@ -32,6 +32,7 @@ A sequence such as <kbd>g</kbd> <kbd>j</kbd> means press <kbd>g</kbd>, release i
 | <kbd>g</kbd> <kbd>p</kbd> | Go to Projections                                |
 | <kbd>g</kbd> <kbd>r</kbd> | Go to Reports                                    |
 | <kbd>g</kbd> <kbd>i</kbd> | Go to Imports (when the engine supports imports) |
+| <kbd>g</kbd> <kbd>,</kbd> | Go to Settings                                   |
 
 ## Journal
 

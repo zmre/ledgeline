@@ -52,7 +52,7 @@ Give the app your books' main journal, the same file you open in Ledgeline. The 
 
 With no journal named, the app reopens the books you used last in either app. **File → Open…** picks another journal and **File → Open Recent** lists the ones you've had open. The list is shared with Ledgeline.
 
-The invoicer uses the theme and text size you chose in Ledgeline. A books folder pinned to a theme opens in that theme in both apps.
+The invoicer shares its theme and text size with Ledgeline: change them in either app's **Settings → Appearance**. A books folder pinned to a theme opens in that theme in both apps.
 
 ## Getting around
 
@@ -66,6 +66,8 @@ The sidebar has six sections:
 | Catalog   | Products and services you bill often, with their rate and the account each one books to.          |
 | Snippets  | Reusable text such as payment instructions and terms, copied into an invoice when you insert one. |
 | Templates | How invoices look on screen and on paper. See [Templates](templates.md).                          |
+
+**Settings**, at the foot of the sidebar, holds these books' settings and the appearance. <kbd>g</kbd> <kbd>,</kbd> or <kbd>Cmd</kbd>+<kbd>,</kbd> opens it too. See [Settings](settings.md).
 
 The **New** button at the top of the sidebar starts a new invoice. Its menu also offers a new customer, catalog item, snippet or template. Press <kbd>?</kbd> anywhere to see the [keyboard shortcuts](keyboard.md) for the page you are on.
 
@@ -84,7 +86,7 @@ A sent invoice can still be edited. Saving it re-books it to match, unless its d
 - [Booking](booking.md): what lands in the journal and when, deposits, voids, and how the paid status is kept up to date.
 - [Templates](templates.md): changing how invoices look, for people who don't write HTML.
 - [Dashboard](dashboard.md): the receivables dashboard and the settings that shape it.
-- [Settings](settings.md): every invoicer setting in `ledgeline.toml`, with its default.
+- [Settings](settings.md): the Settings page, and every invoicer setting in `ledgeline.toml` with its default.
 - [Keyboard shortcuts](keyboard.md): every key, page by page.
 - [Command line](cli.md): every command and option.
 - [Scripting recipes](scripting.md): `grep`, `hledger` and the command line working on your invoices.

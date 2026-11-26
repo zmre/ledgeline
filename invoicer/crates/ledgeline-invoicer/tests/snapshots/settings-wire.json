@@ -1,0 +1,303 @@
+{
+  "page": {
+    "file": "present",
+    "problem": null,
+    "problems": [],
+    "readOnly": false,
+    "revision": "1a2b3c4d5e6f7081-42",
+    "values": {
+      "invoices-dir": "invoices",
+      "default-terms": 30,
+      "default-template": null,
+      "words": {
+        "quantity": [
+          "Qty",
+          "Hours"
+        ]
+      }
+    },
+    "defaults": {
+      "invoices-dir": "invoices",
+      "default-terms": null,
+      "default-template": null,
+      "words": {
+        "quantity": [
+          "Qty",
+          "Quantity",
+          "Hours",
+          "Units"
+        ]
+      }
+    },
+    "set": [
+      "default-terms",
+      "words.quantity"
+    ],
+    "inferred": {
+      "receivable-account": "assets:receivable",
+      "revenue-account": "revenue:consulting",
+      "deposit-account": "liabilities:customer-deposits"
+    },
+    "nextNumber": {
+      "number": "208",
+      "after": "207",
+      "source": "document"
+    },
+    "books": {
+      "basis": "cash",
+      "closedThrough": "2026-06-30"
+    },
+    "booksError": null,
+    "choices": {
+      "templates": [
+        {
+          "value": "/invoices/tpl/classic.html",
+          "name": "Classic",
+          "kinds": [
+            "invoice"
+          ],
+          "starter": true
+        }
+      ],
+      "companies": [
+        {
+          "title": "My Company",
+          "link": "[[My Company]]"
+        }
+      ],
+      "accounts": [
+        "assets:checking"
+      ]
+    },
+    "affectsBookings": [
+      "receivable-account",
+      "revenue-account",
+      "deposit-account",
+      "discount-account",
+      "cash-deposits",
+      "payment-allocation"
+    ],
+    "coming": [
+      {
+        "id": "oldest-row-first",
+        "setting": "payment-allocation",
+        "section": "payments",
+        "label": "Oldest row first"
+      },
+      {
+        "id": "keep-deferral",
+        "setting": "cash-deposits",
+        "section": "payments",
+        "label": "Cash books: keep a deposit as a deferral"
+      },
+      {
+        "id": "first-open-day",
+        "setting": null,
+        "section": "editing",
+        "label": "Sending into a closed period: book it on the first open day"
+      },
+      {
+        "id": "reverse-and-rebook",
+        "setting": null,
+        "section": "editing",
+        "label": "Editing a sent invoice: reverse it and book it again"
+      }
+    ]
+  },
+  "pageReadOnly": {
+    "file": "present",
+    "problem": "The invoicer settings in ledgeline.toml have a problem, so they can't be saved here. Fix it in the file.",
+    "problems": [
+      {
+        "key": "filename",
+        "message": "The new invoice file name must include the invoice number, or two invoices could share a file."
+      }
+    ],
+    "readOnly": true,
+    "revision": "0-0",
+    "values": {
+      "invoices-dir": "invoices",
+      "default-terms": 30,
+      "default-template": null,
+      "words": {
+        "quantity": [
+          "Qty",
+          "Hours"
+        ]
+      }
+    },
+    "defaults": {
+      "invoices-dir": "invoices",
+      "default-terms": null,
+      "default-template": null,
+      "words": {
+        "quantity": [
+          "Qty",
+          "Quantity",
+          "Hours",
+          "Units"
+        ]
+      }
+    },
+    "set": [
+      "default-terms",
+      "words.quantity"
+    ],
+    "inferred": {
+      "receivable-account": null,
+      "revenue-account": null,
+      "deposit-account": null
+    },
+    "nextNumber": null,
+    "books": {
+      "basis": null,
+      "closedThrough": null
+    },
+    "booksError": "The books couldn't open: …",
+    "choices": {
+      "templates": [],
+      "companies": [],
+      "accounts": []
+    },
+    "affectsBookings": [
+      "receivable-account",
+      "revenue-account",
+      "deposit-account",
+      "discount-account",
+      "cash-deposits",
+      "payment-allocation"
+    ],
+    "coming": [
+      {
+        "id": "oldest-row-first",
+        "setting": "payment-allocation",
+        "section": "payments",
+        "label": "Oldest row first"
+      },
+      {
+        "id": "keep-deferral",
+        "setting": "cash-deposits",
+        "section": "payments",
+        "label": "Cash books: keep a deposit as a deferral"
+      },
+      {
+        "id": "first-open-day",
+        "setting": null,
+        "section": "editing",
+        "label": "Sending into a closed period: book it on the first open day"
+      },
+      {
+        "id": "reverse-and-rebook",
+        "setting": null,
+        "section": "editing",
+        "label": "Editing a sent invoice: reverse it and book it again"
+      }
+    ]
+  },
+  "check": {
+    "problems": [
+      {
+        "key": "dso-days",
+        "message": "The days-sales-outstanding window must be a whole number from 1 to 3660."
+      }
+    ],
+    "effects": [
+      {
+        "key": "payment-allocation",
+        "message": "Payments you apply from now on are split pro rata. Payments already in your books keep the split they were booked with."
+      }
+    ],
+    "refused": {
+      "key": "cash-deposits",
+      "message": "1 deposit is waiting for its final invoice. Change how deposit payments book once its final invoice is paid.",
+      "deposits": [
+        {
+          "number": "205",
+          "customer": "Contoso",
+          "date": "2026-10-01",
+          "waiting": "$1,500.00",
+          "bookedTo": [
+            "revenue:consulting"
+          ]
+        }
+      ]
+    }
+  },
+  "saved": {
+    "revision": "1a2b3c4d5e6f7082-43",
+    "values": {
+      "invoices-dir": "invoices",
+      "default-terms": 30,
+      "default-template": null,
+      "words": {
+        "quantity": [
+          "Qty",
+          "Hours"
+        ]
+      }
+    },
+    "set": [
+      "default-terms",
+      "words.quantity"
+    ],
+    "created": false
+  },
+  "errors": {
+    "changed": {
+      "error": "The settings file changed since this page read it.",
+      "code": "changed",
+      "revision": "1a2b3c4d5e6f7090-44"
+    },
+    "noFile": {
+      "error": "These books have no settings file yet.",
+      "code": "no-file"
+    },
+    "unusable": {
+      "error": "ledgeline.toml is a symbolic link, so the app won't write to it.",
+      "code": "unusable"
+    },
+    "confirm": {
+      "error": "Some changes affect new bookings.",
+      "code": "confirm",
+      "effects": [
+        {
+          "key": "payment-allocation",
+          "message": "Payments you apply from now on are split pro rata. Payments already in your books keep the split they were booked with."
+        }
+      ]
+    },
+    "invalid": {
+      "error": "Some settings have problems.",
+      "code": "invalid",
+      "problems": [
+        {
+          "key": "dso-days",
+          "message": "The days-sales-outstanding window must be a whole number from 1 to 3660."
+        }
+      ]
+    },
+    "refused": {
+      "error": "1 deposit is waiting for its final invoice.",
+      "code": "refused",
+      "refused": {
+        "key": "cash-deposits",
+        "message": "1 deposit is waiting for its final invoice. Change how deposit payments book once its final invoice is paid.",
+        "deposits": [
+          {
+            "number": "205",
+            "customer": "Contoso",
+            "date": "2026-10-01",
+            "waiting": "$1,500.00",
+            "bookedTo": [
+              "revenue:consulting"
+            ]
+          }
+        ]
+      }
+    },
+    "badRequest": {
+      "error": "There is no setting called “invoice-dir”.",
+      "code": "bad-request"
+    }
+  }
+}

@@ -5,7 +5,10 @@
 //! why this table, not the engine, is what changes when the SPA gains a view
 //! setting.
 
-use super::{Kind, Schema, Spec, THEME, UI_SCALE, flag, whole};
+use super::{
+    Kind, SETTLEMENT_LEAD_DAYS, SETTLEMENT_LOOKBACK_DAYS, SETTLEMENT_TOLERANCE_BPS, Schema, Spec,
+    THEME, UI_SCALE, flag, whole,
+};
 
 /// The insights box's two views (`InsightsTab` in `settings.svelte.ts`).
 const INSIGHTS_TABS: &[&str] = &["activity", "balances"];
@@ -29,6 +32,11 @@ const PIE_DIMENSIONS: &[&str] = &[
 ///
 /// The bank sync keys (plan 43) are here for the same reason: sync the real
 /// books automatically, not the demo ledger.
+///
+/// The invoice matcher's three keys (plan 45 D-settle) are here because
+/// how far back to look and how early a payment may come differ by books
+/// (settings plan D2): Ledgeline Invoicer pins them too, and reads them
+/// for its Apply payment.
 pub const PINNABLE: &[&str] = &[
     "theme",
     "uiScale",
@@ -40,6 +48,9 @@ pub const PINNABLE: &[&str] = &[
     "syncKeepSourceDays",
     "manualRemindDays",
     "autoRecognize",
+    "settlementLookbackDays",
+    "settlementToleranceBps",
+    "settlementLeadDays",
 ];
 
 /// The automatic price keys, whose change wakes the price updater.
@@ -144,13 +155,10 @@ const SPECS: &[Spec] = &[
         },
     },
     // Plan 45 D-settle: the invoice ↔ payment matcher, beside the match
-    // settings. 0 = no lookback limit; the tolerance is basis points of the
-    // invoice (300 = 3%, Q3).
-    whole("settlementLookbackDays", 0, 3650, 180),
-    whole("settlementToleranceBps", 0, 10_000, 300),
-    // How many days a payment may come BEFORE its invoice (a payroll draw,
-    // then its bill): 0–60, default 4.
-    whole("settlementLeadDays", 0, 60, 4),
+    // settings; shared with Ledgeline Invoicer (see the specs).
+    SETTLEMENT_LOOKBACK_DAYS,
+    SETTLEMENT_TOLERANCE_BPS,
+    SETTLEMENT_LEAD_DAYS,
 ];
 
 /// The keys [`super::GLOBAL_FILE`] keeps per ledger

@@ -1,8 +1,10 @@
 //! Creating a draft (ARCHITECTURE §5.2) and saving documents.
 //!
 //! A draft snapshots the customer and your company into frontmatter
-//! (`invoicee_*`, `invoicer_*`), copies the customer's terms (with
-//! `due_date = date + terms`), template and default snippets, builds the
+//! (`invoicee_*`, `invoicer_*`), takes its terms (with `due_date = date +
+//! terms`) and template from the request, else the customer, else `[invoicer]
+//! default-terms` and `default-template` (else the first template for its
+//! type), copies the customer's default snippets, builds the
 //! bill table from rows or catalog items with every amount computed, and is
 //! named by `[invoicer] filename`. Drafts never touch the books (I2).
 //!
@@ -81,13 +83,14 @@ pub struct NewInvoice {
     /// The customer: a `[[wikilink]]` or a title.
     pub customer: String,
     /// The template's `/`-rooted path; else the customer's
-    /// `invoice_template`; else the first template for this type.
+    /// `invoice_template`; else `[invoicer] default-template`, when the
+    /// books have it for this type; else the first template for this type.
     pub template: Option<String>,
     /// The number; else the next one.
     pub number: Option<String>,
     /// The issue date (`today` is always a parameter: plan 26).
     pub date: String,
-    /// Net days; else the customer's.
+    /// Net days; else the customer's; else `[invoicer] default-terms`.
     pub terms: Option<u32>,
     /// `reference`.
     pub reference: Option<String>,
@@ -130,6 +133,9 @@ pub struct Draft {
     pub number: InvoiceNumber,
     /// Its text.
     pub text: String,
+    /// What it fell back from, in plain words (a default template that
+    /// isn't in the books).
+    pub warnings: Vec<String>,
 }
 
 /// Why a draft can't be made or a document can't be written. Nothing is
@@ -295,6 +301,35 @@ fn default_snippets(site: &Site, vault: &dyn Vault, from: &VaultPath, links: &[S
         .join("\n")
 }
 
+/// `[invoicer] default-template`, when the books have it for `doc_type`;
+/// else `None`, with a warning saying so (the caller falls back to the
+/// first template).
+fn default_template(
+    index: &DocumentIndex,
+    doc_type: DocType,
+    warnings: &mut Vec<String>,
+) -> Option<String> {
+    let wanted = index.settings().default_template.as_deref()?;
+    match templates::find(index.templates(), wanted) {
+        Some(found) if found.supports(doc_type) => Some(found.template_path()),
+        Some(found) => {
+            warnings.push(format!(
+                "The default template, {}, isn't for {}s, so the first one that is was used.",
+                found.name,
+                doc_type.as_str().replace('-', " ")
+            ));
+            None
+        }
+        None => {
+            warnings.push(format!(
+                "The default template, {wanted}, isn't in the books, so the first template was \
+                 used."
+            ));
+            None
+        }
+    }
+}
+
 /// Render a new draft against the index (and `books`, the `invoice:`
 /// numbers already booked, for Phase 2's numbering).
 ///
@@ -343,17 +378,19 @@ pub fn render(
     let bill_to = customer.billing_contact(site, words);
     let company = customers::company(site, settings);
     let labels = &words.billing_labels;
+    let mut warnings: Vec<String> = Vec::new();
     let template = new
         .template
         .clone()
         .or_else(|| customer.invoice_template.clone())
+        .or_else(|| default_template(index, new.doc_type, &mut warnings))
         .or_else(|| {
             templates::discover(vault, site)
                 .into_iter()
                 .find(|t| t.supports(new.doc_type))
                 .map(|t| t.template_path())
         });
-    let terms = new.terms.or(customer.terms);
+    let terms = new.terms.or(customer.terms).or(settings.default_terms);
     let due_date = terms.map(|t| crate::doc::due_from_terms(&new.date, i64::from(t)));
 
     let filename = fill_pattern(
@@ -450,7 +487,12 @@ pub fn render(
     }
     let text = format!("{frontmatter}\n{body}");
     verify(&text, settings, index.money())?;
-    Ok(Draft { path, number, text })
+    Ok(Draft {
+        path,
+        number,
+        text,
+        warnings,
+    })
 }
 
 /// Refuse text that doesn't read back as a sound document: frontmatter that

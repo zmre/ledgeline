@@ -39,11 +39,25 @@ A pair is **clear** when it's the only good candidate for both sides, the amount
 
 Usually a payment comes after its invoice, but not always. A payroll provider, for example, debits your bank account and sends the bill a few days later. Ledgeline accepts a payment up to 4 days before its invoice, and the card says "Paid 3 days before the invoice".
 
-Change the limit with **Paid up to N days before the invoice** in the page header, or in [Settings → Books](../settings/settings-files.md#the-keys) (`settlementLeadDays`, 0 to 60). An exact payment just before a bill outranks a different-sized payment two weeks after it.
+Change the limit with **Paid up to N days before the invoice** in the page header, or in [Settings → Books](#the-matching-settings) (`settlementLeadDays`, 0 to 60). An exact payment just before a bill outranks a different-sized payment two weeks after it.
 
 ### Looking back
 
 The list covers the last 180 days. Change it with **Look back** in the page header (`settlementLookbackDays`). "All time" looks at the whole journal. The limit applies to both sides of a pair.
+
+### The matching settings
+
+**Settings → Books → Invoice matching** holds the three numbers this page starts from:
+
+| Setting                                                                             | Key                      | Default |
+|-------------------------------------------------------------------------------------|--------------------------|---------|
+| Look for payments up to N days after the invoice                                    | `settlementLookbackDays` | 180     |
+| Paid up to N days before the invoice still counts                                   | `settlementLeadDays`     | 4       |
+| Treat a payment up to N% short of its invoice as paid, with the difference as a fee | `settlementToleranceBps` | 3%      |
+
+They apply to every ledger. Tick **Use for this ledger only** under one of them to keep its value for the open ledger alone: Ledgeline writes it into the `[ui]` table of that ledger's `ledgeline.toml`, creating the file if needed. Untick it to go back to the shared value. See [Keeping a setting for one ledger](../settings/settings-files.md#keeping-a-setting-for-one-ledger).
+
+[Ledgeline Invoicer](../invoicer/index.md) matches payments to invoices with the same lookback and lead settings, under **Settings → These books → Payments** there. It doesn't use the fee tolerance: it offers a short payment as a part payment. A change in either app, or a value kept for one ledger, applies to both. See [Payment matching, shared with Ledgeline](../invoicer/settings.md#payment-matching-shared-with-ledgeline).
 
 ## Linking a pair
 
@@ -67,7 +81,7 @@ The two receivable postings then cancel exactly:
     assets:accounts receivable   $-3,000.00  ; customer: Tailspin, match: xa53h2
 ```
 
-Set the tolerance with **Fee tolerance** in the page header, or in Settings → Books (`settlementToleranceBps`, in hundredths of a percent: 300 is 3%).
+Set the tolerance with **Fee tolerance** in the page header, or in [Settings → Books](#the-matching-settings) (`settlementToleranceBps`, in hundredths of a percent: 300 is 3%).
 
 ### Link all
 

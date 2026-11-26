@@ -106,6 +106,7 @@ use serde::Serialize;
 use serde_json::{Map, Value as Json};
 use toml_edit::{DocumentMut, InlineTable, Item, Table, TableLike};
 
+use crate::accrual::settle;
 use crate::ledger_file::{self, LedgerEditError, LedgerFile};
 use crate::vault::{Vault, VaultError, VaultPath};
 
@@ -278,6 +279,54 @@ pub const THEME: Spec = Spec {
 /// The interface scale, in whole percent. The SPA steps 70–200; the wider
 /// range is for hand edits. Common to every app's [`Schema`].
 pub const UI_SCALE: Spec = whole("uiScale", 50, 300, 100);
+
+/// The invoice ↔ payment matcher's lookback, in days (plan 45 D-settle);
+/// 0 is no limit. Ledgeline's and Ledgeline Invoicer's ([`settle_settings`]),
+/// and pinnable in both, so one books folder can look further back than
+/// another (settings plan D2).
+pub const SETTLEMENT_LOOKBACK_DAYS: Spec = whole(
+    "settlementLookbackDays",
+    0,
+    3650,
+    settle::DEFAULT_LOOKBACK_DAYS as i64,
+);
+
+/// The matcher's tolerance for a short payment, in basis points of the
+/// invoice (300 = 3%, plan 45 Q3). Shared as [`SETTLEMENT_LOOKBACK_DAYS`].
+pub const SETTLEMENT_TOLERANCE_BPS: Spec = whole(
+    "settlementToleranceBps",
+    0,
+    10_000,
+    settle::DEFAULT_TOLERANCE_BPS as i64,
+);
+
+/// How many days a payment may come BEFORE its invoice (a payroll draw, then
+/// its bill): 0–60. Shared as [`SETTLEMENT_LOOKBACK_DAYS`].
+pub const SETTLEMENT_LEAD_DAYS: Spec = whole(
+    "settlementLeadDays",
+    0,
+    60,
+    settle::DEFAULT_LEAD_DAYS as i64,
+);
+
+/// The matcher's settings from effective preferences ([`WireUiPrefs::prefs`]):
+/// the ledger's pinned value, else the global one, else the default, as
+/// [`current`] merged them. A schema without the keys gets the defaults.
+#[must_use]
+pub fn settle_settings(prefs: &Json) -> settle::SettleSettings {
+    let read = |spec: &Spec, default: u32| {
+        prefs
+            .get(spec.key)
+            .and_then(Json::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(default)
+    };
+    settle::SettleSettings {
+        lookback_days: read(&SETTLEMENT_LOOKBACK_DAYS, settle::DEFAULT_LOOKBACK_DAYS),
+        tolerance_bps: read(&SETTLEMENT_TOLERANCE_BPS, settle::DEFAULT_TOLERANCE_BPS),
+        lead_days: read(&SETTLEMENT_LEAD_DAYS, settle::DEFAULT_LEAD_DAYS),
+    }
+}
 
 /// A `true`/`false` key.
 #[must_use]
@@ -1846,6 +1895,42 @@ mod tests {
             prefs_json(&merge(S, &[&ledger.values, &global.values])),
             issues,
         )
+    }
+
+    /// Settings plan D2: the matcher's keys are shared, and one ledger may
+    /// keep its own; [`settle_settings`] reads the effective values.
+    #[test]
+    fn the_matcher_keys_pin_and_a_pinned_value_wins() {
+        for key in [
+            "settlementLookbackDays",
+            "settlementToleranceBps",
+            "settlementLeadDays",
+        ] {
+            assert!(
+                Pin::from_json(S, &json!({"key": key, "pinned": true})).is_ok(),
+                "{key}"
+            );
+        }
+        let (prefs, issues) = effective(
+            "[ui]\nsettlementLookbackDays = 365\n",
+            "settlementLookbackDays = 90\nsettlementLeadDays = 9\n",
+        );
+        assert!(issues.is_empty(), "{issues:?}");
+        assert_eq!(
+            settle_settings(&prefs),
+            settle::SettleSettings {
+                lookback_days: 365,
+                tolerance_bps: 300,
+                lead_days: 9,
+            }
+        );
+        let (prefs, _) = effective("", "");
+        assert_eq!(settle_settings(&prefs), settle::SettleSettings::default());
+        assert_eq!(
+            settle_settings(&json!({})),
+            settle::SettleSettings::default(),
+            "a schema without the keys gets the defaults"
+        );
     }
 
     #[test]

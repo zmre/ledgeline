@@ -61,6 +61,29 @@ describe("COMPONENT HeaderForm", () => {
         expect(form().customer).toBe("[[North W]]");
     });
 
+    it("gives a customer with no terms the books' default, and keeps the invoice's own", async () => {
+        const options: EditorOptions = {
+            ...OPTIONS,
+            default_terms: 15,
+            customers: [...OPTIONS.customers, {...OPTIONS.customers[0], title: "Walk-in", link: "[[Walk-in]]", path: "customers/Walk-in.md", terms: null}],
+        };
+        const choose = async (typed: string): Promise<void> => {
+            const field = screen.getByTestId("header-customer") as HTMLInputElement;
+            await fireEvent.input(field, {target: {value: typed}});
+            await tick();
+            await fireEvent.keyDown(field, {key: "Enter"});
+            await tick();
+        };
+        const fresh = mount({customer: "", terms: null}, {options});
+        await choose("Walk");
+        expect(fresh.form().customer).toBe("[[Walk-in]]");
+        expect(fresh.form().terms).toBe(15);
+        document.body.innerHTML = "";
+        const own = mount({customer: "", terms: 45}, {options});
+        await choose("Walk");
+        expect(own.form().terms).toBe(45);
+    });
+
     it("picks the template from a list by name", async () => {
         const {form} = mount();
         const select = screen.getByTestId("header-template") as HTMLSelectElement;

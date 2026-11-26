@@ -21,7 +21,7 @@ The top row follows money through three steps:
 | Outstanding | Everything still owed, how many items, and how much of it is overdue. | the invoice list, open invoices only           |
 | Paid        | Money received in the period, and how many invoices it paid into.     | the invoice list, invoices paid in that period |
 
-The **Paid in the** menu picks the period: the last 7, 30, 90 or 365 days, plus the number of days in your `paid-window-days` [setting](settings.md) if it is another. The period ends today and counts both ends, so the last 30 days on 22 November starts on 24 October. Your choice is kept in the page's address, so Back returns to the previous one.
+The **Paid in the** menu picks the period: the last 7, 30, 90 or 365 days, plus the number of days in your Paid window [setting](settings.md#dashboard) if it is another. The period ends today and counts both ends, so the last 30 days on 22 November starts on 24 October. Your choice is kept in the page's address, so Back returns to the previous one.
 
 "Paid" counts money received, on the day it was received:
 
@@ -44,7 +44,7 @@ The large figure beside the bar is the total outstanding. Next to it, the aging 
 | 61–90   | 61 to 90 days past due         |
 | 91+     | 91 days or more past due       |
 
-Each row opens the invoices in it. The `aging-buckets` [setting](settings.md) changes the ranges.
+Each row opens the invoices in it. The Aging ranges [setting](settings.md#dashboard) changes the ranges.
 
 If some of what is owed was booked without an invoice file in these books, a line under the bar says how much and how many items. The invoice list can only show invoices that have files, so those items appear on the dashboard but not in the list.
 
@@ -69,7 +69,7 @@ Six cards for the invoices that changed most recently, newest first. Each card s
 
 ## Settings
 
-These go under `[invoicer]` in the books' `ledgeline.toml`. See [Settings](settings.md) for the rest.
+Change these in **Settings → These books → Dashboard**, then Save. See [Settings](settings.md#dashboard). They are kept under `[invoicer]` in the books' `ledgeline.toml`:
 
 | Setting            | Default        | Changes                                                                                                                                                                 |
 |--------------------|----------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|

@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
 use super::AppState;
-use super::api::{ApiError, ApiResult, blocking, no_books, to_value, today};
+use super::api::{ApiError, ApiResult, blocking, to_value, today};
 use super::books::OpenBooks;
 use super::mbr::MbrGate;
 use super::native::{Anchor, Capabilities, Native, NativeRequest, PrintJob, answer};
@@ -201,7 +201,7 @@ pub(crate) async fn export(
         Err(e) => return Err(ApiError::bad_request(e.body_text())),
     };
     let native = native_for(&state, |c| c.pdf, "PDF export")?;
-    let books = state.books().ok_or_else(no_books)?;
+    let books = state.open_books()?;
     let origin = origin(&headers)?;
     let mut exported = export_invoice(
         books,
@@ -393,7 +393,7 @@ pub(crate) async fn delivery(
     Path(number): Path<String>,
 ) -> ApiResult {
     let caps = state.native().map(|n| n.capabilities()).unwrap_or_default();
-    let books = state.books().ok_or_else(no_books)?;
+    let books = state.open_books()?;
     blocking(StatusCode::OK, move || {
         to_value(delivery_of(&books, &number, caps)?)
     })
@@ -433,7 +433,7 @@ pub(crate) async fn send(
         ));
     }
     let today = today(body.today.as_deref())?;
-    let books = state.books().ok_or_else(no_books)?;
+    let books = state.open_books()?;
     blocking(StatusCode::OK, move || {
         let mut session = books.session();
         let doc_number = session
@@ -470,7 +470,7 @@ pub(crate) async fn open_portal(
     State(state): State<AppState>,
     Path(number): Path<String>,
 ) -> ApiResult {
-    let books = state.books().ok_or_else(no_books)?;
+    let books = state.open_books()?;
     let delivery =
         tokio::task::spawn_blocking(move || delivery_of(&books, &number, Capabilities::default()))
             .await
@@ -550,7 +550,7 @@ async fn file_request(
 ) -> ApiResult {
     let Json(body) = body.map_err(|e| ApiError::bad_request(e.body_text()))?;
     let native = native_for(&state, wants, what)?;
-    let books = state.books().ok_or_else(no_books)?;
+    let books = state.open_books()?;
     let anchor = body.anchor;
     let file = tokio::task::spawn_blocking(move || exported_file(&books, &body))
         .await
@@ -609,7 +609,7 @@ pub(crate) async fn open_pdf(
 ) -> ApiResult {
     let Json(body) = body.map_err(|e| ApiError::bad_request(e.body_text()))?;
     let native = native_for(&state, |c| c.open_file, "Opening a PDF")?;
-    let books = state.books().ok_or_else(no_books)?;
+    let books = state.open_books()?;
     let file = tokio::task::spawn_blocking(move || exported_file(&books, &body))
         .await
         .map_err(|e| ApiError::status(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
