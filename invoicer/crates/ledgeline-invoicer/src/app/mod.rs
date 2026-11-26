@@ -34,6 +34,7 @@ pub(crate) mod pdf;
 pub(crate) mod prefs;
 pub(crate) mod preview;
 mod serve;
+pub(crate) mod settings_wire;
 pub(crate) mod templates;
 pub(crate) mod watch;
 

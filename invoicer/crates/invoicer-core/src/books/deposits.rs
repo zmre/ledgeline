@@ -82,6 +82,25 @@ pub struct OpenDeposits {
     pub deposits: Vec<OpenDeposit>,
 }
 
+/// A deposit received in cash books that no finished final invoice has used
+/// up yet ([`InvoiceBooks::deposits_awaiting_final`]): changing
+/// `cash-deposits` now would count it twice or never (settings plan D5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaitingDeposit {
+    /// The deposit invoice's number.
+    pub number: String,
+    /// Its customer, as the books name them (`customer:`).
+    pub customer: String,
+    /// The deposit invoice's date.
+    pub date: String,
+    /// What is still waiting, in the invoice's money style (`$1,500.00`).
+    pub waiting: String,
+    /// Where its payments actually booked (the revenue account, or the
+    /// deposit account), whatever the setting says now.
+    pub booked_to: Vec<String>,
+}
+
 /// **Apply deposit**: write a row applying `deposit` to draft `number`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplyDeposit {

@@ -9,7 +9,8 @@
 //!   per account and deferral (§4.2);
 //! - [`frontmatter`]: read losslessly, edit by key (§5.5);
 //! - [`problem`]: what `check` reports;
-//! - [`settings`]: `ledgeline.toml [invoicer]` (§3.8);
+//! - [`settings`]: `ledgeline.toml [invoicer]` (§3.8), and
+//!   [`settings_edit`]: writing it from the Settings page;
 //! - [`notes`]: discovery, behind an API shaped like MBR's `Site` (§3.1);
 //! - [`customers`] (§3.4) and [`snippets`] (§3.7);
 //! - [`customer_edit`]: creating and editing customer notes (PLAN 4b);
@@ -59,6 +60,7 @@ pub mod reconcile;
 pub mod sent;
 pub mod session;
 pub mod settings;
+pub mod settings_edit;
 pub mod snippet_edit;
 pub mod snippets;
 pub mod table;

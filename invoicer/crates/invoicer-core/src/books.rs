@@ -42,7 +42,7 @@ pub mod recognize;
 pub mod spec;
 pub mod undo;
 
-pub use deposits::{ApplyDeposit, DepositApplied, OpenDeposit, OpenDeposits};
+pub use deposits::{ApplyDeposit, DepositApplied, OpenDeposit, OpenDeposits, WaitingDeposit};
 pub(crate) use lifecycle::receipt_postings;
 pub use lifecycle::{
     Basis, BookedTransaction, Preview, Rebook, Rebooked, Send, Sent, StepCheck, Void, Voided,

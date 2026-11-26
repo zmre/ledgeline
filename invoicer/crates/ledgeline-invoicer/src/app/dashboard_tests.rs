@@ -21,7 +21,7 @@ const TODAY: &str = "2026-11-22";
 
 /// Compare `actual` with `tests/snapshots/<name>`, or write it there when
 /// `UPDATE_SNAPSHOTS` is set.
-fn snapshot(name: &str, actual: &Value) {
+pub(super) fn snapshot(name: &str, actual: &Value) {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/snapshots")
         .join(name);
