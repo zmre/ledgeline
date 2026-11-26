@@ -115,7 +115,7 @@ lto = true
 codegen-units = 1
 strip = "debuginfo"
 
-# CI's tests and clippy (`.#tests`, `.#clippy`, `.#spaShellCsp` in flake.nix,
+# CI's tests and clippy (`.#tests` and `.#clippy` in flake.nix,
 # and their own crane deps layer `.#cargoArtifactsCi`). Optimised like release
 # but WITHOUT fat LTO and with parallel codegen: under `release` every one of
 # the ~150 integration-test binaries ran a whole-program LTO link over the

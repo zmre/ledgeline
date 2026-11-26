@@ -139,11 +139,11 @@
       # `web/build` (or writes its own placeholder when there is none). Both are
       # git-ignored build artifacts, so neither is in `src`. Before every cargo
       # phase we drop a placeholder `index.html` into `web/build` for build.rs to
-      # mirror, so `.#ledgeline`, `.#tests` and `.#clippy` embed a SCRIPT-LESS
-      # placeholder SPA — fine for proving the Rust compiles, links and passes,
-      # and useless for anything about the real UI. The outputs that need the
-      # real SvelteKit shell (`ledgelineWithSpa`, and the `spaShellCsp` check
-      # that tests its CSP) override `preBuild` to copy `spaBuild` there instead.
+      # mirror, so `.#ledgeline` and `.#clippy` embed a SCRIPT-LESS placeholder
+      # SPA — fine for proving the Rust compiles, links and passes, and useless
+      # for anything about the real UI. The outputs that need the real
+      # SvelteKit shell (`ledgelineWithSpa`, and `tests` wherever `hasRealSpa`,
+      # for its CSP tests) override `preBuild` to copy `spaBuild` there instead.
       # Locally, `cd web && bun run build` before `cargo build` does the same.
       spaPlaceholder = ''
         mkdir -p web/build
@@ -261,7 +261,7 @@
       #     (macApp/macDist, linuxDist). Both are `cargo build -p ledgeline`,
       #     so that is exactly what this layer runs.
       #   * `cargoArtifactsCi` — the `ci` profile (release without LTO, see
-      #     Cargo.toml), for the CI checks: `clippy`, `tests`, `spaShellCsp`.
+      #     Cargo.toml), for the CI checks: `clippy` and `tests`.
       #     Testing under `release` LTO-linked each of ~150 test binaries,
       #     which cost most of an hour on Linux and over two on macOS.
       #
@@ -275,13 +275,11 @@
       #     deps; a featureless layer made them recompile the mbr crates on
       #     every run). The ci layer runs `check` (what clippy reuses) and
       #     `test --no-run` (`tests`) with exactly that.
-      #   * `spaShellCsp` runs `test -p ledgeline`, which resolves features
-      #     for ledgeline alone — a workspace-wide pass does not cover it
-      #     (CI run 45513409069 recompiled 122 crates for it). Hence its own
-      #     `test --no-run -p ledgeline` pass.
-      #   * `invoicerSpaShellCsp` runs `test -p ledgeline-invoicer`, likewise
-      #     (113 crates recompiled per run without it, measured locally);
-      #     hence a `test --no-run -p ledgeline-invoicer` pass too.
+      #     Nothing else may test a `-p` subset on this layer: `test -p
+      #     ledgeline` resolves features for ledgeline alone, which the
+      #     workspace pass does not cover (CI run 45513409069 recompiled 122
+      #     crates for the old `spaShellCsp` check, which did exactly that).
+      #     That is why the real-SPA CSP tests run inside `tests` now.
       #   * `ledgeline`/`ledgelineWithSpa` run `build -p ledgeline`; the
       #     release layer used to build the whole workspace and they rebuilt
       #     ~160-220 dependency crates (with fat LTO) every time. The
@@ -302,11 +300,7 @@
           # `ledgeline-ci-deps-<version>`, told apart from the release layer.
           pname = "ledgeline-ci";
           buildPhaseCargoCommand = "cargoWithProfile check --locked --all-targets ${mobileFeature}";
-          checkPhaseCargoCommand = ''
-            cargoWithProfile test --locked --no-run ${mobileFeature}
-            cargoWithProfile test --no-run ${ledgelineOnly}
-            cargoWithProfile test --no-run ${invoicerOnly}
-          '';
+          checkPhaseCargoCommand = "cargoWithProfile test --locked --no-run ${mobileFeature}";
         });
 
       # The workspace binary (`ledgeline` = axum server + wry/tao GUI). Tests run
@@ -341,11 +335,38 @@
           cargoClippyExtraArgs = "--all-targets ${mobileFeature} -- -D warnings";
         });
 
+      # The whole workspace suite. On every system with a pinned SPA hash
+      # (`hasRealSpa`) it embeds BOTH real SPAs (`spaBuild`, `invoicerSpaBuild`)
+      # instead of the placeholder and sets `LEDGELINE_REQUIRE_REAL_SPA=1`, so
+      # the two real-shell CSP tests in the suite —
+      # crates/ledgeline-server/tests/spa_shell_csp.rs and the invoicer's
+      # `app::spa_shell_csp_tests` — FAIL on a placeholder instead of skipping.
+      # `security::shell_csp` hashes the inline scripts of whatever is
+      # embedded, so without the real shell a SvelteKit upgrade could ship one
+      # the policy refuses (a blank window) with every check green. The
+      # browser-level twins are the two csp.same-origin e2e specs.
+      #
+      # These used to be two separate checks (`spaShellCsp`,
+      # `invoicerSpaShellCsp`), each its own `cargoTest` with a different
+      # `preBuild`, and so each recompiling every workspace crate to run one
+      # test (and each needing its own feature-resolution pass in the ci deps
+      # layer). Folded in, a Rust change compiles the workspace once. The cost
+      # is that an SPA-only change now re-runs the whole suite rather than two
+      # single tests — about the same compile, since both checks recompiled
+      # the workspace anyway. Every other test is placeholder-agnostic: locally
+      # `cargo test` runs against the real shell whenever web/build exists.
+      #
+      # Elsewhere (aarch64-linux, no hash) the placeholder stays, so the suite
+      # still evaluates and runs; the two CSP tests then only print a note.
       tests = craneLib.cargoTest (commonArgs
         // ciProfile
         // {
           cargoArtifacts = cargoArtifactsCi;
           cargoTestExtraArgs = mobileFeature;
+        }
+        // lib.optionalAttrs hasRealSpa {
+          preBuild = embedRealSpa + embedInvoicerSpa;
+          LEDGELINE_REQUIRE_REAL_SPA = "1";
         });
 
       fmt = craneLib.cargoFmt {
@@ -358,7 +379,7 @@
       # sandbox). A real distributable must embed the ACTUAL SvelteKit UI, so we
       # build the SPA in Nix (bun) and feed it into a dedicated crane build.
       # This whole block is only ever forced on systems with a pinned
-      # `spaNodeModulesHashes` entry (see `packages` and `realSpaChecks` below).
+      # `spaNodeModulesHashes` entry (see `hasRealSpa`).
 
       # 1. node_modules for the SPA. `bun install` needs the network, so this is
       #    a fixed-output derivation: the recursive `outputHash` pins the exact
@@ -404,6 +425,15 @@
         # this line last did.
         x86_64-darwin = "sha256-9mysF9acNfbdTANAERZ5Z+R2PGL4vK8k3ZzISQnY8Ec=";
       };
+
+      # Whether this system can build anything with a real SPA in it. Every
+      # output that forces `spaNodeModules` (the real-SPA binaries, macDist,
+      # linuxDist, the real-SPA `tests`, and `packages`/`apps.default` on top
+      # of them) is gated on this, so a system with no pin (aarch64-linux
+      # today) still EVALUATES — `nix flake check --all-systems` included —
+      # and falls back to the placeholder-SPA `ledgeline`, rather than
+      # throwing the moment anything touches `default`.
+      hasRealSpa = spaNodeModulesHashes ? ${system};
 
       # The bun WORKSPACE (root package.json: web/, invoicer/web and
       # packages/*). `bun install` only needs the manifests and the
@@ -559,26 +589,6 @@
           meta = ledgeline.meta;
         });
 
-      # 3b. The shell CSP against the REAL SvelteKit shell. `security::shell_csp`
-      #     hashes the inline scripts of whatever is embedded, and every other
-      #     cargo test embeds the script-less placeholder, so without this a
-      #     SvelteKit upgrade could ship a shell the policy refuses (a blank
-      #     window) with every check green. Embeds `spaBuild` exactly as
-      #     `ledgelineWithSpa` does and runs ONE integration test, which
-      #     `LEDGELINE_REQUIRE_REAL_SPA` turns from "placeholder is fine" into
-      #     "placeholder is a failure". On the ci layer like `tests`, so only
-      #     the workspace crates compile, without LTO. The browser-level twin
-      #     is web/e2e/csp.same-origin.e2e.ts.
-      spaShellCsp = craneLib.cargoTest (commonArgs
-        // ciProfile
-        // {
-          cargoArtifacts = cargoArtifactsCi;
-          pname = "ledgeline-spa-shell-csp";
-          preBuild = embedRealSpa;
-          LEDGELINE_REQUIRE_REAL_SPA = "1";
-          cargoTestExtraArgs = "-p ledgeline --test spa_shell_csp";
-        });
-
       # 3c. Ledgeline Invoicer (`ledgeline-invoicer`, invoicer/): the same
       #     three steps for the second app. Its build.rs mirrors
       #     `invoicer/web/build` into the crate's `spa/`, as the server's does
@@ -637,21 +647,6 @@
               description = "Ledgeline Invoicer — plain-text invoices linked into hledger books (desktop app and CLI)";
               mainProgram = "ledgeline-invoicer";
             };
-        });
-
-      # The invoicer's `spaShellCsp`: its SPA under the shell's CSP, against
-      # the REAL `invoicerSpaBuild` (`app::spa_shell_csp_tests`, the same
-      # oracle as Ledgeline's). A unit test of the binary, hence `--bin`; the
-      # name filter picks it out of the crate's other unit tests. On the ci
-      # layer like `spaShellCsp`.
-      invoicerSpaShellCsp = craneLib.cargoTest (commonArgs
-        // ciProfile
-        // {
-          cargoArtifacts = cargoArtifactsCi;
-          pname = "ledgeline-invoicer-spa-shell-csp";
-          preBuild = embedInvoicerSpa;
-          LEDGELINE_REQUIRE_REAL_SPA = "1";
-          cargoTestExtraArgs = "-p ledgeline-invoicer --bin ledgeline-invoicer spa_shell_csp";
         });
 
       # 4. Icon: assets/ledgeline.png (1024²) → a multi-resolution
@@ -1227,14 +1222,6 @@
           };
         };
       };
-
-      # Checks that embed the real SPA, so they need `spaNodeModules`, whose
-      # outputHash exists only for the systems pinned in
-      # `spaNodeModulesHashes`. Elsewhere (aarch64-linux) forcing it throws, so
-      # the check is simply absent there rather than breaking evaluation.
-      realSpaChecks = lib.optionalAttrs (spaNodeModulesHashes ? ${system}) {
-        inherit spaShellCsp invoicerSpaShellCsp;
-      };
     in {
       # Buildable outputs. `nix build .#ledgeline` proves the GUI deps resolve
       # (webkitgtk on Linux, system WebKit on macOS); the checks reuse the
@@ -1259,7 +1246,11 @@
         # SvelteKit UI and (b) has a WebKit web process that can actually create
         # an EGL display off NixOS. `.#ledgeline` stays the bare,
         # placeholder-SPA binary on every system (CI + releases).
-        // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+        #
+        # Both platform blocks need `hasRealSpa`: on a system with no pinned
+        # `spaNodeModules` hash (aarch64-linux) they are absent and `default`
+        # stays the bare `ledgeline`, which evaluates and builds anywhere.
+        // lib.optionalAttrs (pkgs.stdenv.hostPlatform.isLinux && hasRealSpa) {
           inherit linuxDist spaNodeModules spaBuild ledgelineWithSpa;
           inherit invoicerSpaBuild invoicerWithSpa;
           default = linuxDist;
@@ -1274,23 +1265,21 @@
         # up. `.#macApp` is the app bundle alone. On Linux `default` stays the
         # headless `ledgeline` binary. `.#ledgeline` remains the binary on every
         # system (CI); `apps.default` / `nix run .` run it.
-        // lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
+        // lib.optionalAttrs (pkgs.stdenv.hostPlatform.isDarwin && hasRealSpa) {
           inherit macApp macDist spaNodeModules spaBuild ledgelineWithSpa ledgelineIcns bundledHledger;
           # Ledgeline Invoicer.app (`result/Applications/Ledgeline Invoicer.app`)
           # and what it is assembled from. Not part of `macDist`/`default`.
           inherit invoicerMacApp invoicerWithSpa invoicerSpaBuild invoicerIcns;
           default = macDist;
-        }
-        // realSpaChecks;
+        };
 
       # `nix flake check` runs all of these; CI invokes them individually
-      # (`nix build .#{fmt,clippy,tests,spaShellCsp,invoicerSpaShellCsp}`; `ledgeline` is flake-check only) — the bare attr
-      # resolves to the current system automatically.
-      checks =
-        {
-          inherit ledgeline clippy fmt tests;
-        }
-        // realSpaChecks;
+      # (`nix build .#{fmt,clippy,tests}`; `ledgeline` is flake-check only) — the
+      # bare attr resolves to the current system automatically. `tests` also
+      # covers both shells' CSP against the real SPAs wherever `hasRealSpa`.
+      checks = {
+        inherit ledgeline clippy fmt tests;
+      };
 
       # `nix run .` → the REAL app on BOTH platforms, so
       # `nix run github:zmre/ledgeline -- ~/finance/2026.journal` opens the real
@@ -1312,9 +1301,15 @@
       # failed for everyone on Linux while `nix build` / `nix profile install`
       # stayed fine. Nothing in `nix flake check` builds an app's program path,
       # so this is not caught by the gate; say the name out loud instead.
+      #
+      # With no pinned SPA hash (aarch64-linux) this falls back to the bare,
+      # placeholder-SPA `ledgeline`, as `packages.default` does: a working
+      # `nix run -- --server …` and an evaluable flake, rather than an error.
       apps.default = flake-utils.lib.mkApp {
         drv =
-          if pkgs.stdenv.hostPlatform.isDarwin
+          if !hasRealSpa
+          then ledgeline
+          else if pkgs.stdenv.hostPlatform.isDarwin
           then ledgelineWithSpa
           else linuxDist;
         name = "ledgeline";

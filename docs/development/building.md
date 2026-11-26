@@ -99,11 +99,11 @@ git push --no-verify
 There are two layers, one per cargo profile, because cargo only reuses
 artifacts built with the same profile and the same resolved features:
 
-| Layer | Profile | Used by |
-| --- | --- | --- |
-| `.#cargoArtifacts` | `release` (fat LTO, `codegen-units = 1`) | what ships: `.#ledgeline`, `.#ledgelineWithSpa`, macApp/macDist, linuxDist |
-| `.#cargoArtifactsCi` | `ci` (release minus LTO, `codegen-units = 16`; see `Cargo.toml`) | the checks: `.#tests`, `.#clippy`, `.#spaShellCsp`, `.#invoicerSpaShellCsp` |
-| `.#cargoArtifactsInvoicer` | `release`, **chained** on `.#cargoArtifacts` | Ledgeline Invoicer: `.#invoicerWithSpa`, `.#invoicerMacApp`, linuxDist's invoicer |
+| Layer                      | Profile                                                          | Used by                                                                           |
+|----------------------------|------------------------------------------------------------------|-----------------------------------------------------------------------------------|
+| `.#cargoArtifacts`         | `release` (fat LTO, `codegen-units = 1`)                         | what ships: `.#ledgeline`, `.#ledgelineWithSpa`, macApp/macDist, linuxDist        |
+| `.#cargoArtifactsCi`       | `ci` (release minus LTO, `codegen-units = 16`; see `Cargo.toml`) | the checks: `.#tests`, `.#clippy`                                                 |
+| `.#cargoArtifactsInvoicer` | `release`, **chained** on `.#cargoArtifacts`                     | Ledgeline Invoicer: `.#invoicerWithSpa`, `.#invoicerMacApp`, linuxDist's invoicer |
 
 The invoicer's layer starts from Ledgeline's and adds only what `build -p
 ledgeline-invoicer` needs beyond it (MBR and its tree, ~130 crates, and shared
@@ -122,12 +122,13 @@ Each layer also runs the same cargo commands, with the same feature flags and
 the same `-p` selection, as the outputs that reuse it, because cargo unifies
 features over the packages a command selects. The ci layer runs
 `--features ledgeline-ffi/mobile` over the workspace (what `tests` and `clippy`
-pass) plus `test --no-run -p ledgeline` and `-p ledgeline-invoicer` passes for
-`spaShellCsp` and `invoicerSpaShellCsp`; the release layer runs `build -p
-ledgeline`, like `.#ledgeline` and `.#ledgelineWithSpa`.
+pass); the release layer runs `build -p ledgeline`, like `.#ledgeline` and
+`.#ledgelineWithSpa`.
 When either one doesn't match, the output recompiles every crate whose features
-differ. CI run 45513409069 hit that: 122 crates for `spaShellCsp`, and ~220
-for each `ledgeline` build when the release layer built the whole workspace.
+differ. CI run 45513409069 hit that: 122 crates for the old `spaShellCsp`
+check (a `test -p ledgeline`), and ~220 for each `ledgeline` build when the
+release layer built the whole workspace. That is why nothing on the ci layer
+tests a `-p` subset: the real-SPA CSP tests run inside `.#tests`.
 
 Because the dependency layer's hash depends only on `Cargo.toml` / `Cargo.lock`
 (not on your source), editing a `.rs` file or a fixture recompiles only the
@@ -238,17 +239,24 @@ struct SpaAssets;
 writes a placeholder when there is none (rust-embed refuses to *compile* against
 a missing folder). Neither directory is in the Nix source, so the flake's
 `preBuild` drops a placeholder `web/build/index.html` before every cargo phase of
-`.#ledgeline`, `.#clippy` and `.#tests`.
+`.#ledgeline` and `.#clippy`.
 
-Consequence: **those three embed a script-less placeholder SPA.** Fine for
+Consequence: **those two embed a script-less placeholder SPA.** Fine for
 proving the Rust compiles, links and passes; useless for anything about the real
 UI. The SvelteKit SPA IS built inside Nix (`spaNodeModules` → `spaBuild`), and
 the outputs that need it copy it into `web/build` instead: `ledgelineWithSpa`
 (what `macDist`, `linuxDist` and `nix run` ship, and what the CI `e2e` job runs
-for `web/e2e/csp.same-origin.e2e.ts`), and the `spaShellCsp` check, which runs
-`tests/spa_shell_csp.rs` against the real shell with
-`LEDGELINE_REQUIRE_REAL_SPA=1` so the CSP's inline-script hashes are tested
-against what actually ships. Locally, build the SPA first (next section).
+for `web/e2e/csp.same-origin.e2e.ts`), and `.#tests`, which embeds both
+`spaBuild` and `invoicerSpaBuild` and sets `LEDGELINE_REQUIRE_REAL_SPA=1`, so
+`tests/spa_shell_csp.rs` and the invoicer's `app::spa_shell_csp_tests` check
+the CSP's inline-script hashes against what actually ships (and fail on a
+placeholder). Locally, build the SPA first (next section).
+
+All of this needs a pinned `spaNodeModules` hash for the system. On one without
+(aarch64-linux today) the real-SPA outputs are absent, `.#tests` embeds the
+placeholder, and `packages.default` / `apps.default` fall back to
+`.#ledgeline`, so the flake still evaluates there (`nix flake check
+--all-systems`).
 
 > The crane source filter also keeps the repo `fixtures/` tree in the build
 > source, because the integration tests read it at runtime
@@ -544,14 +552,15 @@ Each job installs Nix with `DeterminateSystems/determinate-nix-action@v3` and
 wires `cachix/cachix-action@v17` (cache `zmre`, pulling `nix-community`
 too). Jobs:
 
-| Job            | Runner(s) | Command                                                                                                                                                                                             |
-|----------------|-----------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `format-check` | ubuntu    | `nix build -L .#fmt` (runs first)                                                                                                                                                                   |
-| `clippy`       | ubuntu    | `nix build -L .#clippy`                                                                                                                                                                             |
-| `tests`        | ubuntu    | `nix build -L .#tests`, `.#spaShellCsp`, `.#invoicerSpaShellCsp` (+ pushes the Linux ci-profile deps layer)                                                                                         |
-| `build`        | ubuntu    | `nix build -L .#linuxDist` (both apps) (+ pushes the Linux release and invoicer deps layers; pushes and pins release artifacts on `main`)                                            |
-| `macos`        | macos-15  | one `nix build -L --no-link --keep-going .#tests .#clippy .#macDist .#spaShellCsp .#invoicerMacApp .#invoicerSpaShellCsp` (+ pushes the three darwin deps layers; pushes and pins release artifacts on `main`) |
-| `spa`          | ubuntu    | `bun install --frozen-lockfile`, then `bun run build`, `bun run test:unit`, `bun run check` and `bun run lint` in `web/` and `invoicer/web/`, and `test:unit`, `check` and `lint` in `packages/ui/` |
+| Job            | Runner(s) | Command                                                                                                                                                                                                         |
+|----------------|-----------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `format-check` | ubuntu    | `nix build -L .#fmt` (runs first)                                                                                                                                                                               |
+| `clippy`       | ubuntu    | `nix build -L .#clippy`                                                                                                                                                                                         |
+| `tests`        | ubuntu    | `nix build -L .#tests`, which also runs both shells' CSP tests against the real SPAs (+ pushes the Linux ci-profile deps layer)                                                                                 |
+| `build`        | ubuntu    | `nix build -L .#linuxDist` (both apps) (+ pushes the Linux release and invoicer deps layers; pushes and pins release artifacts on `main`)                                                                       |
+| `macos`        | macos-15  | one `nix build -L --no-link --keep-going .#tests .#clippy .#macDist .#invoicerMacApp` (+ pushes the three darwin deps layers; pushes and pins release artifacts on `main`)                                      |
+| `spa`          | ubuntu    | `bun install --frozen-lockfile`, then `bun run build`, `bun run test:unit`, `bun run check` and `bun run lint` in `web/` and `invoicer/web/`, and `test:unit`, `check` and `lint` in `packages/ui/`             |
+| `e2e`          | ubuntu    | one `nix build -L .#ledgelineWithSpa .#invoicerWithSpa`, then the vitest contract suites against a live engine, `bun run test:e2e` in `web/` and `bun run test:e2e` in `invoicer/web/` (`timeout-minutes: 120`) |
 
 Neither job builds the placeholder-SPA `.#ledgeline`: it is a separate release-profile
 LTO compile from `ledgelineWithSpa`, and `linuxDist` / `macDist` already prove the GUI deps
@@ -563,9 +572,14 @@ macOS is a single job because GitHub's free macOS runners are slow (an M1 with 3
 
 `clippy`, `tests`, `build`, and `macos` depend on `format-check` and share the crane
 dependency layer (populated once, then pulled from Cachix on later runs). The
-`e2e` job builds `.#ledgelineWithSpa`, runs the vitest contract suites against it, then
-runs the Playwright specs; `versions`, plus `audit` and `spa-audit` (called from `audit.yml`), round out
-the ten jobs. All of them run on `pull_request`, none is conditional, so all of them gate.
+`e2e` job builds `.#ledgelineWithSpa` and `.#invoicerWithSpa` in one invocation (they
+share the release deps layer), runs the vitest contract suites against the engine, then
+Ledgeline's Playwright specs and then the invoicer's (`invoicer/web/e2e`, what
+`just invoicer-e2e` runs locally, on ports 5197–5199 and 4273). The invoicer's suite runs
+even when Ledgeline's failed, so one red suite does not hide the other. Its 120-minute
+timeout covers a cold release deps layer plus both suites. The invoicer's suite is in CI
+only, not `just pre-push`. `versions`, plus `audit` and `spa-audit` (called from `audit.yml`),
+round out the ten jobs. All of them run on `pull_request`, none is conditional, so all of them gate.
 
 `.github/workflows/ci-rerun.yml` runs every 30 minutes and re-runs CI runs that failed only
 because GitHub never assigned a runner: every cancelled or failed job has no step that

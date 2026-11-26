@@ -118,25 +118,15 @@ jobs:
           extraPullNames: nix-community
           skipPush: true
 
+      # Also the shells' CSP against the REAL SvelteKit shells: on this system
+      # `.#tests` embeds `spaBuild` and `invoicerSpaBuild` (not the script-less
+      # placeholder) and sets LEDGELINE_REQUIRE_REAL_SPA=1, so
+      # tests/spa_shell_csp.rs and the invoicer's `app::spa_shell_csp_tests`
+      # FAIL on a placeholder. Without that a SvelteKit release that emits a
+      # script the policy does not hash would ship a blank window with nothing
+      # red. The browser-level twins are the e2e job's csp.same-origin specs.
       - name: Tests
         run: nix build -L .#tests
-
-      # The shell's CSP against the REAL SvelteKit shell. `.#tests` embeds the
-      # script-less placeholder, so it cannot see a SvelteKit release that emits
-      # a script the policy does not hash (a blank window, nothing red). This
-      # runs tests/spa_shell_csp.rs with `spaBuild` embedded and
-      # LEDGELINE_REQUIRE_REAL_SPA=1, under which a placeholder FAILS. Here, not
-      # in `build`, because it is a `ci`-profile test on `.#cargoArtifactsCi`
-      # like `.#tests`: in `build` it would pull (or rebuild) a second deps
-      # layer. The browser-level twin is the e2e job's csp.same-origin spec.
-      - name: CSP vs. the real SPA shell
-        run: nix build -L --no-link .#spaShellCsp
-
-      # The same for Ledgeline Invoicer's shell (`app::spa_shell_csp_tests`,
-      # the same oracle) with `invoicerSpaBuild` embedded. Same ci layer, so it
-      # adds the invoicer SPA's vite build and one test binary, not a deps build.
-      - name: CSP vs. the real invoicer SPA shell
-        run: nix build -L --no-link .#invoicerSpaShellCsp
 
       # The crane dependency layer is the multi-GB, 45+ minute part of every
       # cold build, and the ONLY thing whose cache hit changes how long CI
@@ -414,6 +404,9 @@ jobs:
       # ONE invocation, so the deps layer is realised once and the rest build
       # in parallel on top of it:
       #   * `.#tests`, `.#clippy` — the old macOS `tests` / `clippy` legs.
+      #     `.#tests` embeds the real `spaBuild` and `invoicerSpaBuild` (both
+      #     shared with the apps below), so it also covers both shells' CSP
+      #     against the real SPAs (see the `tests` job).
       #   * `.#macDist` — proves the GUI deps resolve against system WebKit,
       #     and is what a Mac user ends up with (`.#ledgeline`, the placeholder-SPA
       #     binary, is not, and is not built here: see `build`).
@@ -424,32 +417,26 @@ jobs:
       #     reachable from `.#ledgeline`, so without it
       #     `nix build github:zmre/ledgeline` / `nix profile install` on a Mac
       #     recompiles all of it even with our cache configured.
-      #   * `.#spaShellCsp` — the shell's CSP against the REAL SvelteKit shell
-      #     (see the same step in `build` for why); `spaBuild` is already in
-      #     the store from `macDist`.
       #   * `.#invoicerMacApp` — Ledgeline Invoicer.app, what the release's
       #     invoicer leg signs (invoicer PLAN 6a): the invoicer SPA, the
       #     `invoicerWithSpa` binary on `.#cargoArtifactsInvoicer` (chained on
       #     the release layer, so only the invoicer's extra crates compile),
       #     the icns and the de-nixing checks. Without it the first build of
       #     the bundle would be a release tag.
-      #   * `.#invoicerSpaShellCsp` — the invoicer's shell CSP, on the ci layer
-      #     like `.#spaShellCsp`; `invoicerSpaBuild` is shared with the app.
       #
       # `--keep-going` so one red check does not hide another: as three jobs, a
       # failing test still let clippy report; without it Nix stops scheduling
       # new builds at the first failure.
       - name: Tests, clippy, build (one nix build)
-        run: nix build -L --no-link --keep-going .#tests .#clippy .#macDist .#spaShellCsp .#invoicerMacApp .#invoicerSpaShellCsp
+        run: nix build -L --no-link --keep-going .#tests .#clippy .#macDist .#invoicerMacApp
 
       # GC root for the deps layer, so cache-nix-action's pre-save GC (above)
       # keeps the one path that makes the next run fast. An indirect root: the
       # out-link lives in the workspace, which survives until the post steps.
       # Same `!cancelled()` + local-store guard as the push below.
-      # All three layers: release (`.#cargoArtifacts`, for macDist),
-      # ci profile (`.#cargoArtifactsCi`, for tests/clippy/spaShellCsp and
-      # invoicerSpaShellCsp) and the invoicer's release delta
-      # (`.#cargoArtifactsInvoicer`, for invoicerMacApp).
+      # All three layers: release (`.#cargoArtifacts`, for macDist), ci
+      # profile (`.#cargoArtifactsCi`, for tests and clippy) and the invoicer's
+      # release delta (`.#cargoArtifactsInvoicer`, for invoicerMacApp).
       - name: Root the deps layers (for the store cache)
         if: ${{ !cancelled() }}
         run: |
@@ -474,8 +461,8 @@ jobs:
             exit 0
           fi
           # Every layer, like `build`. Pushing only the release one left the
-          # darwin ci layer (what tests/clippy/spaShellCsp reuse) off Cachix,
-          # so every macOS run rebuilt it.
+          # darwin ci layer (what tests/clippy reuse) off Cachix, so every
+          # macOS run rebuilt it.
           for attr in cargoArtifacts cargoArtifactsCi cargoArtifactsInvoicer; do
             deps=$(nix eval --raw ".#$attr.outPath")
             if ! nix path-info "$deps" >/dev/null 2>&1; then
@@ -598,7 +585,8 @@ jobs:
         run: bun run lint
 
       # Ledgeline Invoicer's SPA (invoicer/web), in the same bun workspace.
-      # Not in `e2e`: it has no Playwright suite yet.
+      # Its Playwright suite (invoicer/web/e2e) runs in `e2e`, which has the
+      # real-SPA binary it needs.
       - name: Invoicer SPA build
         working-directory: invoicer/web
         run: bun run build
@@ -615,15 +603,31 @@ jobs:
         working-directory: invoicer/web
         run: bun run lint
 
-  # The two suites that need a REAL engine behind the SPA, sharing one build of
-  # the binary:
+  # The suites that need a REAL server behind an SPA, sharing one Nix build of
+  # both binaries:
   #   * the round-trip contract tests (vitest, `describe.runIf(LEDGELINE_API_URL)`)
-  #   * the Playwright e2e specs, which assert hledger-verified fixture numbers
-  #     and are the only guard against wire drift between the engine and the SPA.
+  #   * Ledgeline's Playwright e2e specs, which assert hledger-verified fixture
+  #     numbers and are the only guard against wire drift between the engine
+  #     and the SPA.
+  #   * Ledgeline Invoicer's Playwright specs (invoicer/web/e2e), the only
+  #     browser-level coverage of the invoicer: keyboard navigation, the
+  #     document editor, and its shell booting under its own CSP.
+  #
+  # One job, not a sibling: the two binaries share the release deps layer
+  # (`.#cargoArtifactsInvoicer` is chained on `.#cargoArtifacts`), so one job
+  # fetches it, or on a cold Cargo.lock bump builds it, once; and the browser
+  # download and `bun install` happen once. The suites use disjoint ports
+  # (Ledgeline 5092–5099 and 4173, the invoicer 5197–5199 and 4273).
+  #
+  # The timeout covers a cold release deps layer (45+ minutes on these
+  # runners, see `tests`) plus both suites; a warm run is far inside it.
+  # Without one a wedged webServer or browser would hold the runner for
+  # GitHub's default six hours.
   e2e:
     name: E2E + API contract
     needs: format-check
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     env:
       TZ: America/Denver
     steps:
@@ -651,8 +655,18 @@ jobs:
       # SPA, and csp.same-origin.e2e.ts loads the app from the engine itself to
       # prove the shipped shell boots under its own CSP. This is the same
       # derivation `linuxDist` wraps, so the `build` job pushes and pins it.
-      - name: Build ledgeline (real SPA embedded)
-        run: nix build -L .#ledgelineWithSpa
+      #
+      # `invoicerWithSpa` likewise (linuxDist wraps it too), for the invoicer's
+      # suite. ONE invocation, so Nix schedules both compiles on top of the
+      # shared release layer in parallel; the out-links are made afterwards
+      # (instant, both are in the store) so neither depends on the
+      # `result`/`result-1` numbering of a multi-installable build.
+      - name: Build ledgeline and ledgeline-invoicer (real SPAs embedded)
+        id: bins
+        run: |
+          nix build -L --no-link .#ledgelineWithSpa .#invoicerWithSpa
+          nix build --out-link result .#ledgelineWithSpa
+          nix build --out-link result-invoicer .#invoicerWithSpa
 
       # Same pin as the `spa` job's, for the same reason.
       - name: Setup Bun
@@ -664,9 +678,13 @@ jobs:
         working-directory: web
         run: bun install --frozen-lockfile
 
-      # playwright.config.ts declares no `projects`, so the suite runs on the
-      # default browser (chromium) — the only one worth downloading.
+      # Neither playwright.config.ts names a browser (the invoicer's
+      # `projects` only order its specs), so both suites run on the default,
+      # chromium — the only one worth downloading. One @playwright/test, hoisted
+      # to the workspace root, serves both, so this one install covers the
+      # invoicer's suite too.
       - name: Install Playwright chromium
+        id: browsers
         working-directory: web
         run: bunx playwright install --with-deps chromium
 
@@ -715,16 +733,40 @@ jobs:
           REQUIRE_REAL_SPA: "1"
         run: bun run test:e2e
 
-      # playwright.config.ts sets no `reporter`, so there is no playwright-report/
-      # to collect — but a failing spec still drops its error context (page
-      # snapshot, console) under test-results/, which is what makes a red headless
-      # run debuggable after the fact.
+      # The invoicer's suite: what `just invoicer-e2e` runs, against the Nix
+      # binary. Its playwright.config.ts starts four servers itself: the
+      # invoicer `--server` on 5199, 5198 and 5197, each over a fresh scratch
+      # copy of an invoicer/fixtures/ book under target/ (created by the
+      # config; there is no cargo target dir here otherwise), and `bun run
+      # build && bun run preview` on 4273. LEDGELINE_INVOICER_BIN points them
+      # at the Nix binary, which is absolute because the servers run from
+      # invoicer/web. REQUIRE_REAL_SPA=1 makes csp.same-origin, empty and cash,
+      # which load the SPA the server embeds, fail on a placeholder instead of
+      # skipping.
+      #
+      # Runs even when Ledgeline's contract tests or e2e failed, so one red
+      # suite does not hide the other; but not when the binaries or the
+      # browser never arrived, where it could only fail for the same reason.
+      - name: Invoicer E2E (Playwright)
+        if: ${{ !cancelled() && steps.bins.outcome == 'success' && steps.browsers.outcome == 'success' }}
+        working-directory: invoicer/web
+        env:
+          LEDGELINE_INVOICER_BIN: ${{ github.workspace }}/result-invoicer/bin/ledgeline-invoicer
+          REQUIRE_REAL_SPA: "1"
+        run: bun run test:e2e
+
+      # Neither playwright.config.ts sets a `reporter`, so there is no
+      # playwright-report/ to collect — but a failing spec still drops its
+      # error context (page snapshot, console) under test-results/, which is
+      # what makes a red headless run debuggable after the fact.
       - name: Upload Playwright failure context
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: playwright-test-results
-          path: web/test-results/
+          path: |
+            web/test-results/
+            invoicer/web/test-results/
           if-no-files-found: ignore
           retention-days: 7
 

@@ -19,9 +19,9 @@
 //!   the invoicer's twin of this test.
 //! * **`LEDGELINE_REQUIRE_REAL_SPA=1` makes a placeholder a FAILURE.** A plain
 //!   `cargo test` on a fresh checkout embeds the placeholder, and the invariants
-//!   still hold for it, so the test runs and passes there. The
-//!   `spaShellCsp` Nix check embeds the real `spaBuild` output and sets the
-//!   variable, so a silently-placeholder build cannot pass for a real one.
+//!   still hold for it, so the test runs and passes there. The Nix `tests`
+//!   check embeds the real `spaBuild` output and sets the variable, so a
+//!   silently-placeholder build cannot pass for a real one.
 
 mod common;
 #[path = "../../ledgeline-shell/tests/support/shell_csp_oracle.rs"]
@@ -91,7 +91,7 @@ async fn the_shell_csp_admits_exactly_the_inline_scripts_it_serves() {
         &html,
         std::env::var_os(REQUIRE_REAL_SPA).is_some(),
         sha256_source,
-        "Run `bun run build` in web/ first (or `nix build .#spaShellCsp`) to check the real one.",
+        "Run `bun run build` in web/ first (or `nix build .#tests`) to check the real one.",
     );
 }
 
