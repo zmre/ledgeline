@@ -1,0 +1,301 @@
+{
+  "file": "present",
+  "problem": null,
+  "problems": [],
+  "readOnly": false,
+  "revision": "89-82d7901459de24c7",
+  "values": {
+    "invoices-dir": "invoices",
+    "customers-dir": "customers",
+    "templates-dir": "invoices/tpl",
+    "catalog": "invoices/catalog.md",
+    "company": "[[My Company]]",
+    "receivable-account": null,
+    "revenue-account": "revenue:consulting",
+    "deposit-account": "liabilities:customer-deposits",
+    "discount-account": null,
+    "filename": "{date} {customer} Invoice {invoice_num}.md",
+    "number-start": "201",
+    "default-terms": null,
+    "default-template": null,
+    "pdf-dir": "invoices/pdf",
+    "cash-deposits": "income-on-receipt",
+    "payment-allocation": "match-rows",
+    "recalc-on-save": "drafts",
+    "aging-buckets": [
+      30,
+      60,
+      90
+    ],
+    "dso-days": 90,
+    "paid-window-days": 30,
+    "words": {
+      "description": [
+        "Description",
+        "Item",
+        "Service",
+        "Product"
+      ],
+      "quantity": [
+        "Qty",
+        "Quantity",
+        "Hours",
+        "Units"
+      ],
+      "rate": [
+        "Rate",
+        "Price",
+        "Unit price",
+        "Unit cost"
+      ],
+      "amount": [
+        "Amount",
+        "Total",
+        "Line total"
+      ],
+      "date": [
+        "Date",
+        "Service date"
+      ],
+      "unit": [
+        "Unit"
+      ],
+      "item": [
+        "Code",
+        "SKU"
+      ],
+      "subtotal": [
+        "Subtotal"
+      ],
+      "total": [
+        "Total due",
+        "Total",
+        "Balance due",
+        "Amount due"
+      ],
+      "deposit": [
+        "Less deposit"
+      ],
+      "tax": [
+        "Sales tax"
+      ],
+      "customer-tag": "customer",
+      "billing-labels": [
+        "billing",
+        "work"
+      ]
+    }
+  },
+  "defaults": {
+    "invoices-dir": "invoices",
+    "customers-dir": "customers",
+    "templates-dir": "invoices/tpl",
+    "catalog": "invoices/catalog.md",
+    "company": null,
+    "receivable-account": null,
+    "revenue-account": null,
+    "deposit-account": null,
+    "discount-account": null,
+    "filename": "{date} {customer} Invoice {invoice_num}.md",
+    "number-start": null,
+    "default-terms": null,
+    "default-template": null,
+    "pdf-dir": "invoices/pdf",
+    "cash-deposits": "income-on-receipt",
+    "payment-allocation": "match-rows",
+    "recalc-on-save": "drafts",
+    "aging-buckets": [
+      30,
+      60,
+      90
+    ],
+    "dso-days": 90,
+    "paid-window-days": 30,
+    "words": {
+      "description": [
+        "Description",
+        "Item",
+        "Service",
+        "Product"
+      ],
+      "quantity": [
+        "Qty",
+        "Quantity",
+        "Hours",
+        "Units"
+      ],
+      "rate": [
+        "Rate",
+        "Price",
+        "Unit price",
+        "Unit cost"
+      ],
+      "amount": [
+        "Amount",
+        "Total",
+        "Line total"
+      ],
+      "date": [
+        "Date",
+        "Service date"
+      ],
+      "unit": [
+        "Unit"
+      ],
+      "item": [
+        "Code",
+        "SKU"
+      ],
+      "subtotal": [
+        "Subtotal"
+      ],
+      "total": [
+        "Total due",
+        "Total",
+        "Balance due",
+        "Amount due"
+      ],
+      "deposit": [
+        "Less deposit"
+      ],
+      "tax": [
+        "Sales tax"
+      ],
+      "customer-tag": "customer",
+      "billing-labels": [
+        "billing",
+        "work"
+      ]
+    }
+  },
+  "set": [
+    "company",
+    "number-start",
+    "revenue-account",
+    "deposit-account"
+  ],
+  "inferred": {
+    "receivable-account": null,
+    "revenue-account": null,
+    "deposit-account": "liabilities:deferred-revenue"
+  },
+  "nextNumber": {
+    "number": "208",
+    "after": "207",
+    "source": "document"
+  },
+  "books": {
+    "basis": "cash",
+    "closedThrough": null
+  },
+  "booksError": null,
+  "choices": {
+    "templates": [
+      {
+        "value": "/invoices/tpl/myco-default.html",
+        "name": "MyCo default",
+        "kinds": [
+          "invoice",
+          "estimate"
+        ],
+        "starter": false
+      },
+      {
+        "value": "/invoices/tpl/classic.html",
+        "name": "Classic",
+        "kinds": [
+          "invoice",
+          "estimate",
+          "credit-note"
+        ],
+        "starter": true
+      },
+      {
+        "value": "/invoices/tpl/modern.html",
+        "name": "Modern",
+        "kinds": [
+          "invoice",
+          "estimate",
+          "credit-note"
+        ],
+        "starter": true
+      }
+    ],
+    "companies": [
+      {
+        "title": "My Company",
+        "link": "[[My Company]]"
+      },
+      {
+        "title": "Contoso",
+        "link": "[[Contoso]]"
+      },
+      {
+        "title": "Customer X",
+        "link": "[[Customer X]]"
+      },
+      {
+        "title": "Fabrikam",
+        "link": "[[Fabrikam]]"
+      },
+      {
+        "title": "Tailspin",
+        "link": "[[Tailspin]]"
+      },
+      {
+        "title": "Wingtip",
+        "link": "[[Wingtip]]"
+      }
+    ],
+    "accounts": [
+      "assets",
+      "assets:bank",
+      "assets:bank:checking",
+      "equity",
+      "equity:opening",
+      "expenses",
+      "expenses:payment fees",
+      "income",
+      "income:unknown",
+      "liabilities",
+      "liabilities:customer-deposits",
+      "revenue",
+      "revenue:consulting",
+      "revenue:consulting:delivery"
+    ]
+  },
+  "affectsBookings": [
+    "receivable-account",
+    "revenue-account",
+    "deposit-account",
+    "discount-account",
+    "cash-deposits",
+    "payment-allocation"
+  ],
+  "coming": [
+    {
+      "id": "oldest-row-first",
+      "setting": "payment-allocation",
+      "section": "payments",
+      "label": "Oldest row first"
+    },
+    {
+      "id": "keep-deferral",
+      "setting": "cash-deposits",
+      "section": "payments",
+      "label": "Cash books: keep a deposit as a deferral"
+    },
+    {
+      "id": "first-open-day",
+      "setting": null,
+      "section": "editing",
+      "label": "Sending into a closed period: book it on the first open day"
+    },
+    {
+      "id": "reverse-and-rebook",
+      "setting": null,
+      "section": "editing",
+      "label": "Editing a sent invoice: reverse it and book it again"
+    }
+  ]
+}

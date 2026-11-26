@@ -660,6 +660,10 @@ pub struct Created {
     /// The text (always on a dry run).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// What the draft fell back from ([`draft::Draft::warnings`]); the
+    /// caller lists them with its own.
+    #[serde(skip)]
+    pub warnings: Vec<String>,
 }
 
 /// `new`: render a draft (numbered over the files and `booked`) and, unless
@@ -687,6 +691,7 @@ pub fn create(
         total,
         written: !dry_run,
         text: dry_run.then_some(made.text),
+        warnings: made.warnings,
     })
 }
 

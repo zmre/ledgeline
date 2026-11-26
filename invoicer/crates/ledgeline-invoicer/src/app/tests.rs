@@ -18,7 +18,7 @@ pub(super) const TOKEN: &str = "router-test-token-0123456789";
 const PORT: u16 = 5199;
 pub(super) const HOST: &str = "127.0.0.1:5199";
 
-fn copy_tree(src: &Path, dest: &Path) {
+pub(super) fn copy_tree(src: &Path, dest: &Path) {
     std::fs::create_dir_all(dest).expect("mkdir");
     for entry in std::fs::read_dir(src).expect("read_dir") {
         let entry = entry.expect("entry");
@@ -105,7 +105,7 @@ pub(super) async fn send(
     (status, headers, String::from_utf8_lossy(&body).into_owned())
 }
 
-fn get(path: &str) -> axum::http::request::Builder {
+pub(super) fn get(path: &str) -> axum::http::request::Builder {
     Request::get(path).header(header::HOST, HOST)
 }
 
@@ -330,8 +330,21 @@ async fn the_reconciler_follows_changes() {
             .is_none()
     );
 
-    // A settings change re-opens the session and reconciles everything.
+    // A settings file whose `[invoicer]` and `[books]` read as before (a
+    // touch, a Save's echo, a theme pin) reconciles nothing.
     let settings = root.join("ledgeline.toml");
+    assert!(
+        books
+            .apply_changes(std::slice::from_ref(&settings))
+            .is_none()
+    );
+    // A settings change re-opens the session and reconciles everything.
+    let text = std::fs::read_to_string(&settings).expect("reads");
+    std::fs::write(
+        &settings,
+        format!("{text}\n[invoicer.words]\ntax = [\"VAT\"]\n"),
+    )
+    .expect("writes");
     let all = books
         .apply_changes(std::slice::from_ref(&settings))
         .expect("ran");
@@ -1584,7 +1597,7 @@ async fn a_preview_is_a_gated_page_under_mbrs_policy() {
 
 /// The next server-sent event's text from `body`, or `None` when nothing
 /// came within `wait`.
-async fn next_event(body: &mut Body, wait: std::time::Duration) -> Option<String> {
+pub(super) async fn next_event(body: &mut Body, wait: std::time::Duration) -> Option<String> {
     let mut text = String::new();
     let deadline = tokio::time::Instant::now() + wait;
     loop {
@@ -1602,7 +1615,7 @@ async fn next_event(body: &mut Body, wait: std::time::Duration) -> Option<String
 }
 
 /// Open `GET /api/events` and read its `ready` event.
-async fn events(app: &App) -> Body {
+pub(super) async fn events(app: &App) -> Body {
     let response = app
         .router
         .clone()

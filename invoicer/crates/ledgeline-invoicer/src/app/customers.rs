@@ -40,7 +40,7 @@ use serde_json::{Value, json};
 
 use super::AppState;
 use super::api::{
-    ApiError, ApiResult, bad, blocking, given, no_books, sort_dir, to_value, today, with_books,
+    ApiError, ApiResult, bad, blocking, given, sort_dir, to_value, today, with_books,
 };
 use super::books::OpenBooks;
 
@@ -133,7 +133,7 @@ async fn create(
     body: Result<Json<CustomerFields>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let Json(fields) = body.map_err(|e| ApiError::bad_request(e.body_text()))?;
-    let books = state.books().ok_or_else(no_books)?;
+    let books = state.open_books()?;
     let mut response = blocking(StatusCode::OK, move || {
         let mut session = books.session();
         let (index, vault) = session.parts_mut();
@@ -346,7 +346,7 @@ async fn update(
 ) -> ApiResult {
     let Json(body) = body.map_err(|e| ApiError::bad_request(e.body_text()))?;
     let day = today(body.today.as_deref())?;
-    let books = state.books().ok_or_else(no_books)?;
+    let books = state.open_books()?;
     blocking(StatusCode::OK, move || {
         let mut session = books.session();
         let path = find(&session, &key)?;

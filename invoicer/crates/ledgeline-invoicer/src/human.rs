@@ -573,7 +573,29 @@ pub fn customer(detail: &CustomerDetail<'_>) -> String {
 ///
 /// # Errors
 /// When the settings don't serialize (they always should).
-pub fn config(view: &ConfigView<'_>) -> Result<String, toml::ser::Error> {
+/// The payment matcher's effective settings, as `config` shows them: the
+/// UI preference keys they are kept under (shared with Ledgeline).
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Matching {
+    pub settlement_lookback_days: u32,
+    pub settlement_tolerance_bps: u32,
+    pub settlement_lead_days: u32,
+}
+
+impl Matching {
+    /// From the matcher's settings.
+    #[must_use]
+    pub fn of(settle: &ledgeline_core::accrual::settle::SettleSettings) -> Self {
+        Self {
+            settlement_lookback_days: settle.lookback_days,
+            settlement_tolerance_bps: settle.tolerance_bps,
+            settlement_lead_days: settle.lead_days,
+        }
+    }
+}
+
+pub fn config(view: &ConfigView<'_>, matching: &Matching) -> Result<String, toml::ser::Error> {
     let mut out = format!(
         "# journal: {}\n# books folder: {}\n",
         view.journal, view.books_folder
@@ -591,6 +613,19 @@ pub fn config(view: &ConfigView<'_>) -> Result<String, toml::ser::Error> {
         books: &view.books,
         invoicer: view.invoicer,
     })?);
+    // Not this file's unless pinned: shared with Ledgeline in ui-prefs.toml,
+    // kept for these books under [ui].
+    out.push_str(
+        "\n# Payment matching, shared with Ledgeline (ui-prefs.toml; [ui] in this file\n\
+         # keeps a value for these books only):\n",
+    );
+    for (key, value) in [
+        ("settlementLookbackDays", matching.settlement_lookback_days),
+        ("settlementToleranceBps", matching.settlement_tolerance_bps),
+        ("settlementLeadDays", matching.settlement_lead_days),
+    ] {
+        let _ = writeln!(out, "# {key} = {value}");
+    }
     Ok(out)
 }
 

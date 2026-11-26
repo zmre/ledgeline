@@ -51,6 +51,13 @@ pub struct Settings {
     /// integer or text in the TOML).
     #[serde(deserialize_with = "number_text")]
     pub number_start: Option<String>,
+    /// A new invoice's payment terms, in net days, when neither it nor its
+    /// customer names any (`0` to [`MAX_TERMS_DAYS`]).
+    pub default_terms: Option<u32>,
+    /// A new invoice's template, as its `template:` holds it
+    /// (`/invoices/tpl/classic.html`), when neither it nor its customer
+    /// names one; else the first template for its type.
+    pub default_template: Option<String>,
     /// Where final PDFs are kept (ignored by discovery).
     pub pdf_dir: String,
     /// Cash books: how a deposit invoice's payment is booked.
@@ -91,6 +98,9 @@ pub const MAX_PAID_WINDOW_DAYS: u32 = 3660;
 
 /// The most aging bucket edges `aging-buckets` may list.
 pub const MAX_AGING_BUCKETS: usize = 8;
+
+/// The longest `default-terms`: ten years of net days.
+pub const MAX_TERMS_DAYS: u32 = 3650;
 
 /// `cash-deposits`: how cash books book a deposit (accounting policy; there
 /// is more than one valid way, so it is a setting).
@@ -160,6 +170,8 @@ impl Default for Settings {
             discount_account: None,
             filename: "{date} {customer} Invoice {invoice_num}.md".to_string(),
             number_start: None,
+            default_terms: None,
+            default_template: None,
             pdf_dir: "invoices/pdf".to_string(),
             cash_deposits: CashDeposits::default(),
             payment_allocation: PaymentAllocation::default(),
@@ -175,67 +187,359 @@ impl Default for Settings {
 /// Why `[invoicer]` can't be read.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum SettingsError {
-    /// Not TOML, an unknown key, a bad value.
-    #[error("ledgeline.toml [invoicer]: {0}")]
-    Invalid(String),
+    /// Not TOML, an unknown setting, a bad value. `key` names the setting
+    /// as the file does (`filename`, `words.quantity`), `None` for the file
+    /// as a whole; `message` is a plain sentence that names no key, for the
+    /// Settings page.
+    #[error("ledgeline.toml [invoicer]{}: {message}", key.as_deref().map(|k| format!(" {k}")).unwrap_or_default())]
+    Invalid {
+        /// The setting.
+        key: Option<String>,
+        /// Why, in plain words.
+        message: String,
+    },
     /// The file is there but can't be read.
     #[error("ledgeline.toml can't be read: {0}")]
     Unreadable(String),
+}
+
+impl SettingsError {
+    /// A problem with the setting `key`.
+    #[must_use]
+    pub fn invalid(key: &str, message: impl Into<String>) -> Self {
+        Self::Invalid {
+            key: Some(key.to_string()),
+            message: message.into(),
+        }
+    }
+
+    /// A problem with the file as a whole.
+    #[must_use]
+    pub fn invalid_file(message: impl Into<String>) -> Self {
+        Self::Invalid {
+            key: None,
+            message: message.into(),
+        }
+    }
+}
+
+/// The settings `[invoicer]` may set, as the file names them, in the
+/// Settings page's order. `words` is the `[invoicer.words]` table
+/// ([`WORD_KEYS`]).
+pub const KEYS: [&str; 20] = [
+    "company",
+    "filename",
+    "number-start",
+    "default-terms",
+    "default-template",
+    "receivable-account",
+    "revenue-account",
+    "deposit-account",
+    "discount-account",
+    "cash-deposits",
+    "payment-allocation",
+    "recalc-on-save",
+    "aging-buckets",
+    "dso-days",
+    "paid-window-days",
+    "invoices-dir",
+    "customers-dir",
+    "templates-dir",
+    "catalog",
+    "pdf-dir",
+];
+
+/// The settings `[invoicer.words]` may set; `words.<key>` elsewhere.
+pub const WORD_KEYS: [&str; 13] = [
+    "description",
+    "quantity",
+    "rate",
+    "amount",
+    "date",
+    "unit",
+    "item",
+    "subtotal",
+    "total",
+    "deposit",
+    "tax",
+    "customer-tag",
+    "billing-labels",
+];
+
+/// A setting's name in plain words, for messages ("the file name", never
+/// `filename`): `key` as [`KEYS`] names it, or `words.<key>`.
+#[must_use]
+pub fn label(key: &str) -> &'static str {
+    match key {
+        "company" => "your company",
+        "invoices-dir" => "the invoices folder",
+        "customers-dir" => "the customers folder",
+        "templates-dir" => "the templates folder",
+        "catalog" => "the catalog note",
+        "pdf-dir" => "the PDF folder",
+        "filename" => "the new invoice file name",
+        "number-start" => "the first invoice number",
+        "default-terms" => "the default payment terms",
+        "default-template" => "the default template",
+        "receivable-account" => "the receivable account",
+        "revenue-account" => "the revenue account",
+        "deposit-account" => "the deposit account",
+        "discount-account" => "the discount account",
+        "cash-deposits" => "how deposit payments book",
+        "payment-allocation" => "how a payment is split over rows",
+        "recalc-on-save" => "recalculating drafts after outside edits",
+        "aging-buckets" => "the aging ranges",
+        "dso-days" => "the days-sales-outstanding window",
+        "paid-window-days" => "the paid window",
+        "words.description" => "the description column's words",
+        "words.quantity" => "the quantity column's words",
+        "words.rate" => "the rate column's words",
+        "words.amount" => "the amount column's words",
+        "words.date" => "the date column's words",
+        "words.unit" => "the unit column's words",
+        "words.item" => "the item code column's words",
+        "words.subtotal" => "the subtotal row's words",
+        "words.total" => "the total row's words",
+        "words.deposit" => "the deposit row's words",
+        "words.tax" => "the tax row's words",
+        "words.customer-tag" => "the customer tag",
+        "words.billing-labels" => "the billing labels",
+        _ => "this setting",
+    }
+}
+
+/// Whether `key` names a setting: one of [`KEYS`], or `words.` and one of
+/// [`WORD_KEYS`].
+#[must_use]
+pub fn is_key(key: &str) -> bool {
+    KEYS.contains(&key)
+        || key
+            .strip_prefix("words.")
+            .is_some_and(|word| WORD_KEYS.contains(&word))
+}
+
+/// What a value of `key` must be, in plain words (after "must be").
+fn expected(key: &str) -> String {
+    match key {
+        "invoices-dir" | "customers-dir" | "templates-dir" | "pdf-dir" => {
+            "a folder inside the books folder".to_string()
+        }
+        "catalog" => "a note inside the books folder".to_string(),
+        "default-template" => "an .html template inside the books folder".to_string(),
+        "filename" | "company" | "receivable-account" | "revenue-account" | "deposit-account"
+        | "discount-account" | "words.customer-tag" => "text".to_string(),
+        "number-start" => "a number, or text such as 2026-0001".to_string(),
+        "default-terms" => format!("a whole number of days from 0 to {MAX_TERMS_DAYS}"),
+        "cash-deposits" | "payment-allocation" | "recalc-on-save" => {
+            "one of the choices offered".to_string()
+        }
+        "aging-buckets" => format!(
+            "1 to {MAX_AGING_BUCKETS} increasing numbers of days above zero, such as 30, 60, 90"
+        ),
+        "dso-days" => format!("a whole number of days from 1 to {MAX_PAID_WINDOW_DAYS}"),
+        "paid-window-days" => format!("a whole number of days from 1 to {MAX_PAID_WINDOW_DAYS}"),
+        _ => "a list of words, none of them blank".to_string(),
+    }
+}
+
+/// `label` with its first letter in capitals, to start a sentence.
+fn sentence(label: &str) -> String {
+    let mut chars = label.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
+/// "The X must be Y.", for `key`.
+fn must_be(key: &str) -> SettingsError {
+    SettingsError::invalid(
+        key,
+        format!("{} must be {}.", sentence(label(key)), expected(key)),
+    )
+}
+
+/// The `[invoicer]` table of a whole `ledgeline.toml`'s text, if it has one.
+fn invoicer_table(text: &str) -> Result<Option<toml::Table>, SettingsError> {
+    let doc: toml::Table = toml::from_str(text).map_err(|e| {
+        let line = e
+            .span()
+            .map(|span| text[..span.start.min(text.len())].lines().count().max(1));
+        SettingsError::invalid_file(match line {
+            Some(line) => format!("ledgeline.toml isn't valid TOML (line {line})."),
+            None => "ledgeline.toml isn't valid TOML.".to_string(),
+        })
+    })?;
+    match doc.get("invoicer") {
+        None => Ok(None),
+        Some(toml::Value::Table(table)) => Ok(Some(table.clone())),
+        Some(_) => Err(SettingsError::invalid_file(
+            "The invoicer settings in ledgeline.toml must be a table ([invoicer]).",
+        )),
+    }
+}
+
+/// The one problem with `key = value`, checked alone (every check is
+/// about one setting). `key` is a top-level key, or `words.<key>`.
+fn check_one(key: &str, value: &toml::Value) -> Result<(), SettingsError> {
+    if let Some(word) = key.strip_prefix("words.") {
+        if !WORD_KEYS.contains(&word) {
+            return Err(unknown(key));
+        }
+        let words: Words = toml::Table::from_iter([(word.to_string(), value.clone())])
+            .try_into()
+            .map_err(|_| must_be(key))?;
+        if word == "customer-tag" && words.customer_tag.trim().is_empty() {
+            return Err(SettingsError::invalid(
+                key,
+                "The customer tag may not be blank.",
+            ));
+        }
+        return Ok(());
+    }
+    if !KEYS.contains(&key) {
+        return Err(unknown(key));
+    }
+    let optional_text = [
+        "company",
+        "number-start",
+        "default-template",
+        "receivable-account",
+        "revenue-account",
+        "deposit-account",
+        "discount-account",
+    ];
+    if optional_text.contains(&key) && value.as_str().is_some_and(|text| text.trim().is_empty()) {
+        return Err(SettingsError::invalid(
+            key,
+            format!(
+                "{} may not be blank: choose “Use the default” instead.",
+                sentence(label(key))
+            ),
+        ));
+    }
+    let one: Settings = toml::Table::from_iter([(key.to_string(), value.clone())])
+        .try_into()
+        .map_err(|_| must_be(key))?;
+    match key {
+        "filename" if !one.filename.contains("{invoice_num}") => Err(SettingsError::invalid(
+            key,
+            "The new invoice file name must include the invoice number, or two invoices could \
+             share a file.",
+        )),
+        "aging-buckets" => {
+            let edges = &one.aging_buckets;
+            if edges.is_empty()
+                || edges.len() > MAX_AGING_BUCKETS
+                || edges[0] == 0
+                || edges.windows(2).any(|w| w[0] >= w[1])
+            {
+                Err(must_be(key))
+            } else {
+                Ok(())
+            }
+        }
+        "dso-days" if one.dso_days == 0 => Err(must_be(key)),
+        "paid-window-days" if !(1..=MAX_PAID_WINDOW_DAYS).contains(&one.paid_window_days) => {
+            Err(must_be(key))
+        }
+        "default-terms" if one.default_terms.is_some_and(|t| t > MAX_TERMS_DAYS) => {
+            Err(must_be(key))
+        }
+        "default-template" => match one.default_template.as_deref().map(str::trim) {
+            Some(path)
+                if VaultPath::new(path.trim_start_matches('/'))
+                    .ok()
+                    .and_then(|p| p.extension().map(|e| e.eq_ignore_ascii_case("html")))
+                    != Some(true) =>
+            {
+                Err(must_be(key))
+            }
+            _ => Ok(()),
+        },
+        "invoices-dir" | "customers-dir" | "templates-dir" | "catalog" | "pdf-dir" => {
+            let dir = match key {
+                "invoices-dir" => &one.invoices_dir,
+                "customers-dir" => &one.customers_dir,
+                "templates-dir" => &one.templates_dir,
+                "catalog" => &one.catalog,
+                _ => &one.pdf_dir,
+            };
+            VaultPath::new(dir.trim_start_matches('/'))
+                .map(|_| ())
+                .map_err(|_| must_be(key))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// An unknown setting. Its name is quoted: it is the one way to find it in
+/// the file.
+fn unknown(key: &str) -> SettingsError {
+    SettingsError::invalid(
+        key,
+        format!(
+            "The invoicer doesn't know a setting called “{key}”: correct its spelling in \
+             ledgeline.toml, or remove it."
+        ),
+    )
+}
+
+/// Every problem with `[invoicer]`, each setting checked on its own.
+fn problems_in(table: &toml::Table) -> Vec<SettingsError> {
+    let mut problems = Vec::new();
+    for (key, value) in table {
+        if key == "words" {
+            match value {
+                toml::Value::Table(words) => {
+                    problems.extend(words.iter().filter_map(|(word, value)| {
+                        check_one(&format!("words.{word}"), value).err()
+                    }))
+                }
+                _ => problems.push(SettingsError::invalid_file(
+                    "The invoicer's words in ledgeline.toml must be a table ([invoicer.words]).",
+                )),
+            }
+        } else if let Err(problem) = check_one(key, value) {
+            problems.push(problem);
+        }
+    }
+    problems
 }
 
 impl Settings {
     /// The settings from a whole `ledgeline.toml`'s text.
     ///
     /// # Errors
-    /// [`SettingsError::Invalid`] for TOML that doesn't parse, an unknown
-    /// key, an empty word list, a blank `customer-tag`, or a filename
-    /// pattern without `{invoice_num}`, `aging-buckets` that aren't one to
-    /// eight strictly increasing positive day counts, a zero `dso-days`, or
-    /// a `paid-window-days` outside 1 to [`MAX_PAID_WINDOW_DAYS`].
+    /// [`SettingsError::Invalid`], keyed, for the first problem
+    /// [`Settings::problems`] finds: TOML that doesn't parse, an unknown
+    /// key, an empty word list, a blank `customer-tag`, a filename pattern
+    /// without `{invoice_num}`, `aging-buckets` that aren't one to eight
+    /// strictly increasing positive day counts, a zero `dso-days`, a
+    /// `paid-window-days` outside 1 to [`MAX_PAID_WINDOW_DAYS`], a
+    /// `default-terms` over [`MAX_TERMS_DAYS`], a `default-template` that
+    /// isn't an `.html` path, or a folder outside the books folder.
     pub fn from_ledgeline_toml(text: &str) -> Result<Self, SettingsError> {
-        let invalid = |e: &dyn std::fmt::Display| SettingsError::Invalid(e.to_string());
-        let doc: toml::Table = toml::from_str(text).map_err(|e| invalid(&e))?;
-        let settings: Self = match doc.get("invoicer").cloned() {
-            None => Self::default(),
-            Some(value) => value.try_into().map_err(|e| invalid(&e))?,
+        let Some(table) = invoicer_table(text)? else {
+            return Ok(Self::default());
         };
-        if settings.words.customer_tag.trim().is_empty() {
-            return Err(invalid(&"words.customer-tag may not be blank"));
+        if let Some(problem) = problems_in(&table).into_iter().next() {
+            return Err(problem);
         }
-        if !settings.filename.contains("{invoice_num}") {
-            return Err(invalid(
-                &"filename must contain {invoice_num}, or two invoices could share a file",
-            ));
+        toml::Value::Table(table)
+            .try_into()
+            .map_err(|e: toml::de::Error| SettingsError::invalid_file(e.to_string()))
+    }
+
+    /// Every problem with `[invoicer]` in a whole `ledgeline.toml`'s text,
+    /// one per setting (or one for the file when it doesn't parse); empty
+    /// when it reads.
+    #[must_use]
+    pub fn problems(text: &str) -> Vec<SettingsError> {
+        match invoicer_table(text) {
+            Err(problem) => vec![problem],
+            Ok(None) => Vec::new(),
+            Ok(Some(table)) => problems_in(&table),
         }
-        let edges = &settings.aging_buckets;
-        if edges.is_empty()
-            || edges.len() > MAX_AGING_BUCKETS
-            || edges[0] == 0
-            || edges.windows(2).any(|w| w[0] >= w[1])
-        {
-            return Err(invalid(&format!(
-                "aging-buckets = {edges:?}: give 1 to {MAX_AGING_BUCKETS} increasing day counts above zero, like [30, 60, 90]"
-            )));
-        }
-        if settings.dso_days == 0 {
-            return Err(invalid(&"dso-days must be at least 1"));
-        }
-        if !(1..=MAX_PAID_WINDOW_DAYS).contains(&settings.paid_window_days) {
-            return Err(invalid(&format!(
-                "paid-window-days must be 1 to {MAX_PAID_WINDOW_DAYS}"
-            )));
-        }
-        for (key, dir) in [
-            ("invoices-dir", &settings.invoices_dir),
-            ("customers-dir", &settings.customers_dir),
-            ("templates-dir", &settings.templates_dir),
-            ("catalog", &settings.catalog),
-            ("pdf-dir", &settings.pdf_dir),
-        ] {
-            VaultPath::new(dir.trim_start_matches('/'))
-                .map_err(|e| invalid(&format!("{key} = {dir:?}: {e}")))?;
-        }
-        Ok(settings)
     }
 
     /// The settings of the books in `vault` (its root's `ledgeline.toml`),
@@ -265,8 +569,9 @@ impl Settings {
     /// # Errors
     /// When the path can't name anything in the vault (checked at read).
     pub fn vault_path(path: &str) -> Result<VaultPath, SettingsError> {
-        VaultPath::new(path.trim_start_matches('/'))
-            .map_err(|e| SettingsError::Invalid(format!("{path:?}: {e}")))
+        VaultPath::new(path.trim_start_matches('/')).map_err(|_| {
+            SettingsError::invalid_file(format!("“{path}” isn't inside the books folder."))
+        })
     }
 }
 
@@ -352,6 +657,110 @@ mod tests {
         let settings =
             Settings::from_ledgeline_toml("[invoicer]\npaid-window-days = 90\n").expect("reads");
         assert_eq!(settings.paid_window_days, 90);
+    }
+
+    #[test]
+    fn default_terms_are_net_days_up_to_ten_years() {
+        let settings =
+            Settings::from_ledgeline_toml("[invoicer]\ndefault-terms = 30\n").expect("reads");
+        assert_eq!(settings.default_terms, Some(30));
+        assert_eq!(Settings::default().default_terms, None);
+        assert!(Settings::from_ledgeline_toml("[invoicer]\ndefault-terms = 0\n").is_ok());
+        assert!(Settings::from_ledgeline_toml("[invoicer]\ndefault-terms = 3650\n").is_ok());
+        for bad in ["3651", "-1", "\"30\"", "1.5"] {
+            let error =
+                Settings::from_ledgeline_toml(&format!("[invoicer]\ndefault-terms = {bad}\n"))
+                    .expect_err(bad);
+            assert_eq!(
+                error,
+                SettingsError::invalid(
+                    "default-terms",
+                    "The default payment terms must be a whole number of days from 0 to 3650."
+                ),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_default_template_is_an_html_path_in_the_books() {
+        let settings = Settings::from_ledgeline_toml(
+            "[invoicer]\ndefault-template = \"/invoices/tpl/modern.html\"\n",
+        )
+        .expect("reads");
+        assert_eq!(
+            settings.default_template.as_deref(),
+            Some("/invoices/tpl/modern.html")
+        );
+        for bad in ["\"../up.html\"", "\"invoices/tpl/x.md\"", "\"\"", "3"] {
+            let error =
+                Settings::from_ledgeline_toml(&format!("[invoicer]\ndefault-template = {bad}\n"))
+                    .expect_err(bad);
+            assert!(
+                matches!(&error, SettingsError::Invalid { key: Some(k), .. } if k == "default-template"),
+                "{bad}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn errors_are_keyed_and_plain() {
+        let problems = Settings::problems(
+            "[invoicer]\nfilename = \"{date}.md\"\ninvoice-dir = \"x\"\ndso-days = 0\n\
+             [invoicer.words]\nquantity = []\ncustomer-tag = \" \"\nnope = [\"a\"]\n",
+        );
+        let mut keys: Vec<Option<&str>> = problems
+            .iter()
+            .map(|p| match p {
+                SettingsError::Invalid { key, .. } => key.as_deref(),
+                SettingsError::Unreadable(_) => None,
+            })
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                Some("dso-days"),
+                Some("filename"),
+                Some("invoice-dir"),
+                Some("words.customer-tag"),
+                Some("words.nope"),
+                Some("words.quantity"),
+            ]
+        );
+        for problem in &problems {
+            let SettingsError::Invalid { key, message } = problem else {
+                panic!("{problem}");
+            };
+            let key = key.as_deref().expect("keyed");
+            // A known key never appears in its own message; an unknown one
+            // is quoted, the one way to find it.
+            if is_key(key) {
+                assert!(!message.contains(key), "{message}");
+                assert!(
+                    !message.contains('{') && !message.contains("[["),
+                    "{message}"
+                );
+            }
+            assert!(message.ends_with('.'), "{message}");
+        }
+        // The CLI's text still names the key, for whoever edits the file.
+        assert!(problems.iter().any(|p| {
+            p.to_string()
+                .starts_with("ledgeline.toml [invoicer] filename: ")
+        }));
+        let not_toml = Settings::problems("a = = 1");
+        assert!(
+            matches!(&not_toml[..], [SettingsError::Invalid { key: None, message }] if message.contains("line 1")),
+            "{not_toml:?}"
+        );
+        assert!(Settings::problems("[books]\nbasis = \"cash\"\n").is_empty());
+        for key in KEYS {
+            assert_ne!(label(key), "this setting", "{key}");
+        }
+        for word in WORD_KEYS {
+            assert_ne!(label(&format!("words.{word}")), "this setting", "{word}");
+        }
     }
 
     #[test]

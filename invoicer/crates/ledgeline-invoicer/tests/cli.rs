@@ -1604,3 +1604,117 @@ fn pdf_keeps_a_sent_invoice_and_its_earlier_export() {
     assert_eq!(out["destination"], "copy", "{out}");
     assert!(fs::read(&copy).unwrap().starts_with(b"%PDF-"));
 }
+
+/// `config` shows the settings plan's new keys, and the payment matching
+/// shared with Ledgeline (`ui-prefs.toml`, else these books' `[ui]`).
+#[test]
+fn config_shows_the_new_settings_and_the_shared_matching() {
+    let books = Books::of("cash");
+    let config = books.json(&["config"], 0);
+    assert_eq!(config["invoicer"]["default-terms"], Value::Null);
+    assert_eq!(config["invoicer"]["default-template"], Value::Null);
+    assert_eq!(
+        config["matching"],
+        serde_json::json!({
+            "settlementLookbackDays": 180,
+            "settlementToleranceBps": 300,
+            "settlementLeadDays": 4,
+        })
+    );
+    let settings = books.read("ledgeline.toml");
+    fs::write(
+        books.file("ledgeline.toml"),
+        settings.replace(
+            "number-start = 201\n",
+            "number-start = 201\ndefault-terms = 15\ndefault-template = \"/invoices/tpl/myco-default.html\"\n\n[ui]\nsettlementLeadDays = 9\n",
+        ),
+    )
+    .expect("writes");
+    fs::write(
+        books.dir.path().join("config/ui-prefs.toml"),
+        "settlementLookbackDays = 365\nsettlementLeadDays = 2\n",
+    )
+    .expect("writes");
+    let config = books.json(&["config"], 0);
+    assert_eq!(config["invoicer"]["default-terms"], 15);
+    assert_eq!(
+        config["invoicer"]["default-template"],
+        "/invoices/tpl/myco-default.html"
+    );
+    // The books' pin wins over the shared file, which wins over the default.
+    assert_eq!(config["matching"]["settlementLookbackDays"], 365);
+    assert_eq!(config["matching"]["settlementLeadDays"], 9);
+    let text = books.text(&["config"]);
+    assert!(text.contains("default-terms = 15\n"), "{text}");
+    assert!(text.contains("# settlementLeadDays = 9\n"), "{text}");
+}
+
+/// RC-10: `apply-payment`'s matching flags, defaulting to the shared
+/// settings the app uses. 203 ($1,200, Wingtip) is paid by an ACH of
+/// 2026-11-16; on 2027-06-04 that is 200 days back.
+#[test]
+fn apply_payment_takes_the_matching_flags() {
+    let books = Books::of("cash");
+    let journal = books.read("books.journal");
+    fs::write(
+        books.journal(),
+        format!(
+            "{journal}\n2026-11-16 * ACH WINGTIP PAYMENTS  ; id: ach-41\n    \
+             assets:bank:checking  $1,200.00\n    income:unknown\n"
+        ),
+    )
+    .expect("writes");
+    let list = |extra: &[&str]| -> Output {
+        books
+            .bare()
+            .arg("-f")
+            .arg(books.journal())
+            .args(["--today", "2027-06-04", "--json", "apply-payment", "203"])
+            .args(extra)
+            .output()
+            .expect("runs")
+    };
+    let found = |out: &Output| -> bool {
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let options: Value = serde_json::from_slice(&out.stdout).expect("json");
+        options["candidates"]
+            .as_array()
+            .expect("candidates")
+            .iter()
+            .any(|c| c["description"] == "ACH WINGTIP PAYMENTS")
+    };
+    assert!(!found(&list(&[])), "the default 180 days");
+    assert!(found(&list(&["--lookback-days", "365"])));
+    assert!(
+        found(&list(&["--lookback-days", "0"])),
+        "0 looks back forever"
+    );
+    assert!(found(&list(&[
+        "--lookback-days",
+        "365",
+        "--tolerance-percent",
+        "2.5",
+        "--lead-days",
+        "4"
+    ])));
+    // The shared setting is the default, as in the app.
+    fs::write(
+        books.dir.path().join("config/ui-prefs.toml"),
+        "settlementLookbackDays = 0\n",
+    )
+    .expect("writes");
+    assert!(found(&list(&[])));
+    assert!(!found(&list(&["--lookback-days", "30"])), "a flag wins");
+    for bad in [
+        ["--lookback-days", "4000"],
+        ["--lead-days", "61"],
+        ["--tolerance-percent", "200"],
+        ["--tolerance-percent", "lots"],
+    ] {
+        assert_eq!(list(&bad).status.code(), Some(2), "{bad:?}");
+    }
+}

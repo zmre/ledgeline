@@ -15,6 +15,8 @@
     "catalog": "invoices/catalog.md",
     "company": "[[My Company]]",
     "customers-dir": "customers",
+    "default-template": null,
+    "default-terms": null,
     "deposit-account": "liabilities:customer-deposits",
     "discount-account": null,
     "dso-days": 90,
@@ -86,5 +88,10 @@
     }
   },
   "journal": "<BOOKS>/books.journal",
+  "matching": {
+    "settlementLeadDays": 4,
+    "settlementLookbackDays": 180,
+    "settlementToleranceBps": 300
+  },
   "warnings": []
 }

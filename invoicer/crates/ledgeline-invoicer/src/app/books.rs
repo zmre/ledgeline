@@ -13,7 +13,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use axum::Router;
 use invoicer_core::edit;
 use invoicer_core::reconcile::{self, ReconcileOptions, Reconciled};
-use invoicer_core::session::Session;
+use invoicer_core::session::{OpenError, Session};
+use invoicer_core::settings::{Settings, SettingsError};
+use ledgeline_core::accrual::books_config;
 use ledgeline_core::vault::{Vault, VaultPath};
 use mbr_core::Config as MbrConfig;
 use mbr_core::standalone::Renderer;
@@ -82,14 +84,14 @@ impl OpenBooks {
     ///
     /// # Errors
     /// Why the books or MBR's configuration can't be opened.
-    pub(crate) fn open(journal: &Path, gui: bool) -> Result<Self, String> {
+    pub(crate) fn open(journal: &Path, gui: bool) -> Result<Self, OpenFailure> {
         let journal = journal
             .canonicalize()
-            .map_err(|e| format!("{}: {e}", journal.display()))?;
-        let session = Session::open_local(&journal).map_err(|e| e.to_string())?;
+            .map_err(|e| OpenFailure::other(format!("{}: {e}", journal.display())))?;
+        let session = Session::open_local(&journal).map_err(|e| OpenFailure::of(&e))?;
         let vault = session.shared_vault();
         let main = session.main().clone();
-        let live = mbr_live(vault.root(), gui)?;
+        let live = mbr_live(vault.root(), gui).map_err(OpenFailure::other)?;
         Ok(Self {
             journal,
             vault,
@@ -244,8 +246,13 @@ impl OpenBooks {
     ///   copied in;
     /// - a journal file: the journal and `[books]` are read again, and the
     ///   invoices whose payment state moved are reconciled;
-    /// - `ledgeline.toml`: the session is opened afresh (`[invoicer]` may
-    ///   have changed), and every invoice is reconciled.
+    /// - `ledgeline.toml`: when `[invoicer]` changed, the session is opened
+    ///   afresh (the index and its caches with it) and every invoice is
+    ///   reconciled; when only `[books]` did, the journal is read again and
+    ///   every invoice reconciled; when neither did (the Settings page's own
+    ///   Save echoing back, a theme pin, a bank link), nothing. A file that
+    ///   no longer reads keeps the books as they were (the Settings page
+    ///   says why).
     ///
     /// Returns the reconciler's report when it ran.
     fn reload_changed(&self, changed: &[PathBuf]) -> Option<Reconciled> {
@@ -259,16 +266,36 @@ impl OpenBooks {
         let settings = root.join(SETTINGS_FILE);
         let settings_changed = changed.iter().any(|p| same_file(p, &settings));
         if settings_changed {
-            match Session::open(Arc::clone(&self.vault), self.main.clone()) {
-                Ok(fresh) => *session = fresh,
-                Err(error) => {
-                    eprintln!("{}: reload skipped: {error}", APP.log_prefix);
-                    return None;
-                }
+            // Our own Save echoes back, and a theme pin or a bank link
+            // changes another table: nothing to redo when `[invoicer]` and
+            // `[books]` read as before.
+            let fresh_settings = Settings::read(&*self.vault);
+            let fresh_books = books_config::read(&*self.vault, &self.main);
+            let same_settings = fresh_settings.as_ref().ok() == Some(session.settings());
+            let same_books = fresh_books.as_ref().ok() == Some(session.books_config());
+            if same_settings && same_books {
+                return None;
             }
-            let _ = session.book_states();
-            install_starters_in(&mut session, None);
-            return reconcile_in(&mut session, None);
+            if same_settings {
+                // `[books]` alone (a basis, closed-through): the journal's
+                // roles and the payment state, not the index.
+                return match session.reload_books() {
+                    Ok(_) => reconcile_in(&mut session, None),
+                    Err(error) => {
+                        eprintln!("{}: reload skipped: {error}", APP.log_prefix);
+                        None
+                    }
+                };
+            }
+            return match reopen(&mut session, &self.vault, &self.main) {
+                Ok(report) => report,
+                Err(error) => {
+                    // The page reads the file itself, so the change event
+                    // (sent by the caller) is what brings it the problem.
+                    eprintln!("{}: reload skipped: {error}", APP.log_prefix);
+                    None
+                }
+            };
         }
 
         let mut numbers: BTreeSet<String> = BTreeSet::new();
@@ -335,6 +362,73 @@ impl OpenBooks {
             reconcile_in(&mut session, Some(numbers.into_iter().collect()))
         }
     }
+}
+
+/// Why the books couldn't open.
+#[derive(Debug, Clone)]
+pub(crate) struct OpenFailure {
+    /// The error, for the log and the open dialog.
+    pub message: String,
+    /// The problem in the books' `ledgeline.toml` (`[invoicer]` or
+    /// `[books]`), in plain words, when that is why: the app then serves
+    /// the Settings page over them anyway.
+    pub in_settings: Option<String>,
+}
+
+impl OpenFailure {
+    fn other(message: String) -> Self {
+        Self {
+            message,
+            in_settings: None,
+        }
+    }
+
+    fn of(error: &OpenError) -> Self {
+        let in_settings = match error {
+            OpenError::Settings(SettingsError::Invalid { message, .. }) => Some(format!(
+                "the invoicer settings in ledgeline.toml have a problem. {message}"
+            )),
+            OpenError::Settings(SettingsError::Unreadable(_)) => {
+                Some("ledgeline.toml can't be read.".to_string())
+            }
+            OpenError::Books(error) => Some(error.to_string()),
+            OpenError::Path { .. } | OpenError::Journal { .. } => None,
+        };
+        Self {
+            message: error.to_string(),
+            in_settings,
+        }
+    }
+}
+
+impl std::fmt::Display for OpenFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl From<OpenFailure> for String {
+    fn from(failure: OpenFailure) -> Self {
+        failure.message
+    }
+}
+
+/// Open `session`'s books afresh (`[invoicer]` changed: the index is built
+/// with the new settings, its caches with it), then copy in the starters
+/// documents name and reconcile every invoice. The session is unchanged
+/// when they don't open.
+///
+/// # Errors
+/// Why the books don't open with the file as it is now.
+pub(crate) fn reopen(
+    session: &mut Session,
+    vault: &Arc<dyn Vault>,
+    main: &VaultPath,
+) -> Result<Option<Reconciled>, OpenError> {
+    *session = Session::open(Arc::clone(vault), main.clone())?;
+    let _ = session.book_states();
+    install_starters_in(session, None);
+    Ok(reconcile_in(session, None))
 }
 
 /// Read the journal again after this app wrote it (Send, Void, …), so the

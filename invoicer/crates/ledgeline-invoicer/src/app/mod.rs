@@ -34,6 +34,7 @@ pub(crate) mod pdf;
 pub(crate) mod prefs;
 pub(crate) mod preview;
 mod serve;
+pub(crate) mod settings;
 pub(crate) mod settings_wire;
 pub(crate) mod templates;
 pub(crate) mod watch;
@@ -128,6 +129,9 @@ pub(crate) struct AppState {
 
 struct Shared {
     books: ArcSwapOption<OpenBooks>,
+    /// The books asked for that couldn't open because of a problem in their
+    /// `ledgeline.toml`: the Settings page still reads it and says why.
+    unopened: ArcSwapOption<Unopened>,
     app_dirs: AppDirs,
     prefs: UiPrefsSession,
     /// The desktop (PDF, Share…, Copy file, the browser), when this
@@ -152,6 +156,7 @@ impl AppState {
         Self {
             inner: Arc::new(Shared {
                 books: ArcSwapOption::from(books),
+                unopened: ArcSwapOption::empty(),
                 app_dirs,
                 prefs: prefs::session_from_env(),
                 native,
@@ -170,10 +175,30 @@ impl AppState {
         self.inner.books.load_full()
     }
 
+    /// The books open now, or the `409` saying there are none (and, when
+    /// they couldn't open, why: [`Unopened`]).
+    pub(crate) fn open_books(&self) -> Result<Arc<OpenBooks>, api::ApiError> {
+        self.books()
+            .ok_or_else(|| api::no_books(self.unopened().as_deref()))
+    }
+
     /// Put `books` in place of whatever was open.
     #[cfg(feature = "gui")]
     pub(crate) fn replace_books(&self, books: Arc<OpenBooks>) {
+        self.inner.unopened.store(None);
         self.inner.books.store(Some(books));
+    }
+
+    /// The books asked for that couldn't open, if that is why none are.
+    pub(crate) fn unopened(&self) -> Option<Arc<Unopened>> {
+        self.inner.unopened.load_full()
+    }
+
+    /// Record that the books at `unopened.journal` couldn't open (and close
+    /// whatever was open: the user asked for these).
+    pub(crate) fn set_unopened(&self, unopened: Unopened) {
+        self.inner.books.store(None);
+        self.inner.unopened.store(Some(Arc::new(unopened)));
     }
 
     pub(crate) fn app_dirs(&self) -> &AppDirs {
@@ -183,6 +208,16 @@ impl AppState {
     pub(crate) fn ui_prefs(&self) -> &UiPrefsSession {
         &self.inner.prefs
     }
+}
+
+/// Books that were asked for but couldn't open because of a problem in
+/// their `ledgeline.toml` ([`books::OpenFailure::in_settings`]).
+#[derive(Debug, Clone)]
+pub(crate) struct Unopened {
+    /// The main journal asked for.
+    pub journal: PathBuf,
+    /// Why, in plain words.
+    pub problem: String,
 }
 
 /// The whole router, for a server bound to `port` with `security` (the
@@ -247,6 +282,8 @@ mod files_tests;
 mod library_tests;
 #[cfg(test)]
 mod payments_tests;
+#[cfg(test)]
+mod settings_tests;
 #[cfg(test)]
 mod spa_shell_csp_tests;
 #[cfg(test)]

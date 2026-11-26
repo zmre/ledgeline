@@ -5,8 +5,10 @@
 //! 1. Open the books (the positional journal, then recents) and reconcile.
 //! 2. [`shell::spawn_server`]: the server on `127.0.0.1:0`, the router
 //!    built for the port actually bound.
-//! 3. On the main thread: menus, window, webview at `/app/`, with the token
-//!    and the shared theme and scale handed over by initialization script.
+//! 3. On the main thread: menus (with "Settings…", ⌘, / Ctrl+, opening
+//!    `/app/settings`), window, webview at `/app/` (at `/app/settings` when
+//!    a problem in `ledgeline.toml` kept the books shut), with the token and
+//!    the shared theme and scale handed over by initialization script.
 //! 4. The event loop: File → Open / Open Recent swap the books (MBR server
 //!    and watcher included) without restarting the server; PDF exports,
 //!    Share… and Copy file run on it ([`super::desktop`], PLAN 3c).
@@ -21,7 +23,8 @@ use ledgeline_shell::gui::{
 };
 use ledgeline_shell::recents;
 use ledgeline_shell::security::token_init_script;
-use muda::{IsMenuItem, MenuEvent};
+use muda::accelerator::{Accelerator, Code};
+use muda::{IsMenuItem, MenuEvent, MenuItem};
 use notify::RecommendedWatcher;
 #[cfg(target_os = "linux")]
 use tao::{
@@ -33,11 +36,11 @@ use tao::{
     event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy},
 };
 
-use super::books::OpenBooks;
+use super::books::{OpenBooks, OpenFailure};
 use super::desktop::{self, DesktopHost, LoopNative, NativeEvent};
 use super::native::Native;
 use super::serve::plan_security;
-use super::{APP, AppArgs, AppState, SPA_BASE, prefs, router, watch};
+use super::{APP, AppArgs, AppState, SPA_BASE, Unopened, prefs, router, watch};
 
 /// How many recent journals File → Open Recent shows.
 const RECENT_MENU_LIMIT: usize = 5;
@@ -65,11 +68,25 @@ pub(crate) fn run(args: &AppArgs, app_dirs: AppDirs) -> Result<(), String> {
         .build()
         .map_err(|e| format!("building the async runtime: {e}"))?;
 
+    let mut unopened = None;
     let books = match &args.journal {
         Some(journal) => match open_books(&runtime, journal, &app_dirs) {
             Ok(books) => Some(books),
+            // A problem in `ledgeline.toml`: the window opens on the
+            // Settings page, which says what it is.
+            Err(OpenFailure {
+                message,
+                in_settings: Some(problem),
+            }) => {
+                eprintln!("{}: the books didn't open: {message}", APP.log_prefix);
+                unopened = Some(Unopened {
+                    journal: journal.clone(),
+                    problem,
+                });
+                None
+            }
             Err(error) => {
-                show_open_error(journal, &error);
+                show_open_error(journal, &error.message);
                 None
             }
         },
@@ -82,6 +99,9 @@ pub(crate) fn run(args: &AppArgs, app_dirs: AppDirs) -> Result<(), String> {
         desktop::capabilities(true),
     ));
     let state = AppState::with_native(books.clone(), app_dirs, Some(native));
+    if let Some(unopened) = unopened {
+        state.set_unopened(unopened);
+    }
 
     let host = args.host.clone();
     let port = args.port.unwrap_or(0);
@@ -127,7 +147,7 @@ fn open_books(
     runtime: &tokio::runtime::Runtime,
     journal: &Path,
     app_dirs: &AppDirs,
-) -> Result<Arc<OpenBooks>, String> {
+) -> Result<Arc<OpenBooks>, OpenFailure> {
     let _entered = runtime.enter();
     let books = OpenBooks::open(journal, true)?;
     books.install_starters();
@@ -193,18 +213,37 @@ fn show_open_error(path: &Path, error: &str) {
     );
 }
 
-fn build_menu() -> AppMenu {
+/// The "Settings…" item's id.
+const SETTINGS_ID: &str = "settings";
+
+/// The menus, and the "Settings…" item (⌘, / Ctrl+,): in the app menu on
+/// macOS, after Open Recent in File elsewhere.
+fn build_menu() -> (AppMenu, MenuItem) {
     let none: [&dyn IsMenuItem; 0] = [];
-    AppMenu::build(
+    let settings = MenuItem::with_id(
+        SETTINGS_ID,
+        "&Settings…",
+        true,
+        Some(Accelerator::new(shell::COMMAND_MODIFIER, Code::Comma)),
+    );
+    let items: [&dyn IsMenuItem; 1] = [&settings];
+    let (app_menu_items, after_recent): (&[&dyn IsMenuItem], &[&dyn IsMenuItem]) =
+        if cfg!(target_os = "macos") {
+            (&items, &none)
+        } else {
+            (&none, &items)
+        };
+    let menu = AppMenu::build(
         &APP,
         &MenuSpec {
             version: env!("CARGO_PKG_VERSION"),
             new_label: "&New Invoice…",
             open_label: "&Open Books…",
-            app_menu_items: &none,
-            after_recent: &none,
+            app_menu_items,
+            after_recent,
         },
-    )
+    );
+    (menu, settings)
 }
 
 /// Build the window and webview, then run the (diverging) event loop.
@@ -216,7 +255,7 @@ fn run_event_loop(
     MenuEvent::set_event_handler(Some(move |event| {
         let _ = menu_proxy.send_event(UserEvent::Menu(event));
     }));
-    let menu = build_menu();
+    let (menu, settings_item) = build_menu();
     let window =
         shell::build_window(&APP, &event_loop, &menu.menu_bar).map_err(|e| e.to_string())?;
     perf::stamp("window_built");
@@ -224,11 +263,19 @@ fn run_event_loop(
     let appearance = prefs::boot_appearance(&ctx.state);
     let origin = shell::webview_origin(&ctx.url).map_err(|e| e.to_string())?;
     let home = format!("{}{}/", ctx.url, SPA_BASE.trim_start_matches('/'));
+    // The SPA's Settings page (`/app/settings`).
+    let settings_page = format!("{home}settings");
+    // Books a problem in `ledgeline.toml` kept shut open on that page.
+    let first_page = if ctx.state.unopened().is_some() {
+        &settings_page
+    } else {
+        &home
+    };
     let webview = shell::build_webview(
         &APP,
         &window,
         &ctx.url,
-        &home,
+        first_page,
         vec![
             token_init_script(&APP, &origin, &ctx.token),
             appearance_init_script(&origin, &appearance),
@@ -285,13 +332,31 @@ fn run_event_loop(
                 eprintln!("{}: opened {}", APP.log_prefix, books.journal().display());
                 let _ = webview.load_url(&home);
             }
+            Err(OpenFailure {
+                message,
+                in_settings: Some(problem),
+            }) => {
+                eprintln!(
+                    "{}: could not open {}: {message}",
+                    APP.log_prefix,
+                    raw.display()
+                );
+                // The Settings page says what is wrong in `ledgeline.toml`;
+                // Reload tries again once it is fixed.
+                watcher.replace(None);
+                state.set_unopened(Unopened {
+                    journal: raw.to_path_buf(),
+                    problem,
+                });
+                let _ = webview.load_url(&settings_page);
+            }
             Err(error) => {
                 eprintln!(
                     "{}: could not open {}: {error}",
                     APP.log_prefix,
                     raw.display()
                 );
-                show_open_error(raw, &error);
+                show_open_error(raw, &error.message);
             }
         };
 
@@ -302,9 +367,14 @@ fn run_event_loop(
                     let _ = webview.load_url(&format!("{home}new"));
                 }
                 Shortcut::Open => spawn_file_picker(picker_proxy.clone()),
-                Shortcut::Reload => {
-                    let _ = webview.load_url(&home);
-                }
+                // Books a problem in `ledgeline.toml` kept shut: try again
+                // (it may be fixed now).
+                Shortcut::Reload => match state.unopened().filter(|_| state.books().is_none()) {
+                    Some(unopened) => open(&unopened.journal),
+                    None => {
+                        let _ = webview.load_url(&home);
+                    }
+                },
                 Shortcut::Back => {
                     let _ = webview.evaluate_script("history.back()");
                 }
@@ -322,7 +392,9 @@ fn run_event_loop(
 
         match event {
             Event::UserEvent(UserEvent::Menu(menu_event)) => {
-                if let Some(shortcut) = menu.shortcut_for(&menu_event.id) {
+                if menu_event.id == *settings_item.id() {
+                    let _ = webview.load_url(&settings_page);
+                } else if let Some(shortcut) = menu.shortcut_for(&menu_event.id) {
                     if perform(shortcut) {
                         #[cfg(target_os = "linux")]
                         shell::stop_web_process(&webview);
@@ -357,10 +429,19 @@ fn run_event_loop(
                 event: WindowEvent::KeyboardInput { event: key, .. },
                 ..
             } if key.state == ElementState::Released => {
+                let ctrl_only = modifiers.get().control_key()
+                    && !modifiers.get().alt_key()
+                    && !modifiers.get().super_key();
                 if key.logical_key == Key::F10 {
                     let visible = !chrome_visible.get();
                     shell::set_window_chrome_visible(&APP, &menu_bar, &window, visible);
                     chrome_visible.set(visible);
+                } else if !chrome_visible.get()
+                    && ctrl_only
+                    && key.logical_key == Key::Character(",")
+                {
+                    // The menu's accelerator is dead with the bar hidden.
+                    let _ = webview.load_url(&settings_page);
                 } else if !chrome_visible.get()
                     && let Some(shortcut) =
                         shell::linux_shortcut_for(&key.logical_key, modifiers.get())

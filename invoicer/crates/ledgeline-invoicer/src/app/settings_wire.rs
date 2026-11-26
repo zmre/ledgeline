@@ -7,9 +7,6 @@
 //! them (`invoices-dir`, `words.quantity`): they are map keys and list
 //! entries the page looks labels up by, never text it shows.
 
-// Until the routes that use them land (the wire is published first).
-#![allow(dead_code)]
-
 use invoicer_core::settings_edit::{Effect, Refusal, SettingProblem};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -196,16 +193,6 @@ pub(crate) struct SettingsSaved {
     pub created: bool,
 }
 
-/// The settings that change what new bookings do.
-pub(crate) const AFFECTS_BOOKINGS: [&str; 6] = [
-    "receivable-account",
-    "revenue-account",
-    "deposit-account",
-    "discount-account",
-    "cash-deposits",
-    "payment-allocation",
-];
-
 /// The choices shown as "Coming later" (settings plan D3).
 pub(crate) const COMING: [ComingLater; 4] = [
     ComingLater {
@@ -244,6 +231,7 @@ mod tests {
 
     use super::*;
     use invoicer_core::books::WaitingDeposit;
+    use invoicer_core::settings_edit::AFFECTS_BOOKINGS;
     use serde_json::json;
 
     fn object(value: Value) -> Map<String, Value> {

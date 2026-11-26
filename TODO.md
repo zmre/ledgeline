@@ -58,6 +58,24 @@
 - The Accounts editor's "declare a deferred-revenue / prepaid account" action from the Accrual section.
 - Reuse the full transaction body (Phase 3b's Details) in the plan 35 transfer-match overlay.
 
+## Invoicer settings (follow-ups to the settings page, 2026-11-25)
+
+Shown on the Settings page as "Coming later" (a disabled choice):
+
+- **Oldest row first:** a third `payment-allocation` choice for cash books, paying an invoice's rows in table order instead of matching them or splitting pro rata.
+- **Cash books: keep a deposit as a deferral:** modified cash, holding a deferred row's payment in its deferral account until it recognizes (`cash-deferred-rows = "defer"` in invoicer/PLAN.md).
+- **Sending into a closed period:** book the invoice dated the first open day after `[books] closed-through`, instead of refusing it.
+- **Editing a sent invoice:** reverse the booked transaction and book it again, for an audit trail of every change, instead of replacing it in place.
+
+Planned, docs only (invoicer/PLAN.md "Configurable accounting flows"):
+
+- **Which deposit an application uses:** the oldest only, or ask, instead of the one its row names and then the oldest.
+- **Voiding a final invoice that applied a deposit:** keep the deposit applied (forfeited) instead of opening it again for a reissue.
+- **What "paid in the last N days" counts:** count credits too, not only money received.
+- **What the `paid:` mirror counts as paid (accrual):** mirror a credit note or write-off as its own state.
+- **Aging buckets in `ledgeline-core`:** so `receivables` and Ledgeline share one set of edges.
+- **A cash-books deposit's revenue account:** a per-deposit-invoice override (frontmatter, or the row's books cell).
+
 ## Security
 
 ## Performance

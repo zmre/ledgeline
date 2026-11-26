@@ -27,7 +27,8 @@
 //! | `GET`/`POST /api/customers`, `GET`/`PUT /api/customers/{*key}` | Customers: list, create, show, edit ([`super::customers`], 4b). |
 //! | `GET`/`POST /api/catalog`, `PUT /api/catalog/{*path}`; `GET`/`POST /api/snippets`, `PUT`/`DELETE /api/snippets/{*path}` | The catalog and snippets editors ([`super::library`], 4c). |
 //! | `GET /api/files`, `POST /api/files/pick`, `/api/files/open` | Files in the books folder for contracts: list, the open dialog, open one ([`super::files`]). |
-//! | `GET`/`PATCH /api/ui-prefs` | The shared theme and scale (Ledgeline's shape). |
+//! | `GET`/`PATCH /api/ui-prefs`, `POST /api/ui-prefs/pin` | The shared theme, scale and payment matching, and keeping one for these books (Ledgeline's shapes). |
+//! | `GET`/`PUT /api/settings`, `POST /api/settings/check` | The Settings page: `[invoicer]`, read and saved ([`super::settings`]). |
 //! | `POST /api/session`         | The cookie MBR's pages need ([`super::mbr`]).  |
 //! | the invoice editor's routes | Form, compute, save, new, void, rebook… (4a): [`super::editor`]. |
 //!
@@ -55,7 +56,7 @@ use invoicer_core::doc::{DocType, Status};
 use invoicer_core::index::ListFilter;
 use invoicer_core::table::books::is_iso_date;
 use invoicer_core::views::{self, ListQuery};
-use ledgeline_core::ui_prefs::{Patch, UiPrefsError};
+use ledgeline_core::ui_prefs::{Patch, Pin, UiPrefsError};
 use ledgeline_shell::security::no_store_json;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -94,6 +95,8 @@ pub(crate) fn routes() -> Router<AppState> {
         .merge(super::templates::routes())
         .merge(super::files::routes())
         .route("/api/ui-prefs", get(ui_prefs).patch(patch_ui_prefs))
+        .route("/api/ui-prefs/pin", post(pin_ui_pref))
+        .merge(super::settings::routes())
         .route("/api/session", post(session))
         // The invoice editor (4a): its own table, merged.
         .merge(super::editor::routes())
@@ -199,15 +202,25 @@ pub(crate) async fn with_books<F>(state: &AppState, status: StatusCode, f: F) ->
 where
     F: FnOnce(&OpenBooks) -> Result<Value, ApiError> + Send + 'static,
 {
-    let books = state.books().ok_or_else(no_books)?;
+    let books = state.open_books()?;
     blocking(status, move || f(&books)).await
 }
 
-pub(crate) fn no_books() -> ApiError {
-    ApiError::status(
-        StatusCode::CONFLICT,
-        "no books are open; choose File → Open",
-    )
+/// `409`: no books are open. When the books were asked for but couldn't
+/// open (a problem in `ledgeline.toml`, say), `problem` says why, so every
+/// page can, and `GET /api/settings` still answers.
+pub(crate) fn no_books(unopened: Option<&super::Unopened>) -> ApiError {
+    match unopened {
+        Some(unopened) => ApiError::status(
+            StatusCode::CONFLICT,
+            format!("the books couldn't open: {}", unopened.problem),
+        )
+        .with("problem", Value::String(unopened.problem.clone())),
+        None => ApiError::status(
+            StatusCode::CONFLICT,
+            "no books are open; choose File → Open",
+        ),
+    }
 }
 
 /// Run `f` on the blocking pool, answering its JSON with `status`.
@@ -485,7 +498,7 @@ async fn preview(
     payload: Result<Json<PreviewRequest>, JsonRejection>,
 ) -> ApiResult {
     let Json(request) = payload.map_err(|e| ApiError::bad_request(e.body_text()))?;
-    let books = state.books().ok_or_else(no_books)?;
+    let books = state.open_books()?;
     let rendered = tokio::task::spawn_blocking(move || preview::render(&books, request))
         .await
         .map_err(|e| {
@@ -521,7 +534,7 @@ async fn events(State(state): State<AppState>) -> Result<Response, ApiError> {
     use futures_util::stream::{self, StreamExt as _};
     use tokio::sync::broadcast::error::RecvError;
 
-    let books = state.books().ok_or_else(no_books)?;
+    let books = state.open_books()?;
     let receiver = books.subscribe();
     // The stream must not keep the books alive past File → Open.
     drop(books);
@@ -565,6 +578,19 @@ async fn patch_ui_prefs(
         to_value(prefs::apply(&state, &patch)?)
     })
     .await
+}
+
+/// `POST /api/ui-prefs/pin`: `{key, pinned}`, keep one of the shared keys
+/// (the theme, the scale, the payment matcher's three) for the open books
+/// in their `ledgeline.toml [ui]`, creating the file if needed, or stop
+/// keeping it; Ledgeline's route, answering the effective values after.
+async fn pin_ui_pref(
+    State(state): State<AppState>,
+    payload: Result<Json<Value>, JsonRejection>,
+) -> ApiResult {
+    let Json(body) = payload.map_err(|e| ApiError::bad_request(e.body_text()))?;
+    let pin = Pin::from_json(&prefs::SCHEMA, &body)?;
+    blocking(StatusCode::OK, move || to_value(prefs::pin(&state, pin)?)).await
 }
 
 /// `POST /api/session`: the cookie MBR's pages need.

@@ -21,7 +21,7 @@
 // | 400    | `bad-request` | an unknown setting or a value of no shape  |                        |
 // | 409    | `changed`     | the revision isn't the file's any more     | `revision` (current)   |
 // | 409    | `no-file`     | no `ledgeline.toml`, and no `createFile`   |                        |
-// | 409    | `unusable`    | symlink, over 64 KiB, not TOML, or invalid | (see `SettingsPage`)   |
+// | 409    | `unusable`    | symlink, over 64 KiB, not TOML, or invalid | `problems` if invalid  |
 // | 409    | `confirm`     | an effect not in `confirmed`               | `effects: Effect[]`    |
 // | 422    | `invalid`     | problems with the values                   | `problems`             |
 // | 422    | `refused`     | D5: deposits wait for their final invoice  | `refused: Refusal`     |
