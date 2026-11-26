@@ -151,6 +151,8 @@ export interface EditorOptions {
     subtotal_words?: string[];
     /** Notes `deposit_for` may link to: estimates first. */
     link_notes?: {title: string; link: string; kind: string | null}[];
+    /** The books' default payment terms (Settings → New invoices), for a customer with none; null: no default. */
+    default_terms?: number | null;
 }
 
 /** The labels total rows may carry: the books' words, else the engine's defaults. */

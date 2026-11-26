@@ -17,6 +17,7 @@ export const INVOICER_KEY_GROUPS = [
     "Snippets",
     "Templates",
     "Template",
+    "Settings",
 ] as const;
 
 export type InvoicerKeyGroup = (typeof INVOICER_KEY_GROUPS)[number];

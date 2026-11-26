@@ -8,13 +8,15 @@
     import KeyHelp from "#ui/keys/KeyHelp.svelte";
     import {keymap, registerKeys} from "#ui/keys/keymap.svelte.js";
     import {useAppearance} from "#ui/theme/appearance.svelte.js";
-    import {APP_NAME, defaultAppearance} from "#lib/app.js";
-    import {appearanceFrom, ensureSession, fetchBooks, fetchUiPrefs} from "#lib/api.js";
+    import {listenForMenuZoom} from "#ui/theme/zoom.svelte.js";
+    import {APP_NAME} from "#lib/app.js";
+    import {ensureSession, fetchBooks} from "#lib/api.js";
     import {changes, noteChange} from "#lib/changes.svelte.js";
     import {listenForChanges} from "#lib/events.js";
     import {invoiceCounts, invoiceCountsTitle, type BooksInfo} from "#lib/invoices.js";
     import {appLayer} from "#lib/keys/appKeys.js";
     import {INVOICER_KEY_GROUPS} from "#lib/keys/groups.js";
+    import {uiPrefs} from "#lib/uiPrefs.svelte.js";
     import type {NewChoice} from "#lib/components/NewMenu.svelte";
     import Sidebar, {type SidebarCount, type SidebarLink} from "#lib/components/Sidebar.svelte";
 
@@ -22,8 +24,12 @@
 
     // The shared theme and UI scale, applied the way Ledgeline applies them:
     // defaults until the saved prefs (ui-prefs.toml and the books' pin) load.
-    const appearance = $state<{theme: string; uiScale: number; uiPrefsReady: boolean}>({...defaultAppearance()});
-    useAppearance(appearance);
+    // The zoom keys (in `appLayer`) and the desktop View menu's Zoom items
+    // (a `ledgeline:zoom` event) step the saved scale, which is saved; a save
+    // still waiting goes out as the page hides.
+    useAppearance(uiPrefs);
+    $effect(() => listenForMenuZoom());
+    $effect(() => uiPrefs.flushWhenLeaving());
 
     // The keymap (PLAN 5k): packages/ui's engine, Ledgeline's, with the
     // invoicer's own layers. `<svelte:window onkeydown>` below is its one
@@ -98,6 +104,14 @@
         ];
     });
 
+    // At the sidebar's foot (SETTINGS-PLAN §4).
+    const settingsLink = $derived<SidebarLink>({
+        id: "settings",
+        href: resolve("/settings"),
+        label: "Settings",
+        active: page.url.pathname.startsWith(resolve("/settings")),
+    });
+
     // The New button's choices (H20, ARCHITECTURE §6.3): invoices and deposit
     // invoices only among the document types, since the app creates nothing
     // else yet (estimates and credit notes are DocType "later"). `?new=1` asks
@@ -112,16 +126,7 @@
     ];
 
     onMount(() => {
-        fetchUiPrefs()
-            .then((body) => {
-                const saved = appearanceFrom(body);
-                if (saved !== null) {
-                    appearance.theme = saved.theme;
-                    appearance.uiScale = saved.uiScale;
-                }
-                appearance.uiPrefsReady = true;
-            })
-            .catch((error: unknown) => console.warn("ui prefs:", error));
+        void uiPrefs.load();
         // The cookie MBR's pages need before any is shown in a frame.
         ensureSession().catch((error: unknown) => console.warn("session:", error));
         // Live reload: the pages re-fetch when a file changes on disk.
@@ -145,11 +150,13 @@
 <svelte:window onkeydown={keymap.handle} onblur={keymap.disarm} />
 
 <div class="flex h-screen flex-col bg-base-100 text-base-content md:flex-row">
-    <Sidebar {links} {books} {newChoices} />
+    <Sidebar {links} {books} {newChoices} settings={settingsLink} />
     <main class="min-h-0 min-w-0 flex-1 overflow-y-auto p-3 sm:p-4 md:p-6">
         {@render children()}
     </main>
 </div>
 
-<KeyHelp note="Shortcuts are off while you're typing in a field, except Save (⌘/Ctrl+S) and the bill table's Alt keys; Esc leaves the field." />
+<KeyHelp
+    note="Shortcuts are off while you're typing in a field, except Save (⌘/Ctrl+S), Settings (⌘/Ctrl+,), zoom and the bill table's Alt keys; Esc leaves the field."
+/>
 <ChordIndicator />
