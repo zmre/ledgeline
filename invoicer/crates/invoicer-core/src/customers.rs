@@ -9,6 +9,7 @@
 //! `postcode`, `country`. Plain strings and a single map are read too, since
 //! people write those by hand.
 
+use crate::attachment::{Attachment, OutsidePath, home_dir};
 use crate::frontmatter::Fields;
 use crate::notes::{Note, Site, resolve_relative, wikilink_target};
 use crate::problem::{Problem, ProblemCode};
@@ -199,31 +200,6 @@ impl Contact {
     }
 }
 
-/// A `contracts:` entry: a note, or a file (usually an executed PDF).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
-pub enum ContractRef {
-    /// `"[[Customer X MSA 2026]]"`.
-    Note {
-        /// As written.
-        link: String,
-    },
-    /// `/customers/contracts/SOW 3.pdf`, or relative to the customer note.
-    File {
-        /// As written.
-        path: String,
-    },
-}
-
-/// Where a contract is.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ContractTarget {
-    /// The note it links.
-    Note(VaultPath),
-    /// The file it names.
-    File(VaultPath),
-}
-
 /// `billing_portal:`: how invoices reach a customer that only takes them
 /// through a vendor portal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -252,6 +228,9 @@ pub struct OpenPo {
     pub amount: Option<String>,
     /// When it expires.
     pub expires: Option<String>,
+    /// A file with its details (the PO's PDF, say): a note, a file in the
+    /// books, or one outside them.
+    pub attachment: Option<Attachment>,
 }
 
 /// A customer.
@@ -268,8 +247,8 @@ pub struct Customer {
     pub revenue_account: Option<String>,
     /// The default template (`/invoices/tpl/x.html`).
     pub invoice_template: Option<String>,
-    /// `contracts:`.
-    pub contracts: Vec<ContractRef>,
+    /// `contracts:`: notes, files in the books, or files outside them.
+    pub contracts: Vec<Attachment>,
     /// `billing_portal:`.
     pub billing_portal: Option<BillingPortal>,
     /// `open_pos:`.
@@ -319,6 +298,24 @@ pub fn customers(site: &Site, words: &Words) -> Vec<Customer> {
     site.notes()
         .filter(|note| is_customer(note, words))
         .filter_map(Customer::from_note)
+        .collect()
+}
+
+/// Every file outside the books folder some customer names, in a
+/// `contracts:` entry or an open PO's `attachment:`: the only outside files
+/// the app opens.
+#[must_use]
+pub fn outside_attachments(site: &Site, words: &Words) -> Vec<OutsidePath> {
+    customers(site, words)
+        .into_iter()
+        .flat_map(|c| {
+            let pos = c.open_pos.into_iter().filter_map(|po| po.attachment);
+            c.contracts.into_iter().chain(pos).collect::<Vec<_>>()
+        })
+        .filter_map(|entry| match entry {
+            Attachment::Outside(outside) => Some(outside),
+            _ => None,
+        })
         .collect()
 }
 
@@ -402,14 +399,8 @@ impl Customer {
         let contact = Contact::from_note(note)?;
         let fields = &note.frontmatter;
         let contracts = strings(fields.get("contracts"))
-            .into_iter()
-            .map(|entry| {
-                if wikilink_target(&entry).is_some() {
-                    ContractRef::Note { link: entry }
-                } else {
-                    ContractRef::File { path: entry }
-                }
-            })
+            .iter()
+            .filter_map(|entry| Attachment::read(entry))
             .collect();
         let billing_portal = match fields.get("billing_portal") {
             Some(Value::Object(map)) => {
@@ -440,6 +431,10 @@ impl Customer {
                         reference: map.get("reference").and_then(plain_text)?,
                         amount: map.get("amount").and_then(plain_text),
                         expires: map.get("expires").and_then(plain_text),
+                        attachment: map
+                            .get("attachment")
+                            .and_then(plain_text)
+                            .and_then(|a| Attachment::read(&a)),
                     })
                 })
                 .collect(),
@@ -499,49 +494,65 @@ impl Customer {
         }
     }
 
-    /// Where each contract is, or `None` for one that doesn't exist.
-    #[must_use]
-    pub fn resolve_contract(
-        &self,
-        contract: &ContractRef,
-        site: &Site,
-        vault: &dyn Vault,
-    ) -> Option<ContractTarget> {
-        match contract {
-            ContractRef::Note { link } => site
-                .resolve_wikilink(&self.contact.path, link)
-                .map(|note| ContractTarget::Note(note.path.clone())),
-            ContractRef::File { path } => resolve_relative(&self.contact.path, path.trim())
-                .filter(|p| vault.is_file(p))
-                .map(ContractTarget::File),
-        }
-    }
-
-    /// What `check` reports about this customer: contracts that don't exist,
-    /// a portal that doesn't read or holds a secret, terms that aren't days.
+    /// What `check` reports about this customer: contracts and PO
+    /// attachments that don't exist, a portal that doesn't read or holds a
+    /// secret, terms that aren't days. `~/` entries start at the user's
+    /// home folder.
     #[must_use]
     pub fn problems(&self, note: &Note, site: &Site, vault: &dyn Vault) -> Vec<Problem> {
+        self.problems_from(note, site, vault, home_dir().as_deref())
+    }
+
+    /// [`Customer::problems`], with `~/` entries starting at `home`.
+    #[must_use]
+    pub fn problems_from(
+        &self,
+        note: &Note,
+        site: &Site,
+        vault: &dyn Vault,
+        home: Option<&std::path::Path>,
+    ) -> Vec<Problem> {
         let line = |key: &str| note.line_of(key);
-        let mut problems: Vec<Problem> = self
-            .contracts
-            .iter()
-            .filter(|c| self.resolve_contract(c, site, vault).is_none())
-            .map(|c| {
-                let shown = match c {
-                    ContractRef::Note { link } => link,
-                    ContractRef::File { path } => path,
-                };
+        let missing = |entry: &Attachment| {
+            entry
+                .resolve(&self.contact.path, site, vault, home)
+                .is_none()
+        };
+        let shown = |entry: &Attachment| match entry {
+            Attachment::Outside(outside) => format!("{} (outside the books)", outside.location()),
+            other => other.entry(),
+        };
+        let fix = |entry: &Attachment| {
+            if entry.is_outside() {
+                "choose the file again, or copy it into the books folder"
+            } else {
+                "fix the path: `/` is the books folder; otherwise it is relative to this note"
+            }
+        };
+        let contracts = self.contracts.iter().filter(|c| missing(c)).map(|c| {
+            Problem::warning(
+                ProblemCode::MissingContract,
+                format!("the contract {} doesn't exist", shown(c)),
+            )
+            .with_fix(fix(c), None)
+            .at_line(line("contracts"))
+        });
+        let attachments = self.open_pos.iter().filter_map(|po| {
+            let entry = po.attachment.as_ref().filter(|a| missing(a))?;
+            Some(
                 Problem::warning(
-                    ProblemCode::MissingContract,
-                    format!("the contract {shown} doesn't exist"),
+                    ProblemCode::MissingAttachment,
+                    format!(
+                        "{}'s attachment {} doesn't exist",
+                        po.reference,
+                        shown(entry)
+                    ),
                 )
-                .with_fix(
-                    "fix the path: `/` is the books folder; otherwise it is relative to this note",
-                    None,
-                )
-                .at_line(line("contracts"))
-            })
-            .collect();
+                .with_fix(fix(entry), None)
+                .at_line(line("open_pos")),
+            )
+        });
+        let mut problems: Vec<Problem> = contracts.chain(attachments).collect();
         match note.frontmatter.get("billing_portal") {
             None | Some(Value::Object(_)) => {}
             Some(_) => problems.push(
@@ -606,6 +617,7 @@ impl Customer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::attachment::AttachmentTarget;
     use crate::notes::SiteConfig;
     use ledgeline_core::vault::MemVault;
 
@@ -776,18 +788,60 @@ Fred Smith is the champion.
             &Words::default(),
         )
         .expect("customer");
-        let resolved: Vec<Option<ContractTarget>> = x
+        let resolved: Vec<Option<AttachmentTarget>> = x
             .contracts
             .iter()
-            .map(|c| x.resolve_contract(c, &site, &vault))
+            .map(|c| c.resolve(&x.contact.path, &site, &vault, None))
             .collect();
-        assert!(matches!(resolved[0], Some(ContractTarget::Note(_))));
-        assert!(matches!(resolved[1], Some(ContractTarget::File(_))));
+        assert!(matches!(resolved[0], Some(AttachmentTarget::Note(_))));
+        assert!(matches!(resolved[1], Some(AttachmentTarget::File(_))));
         assert_eq!(resolved[2], None);
         let note = site.note(&x.contact.path).expect("note");
         let problems = x.problems(note, &site, &vault);
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert_eq!(problems[0].code, ProblemCode::MissingContract);
+    }
+
+    #[test]
+    fn missing_po_attachments_and_outside_files_are_reported() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path();
+        std::fs::write(home.join("PO 1.pdf"), b"%PDF-").expect("writes");
+        let vault = MemVault::new()
+            .with_file(
+                "c.md",
+                "---\ntype: organization\ntags: [customer]\ncontracts:\n  - ~/MSA.pdf\n  - \"file:///nowhere/at%20all/SOW.pdf\"\nopen_pos:\n  - reference: PO 1\n    attachment: ~/PO 1.pdf\n  - reference: PO 2\n    attachment: /pos/PO 2.pdf\n  - reference: PO 3\n---\n",
+            )
+            .with_file("pos/PO 2.pdf", "%PDF-");
+        let site = site(&vault);
+        let note = site.notes().next().expect("note");
+        let c = Customer::from_note(note).expect("contact");
+        assert_eq!(
+            c.open_pos[0].attachment,
+            Some(Attachment::Outside(crate::attachment::OutsidePath::Home(
+                "PO 1.pdf".into()
+            )))
+        );
+        assert_eq!(c.open_pos[2].attachment, None);
+        let found = c.problems_from(note, &site, &vault, Some(home));
+        let messages: Vec<&str> = found.iter().map(|p| p.message.as_str()).collect();
+        assert_eq!(
+            messages,
+            [
+                "the contract ~/MSA.pdf (outside the books) doesn't exist",
+                "the contract /nowhere/at all/SOW.pdf (outside the books) doesn't exist",
+            ],
+            "{found:?}"
+        );
+        // Without the PO's file: reported as the contract is.
+        std::fs::remove_file(home.join("PO 1.pdf")).expect("removes");
+        let found = c.problems_from(note, &site, &vault, Some(home));
+        let last = found.last().expect("a problem");
+        assert_eq!(last.code, ProblemCode::MissingAttachment);
+        assert_eq!(
+            last.message,
+            "PO 1's attachment ~/PO 1.pdf (outside the books) doesn't exist"
+        );
     }
 
     #[test]

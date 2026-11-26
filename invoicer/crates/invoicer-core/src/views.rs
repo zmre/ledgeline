@@ -11,7 +11,8 @@
 //! mirror. Overdue is open and due ([`crate::doc::Header::due_on`]) before
 //! `today`.
 
-use crate::customers::{self, BillingContact, ContactKind, ContractRef, Customer, CustomerLookup};
+use crate::attachment::{AttachmentView, home_dir};
+use crate::customers::{self, BillingContact, ContactKind, Customer, CustomerLookup};
 use crate::doc::{Header, Invoice, Paid, Status};
 use crate::frontmatter::Fields;
 use crate::index::{DocumentIndex, IndexedDoc, ListFilter};
@@ -24,7 +25,7 @@ use crate::table::books::BooksEntry;
 use crate::table::columns::Role;
 use crate::table::{BillTable, RowKind};
 use ledgeline_core::accrual::schedule::{Proration, Term};
-use ledgeline_core::vault::{VaultError, VaultPath};
+use ledgeline_core::vault::{Vault, VaultError, VaultPath};
 use serde::Serialize;
 use std::collections::HashMap;
 
@@ -768,39 +769,6 @@ pub fn customers(index: &DocumentIndex, states: Option<&BookStates>) -> Vec<Cust
     all
 }
 
-/// A `contracts:` entry and where it is.
-#[derive(Debug, Clone, Serialize)]
-pub struct ContractView {
-    /// As written.
-    #[serde(flatten)]
-    pub entry: ContractRef,
-    /// The note or file it names; `None` when it doesn't exist.
-    pub found: Option<VaultPath>,
-    /// What to call it: the note's title, else the link's target, or the
-    /// file's name. Never the raw `[[…]]` or path.
-    pub name: String,
-}
-
-/// A contract's name from its entry alone: a link's target (`[[MSA|the
-/// MSA]]` → `MSA`), or a path's file name (`/c/SOW 3.pdf` → `SOW 3.pdf`).
-#[must_use]
-pub fn contract_name(contract: &ContractRef) -> String {
-    match contract {
-        ContractRef::Note { link } => crate::notes::wikilink_target(link)
-            .unwrap_or(link.as_str())
-            .to_string(),
-        ContractRef::File { path } => {
-            let trimmed = path.trim().trim_end_matches('/');
-            trimmed
-                .rsplit('/')
-                .next()
-                .filter(|s| !s.is_empty())
-                .unwrap_or(trimmed)
-                .to_string()
-        }
-    }
-}
-
 /// `customers show`.
 #[derive(Debug, Clone, Serialize)]
 pub struct CustomerDetail<'a> {
@@ -814,7 +782,7 @@ pub struct CustomerDetail<'a> {
     /// `invoice_template`.
     pub invoice_template: Option<&'a str>,
     /// `contracts:`, resolved.
-    pub contracts: Vec<ContractView>,
+    pub contracts: Vec<AttachmentView>,
     /// `billing_portal:`.
     pub billing_portal: Option<&'a crate::customers::BillingPortal>,
     /// `open_pos:`.
@@ -851,17 +819,21 @@ pub struct PoUsage {
     /// The amount less `invoiced` (negative when over); `None` without an
     /// amount that reads as money.
     pub remaining: Option<String>,
+    /// Its `attachment:`, resolved.
+    pub attachment: Option<AttachmentView>,
 }
 
 /// What has been invoiced against each of `customer`'s open POs, by
 /// `docs` (the customer's documents) on `today`.
 pub(crate) fn po_usage(
     index: &DocumentIndex,
+    vault: &dyn Vault,
     customer: &Customer,
     docs: &[&IndexedDoc],
     today: &str,
 ) -> Vec<PoUsage> {
     let money = index.money();
+    let home = home_dir();
     customer
         .open_pos
         .iter()
@@ -914,6 +886,10 @@ pub(crate) fn po_usage(
                     .collect(),
                 invoiced: invoiced.map(format),
                 remaining,
+                attachment: po
+                    .attachment
+                    .as_ref()
+                    .map(|a| a.view(&customer.contact.path, index.site(), vault, home.as_deref())),
             }
         })
         .collect()
@@ -942,25 +918,17 @@ pub fn customer_detail<'a>(
 ) -> CustomerDetail<'a> {
     let index = session.index();
     let counts = problem_counts(problems);
+    let home = home_dir();
     let contracts = customer
         .contracts
         .iter()
         .map(|c| {
-            let target = customer.resolve_contract(c, index.site(), session.vault());
-            let name = match (&target, c) {
-                (Some(customers::ContractTarget::Note(p)), _) => index
-                    .site()
-                    .note(p)
-                    .map_or_else(|| contract_name(c), |n| n.title.clone()),
-                _ => contract_name(c),
-            };
-            ContractView {
-                entry: c.clone(),
-                found: target.map(|t| match t {
-                    customers::ContractTarget::Note(p) | customers::ContractTarget::File(p) => p,
-                }),
-                name,
-            }
+            c.view(
+                &customer.contact.path,
+                index.site(),
+                session.vault(),
+                home.as_deref(),
+            )
         })
         .collect();
     let states = Some(session.book_states());
@@ -973,7 +941,7 @@ pub fn customer_detail<'a>(
         contracts,
         billing_portal: customer.billing_portal.as_ref(),
         open_pos: &customer.open_pos,
-        po_usage: po_usage(index, customer, &docs, today),
+        po_usage: po_usage(index, session.vault(), customer, &docs, today),
         snippets: &customer.snippets,
         documents: docs
             .into_iter()

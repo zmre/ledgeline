@@ -500,10 +500,7 @@ pub fn customer(detail: &CustomerDetail<'_>) -> String {
         .contracts
         .iter()
         .map(|c| {
-            let written = match &c.entry {
-                invoicer_core::customers::ContractRef::Note { link } => link.clone(),
-                invoicer_core::customers::ContractRef::File { path } => path.clone(),
-            };
+            let written = attachment_text(&c.entry);
             if c.found.is_some() {
                 written
             } else {
@@ -537,6 +534,7 @@ pub fn customer(detail: &CustomerDetail<'_>) -> String {
                 Some(po.reference.clone()),
                 po.amount.clone(),
                 po.expires.as_ref().map(|d| format!("expires {d}")),
+                po.attachment.as_ref().map(attachment_text),
             ]
             .into_iter()
             .flatten()
@@ -1171,6 +1169,17 @@ pub fn recognized(r: &Recognized) -> String {
         );
     }
     out
+}
+
+/// An attachment entry for the terminal: as written, or where a file
+/// outside the books is.
+fn attachment_text(entry: &invoicer_core::attachment::Attachment) -> String {
+    match entry {
+        invoicer_core::attachment::Attachment::Outside(outside) => {
+            format!("{} (outside the books)", outside.location())
+        }
+        other => other.entry(),
+    }
 }
 
 #[cfg(test)]
