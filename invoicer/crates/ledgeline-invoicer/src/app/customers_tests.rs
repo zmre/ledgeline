@@ -586,3 +586,57 @@ async fn the_cli_writes_the_file_the_app_writes() {
         "customers import-csv"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_customers_portal_opens_from_its_page() {
+    use std::sync::Arc;
+
+    use super::native::Native;
+    use super::native::mock::MockNative;
+
+    // The page is told the link it may offer: a plain https URL only.
+    let plain = app();
+    let (status, detail) = json_of(&plain, authed(&customer_url("customers/Customer X.md"))).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    assert_eq!(detail["portal_url"], "https://customerx.coupahost.com/");
+    // No window: the URL comes back for the page to open.
+    let (status, body) = json_of(
+        &plain,
+        post_json("/api/customer-portal", &json!({"customer": "Customer X"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body,
+        json!({"url": "https://customerx.coupahost.com/", "opened": false})
+    );
+
+    // The window opens it in the browser.
+    let native = Arc::new(MockNative::everything());
+    let windowed = app_on("accrual", Some(Arc::clone(&native) as Arc<dyn Native>));
+    let (status, body) = json_of(
+        &windowed,
+        post_json(
+            "/api/customer-portal",
+            &json!({"customer": "customers/Customer X.md"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["opened"], true);
+    assert_eq!(
+        *native.opened.lock().unwrap(),
+        ["https://customerx.coupahost.com/"]
+    );
+
+    // A customer without a portal, or no such customer: nothing opens.
+    for customer in ["Contoso", "Nobody at all"] {
+        let (status, body) = json_of(
+            &windowed,
+            post_json("/api/customer-portal", &json!({ "customer": customer })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{customer}: {body}");
+    }
+    assert_eq!(native.opened.lock().unwrap().len(), 1);
+}

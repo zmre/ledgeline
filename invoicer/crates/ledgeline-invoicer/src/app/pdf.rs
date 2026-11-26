@@ -282,7 +282,7 @@ pub(crate) struct Delivery {
 
 /// A portal link the app offers: a plain `https` URL, by the shell's one
 /// rule (the window's navigation policy uses it too), re-serialized.
-fn plain_https(url: &str) -> Option<String> {
+pub(crate) fn plain_https(url: &str) -> Option<String> {
     ledgeline_shell::security::plain_https(url).map(String::from)
 }
 
@@ -484,10 +484,16 @@ pub(crate) async fn open_portal(
                 "the customer has no billing portal with an https URL".to_string(),
             )
         })?;
+    open_url_answer(&state, &url)
+}
+
+/// `{url, opened}` for a portal `url` already checked: the window opens it
+/// in the browser (`opened`); elsewhere the SPA opens `url` itself.
+pub(crate) fn open_url_answer(state: &AppState, url: &str) -> ApiResult {
     let opened = match state.native().filter(|n| n.capabilities().open_url) {
         Some(native) => {
             native
-                .open_url(&url)
+                .open_url(url)
                 .map_err(|e| ApiError::status(StatusCode::SERVICE_UNAVAILABLE, e))?;
             true
         }
