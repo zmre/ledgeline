@@ -4,8 +4,8 @@
 //! (`crates/ledgeline-shell/tests/support/shell_csp_oracle.rs`).
 //!
 //! A unit test rather than an integration test because the crate is a binary
-//! and its router is `pub(crate)`. The `invoicerSpaShellCsp` Nix check embeds
-//! the real `invoicerSpaBuild` and sets `LEDGELINE_REQUIRE_REAL_SPA`, under
+//! and its router is `pub(crate)`. The Nix `tests` check embeds the real
+//! `invoicerSpaBuild` and sets `LEDGELINE_REQUIRE_REAL_SPA`, under
 //! which build.rs's placeholder is a failure; a plain `cargo test` passes on
 //! either. The browser-level twin is `invoicer/web/e2e/csp.same-origin.e2e.ts`.
 
@@ -40,7 +40,7 @@ async fn spa_shell_csp_admits_exactly_the_inline_scripts_it_serves() {
             &html,
             std::env::var_os(REQUIRE_REAL_SPA).is_some(),
             |script| format!("'{}'", ledgeline_shell::security::csp_sha256(script)),
-            "Run `just build-invoicer` first (or `nix build .#invoicerSpaShellCsp`) to check \
+            "Run `just build-invoicer` first (or `nix build .#tests`) to check \
              the real one.",
         );
     }
