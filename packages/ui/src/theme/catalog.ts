@@ -159,7 +159,7 @@ export const THEME_VARIANTS: readonly ThemeVariant[] = Object.freeze([
     }),
     variant("tokyo-night-day", "Tokyo Night Day", "tokyo-night", "light", {
         base100: "#e1e2e7",
-        baseContent: "#3760bf",
+        baseContent: "#274eab",
         primary: "#2e7de9",
         secondary: "#7847bd",
         accent: "#b15c00",
@@ -175,7 +175,7 @@ export const THEME_VARIANTS: readonly ThemeVariant[] = Object.freeze([
     }),
     variant("solarized-light", "Solarized Light", "solarized", "light", {
         base100: "#fdf6e3",
-        baseContent: "#586e75",
+        baseContent: "#4f646b",
         primary: "#268bd2",
         secondary: "#d33682",
         accent: "#b58900",

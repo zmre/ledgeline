@@ -3,7 +3,10 @@
  * base3/base2 (light) or base03 plus derived darker steps (dark: Solarized has
  * no shade below base03). base-content is the "emphasised" tone, base01 (light)
  * or base1 (dark): Solarized's design keeps body text near 5:1, below the 7:1
- * the other themes reach, and that is kept rather than redesigning it.
+ * the other themes reach, and that is kept rather than redesigning it. One
+ * nudge (2026-11-26): light's base01 #586e75 is darkened in OKLab, same hue
+ * and chroma, to #4f646b, so body text clears 4.5:1 on base-200 and base-300
+ * too (was 4.39 and 3.97; now 5.09 and 4.60; 5.78 on base-100).
  *
  * Each variant is a daisyUI custom theme plus its chart block. The chart rules
  * (slot order, the named tokens, how to validate) are in app.css and
@@ -18,7 +21,7 @@
     --color-base-100: #fdf6e3;
     --color-base-200: #eee8d5;
     --color-base-300: #e4ddc8;
-    --color-base-content: #586e75;
+    --color-base-content: #4f646b;
     --color-primary: #268bd2;
     --color-primary-content: #001b22;
     --color-secondary: #d33682;
@@ -72,7 +75,7 @@
     --chart-other: #657b83;
     --chart-in: #239c93;
     --chart-out: #dc322f;
-    --chart-net: #586e75;
+    --chart-net: #4f646b;
 }
 
 @plugin "daisyui/theme" {
