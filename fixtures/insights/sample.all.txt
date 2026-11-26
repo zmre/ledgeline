@@ -489,26 +489,6 @@ InsightsReport {
             ),
         },
         PayeeRow {
-            payee: "vehicle depreciation FY2025",
-            current: Dec {
-                mantissa: 400000,
-                places: 2,
-            },
-            previous: None,
-            delta: None,
-            pct: None,
-        },
-        PayeeRow {
-            payee: "vehicle depreciation FY2026",
-            current: Dec {
-                mantissa: 350000,
-                places: 2,
-            },
-            previous: None,
-            delta: None,
-            pct: None,
-        },
-        PayeeRow {
             payee: "City Power & Light",
             current: Dec {
                 mantissa: 172215,
@@ -637,6 +617,38 @@ InsightsReport {
             pct: Some(
                 194.7508896797153,
             ),
+        },
+        PayeeRow {
+            payee: "Chevron",
+            current: Dec {
+                mantissa: 25814,
+                places: 2,
+            },
+            previous: Some(
+                Dec {
+                    mantissa: 12497,
+                    places: 2,
+                },
+            ),
+            delta: Some(
+                Dec {
+                    mantissa: 13317,
+                    places: 2,
+                },
+            ),
+            pct: Some(
+                106.5615747779467,
+            ),
+        },
+        PayeeRow {
+            payee: "Hotel Laimer Hof",
+            current: Dec {
+                mantissa: 239820000,
+                places: 6,
+            },
+            previous: None,
+            delta: None,
+            pct: None,
         },
     ],
     has_holdings: true,

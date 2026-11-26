@@ -293,7 +293,7 @@ export const METRIC_HELP = {
     toppayees: {
         label: "Top Payees",
         title: "Top Payees",
-        text: "Who got the most of your spending this period, compared with the previous period. Refunds count against the payee. Card payments, paychecks and taxes aren't spending here.",
+        text: "Who got the most of your spending this period, compared with the previous period. Only spending paid from cash, a bank or a card counts, and refunds count against the payee. Card payments, paychecks and taxes are left out.",
         formula: "expenses grouped by payee, the part of the description before |",
     },
 } as const satisfies Record<string, MetricHelp>;

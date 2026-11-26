@@ -21,7 +21,7 @@
 // a comparison against a goal rather than a sign.
 
 /** The neutral rendering — zero, or a figure that does not exist. Muted, never green. */
-export const NEUTRAL_CLASS = "text-base-content/50";
+export const NEUTRAL_CLASS = "text-muted";
 
 /** daisyUI colour class for a signed figure: success (+), error (−), neutral (0 / absent). */
 export function signClass(value: number | bigint | null): string {

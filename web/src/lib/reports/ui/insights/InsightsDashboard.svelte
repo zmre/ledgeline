@@ -78,7 +78,7 @@
     <div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
         <PeriodControl bind:start={params.insStart} bind:end={params.insEnd} />
         {#if insights.refreshing}
-            <span class="flex items-center gap-2 text-xs text-base-content/60" role="status" data-testid="insights-refreshing">
+            <span class="flex items-center gap-2 text-xs text-muted" role="status" data-testid="insights-refreshing">
                 <span class="loading loading-sm loading-spinner motion-reduce:hidden" aria-hidden="true"></span>
                 Updating…
             </span>
@@ -113,7 +113,7 @@
                 <!-- plans/37 decision 4: boxes that don't apply hide, and the grid reflows. -->
                 {@const shows = boxVisibility(report, startup)}
                 {@const runway = shows.runway && startup !== null ? runwayText(startup.current, base, styles) : null}
-                <div class="text-xs text-base-content/60">
+                <div class="text-xs text-muted">
                     Current <span class="font-medium text-base-content/80">{period.currStart} → {period.currEnd}</span>
                     vs previous <span class="font-medium text-base-content/80">{period.prevStart} → {period.prevEnd}</span>
                 </div>

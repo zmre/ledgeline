@@ -1057,6 +1057,43 @@ enum Half {
 struct PayeeSpend {
     previous: Option<Dec>,
     current: Option<Dec>,
+    /// How often each spelling (whitespace collapsed, case kept) was written
+    /// on a current-period transaction — the row shows the most frequent.
+    spellings: BTreeMap<String, usize>,
+}
+
+/// `payee` trimmed with every whitespace run collapsed to one space: how a
+/// payee is displayed. [`payee_key`] adds case folding for grouping.
+fn payee_spelling(payee: &str) -> String {
+    payee.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The grouping key: [`payee_spelling`], lowercased, so `COSTCO`, `Costco`
+/// and `costco  ` are one payee.
+fn payee_key(payee: &str) -> String {
+    payee_spelling(payee).to_lowercase()
+}
+
+/// The spelling written most often; a tie goes to the first in byte order
+/// (so `Costco` beats `costco`), which keeps the row stable across runs.
+fn most_frequent_spelling(spellings: &BTreeMap<String, usize>) -> Option<&str> {
+    spellings
+        .iter()
+        .max_by(|(a, a_count), (b, b_count)| a_count.cmp(b_count).then_with(|| b.cmp(a)))
+        .map(|(spelling, _)| spelling.as_str())
+}
+
+/// True when `account` is where cash or credit actually moves: a Cash-typed
+/// account (hledger's `C`, a subtype of Asset) or a liability. Plain assets
+/// are not — a depreciation entry's accumulated-depreciation leg, or a
+/// prepaid asset being drawn down, moves no money.
+///
+/// Types come from the shared resolver: own declaration, then the nearest
+/// declared ancestor, then hledger's name heuristic (`assets:…:bank`,
+/// `…:checking`, `…:cash`, …). That is exactly how the Cash Balance box
+/// finds cash, so whatever it counts as cash, this does too.
+fn is_cash_or_card(account: &str, types: &AccountTypes) -> bool {
+    types.is_cash(account) || types.is_type(account, AccountType::Liability)
 }
 
 /// The base-commodity value of one posting, at `date`. Commodities with no
@@ -1109,19 +1146,26 @@ fn is_income(txn: &Transaction, opts: &PayeeOpts) -> Result<bool, ReportError> {
 /// The payees that took the most spending over the current period (Box 11),
 /// with each one's previous-period figure.
 ///
-/// Only EXPENSE postings count, classified by declared account type, so a card
-/// payment (asset → liability, no expense leg) never appears — the purchases
-/// it paid for already did, under their own payees — while mortgage interest,
-/// an expense posting, does. Accounts under `cost_exclude` (taxes by default)
-/// are left out, as are closing entries and income ([`is_income`]).
+/// Only EXPENSE postings count, classified by declared account type, and only
+/// in a transaction where cash or credit actually moved ([`is_cash_or_card`]):
+/// a purchase on a card or from a bank counts; depreciation, a prepaid asset
+/// drawn down and other non-cash entries do not, and neither does a closing
+/// entry (it touches no asset or liability). A card payment has no expense leg,
+/// so it never appears — the purchases it paid for already did, under their
+/// own payees — while mortgage interest, an expense posting paid from the bank,
+/// does. Accounts under `cost_exclude` (taxes by default) are left out, and so
+/// is income ([`is_income`]).
 ///
 /// Sums are signed: a refund reduces its payee's total. Each posting is valued
-/// in `base` at its own date and counted in the half its date falls in. Payees
-/// are grouped by [`super::subscriptions::payee_of`], the description before
-/// `|`, exactly as written; a transaction with no payee is skipped.
+/// in `base` at its own date and counted in the half its date falls in.
 ///
-/// Ranked by current spending (exact `Dec`, descending), then payee name, and
-/// only payees with positive current spending are listed.
+/// The payee is [`super::subscriptions::payee_of`], the description before
+/// `|`, grouped case-insensitively with whitespace collapsed ([`payee_key`]);
+/// a row shows the spelling most used in the current period. A transaction
+/// with no payee is skipped.
+///
+/// Ranked by current spending (exact `Dec`, descending), then payee, and only
+/// payees with positive current spending are listed.
 fn top_payees(txns: &[Transaction], opts: &PayeeOpts) -> Result<Vec<PayeeRow>, ReportError> {
     let PayeeOpts {
         period,
@@ -1146,7 +1190,7 @@ fn top_payees(txns: &[Transaction], opts: &PayeeOpts) -> Result<Vec<PayeeRow>, R
                 .any(|prefix| account_matches(prefix, account))
     };
 
-    let mut spend: BTreeMap<&str, PayeeSpend> = BTreeMap::new();
+    let mut spend: BTreeMap<String, PayeeSpend> = BTreeMap::new();
     for txn in txns {
         let payee = super::subscriptions::payee_of(&txn.description);
         if payee.is_empty() {
@@ -1161,47 +1205,58 @@ fn top_payees(txns: &[Transaction], opts: &PayeeOpts) -> Result<Vec<PayeeRow>, R
                 half_of(date).map(|half| (posting, date, half))
             })
             .peekable();
-        if postings.peek().is_none() || is_closing_entry(txn, types) || is_income(txn, opts)? {
+        if postings.peek().is_none()
+            || !txn
+                .postings
+                .iter()
+                .any(|posting| is_cash_or_card(&posting.account.0, types))
+            || is_income(txn, opts)?
+        {
             continue;
         }
-        let entry = spend.entry(payee).or_default();
+        let entry = spend.entry(payee_key(payee)).or_default();
+        let mut in_current = false;
         for (posting, date, half) in postings {
             let value = posting_value(posting, base, db, date)?;
             let slot = match half {
                 Half::Previous => &mut entry.previous,
-                Half::Current => &mut entry.current,
+                Half::Current => {
+                    in_current = true;
+                    &mut entry.current
+                }
             };
             *slot = Some(slot.unwrap_or_else(Dec::zero).add(value)?);
+        }
+        if in_current {
+            *entry.spellings.entry(payee_spelling(payee)).or_default() += 1;
         }
     }
 
     let mut rows = spend
         .into_iter()
-        .filter_map(|(payee, totals)| {
-            totals
-                .current
-                .filter(|current| *current > Dec::zero())
-                .map(|current| (payee, current, totals.previous))
+        .filter_map(|(key, totals)| {
+            let current = totals.current.filter(|current| *current > Dec::zero())?;
+            let shown = most_frequent_spelling(&totals.spellings)?.to_string();
+            Some((key, shown, current, totals.previous))
         })
-        .map(|(payee, current, previous)| {
+        .map(|(key, payee, current, previous)| {
             let delta = previous.map(|prev| current.sub(prev)).transpose()?;
             let pct = previous.and_then(|prev| dec_pct_change(current, prev));
-            Ok(PayeeRow {
-                payee: payee.to_string(),
-                current,
-                previous,
-                delta,
-                pct,
-            })
+            Ok((
+                key,
+                PayeeRow {
+                    payee,
+                    current,
+                    previous,
+                    delta,
+                    pct,
+                },
+            ))
         })
         .collect::<Result<Vec<_>, ReportError>>()?;
-    rows.sort_by(|a, b| {
-        b.current
-            .cmp(&a.current)
-            .then_with(|| a.payee.cmp(&b.payee))
-    });
+    rows.sort_by(|(a_key, a), (b_key, b)| b.current.cmp(&a.current).then_with(|| a_key.cmp(b_key)));
     rows.truncate(TOP_PAYEES_N);
-    Ok(rows)
+    Ok(rows.into_iter().map(|(_, row)| row).collect())
 }
 
 /// The comparison window for `[start, end]`: the span split at [`split_mid`]
@@ -2565,5 +2620,153 @@ P 2025-08-01 EUR $1.10
         );
         assert_eq!(names(&rows), ["Costco"]);
         assert_eq!(rows[0].current, dollars(14_000));
+    }
+
+    #[test]
+    fn top_payees_count_a_bank_purchase_and_a_card_purchase() {
+        let rows = payees(
+            "
+2025-07-01 Farm Stand | eggs
+    expenses:groceries      $12.00
+    assets:checking
+
+2025-07-02 Bookshop | novel
+    expenses:books          $20.00
+    liabilities:card
+",
+        );
+        assert_eq!(names(&rows), ["Bookshop", "Farm Stand"]);
+    }
+
+    #[test]
+    fn a_mortgage_payment_with_escrow_counts_only_its_interest() {
+        let rows = payees(
+            "
+account assets:escrow           ; type: A
+
+2025-08-01 Wells Fargo | mortgage payment
+    expenses:interest:mortgage   $880.00
+    liabilities:mortgage         $620.00
+    assets:escrow                $300.00
+    assets:checking
+",
+        );
+        assert_eq!(names(&rows), ["Wells Fargo"]);
+        assert_eq!(rows[0].current, dollars(88_000));
+    }
+
+    #[test]
+    fn top_payees_skip_entries_where_no_cash_or_card_moved() {
+        let rows = payees(
+            "
+account assets:car:accumulated depreciation  ; type: A
+account assets:prepaid                       ; type: A
+
+2025-07-01 Garage | oil change
+    expenses:car              $90.00
+    liabilities:card
+
+2025-12-31 vehicle depreciation FY2025
+    expenses:depreciation   $3,500.00
+    assets:car:accumulated depreciation
+
+2025-08-01 Geico | insurance recognized
+    expenses:insurance       $100.00
+    assets:prepaid
+",
+        );
+        // Depreciation's asset leg and a prepaid drawdown move no money.
+        assert_eq!(names(&rows), ["Garage"]);
+    }
+
+    /// Undeclared books fall back to hledger's name heuristic, as the Cash
+    /// Balance box does: `assets:bank:…` is cash, `assets:house` is not.
+    #[test]
+    fn undeclared_books_find_cash_by_name() {
+        let text = "
+2025-07-01 Farm Stand | eggs
+    expenses:groceries      $12.00
+    assets:bank:checking
+
+2025-07-02 Roofer | depreciation of the roof
+    expenses:depreciation  $400.00
+    assets:house
+";
+        let journal = crate::parse_journal(text, "undeclared.journal").expect("parses");
+        let rows = insights(
+            &journal,
+            &InsightsOpts {
+                start: "2025-01-01",
+                end: "2025-12-31",
+                cost_exclude: &[],
+                change_min: Dec::zero(),
+            },
+        )
+        .expect("insights succeeds")
+        .top_payees;
+        assert_eq!(names(&rows), ["Farm Stand"]);
+    }
+
+    /// A declared `assets ; type: A` parent makes an undeclared bank child a
+    /// plain asset (the ancestor's type wins over the name, as in hledger), so
+    /// its purchases need the bank declared `type: C`. Pinned so the docs'
+    /// advice stays true.
+    #[test]
+    fn a_declared_asset_parent_hides_an_undeclared_bank() {
+        let body = "
+2025-07-01 Farm Stand | eggs
+    expenses:groceries      $12.00
+    assets:bank
+";
+        let plain = format!("account assets  ; type: A\n{body}");
+        assert!(payees(&plain).is_empty());
+        let declared = format!("account assets  ; type: A\naccount assets:bank  ; type: C\n{body}");
+        assert_eq!(names(&payees(&declared)), ["Farm Stand"]);
+    }
+
+    #[test]
+    fn payees_group_case_insensitively_and_show_the_most_used_spelling() {
+        let rows = payees(
+            "
+2025-03-01 COSTCO WHOLESALE | old statements were upper case
+    expenses:groceries     $100.00
+    liabilities:card
+
+2025-03-02 COSTCO WHOLESALE
+    expenses:groceries     $100.00
+    liabilities:card
+
+2025-03-03 COSTCO WHOLESALE
+    expenses:groceries     $100.00
+    liabilities:card
+
+2025-07-01 Costco  Wholesale | groceries
+    expenses:groceries     $100.00
+    liabilities:card
+
+2025-07-02 Costco Wholesale
+    expenses:groceries     $100.00
+    liabilities:card
+
+2025-07-03 costco wholesale
+    expenses:groceries      $50.00
+    liabilities:card
+
+2025-07-04 trader joe's
+    expenses:groceries      $40.00
+    liabilities:card
+
+2025-07-05 Trader Joe's
+    expenses:groceries      $40.00
+    liabilities:card
+",
+        );
+        // One payee per name whatever the case or spacing; the current
+        // period's commonest spelling shows (the previous period's upper case
+        // doesn't vote), and a tie goes to byte order.
+        assert_eq!(names(&rows), ["Costco Wholesale", "Trader Joe's"]);
+        assert_eq!(rows[0].current, dollars(25_000));
+        assert_eq!(rows[0].previous, Some(dollars(30_000)));
+        assert_eq!(rows[1].current, dollars(8_000));
     }
 }

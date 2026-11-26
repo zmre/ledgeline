@@ -20,11 +20,11 @@
 <div class="card border border-base-content/5 bg-base-200 shadow-sm" data-testid={testid}>
     <div class="card-body gap-2 p-4">
         <div class="flex items-center gap-1">
-            <div class="text-xs font-semibold tracking-wide text-base-content/60 uppercase">Top Transactions</div>
+            <div class="text-xs font-semibold tracking-wide text-muted uppercase">Top Transactions</div>
             <InfoTip {...METRIC_HELP.toptxns} placement="bottom-start" />
         </div>
         {#if rows.length === 0}
-            <div class="text-sm text-base-content/50">No transactions</div>
+            <div class="text-sm text-muted">No transactions</div>
         {:else}
             <ul class="flex flex-col gap-1.5">
                 {#each rows as row (row.index)}
@@ -41,14 +41,13 @@
                                 data-testid="top-txn-recognition"
                             >
                                 <span class="block truncate">Recognition, {shortMonth(recognition.month)}</span>
-                                <span class="text-xs text-base-content/50"
-                                    >{recognition.count} {recognition.count === 1 ? "entry" : "entries"} · {recognition.month}</span
+                                <span class="text-xs text-muted">{recognition.count} {recognition.count === 1 ? "entry" : "entries"} · {recognition.month}</span
                                 >
                             </button>
                         {:else}
                             <span class="min-w-0">
                                 <span class="block truncate" title={row.description}>{row.description || "(no description)"}</span>
-                                <span class="text-xs text-base-content/50">{row.date}</span>
+                                <span class="text-xs text-muted">{row.date}</span>
                             </span>
                         {/if}
                         <span class="font-mono whitespace-nowrap tabular-nums">{fmt(base, row.amount, styles)}</span>

@@ -5,15 +5,17 @@
 ; ranking with the default tax exclusion:
 ;
 ;   Wells Fargo    $880.00  prev $900.00   mortgage INTEREST is an expense posting
-;   Costco         $700.00  prev $500.00   $800 of purchases less a $100 refund
+;   Costco         $740.00  prev $500.00   $840 of purchases less a $100 refund;
+;                                           COSTCO is the same payee, shown as the
+;                                           spelling used most (Costco)
 ;   Whole Foods    $400.00  prev $150.00   the cashback leg does not hide it
 ;   Hardware Store  $75.00  new            costs booked outside expenses:, by type
 ;   Cafe Roma       $60.00  new
 ;
-; Never listed: Chase (card payments move money between accounts and have no
-; expense leg), Acme Corp (a paycheck; its withholding is not spending at the
-; employer) and IRS (taxes are excluded by default; with `exclude=` it tops the
-; list at $2,500.00).
+; Never listed: Car depreciation (no cash or card moved), Chase (card
+; payments move money between accounts and have no expense leg), Acme Corp (a
+; paycheck; its withholding is not spending at the employer) and IRS (taxes
+; are excluded by default; with `exclude=` it tops the list at $2,500.00).
 
 account assets:checking               ; type: C
 account liabilities:card              ; type: L
@@ -28,6 +30,9 @@ account expenses:insurance:health
 account expenses:interest:mortgage
 account expenses:taxes:federal
 account household:supplies            ; type: X
+account assets:car                    ; type: A
+account expenses:depreciation
+account expenses:fuel
 
 2025-01-02 Opening balances
     assets:checking               $50,000.00
@@ -108,3 +113,11 @@ account household:supplies            ; type: X
 2025-12-06 Cafe Roma | lunch
     expenses:groceries                $60.00
     liabilities:card
+
+2025-11-20 COSTCO | gas
+    expenses:fuel                     $40.00
+    liabilities:card
+
+2025-12-31 Car depreciation | FY2025
+    expenses:depreciation          $1,000.00
+    assets:car:accumulated depreciation

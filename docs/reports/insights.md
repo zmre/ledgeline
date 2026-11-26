@@ -93,7 +93,9 @@ Revenue debits in a transaction that credits a deferred revenue account (`kpi: d
 
 Who got the most of your spending this period. Each row shows what you spent with that payee in the current period, what you spent in the previous one, and the change in amount and percent. A payee you didn't pay in the previous period shows **new** instead of a change.
 
-The payee is the part of a transaction's description before `|`, so `Costco | groceries` and `Costco | household` both count towards **Costco**. Only expense postings count:
+The payee is the part of a transaction's description before `|`, so `Costco | groceries` and `Costco | household` both count towards **Costco**. Case and extra spaces don't matter: `COSTCO`, `Costco` and `costco ` are one payee, shown with the spelling you used most this period.
+
+Only expense postings count, and only in a transaction where money actually moved: one with a posting to a cash account (`type: C`) or a liability, such as a credit card. That leaves out entries that move no money, such as depreciation or a prepaid expense being used up.
 
 | Transaction | Counts as |
 | --- | --- |
@@ -102,6 +104,10 @@ The payee is the part of a transaction's description before `|`, so `Costco | gr
 | A mortgage payment: `expenses:interest` $880.00, `liabilities:mortgage` $620.00, `assets:bank` | $880.00, the interest. The principal isn't an expense. |
 | The card payment: `liabilities:card`, `assets:bank` | Nothing. The purchases it paid for are already counted under their own payees. |
 | A paycheck with withholding to `expenses:` accounts | Nothing. It brings money in. |
+| Depreciation: `expenses:depreciation`, `assets:car:accumulated depreciation` | Nothing. No cash or card moved. |
+| A bill you owe: `expenses:repairs` $400.00, `liabilities:payable` | $400.00. It's owed to that payee, and paying it later adds nothing. |
+
+Cash accounts are found the same way as for Cash Balance: an account's declared `type: C`, else its nearest declared parent's type, else its name (an account under `assets` with a segment such as `bank`, `checking`, `savings` or `cash`). If you declare `account assets ; type: A` but not your bank accounts, they count as plain assets and bank purchases won't show here. Declare them `type: C` to fix that.
 
 Accounts under `expenses:tax` and `expenses:taxes` are left out, as in Avg Monthly Costs. Amounts in other commodities are valued in your base currency at the posting's date. Click a payee, or tab to it and press Enter, to open the journal filtered to that payee and the current period.
 
