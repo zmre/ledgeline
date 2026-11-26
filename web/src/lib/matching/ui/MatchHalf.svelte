@@ -34,7 +34,7 @@
 </script>
 
 <section class="flex min-w-0 flex-col gap-2 p-5 sm:p-6" data-testid="match-half-{side}" data-txn={txn.index}>
-    <div class="flex items-center gap-2 text-sm text-base-content/70">
+    <div class="flex items-center gap-2 text-sm text-muted">
         <span class="font-medium text-base-content tabular-nums">{longDate(txn.date)}</span>
         {#if txn.status === "cleared"}
             <span class="inline-flex items-center gap-1 text-success"><ReviewIcon name="check" class="h-3.5 w-3.5" /> cleared</span>
@@ -56,9 +56,9 @@
         </div>
     {/if}
     {#if view.clearing !== null}
-        <div class="truncate text-xs text-base-content/55" title={view.clearing.account}>via {view.clearing.account}</div>
+        <div class="truncate text-xs text-muted" title={view.clearing.account}>via {view.clearing.account}</div>
     {/if}
     {#if half.file !== ""}
-        <div class="truncate font-mono text-xs text-base-content/45" title={half.file} data-testid="match-half-file">{half.file}</div>
+        <div class="truncate font-mono text-xs text-muted" title={half.file} data-testid="match-half-file">{half.file}</div>
     {/if}
 </section>

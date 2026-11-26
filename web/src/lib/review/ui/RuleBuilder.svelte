@@ -74,11 +74,11 @@
         <input type="checkbox" class="toggle toggle-sm toggle-success" bind:checked={on} disabled={busy} data-testid="review-rule-toggle" />
         <span class="flex min-w-0 grow flex-col">
             <span class="flex items-center gap-1.5 text-sm font-medium">
-                <ReviewIcon name="bolt" class="h-3.5 w-3.5 text-base-content/50" />
+                <ReviewIcon name="bolt" class="h-3.5 w-3.5 text-muted" />
                 Remember as a rule
                 <kbd class="kbd kbd-xs font-normal">⇧R</kbd>
             </span>
-            <span class="truncate text-xs text-base-content/50">{hint}</span>
+            <span class="truncate text-xs text-muted">{hint}</span>
         </span>
     </label>
 

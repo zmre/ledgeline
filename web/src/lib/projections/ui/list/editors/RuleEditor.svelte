@@ -220,7 +220,7 @@
         <legend class="sr-only">When it runs</legend>
         {#if periodWords(period) !== null}
             <label class="flex flex-col gap-1">
-                <span class="text-xs text-base-content/60">Repeats</span>
+                <span class="text-xs text-muted">Repeats</span>
                 {#if period.simple !== null}
                     <select class="select w-full select-sm" value={period.simple} aria-label="Repeats" onchange={(e) => setInterval(e.currentTarget.value)}>
                         {#each SCENARIO_INTERVALS as interval (interval)}
@@ -228,23 +228,22 @@
                         {/each}
                     </select>
                 {:else}
-                    <span
-                        class="input flex items-center font-mono text-xs text-base-content/70 input-sm"
-                        title="Shown as written: not one of the intervals offered here">{period.base}</span
+                    <span class="input flex items-center font-mono text-xs text-muted input-sm" title="Shown as written: not one of the intervals offered here"
+                        >{period.base}</span
                     >
                 {/if}
             </label>
             <label class="flex flex-col gap-1">
-                <span class="text-xs text-base-content/60">From</span>
+                <span class="text-xs text-muted">From</span>
                 <DateInput class="w-full" value={period.from} aria-label="From" onchange={(e) => setBound("from", e.currentTarget.value)} />
             </label>
             <label class="flex flex-col gap-1">
-                <span class="text-xs text-base-content/60">To <span class="text-base-content/40">(exclusive)</span></span>
+                <span class="text-xs text-muted">To <span class="text-muted">(exclusive)</span></span>
                 <DateInput class="w-full" value={period.to} aria-label="To (exclusive)" onchange={(e) => setBound("to", e.currentTarget.value)} />
             </label>
         {:else}
             <label class="flex flex-col gap-1 sm:col-span-3">
-                <span class="text-xs text-base-content/60">Period, as hledger writes it</span>
+                <span class="text-xs text-muted">Period, as hledger writes it</span>
                 <input
                     type="text"
                     class="input w-full font-mono input-sm"
@@ -254,15 +253,13 @@
                     spellcheck="false"
                     onchange={(e) => setRaw(e.currentTarget.value)}
                 />
-                <span class="text-xs text-base-content/45"
-                    >This recurrence isn't one the simple controls can state; it is checked when the projection runs.</span
-                >
+                <span class="text-xs text-muted">This recurrence isn't one the simple controls can state; it is checked when the projection runs.</span>
             </label>
         {/if}
     </fieldset>
 
     <label class="flex flex-col gap-1">
-        <span class="text-xs text-base-content/60">Description</span>
+        <span class="text-xs text-muted">Description</span>
         <input
             type="text"
             class={["input w-full input-sm", noteError !== null && "input-error"]}
@@ -276,7 +273,7 @@
     </label>
 
     {#if step !== null}
-        <p class="flex flex-wrap items-center gap-x-2 text-xs text-base-content/60" data-testid="step-info">
+        <p class="flex flex-wrap items-center gap-x-2 text-xs text-muted" data-testid="step-info">
             <span aria-hidden="true" class="text-primary">⛓</span>
             Step {step.index} of {step.of} of a step change.
             {#each step.others as other (other.group)}
@@ -291,8 +288,8 @@
     <!-- The postings -->
     <div class="flex flex-col gap-1.5">
         <div class="flex flex-wrap items-baseline justify-between gap-x-3">
-            <span class="text-xs font-medium text-base-content/70">Postings</span>
-            <span class="text-xs text-base-content/45" data-testid="amount-help"
+            <span class="text-xs font-medium text-muted">Postings</span>
+            <span class="text-xs text-muted" data-testid="amount-help"
                 >Amounts per period, as the journal writes them: a minus moves money out of an account.</span
             >
         </div>
@@ -330,7 +327,7 @@
                             />
                         </div>
                         <label class="input w-32 input-sm">
-                            <span class="text-base-content/50">{line.amount.commodity}</span>
+                            <span class="text-muted">{line.amount.commodity}</span>
                             <input
                                 type="text"
                                 class="text-right font-mono"
@@ -349,7 +346,7 @@
                                 aria-label="Growth rate for {name}, in percent"
                                 onchange={(e) => setGrowthRate(line, e.currentTarget.value)}
                             />
-                            <span class="text-xs text-base-content/50">%/</span>
+                            <span class="text-xs text-muted">%/</span>
                             <select
                                 class="select w-18 select-sm"
                                 value={line.growth?.unit ?? "year"}
@@ -362,7 +359,7 @@
                                 {/each}
                             </select>
                         </div>
-                        <label class="flex items-center gap-1.5 text-xs text-base-content/70" title="A balance that compounds, rather than a per-period flow">
+                        <label class="flex items-center gap-1.5 text-xs text-muted" title="A balance that compounds, rather than a per-period flow">
                             <input
                                 type="checkbox"
                                 class="toggle toggle-xs"
@@ -383,7 +380,7 @@
                     {#if asset}
                         <div class="mt-2 flex flex-wrap items-center gap-2 pl-14 text-xs">
                             <label class={["input w-44 input-sm", line.opening !== null && "input-warning"]}>
-                                <span class="text-base-content/50">Balance</span>
+                                <span class="text-muted">Balance</span>
                                 <input
                                     type="text"
                                     inputmode="decimal"
@@ -403,7 +400,7 @@
                                     >✕ use the journal's{journal === null ? "" : ` (${amountText(line.amount.commodity, journal, styles)})`}</button
                                 >
                             {:else}
-                                <span class="text-base-content/45" data-testid="ledger-balance">
+                                <span class="text-muted" data-testid="ledger-balance">
                                     {journal === null
                                         ? "the journal's balance, once projected"
                                         : `the journal's: ${amountText(line.amount.commodity, journal, styles)}`}
@@ -426,7 +423,7 @@
                         <TypeBadge account={line.account} classes={declared} />
                         <input
                             type="text"
-                            class="input w-full input-ghost font-mono text-base-content/70 input-xs"
+                            class="input w-full input-ghost font-mono text-muted input-xs"
                             value={line.comment}
                             placeholder="; comment on this posting (optional)"
                             aria-label="Comment for {name}"
@@ -444,7 +441,7 @@
 
     <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <label class="flex flex-col gap-1">
-            <span class="text-xs text-base-content/60">Counter-account <span class="text-base-content/40">(the posting with no amount)</span></span>
+            <span class="text-xs text-muted">Counter-account <span class="text-muted">(the posting with no amount)</span></span>
             <AccountInput
                 bind:value={() => first.counter ?? "", (next) => lines.forEach((line) => (line.counter = next === "" ? null : next))}
                 {accountNames}
@@ -454,11 +451,11 @@
                 onCommit={() => setAll({counter: accountOrNull(first.counter)})}
             />
             {#if balanced && first.counter === null}
-                <span class="text-xs text-base-content/45" data-testid="counter-not-needed">None needed: the postings balance on their own.</span>
+                <span class="text-xs text-muted" data-testid="counter-not-needed">None needed: the postings balance on their own.</span>
             {/if}
         </label>
         <label class="flex flex-col gap-1">
-            <span class="text-xs text-base-content/60">Header comment</span>
+            <span class="text-xs text-muted">Header comment</span>
             <input
                 type="text"
                 class="input w-full font-mono input-sm"

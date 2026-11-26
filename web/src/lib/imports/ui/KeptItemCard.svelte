@@ -54,7 +54,7 @@
                     ↓
                 </button>
             </div>
-            <span class="truncate font-mono text-xs text-base-content/60">{summary.title}</span>
+            <span class="truncate font-mono text-xs text-muted">{summary.title}</span>
             {#if summary.advanced}
                 <span class="badge gap-1 badge-ghost badge-sm whitespace-nowrap" data-testid="imports-locked-badge">🔒 advanced — edit in terminal</span>
             {:else}
@@ -62,13 +62,13 @@
             {/if}
         </div>
         {#if summary.detail !== ""}
-            <p class="text-xs text-base-content/60">{summary.detail}</p>
+            <p class="text-xs text-muted">{summary.detail}</p>
         {/if}
         {#if summary.text !== ""}
             <pre class="max-h-40 overflow-auto rounded bg-base-300/40 p-2 text-xs"><code>{summary.text.replace(/\n+$/, "")}</code></pre>
         {/if}
         {#if summary.truncated}
-            <p class="text-xs text-base-content/50">Only the first part is shown; the whole item is kept.</p>
+            <p class="text-xs text-muted">Only the first part is shown; the whole item is kept.</p>
         {/if}
     </div>
 </div>

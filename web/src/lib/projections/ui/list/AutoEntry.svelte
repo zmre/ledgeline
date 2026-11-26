@@ -45,15 +45,15 @@
     {#snippet header(id)}
         <h3 {id} class={["flex min-w-0 flex-wrap items-baseline gap-x-2 text-sm", entry.disabled && "line-through decoration-base-content/50"]}>
             {#if form !== null}
-                <span class="text-base-content/70">When</span>
+                <span class="text-muted">When</span>
                 {#if form.matchAccount !== ""}<TypeBadge account={form.matchAccount} classes={declared} />{/if}
                 <span class="font-mono text-[0.8125rem] text-base-content">{form.matchAccount === "" ? "…" : form.matchAccount}</span>
                 {#if form.extraQuery.trim() !== ""}
-                    <span class="font-mono text-xs text-base-content/60">and {form.extraQuery}</span>
+                    <span class="font-mono text-xs text-muted">and {form.extraQuery}</span>
                 {/if}
-                <span class="text-base-content/70">is projected</span>
+                <span class="text-muted">is projected</span>
                 {#if form.comment !== ""}
-                    <span class="min-w-0 truncate font-mono text-xs text-base-content/45 italic">; {form.comment}</span>
+                    <span class="min-w-0 truncate font-mono text-xs text-muted italic">; {form.comment}</span>
                 {/if}
             {:else}
                 <span class="font-mono text-[0.8125rem] text-base-content/80"><span class="text-base-content/35">=</span> {rule.query}</span>
@@ -67,7 +67,7 @@
     {/snippet}
     {#snippet body()}
         {#if attached !== ""}
-            <p class="mt-0.5 pl-3 font-mono text-xs whitespace-pre-wrap text-base-content/50 italic" data-testid="entry-attached">
+            <p class="mt-0.5 pl-3 font-mono text-xs whitespace-pre-wrap text-muted italic" data-testid="entry-attached">
                 {attached
                     .split("\n")
                     .map((line) => `; ${line}`)
@@ -82,7 +82,7 @@
                     <span class="hidden lg:block"></span>
                 {/each}
                 {#if form.counter !== null}
-                    <PostingAccount account={form.counter} classes={declared} class="col-span-full text-base-content/50" testid="entry-counter"
+                    <PostingAccount account={form.counter} classes={declared} class="col-span-full text-muted" testid="entry-counter"
                         ><span aria-hidden="true">→</span><span class="sr-only">balanced against</span> {form.counter}</PostingAccount
                     >
                 {/if}
@@ -92,8 +92,8 @@
         {/if}
         {#if text !== ""}
             <details class="group/raw mt-1 pl-6" open={form === null}>
-                <summary class="cursor-pointer text-xs text-base-content/45 select-none hover:text-base-content/70">rule text</summary>
-                <pre class="mt-1 overflow-x-auto rounded bg-base-100/60 px-2 py-1 font-mono text-xs text-base-content/70">{text}</pre>
+                <summary class="cursor-pointer text-xs text-muted select-none hover:text-muted">rule text</summary>
+                <pre class="mt-1 overflow-x-auto rounded bg-base-100/60 px-2 py-1 font-mono text-xs text-muted">{text}</pre>
             </details>
         {/if}
     {/snippet}

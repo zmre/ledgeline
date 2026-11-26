@@ -30,7 +30,7 @@
 </script>
 
 <footer class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-box bg-base-200 px-4 py-2">
-    <div class="flex flex-wrap items-center gap-3 text-sm text-base-content/70">
+    <div class="flex flex-wrap items-center gap-3 text-sm text-muted">
         <span class="whitespace-nowrap"><span class="font-medium text-base-content">{count}</span> {count === 1 ? noun : `${noun}s`}</span>
         <span class="whitespace-nowrap">{period}</span>
         {#if hiddenRecognition > 0}
@@ -41,12 +41,12 @@
         {@render actions?.()}
     </div>
     <div class="ml-auto flex flex-wrap items-baseline justify-end gap-x-2 text-sm">
-        <span class="whitespace-nowrap text-base-content/60">Visible Journal Total</span>
+        <span class="whitespace-nowrap text-muted">Visible Journal Total</span>
         <span class="text-right font-mono font-semibold tabular-nums">
             {#each total as amount (amount.commodity)}
                 <span class={["block whitespace-nowrap", amount.qty.m < 0n && "text-error"]}>{formatAmount(amount)}</span>
             {:else}
-                <span class="block text-base-content/40">&mdash;</span>
+                <span class="block text-muted">&mdash;</span>
             {/each}
         </span>
     </div>

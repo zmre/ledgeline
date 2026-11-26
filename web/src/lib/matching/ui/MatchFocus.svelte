@@ -271,7 +271,7 @@
 </script>
 
 {#snippet windowControl()}
-    <label class="flex items-center gap-1.5 text-xs text-base-content/60" for="{uid}-window">
+    <label class="flex items-center gap-1.5 text-xs text-muted" for="{uid}-window">
         within ±
         <input
             id="{uid}-window"
@@ -290,17 +290,17 @@
 
 {#snippet linksList(links: readonly MatchLink[])}
     <section class="flex flex-col gap-3" data-testid="match-focus-links">
-        <h3 class="text-xs font-medium tracking-wide text-base-content/55 uppercase">Linked</h3>
+        <h3 class="text-xs font-medium tracking-wide text-muted uppercase">Linked</h3>
         {#each links as link (link.matchId)}
             <div class="rounded-box border border-base-content/10 px-4 py-3" data-testid="match-focus-link" data-match-id={link.matchId}>
                 <div class="flex items-center gap-2 text-sm">
                     <ReviewIcon name="link" class="h-4 w-4 text-info" />
                     <code>match:{link.matchId}</code>
-                    <span class="text-base-content/55">· {link.members.length} postings</span>
+                    <span class="text-muted">· {link.members.length} postings</span>
                     {#if link.broken}<span class="badge badge-sm badge-warning">broken</span>{/if}
                     <span class="grow"></span>
                     {#if armed?.kind === "unlink" && armed.link.matchId === link.matchId}
-                        <span class="text-xs text-base-content/70">Remove <code>match:{link.matchId}</code> from all {link.members.length}?</span>
+                        <span class="text-xs text-muted">Remove <code>match:{link.matchId}</code> from all {link.members.length}?</span>
                         <button type="button" class="btn btn-warning btn-xs" disabled={busy} onclick={() => unlink(link)} data-testid="match-focus-unlink-go"
                             >Unlink</button
                         >
@@ -331,7 +331,7 @@
     in:cardIn|global={motion}
 >
     {#if focus === null || (data === null && focus.error === null)}
-        <div class="flex items-center justify-center gap-2 py-16 text-sm text-base-content/60" role="status">
+        <div class="flex items-center justify-center gap-2 py-16 text-sm text-muted" role="status">
             <span class="loading loading-sm loading-spinner"></span> Finding matches for this transaction…
         </div>
     {:else if data === null}
@@ -349,9 +349,9 @@
                     <h2 class="flex items-center gap-2 text-2xl leading-tight font-semibold tracking-tight">
                         <ReviewIcon name="link" class="h-6 w-6 text-info" /> Find a match
                     </h2>
-                    <p class="mt-1.5 truncate text-sm text-base-content/65" data-testid="match-focus-txn">
+                    <p class="mt-1.5 truncate text-sm text-muted" data-testid="match-focus-txn">
                         {longDate(data.transaction.txn.date)} · {data.transaction.txn.description || "(no description)"}
-                        {#if clearingAccount !== null}<span class="text-base-content/50"> · via {clearingAccount}</span>{/if}
+                        {#if clearingAccount !== null}<span class="text-muted"> · via {clearingAccount}</span>{/if}
                     </p>
                 </div>
                 {#if moved !== null}
@@ -395,7 +395,7 @@
 
             {#if entry === null}
                 <!-- Nothing open to match: linked, ignored, or not a transfer half at all. -->
-                <p class="text-sm text-base-content/70" data-testid="match-focus-none">
+                <p class="text-sm text-muted" data-testid="match-focus-none">
                     {!data.clearing
                         ? "No clearing account is declared, so there is nothing to match."
                         : data.links.length > 0
@@ -408,7 +408,7 @@
                         No unlinked {need === null ? "opposite amount" : formatAmount(need)} on
                         <code>{clearingAccount ?? "this clearing account"}</code> at any date, and nothing opposite within ±{matches.focusWindow} days.
                     </p>
-                    <p class="text-xs text-base-content/60">
+                    <p class="text-xs text-muted">
                         The other half may not be imported yet. If it never will be, Ignore this side takes it off the in-transit list.
                     </p>
                     {@render windowControl()}
@@ -418,7 +418,7 @@
                     <legend class="sr-only">What to link this posting with</legend>
                     {#if entry.exact.length > 0}
                         <section class="flex flex-col gap-1" data-testid="match-focus-exact">
-                            <h3 class="text-xs font-medium tracking-wide text-base-content/55 uppercase">Exact amount, any date</h3>
+                            <h3 class="text-xs font-medium tracking-wide text-muted uppercase">Exact amount, any date</h3>
                             {#each entry.exact as partner (halfKey(partner))}
                                 {@const option = options.find((candidate) => candidate.id === `e:${halfKey(partner)}`)}
                                 <label class="flex cursor-pointer items-center gap-3 rounded px-1 py-1 hover:bg-base-200/60">
@@ -441,7 +441,7 @@
                     {/if}
                     {#if entry.combinations.length > 0}
                         <section class="flex flex-col gap-1" data-testid="match-focus-combinations">
-                            <h3 class="text-xs font-medium tracking-wide text-base-content/55 uppercase">Combinations that add up</h3>
+                            <h3 class="text-xs font-medium tracking-wide text-muted uppercase">Combinations that add up</h3>
                             {#each entry.combinations as proposal (proposal.group.map(halfKey).join("+"))}
                                 {@const keys = combinationMembers(proposal)
                                     .map(halfKey)
@@ -467,11 +467,11 @@
                     {/if}
                     <section class="flex flex-col gap-1" data-testid="match-focus-nearby">
                         <div class="flex flex-wrap items-center justify-between gap-2">
-                            <h3 class="text-xs font-medium tracking-wide text-base-content/55 uppercase">Pick several</h3>
+                            <h3 class="text-xs font-medium tracking-wide text-muted uppercase">Pick several</h3>
                             {@render windowControl()}
                         </div>
                         {#if entry.nearby.length === 0}
-                            <p class="px-1 text-xs text-base-content/55">Nothing opposite on this account within ±{matches.focusWindow} days.</p>
+                            <p class="px-1 text-xs text-muted">Nothing opposite on this account within ±{matches.focusWindow} days.</p>
                         {/if}
                         {#each entry.nearby as partner (halfKey(partner))}
                             <label class="flex cursor-pointer items-center gap-3 rounded px-1 py-1 hover:bg-base-200/60">
@@ -489,7 +489,7 @@
                 </fieldset>
                 {#if total !== null && picked.length > 0}
                     <p
-                        class={["flex items-center gap-2 text-sm tabular-nums", total.balanced ? "text-success" : "text-base-content/70"]}
+                        class={["flex items-center gap-2 text-sm tabular-nums", total.balanced ? "text-success" : "text-muted"]}
                         data-testid="match-focus-total"
                         data-balanced={total.balanced}
                         aria-live="polite"

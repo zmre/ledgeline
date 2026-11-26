@@ -91,7 +91,7 @@
     <div class="collapse-title flex min-h-0 flex-wrap items-baseline justify-between gap-x-3 py-3 pr-10">
         <h2 class="text-sm font-semibold tracking-tight">Not budgeted</h2>
         {#if rowCount > 0 && headlineTotal !== null}
-            <span class="text-sm text-base-content/70" data-testid="budget-gaps-headline">
+            <span class="text-sm text-muted" data-testid="budget-gaps-headline">
                 {rowCount}
                 {rowCount === 1 ? "category" : "categories"},
                 <span class="font-mono font-semibold tabular-nums">{fmt(headlineTotal)}</span> not budgeted
@@ -99,7 +99,7 @@
         {/if}
     </div>
     <div class="collapse-content flex flex-col gap-4">
-        <p class="text-xs text-base-content/50">
+        <p class="text-xs text-muted">
             Income and expenses over the same period as the bars, at the same depth, that no <code class="rounded bg-base-300 px-1">~</code> rule mentions. Not a
             problem in itself — budgeting some categories and not others is a choice — but it is what your bars above are silent about.
         </p>
@@ -115,7 +115,7 @@
         >
             {#snippet children(current)}
                 {#if current.revenue.length === 0 && current.expense.length === 0}
-                    <p class="py-6 text-center text-sm text-base-content/60" data-testid="budget-gaps-empty">
+                    <p class="py-6 text-center text-sm text-muted" data-testid="budget-gaps-empty">
                         Every income and expense category with activity in {current.from} – {current.to} is covered by a goal.
                     </p>
                 {:else}

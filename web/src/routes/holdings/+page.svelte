@@ -177,7 +177,7 @@
                             <div class="collapse-title flex min-h-0 flex-wrap items-center justify-between gap-x-2 py-3 pr-10">
                                 <h2 class="text-sm font-semibold tracking-tight">Insights</h2>
                                 <span class="min-w-0 text-sm">
-                                    <span class="mr-1 text-base-content/60">Market value</span>
+                                    <span class="mr-1 text-muted">Market value</span>
                                     <span class="font-semibold whitespace-nowrap">{format(report.totals.marketValue)}</span>
                                 </span>
                             </div>
@@ -216,7 +216,7 @@
                         <div class="card bg-base-200" data-testid="holdings-empty">
                             <div class="card-body items-center py-16 text-center">
                                 <h2 class="card-title">No stock holdings in scope</h2>
-                                <p class="text-base-content/60">
+                                <p class="text-muted">
                                     No non-currency commodities are held by the selected accounts as of {report.asOf}. Widen the scope or pick a later date.
                                 </p>
                             </div>
@@ -232,7 +232,7 @@
                     {/if}
                     <!-- Why the visible rows do not add up to the totals row above them. -->
                     {#if hiddenNote !== null}
-                        <p class="px-1 text-xs text-base-content/60" data-testid="holdings-hidden-note">{hiddenNote}</p>
+                        <p class="px-1 text-xs text-muted" data-testid="holdings-hidden-note">{hiddenNote}</p>
                     {/if}
                 {/snippet}
             </AsyncSection>
@@ -286,7 +286,7 @@
                         <div class="card bg-base-200" data-testid="other-holdings-empty">
                             <div class="card-body items-center py-16 text-center">
                                 <h2 class="card-title">No other holdings in scope</h2>
-                                <p class="text-base-content/60">
+                                <p class="text-muted">
                                     No non-stock, non-cash assets are held by the selected accounts as of {report.asOf}. Tag an account
                                     <code class="text-base-content/80">holdings: other</code> to list it here, or widen the scope.
                                 </p>

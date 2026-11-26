@@ -40,7 +40,7 @@
         {#if failing > 0}<span class="text-warning" aria-label="{failing} comparison could not load">!</span>{/if}
     </summary>
     <div class="dropdown-content z-10 mt-1 w-72 max-w-full rounded-box bg-base-200 p-2 shadow-lg">
-        <p class="mb-1 px-1 text-xs text-base-content/60">Your contributions and withdrawals, on the same dates, into a fund instead. Dividends reinvested.</p>
+        <p class="mb-1 px-1 text-xs text-muted">Your contributions and withdrawals, on the same dates, into a fund instead. Dividends reinvested.</p>
         <ul class="flex flex-col">
             {#each catalog as benchmark (benchmark.symbol)}
                 {@const checked = picked.includes(benchmark.symbol)}
@@ -56,10 +56,9 @@
                         />
                         <span class="grow">{benchmark.label}</span>
                         {#if state?.status === "loading"}
-                            <span class="loading loading-xs loading-spinner text-base-content/50" aria-label="Loading {benchmark.label}"></span>
+                            <span class="loading loading-xs loading-spinner text-muted" aria-label="Loading {benchmark.label}"></span>
                         {:else if state?.status === "ready" && state.line.stale}
-                            <span class="text-xs text-base-content/50" title="Couldn't refresh from Yahoo Finance; drawn from prices saved earlier">cached</span
-                            >
+                            <span class="text-xs text-muted" title="Couldn't refresh from Yahoo Finance; drawn from prices saved earlier">cached</span>
                         {/if}
                     </label>
                     {#if state?.status === "error"}

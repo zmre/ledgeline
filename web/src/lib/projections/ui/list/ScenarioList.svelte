@@ -514,7 +514,7 @@
     <!-- Header: the scenario's own default cash account, the filters, Add. -->
     <div class="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
         <div class="flex min-w-0 flex-wrap items-center gap-2 text-sm" data-testid="projection-cash-default">
-            <span class="text-base-content/70">Default cash account</span>
+            <span class="text-muted">Default cash account</span>
             <div class="w-64 max-w-full">
                 <AccountInput
                     bind:value={() => cashText, (next) => (cashText = next)}
@@ -525,7 +525,7 @@
                     onCommit={commitCash}
                 />
             </div>
-            <span class="text-xs text-base-content/45">Where a rule's money goes when it names no counter-account.</span>
+            <span class="text-xs text-muted">Where a rule's money goes when it names no counter-account.</span>
         </div>
         <RowMenu
             bind:this={addMenu}
@@ -538,14 +538,14 @@
     </div>
 
     {#if readOnly}
-        <p class="rounded-box border border-info/25 bg-info/6 px-3 py-2 text-xs text-base-content/70" data-testid="projection-read-only">
+        <p class="rounded-box border border-info/25 bg-info/6 px-3 py-2 text-xs text-muted" data-testid="projection-read-only">
             <strong class="font-semibold text-info">Read-only here:</strong> this file is part of your main journal, so it is never saved over. Edit freely,
             then
             <strong>Save as…</strong> a copy.
         </p>
     {/if}
     {#if seeded}
-        <p class="rounded-box border border-base-content/10 bg-base-200/50 px-3 py-2 text-xs text-base-content/65" data-testid="projection-seeded">
+        <p class="rounded-box border border-base-content/10 bg-base-200/50 px-3 py-2 text-xs text-muted" data-testid="projection-seeded">
             Seeded from your budget and the last 12 months — nothing is saved until you <strong>Save as…</strong>
         </p>
     {/if}
@@ -560,19 +560,19 @@
                             "btn h-7 min-h-7 gap-1.5 rounded-full px-3 text-xs font-normal",
                             filter === chip
                                 ? "border-primary/60 bg-primary/15 text-base-content"
-                                : "border-base-content/10 bg-transparent text-base-content/70 hover:bg-base-200",
+                                : "border-base-content/10 bg-transparent text-muted hover:bg-base-200",
                         ]}
                         aria-pressed={filter === chip}
                         data-testid="projection-filter-{chip}"
                         onclick={() => (filter = chip)}
                     >
                         {FILTER_LABEL[chip]}
-                        <span class="font-mono text-[0.6875rem] text-base-content/45 tabular-nums">{counts[chip]}</span>
+                        <span class="font-mono text-[0.6875rem] text-muted tabular-nums">{counts[chip]}</span>
                     </button>
                 {/if}
             {/each}
             {#if filtered}
-                <span class="ml-1 text-xs text-base-content/45" data-testid="projection-filter-hint">Clear the filter to reorder.</span>
+                <span class="ml-1 text-xs text-muted" data-testid="projection-filter-hint">Clear the filter to reorder.</span>
             {/if}
         </div>
     {/if}
@@ -592,8 +592,8 @@
             class="flex flex-col items-center gap-3 rounded-box border border-dashed border-base-content/12 px-6 py-8 text-center"
             data-testid="projection-empty"
         >
-            <p class="text-sm text-base-content/70">No entries yet.</p>
-            <p class="max-w-md text-xs text-base-content/50">
+            <p class="text-sm text-muted">No entries yet.</p>
+            <p class="max-w-md text-xs text-muted">
                 A scenario is a list of what you expect: money in and out each month, balances that grow, one-off events, and postings that follow other
                 postings.
             </p>
@@ -641,7 +641,7 @@
                     {/if}
                     {#if stepPrompt?.key === entry.key}
                         <div class="mt-1 ml-6 flex flex-wrap items-center gap-2 rounded-box bg-base-200 px-3 py-2 text-xs" data-testid="step-prompt">
-                            <span class="text-base-content/70">Step on</span>
+                            <span class="text-muted">Step on</span>
                             <DateInput
                                 size="xs"
                                 value={stepPrompt.date}
@@ -663,10 +663,7 @@
             {/if}
         </div>
         {#if matching.length === 0}
-            <p
-                class="rounded-box border border-dashed border-base-content/12 px-4 py-4 text-center text-sm text-base-content/60"
-                data-testid="projection-filter-empty"
-            >
+            <p class="rounded-box border border-dashed border-base-content/12 px-4 py-4 text-center text-sm text-muted" data-testid="projection-filter-empty">
                 No {EMPTY_WORD[filter]} entries.
                 <button type="button" class="link link-primary" onclick={() => (filter = "all")}>Clear filter</button>
             </p>

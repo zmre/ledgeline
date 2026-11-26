@@ -67,7 +67,7 @@
                         {/each}
                     </select>
                 </label>
-                <p class="text-xs text-base-content/60" data-testid="recognition-reason">{reasonText(status)}</p>
+                <p class="text-xs text-muted" data-testid="recognition-reason">{reasonText(status)}</p>
             </div>
         </details>
     </div>

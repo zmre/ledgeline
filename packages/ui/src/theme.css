@@ -122,3 +122,29 @@
         --color-orange: color-mix(in oklab, var(--color-warning) 50%, var(--color-error));
     }
 }
+
+/*
+ * Muted text (labels, meta lines, defaults), legible in every theme: base-
+ * content mixed 70% into base-100, or full base-content in the six themes
+ * where that mix falls under WCAG 4.5:1 on base-100 or base-200 (there,
+ * hierarchy comes from size and weight). Use `text-muted` for text instead of
+ * `text-base-content/50…/70`, which fails in those themes. Checked for every
+ * variant by theme/textContrast.test.ts.
+ */
+@layer base {
+    :root,
+    [data-theme] {
+        --color-muted: color-mix(in oklab, var(--color-base-content) 70%, var(--color-base-100));
+    }
+    [data-theme="catppuccin-latte"],
+    [data-theme="gruvbox-light"],
+    [data-theme="one-dark-pro"],
+    [data-theme="solarized-light"],
+    [data-theme="solarized-dark"],
+    [data-theme="tokyo-night-day"] {
+        --color-muted: var(--color-base-content);
+    }
+}
+@utility text-muted {
+    color: var(--color-muted);
+}

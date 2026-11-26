@@ -948,10 +948,10 @@
                                 <div class="mt-2 border-t border-base-content/10 px-1 pt-2">
                                     <ReviewSettings />
                                     {#if olderCount > 0 && settings.matchLookback !== 0}
-                                        <p class="mt-2 text-xs text-base-content/60" data-testid="find-matches-older">{olderLabel(olderCount)}</p>
+                                        <p class="mt-2 text-xs text-muted" data-testid="find-matches-older">{olderLabel(olderCount)}</p>
                                     {/if}
                                     {#if noClearing}
-                                        <p class="mt-2 text-xs text-base-content/60">
+                                        <p class="mt-2 text-xs text-muted">
                                             {matchTip}
                                             <a class="link" href={MATCHING_DOCS} target="_blank" rel="noopener noreferrer" data-testid="find-matches-docs"
                                                 >How?</a
@@ -1071,14 +1071,14 @@
                             <div class="dropdown-content z-20 mt-1 rounded-box border border-base-300 bg-base-200 p-3 shadow-lg">
                                 <ReviewSettings show="matches" />
                                 {#if olderCount > 0 && settings.matchLookback !== 0}
-                                    <p class="mt-2 text-xs text-base-content/60" data-testid="find-matches-older">{olderLabel(olderCount)}</p>
+                                    <p class="mt-2 text-xs text-muted" data-testid="find-matches-older">{olderLabel(olderCount)}</p>
                                 {/if}
                             </div>
                         </details>
                     </div>
                     {#if noClearing}
                         <a
-                            class="link text-xs text-base-content/60 link-hover"
+                            class="link text-xs text-muted link-hover"
                             href={MATCHING_DOCS}
                             target="_blank"
                             rel="noopener noreferrer"
@@ -1167,7 +1167,7 @@
             {#if journalView.total === null}
                 <div class="flex justify-center p-8" aria-label="Loading transactions"><span class="loading loading-spinner"></span></div>
             {:else if total === 0}
-                <div class="p-8 text-center text-sm text-base-content/60">No transactions match the current filters.</div>
+                <div class="p-8 text-center text-sm text-muted">No transactions match the current filters.</div>
             {:else if mode === "table"}
                 <table class="table table-fixed table-sm">
                     <colgroup>
@@ -1179,7 +1179,7 @@
                         {#if pinned !== null}<col class="w-32" /><col class="w-44" />{/if}
                     </colgroup>
                     <thead class="sticky top-0 z-10 bg-base-200" style:top={pageScroll ? "var(--ll-chrome-top)" : undefined} bind:clientHeight={headHeight}>
-                        <tr class="text-base-content/70">
+                        <tr class="text-muted">
                             {#if columns.date}<th class="text-left">Date</th>{/if}
                             {#if columns.status}<th class="text-left">Status</th>{/if}
                             {#if columns.description}<th class="text-left">Description</th>{/if}

@@ -202,13 +202,13 @@
     </div>
 
     {#if pending}
-        <p class="text-sm text-base-content/60" role="status" data-testid="projection-compare-pending">Running the comparison…</p>
+        <p class="text-sm text-muted" role="status" data-testid="projection-compare-pending">Running the comparison…</p>
     {:else if compare !== null && tab === "cash" && compareCash !== null}
         <div class="flex flex-col gap-3" data-testid="projection-cash">
             <div class="alert items-start py-2 text-sm" role="status" data-testid="projection-runway">
                 <span class="grow">
                     <span class="font-semibold">{statement.headline}</span>
-                    {#if statement.detail !== null}<span class="text-base-content/70"> {statement.detail}</span>{/if}
+                    {#if statement.detail !== null}<span class="text-muted"> {statement.detail}</span>{/if}
                 </span>
             </div>
             <PeriodLineChart
@@ -228,7 +228,7 @@
                 testid="projection-cash-chart"
             />
             {#if unchartedCommodities.length > 0}
-                <p class="text-xs text-base-content/60" data-testid="projection-uncharted">
+                <p class="text-xs text-muted" data-testid="projection-uncharted">
                     Charted in {commodity} only. This projection also holds {unchartedCommodities.join(", ")}, which no future price can value into {commodity}.
                 </p>
             {/if}
@@ -256,7 +256,7 @@
         <div class="flex flex-col gap-3" data-testid="projection-accounts">
             <AccountReportControls report={compare.accounts} bind:selected={accountFilter} bind:empty={emptyAccounts} />
             {#if compareAccounts === null}
-                <p class="text-sm text-base-content/60" role="status" data-testid="projection-accounts-pending">Reading every account…</p>
+                <p class="text-sm text-muted" role="status" data-testid="projection-accounts-pending">Reading every account…</p>
             {:else}
                 <AccountReportView
                     report={compareAccounts}
@@ -272,7 +272,7 @@
     {:else if compare !== null && tab === "journal"}
         <div data-testid="projection-journal">
             {#if compare.journal === null}
-                <p class="text-sm text-base-content/60" role="status" data-testid="projection-journal-pending">Listing the generated transactions…</p>
+                <p class="text-sm text-muted" role="status" data-testid="projection-journal-pending">Listing the generated transactions…</p>
             {:else}
                 <ForecastJournalView journal={compare.journal} bind:query={journalQuery} heading="Generated as if projected on {dayLabel(compare.from)}" />
             {/if}
@@ -287,7 +287,7 @@
             >
                 <span class="grow">
                     <span class="font-semibold">{statement.headline}</span>
-                    {#if statement.detail !== null}<span class="text-base-content/70"> {statement.detail}</span>{/if}
+                    {#if statement.detail !== null}<span class="text-muted"> {statement.detail}</span>{/if}
                 </span>
             </div>
             <PeriodLineChart
@@ -306,7 +306,7 @@
                 testid="projection-cash-chart"
             />
             {#if unchartedCommodities.length > 0}
-                <p class="text-xs text-base-content/60" data-testid="projection-uncharted">
+                <p class="text-xs text-muted" data-testid="projection-uncharted">
                     Charted in {commodity} only. This projection also holds {unchartedCommodities.join(", ")}, which no future price can value into {commodity}.
                 </p>
             {/if}
@@ -327,7 +327,7 @@
         <div class="flex flex-col gap-3" data-testid="projection-accounts">
             <AccountReportControls report={projection.accounts} bind:selected={accountFilter} bind:empty={emptyAccounts} />
             {#if accounts === null}
-                <p class="text-sm text-base-content/60" role="status" data-testid="projection-accounts-pending">Reading every account…</p>
+                <p class="text-sm text-muted" role="status" data-testid="projection-accounts-pending">Reading every account…</p>
             {:else}
                 <AccountReportView
                     report={accounts}
@@ -341,7 +341,7 @@
     {:else}
         <div data-testid="projection-journal">
             {#if projection.journal === null}
-                <p class="text-sm text-base-content/60" role="status" data-testid="projection-journal-pending">Listing the generated transactions…</p>
+                <p class="text-sm text-muted" role="status" data-testid="projection-journal-pending">Listing the generated transactions…</p>
             {:else}
                 <ForecastJournalView journal={projection.journal} bind:query={journalQuery} />
             {/if}

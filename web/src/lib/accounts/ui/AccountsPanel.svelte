@@ -294,7 +294,7 @@
                         </li>
                     {/each}
                     {#if filteredRows.length === 0}
-                        <li class="p-2 text-xs text-base-content/60">No accounts match.</li>
+                        <li class="p-2 text-xs text-muted">No accounts match.</li>
                     {/if}
                 </ul>
 
@@ -399,7 +399,7 @@
                                     text="Transfers between your own accounts pass through it, one import on each side. Find Matches pairs the two halves on it. Its subaccounts are clearing accounts too."
                                 />
                                 {#if clearingFrom !== null}
-                                    <span class="text-xs text-base-content/60" data-testid="settings-account-clearing-inherited"
+                                    <span class="text-xs text-muted" data-testid="settings-account-clearing-inherited"
                                         >inherited from <code>{clearingFrom}</code></span
                                     >
                                 {/if}
@@ -493,7 +493,7 @@
                         {/if}
                     </div>
                 {:else}
-                    <p class="text-sm text-base-content/60">Select an account, or add a new one, to edit its type, tags and note.</p>
+                    <p class="text-sm text-muted">Select an account, or add a new one, to edit its type, tags and note.</p>
                 {/if}
             </div>
         </div>

@@ -39,14 +39,14 @@
                 aria-label={aria}
                 data-testid="setting-{field}"
             />
-            <span class="text-base-content/60">days</span>
+            <span class="text-muted">days</span>
         </span>
     </label>
 {/snippet}
 
 <div class="flex w-72 max-w-full flex-col gap-3 p-1 text-sm" data-testid="review-settings">
     {#if show !== "matches"}
-        <h3 class="text-xs font-medium tracking-wide text-base-content/55 uppercase">Review settings</h3>
+        <h3 class="text-xs font-medium tracking-wide text-muted uppercase">Review settings</h3>
         <label class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1" for="{uid}-limit">
             <span>Review Recents takes</span>
             <span class="flex items-center gap-1.5">
@@ -60,7 +60,7 @@
                     onchange={(event) => commit("reviewRecentLimit", event.currentTarget.value)}
                     aria-label="How many recent transactions to review"
                 />
-                <span class="text-base-content/60">at most</span>
+                <span class="text-muted">at most</span>
             </span>
         </label>
         <label class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1" for="{uid}-days">
@@ -76,10 +76,10 @@
                     onchange={(event) => commit("reviewMaxDays", event.currentTarget.value)}
                     aria-label="How many days back to review"
                 />
-                <span class="text-base-content/60">days</span>
+                <span class="text-muted">days</span>
             </span>
         </label>
-        <p class="-mt-2 text-xs text-base-content/50">0 days means no limit. Both queues use this window.</p>
+        <p class="-mt-2 text-xs text-muted">0 days means no limit. Both queues use this window.</p>
         <label class="flex cursor-pointer flex-wrap items-center justify-between gap-x-3 gap-y-1">
             <span>Mark unreviewed rows in the journal</span>
             <input
@@ -95,9 +95,7 @@
         </label>
     {/if}
     {#if show !== "review"}
-        <h3 class={["text-xs font-medium tracking-wide text-base-content/55 uppercase", show === "all" && "mt-1 border-t border-base-content/10 pt-3"]}>
-            Find Matches
-        </h3>
+        <h3 class={["text-xs font-medium tracking-wide text-muted uppercase", show === "all" && "mt-1 border-t border-base-content/10 pt-3"]}>Find Matches</h3>
         {@render days("matchWindow", "Halves at most", "How many days apart the two halves of a transfer may be", 1, 60)}
         {@render days("matchLookback", "Look back", "How many days back to look for matches", 0, 36500)}
         <div class="-mt-1 flex flex-wrap justify-end gap-1" role="group" aria-label="Look back presets">
@@ -114,7 +112,7 @@
                 >
             {/each}
         </div>
-        <p class="-mt-2 text-xs text-base-content/50">0 days means no limit.</p>
+        <p class="-mt-2 text-xs text-muted">0 days means no limit.</p>
         {@render days("matchTransitDays", "In transit after", "Days before an unmatched transfer is flagged as in transit", 1, 365)}
     {/if}
 </div>

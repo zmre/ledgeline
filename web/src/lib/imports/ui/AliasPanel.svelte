@@ -171,7 +171,7 @@
 >
     {#snippet children(loaded)}
         <div class="flex flex-col gap-4" data-testid="imports-aliases">
-            <p class="max-w-3xl text-sm text-base-content/70">{ALIAS_EXPLAINER}</p>
+            <p class="max-w-3xl text-sm text-muted">{ALIAS_EXPLAINER}</p>
 
             {#if !loaded.editable}
                 <div class="alert items-start rounded-box py-2 text-sm alert-info" role="status" data-testid="imports-aliases-read-only">
@@ -215,7 +215,7 @@
                                         <span class="badge badge-sm {badge.tone === 'warning' ? 'badge-warning' : 'badge-ghost'}">{badge.text}</span>
                                     {/each}
                                 {/if}
-                                <span class="ml-auto text-xs text-base-content/50">
+                                <span class="ml-auto text-xs text-muted">
                                     {#if row.index === null}new{:else}line {entry?.line ?? "?"}{/if}
                                 </span>
                             </div>
@@ -223,7 +223,7 @@
                             {#if row.locked}
                                 <!-- Read-only: shown exactly as written, with the engine's own reason. -->
                                 <code class="text-xs break-all" data-testid="imports-alias-locked">{entry === null ? "" : aliasText(entry)}</code>
-                                <p class="text-xs text-base-content/60">
+                                <p class="text-xs text-muted">
                                     Ledgeline will not rewrite this line because {entry?.lockMessage ?? "it is not modelled"}.
                                 </p>
                             {:else}
@@ -281,7 +281,7 @@
                     {/each}
 
                     {#if form.rows.length === 0}
-                        <p class="text-sm text-base-content/60">This journal declares no aliases yet.</p>
+                        <p class="text-sm text-muted">This journal declares no aliases yet.</p>
                     {/if}
                 </div>
 
@@ -293,7 +293,7 @@
                     </button>
                     {#if dirty}<span class="badge badge-sm badge-warning" data-testid="imports-alias-dirty">unsaved</span>{/if}
                     {#if savedAt !== null && !dirty}<span class="badge badge-sm badge-success" data-testid="imports-alias-saved">saved</span>{/if}
-                    <span class="text-xs text-base-content/50">A new alias is added at the end of {form.label}.</span>
+                    <span class="text-xs text-muted">A new alias is added at the end of {form.label}.</span>
                 </div>
 
                 {#if clientErrors.length > 0}

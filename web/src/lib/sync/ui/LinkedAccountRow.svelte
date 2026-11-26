@@ -34,9 +34,9 @@
 <li class="flex flex-col gap-1 border-b border-base-content/5 px-3 py-2 last:border-b-0" data-testid="sync-linked-row" data-key={account.key}>
     <div class="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
         <button type="button" class="link font-medium link-hover" onclick={() => onOpen(account.key)}>{account.label}</button>
-        <span class="truncate font-mono text-xs text-base-content/70">→ {account.journalAccount}</span>
+        <span class="truncate font-mono text-xs text-muted">→ {account.journalAccount}</span>
     </div>
-    <span class="text-xs text-base-content/70" data-testid="sync-linked-line">{elsewhere ? "Synced on another computer" : accountLine(account, now)}</span>
+    <span class="text-xs text-muted" data-testid="sync-linked-line">{elsewhere ? "Synced on another computer" : accountLine(account, now)}</span>
     {#each problems as problem, i (i)}
         <ProblemNotice {problem} scope={{connectionId: connected ? account.connectionId : null, accountKey: account.key}} {onEffect} busy={syncStore.running} />
     {/each}

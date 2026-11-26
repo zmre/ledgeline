@@ -53,7 +53,7 @@
             <kbd class="kbd border-primary-content/30 bg-primary-content/10 kbd-xs text-primary-content">{saveKeys}</kbd>
         </button>
         <span class={["flex", unknown && "tooltip tooltip-top"]} data-tip={unknown ? "Categorise the unknown posting first" : undefined}>
-            <label class={["flex items-center gap-2 text-sm", unknown ? "cursor-not-allowed text-base-content/45" : "cursor-pointer"]}>
+            <label class={["flex items-center gap-2 text-sm", unknown ? "cursor-not-allowed text-muted" : "cursor-pointer"]}>
                 <input
                     type="checkbox"
                     class="checkbox checkbox-sm checkbox-success"

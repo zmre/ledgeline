@@ -110,7 +110,7 @@
 <div class="flex min-h-8 flex-wrap items-center gap-1.5" {...{[TYPING_ATTRIBUTE]: ""}}>
     {#each tags as [name, value] (name)}
         <span class="badge gap-1 border-base-content/15 bg-base-200 font-mono badge-sm" data-testid="review-tag">
-            <span class="text-base-content/60">{name}:</span><span>{value}</span>
+            <span class="text-muted">{name}:</span><span>{value}</span>
             <button
                 type="button"
                 class="-mr-1 rounded-full p-0.5 hover:bg-base-content/10"
@@ -174,7 +174,7 @@
                     }}
                 >
                     <span class="truncate">{match.kind === "name" ? `${match.label}:` : match.label}</span>
-                    <span class="shrink-0 text-xs text-base-content/50 tabular-nums">{match.count}×</span>
+                    <span class="shrink-0 text-xs text-muted tabular-nums">{match.count}×</span>
                 </button>
             </li>
         {/each}

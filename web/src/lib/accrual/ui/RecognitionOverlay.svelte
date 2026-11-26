@@ -194,16 +194,16 @@
                 aria-label="Post {entry.description} {entry.recognized}"
                 data-testid="due-entry-check"
             />
-            <span class="w-14 shrink-0 font-mono text-base-content/60">{dayShort(entry.recognized)}</span>
+            <span class="w-14 shrink-0 font-mono text-muted">{dayShort(entry.recognized)}</span>
             <span class="min-w-0 grow truncate">{party ?? entry.description}</span>
-            <span class="hidden truncate text-base-content/50 sm:inline">{entry.postings.map((p) => p.account).join(" → ")}</span>
+            <span class="hidden truncate text-muted sm:inline">{entry.postings.map((p) => p.account).join(" → ")}</span>
             <span class="shrink-0 font-mono tabular-nums">
                 {totalsText(entry.postings.flatMap((p) => p.amounts.filter((a) => a.quantity.m > 0n)))}
             </span>
         </div>
         {#if open}
             <ul class="mb-1 ml-14 rounded-box bg-base-200/60 px-3 py-1 font-mono text-xs" data-testid="due-entry-postings">
-                <li class="text-base-content/60">{entry.recognized} {entry.description}</li>
+                <li class="text-muted">{entry.recognized} {entry.description}</li>
                 {#each entry.postings as posting, at (at)}
                     <li class="flex gap-4 pl-4">
                         <span class="grow">{posting.account}</span>
@@ -240,7 +240,7 @@
                 data-state={state}
             />
             <span class="font-semibold">{monthShort(month.month)}</span>
-            <span class="text-sm text-base-content/60">· {month.count} {month.count === 1 ? "entry" : "entries"} ·</span>
+            <span class="text-sm text-muted">· {month.count} {month.count === 1 ? "entry" : "entries"} ·</span>
             <span class="font-mono text-sm tabular-nums">{totalsText(month.totals)}</span>
             {#if !open && month.ties.length > 0}
                 <span class={["ml-auto text-xs", month.ties.every((tie) => tie.ties) ? "text-success" : "text-warning"]}>
@@ -251,7 +251,7 @@
         {#if open}
             {#each month.ties as tie (`${tie.account}|${tie.commodity}`)}
                 {@const off = sub(tie.after, tie.scheduled)}
-                <p class="flex flex-wrap items-center gap-2 pl-14 text-xs text-base-content/70" data-testid="due-tie">
+                <p class="flex flex-wrap items-center gap-2 pl-14 text-xs text-muted" data-testid="due-tie">
                     <span class="font-mono">{tie.account}</span>
                     <span class="font-mono tabular-nums">{fmt(tie.commodity, tie.before, styles)} → {fmt(tie.commodity, tie.after, styles)}</span>
                     {#if tie.ties || isZero(off)}
@@ -267,7 +267,7 @@
             <ul>
                 {#each month.groups as group, at (`${group.party?.name ?? ""}|${at}`)}
                     {#if group.party !== null && month.groups.length > 1}
-                        <li class="pt-1 pl-6 text-xs font-semibold text-base-content/60">{group.party.name}</li>
+                        <li class="pt-1 pl-6 text-xs font-semibold text-muted">{group.party.name}</li>
                     {/if}
                     {#each group.entries as entry (entryKey(entry))}
                         {@render entryRow(entry, group.party?.name ?? null)}
@@ -317,7 +317,7 @@
                 {/each}
             </div>
             {#if busy}
-                <span class="flex items-center gap-1.5 text-xs text-base-content/60" role="status">
+                <span class="flex items-center gap-1.5 text-xs text-muted" role="status">
                     <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-success"></span> saving…
                 </span>
             {/if}
@@ -365,7 +365,7 @@
         >
             {#if accrual.tab === "due"}
                 <div class="flex flex-wrap items-center gap-2 border-b border-base-content/10 px-4 py-2">
-                    <p class="text-xs text-base-content/60">To change an entry, post it, then edit it in the journal.</p>
+                    <p class="text-xs text-muted">To change an entry, post it, then edit it in the journal.</p>
                     <button type="button" class="btn ml-auto btn-primary btn-sm" disabled={!canPost} onclick={() => void post()} data-testid="recognition-post">
                         {through === null ? "Post" : `Post through ${dayShort(through)}`}
                         <ReviewIcon name="arrow-right" class="h-3.5 w-3.5" />
@@ -373,7 +373,7 @@
                 </div>
                 <div class="min-h-0 overflow-y-auto overscroll-contain px-3 py-2">
                     {#if due === null}
-                        <div class="flex items-center justify-center gap-2 py-12 text-sm text-base-content/60" role="status">
+                        <div class="flex items-center justify-center gap-2 py-12 text-sm text-muted" role="status">
                             {#if accrual.error !== null}
                                 <span class="text-error">Couldn't read the due entries: {accrual.error}</span>
                             {:else}
@@ -381,7 +381,7 @@
                             {/if}
                         </div>
                     {:else if empty}
-                        <p class="py-12 text-center text-sm text-base-content/60" data-testid="recognition-empty">Nothing is due.</p>
+                        <p class="py-12 text-center text-sm text-muted" data-testid="recognition-empty">Nothing is due.</p>
                     {:else}
                         {#each due.months as month (month.month)}
                             {@render monthBlock(month)}
@@ -390,16 +390,16 @@
                             <label class="mt-2 flex flex-wrap items-center gap-2 rounded-box bg-base-200/60 px-3 py-2 text-sm" data-testid="due-closed">
                                 <input type="checkbox" class="checkbox checkbox-sm" bind:checked={includeClosed} data-testid="due-closed-check" />
                                 <span class="font-semibold">Closed periods{due.closedThrough === null ? "" : ` (through ${due.closedThrough})`}</span>
-                                <span class="text-base-content/60">· {due.closed.count} {due.closed.count === 1 ? "entry" : "entries"} ·</span>
+                                <span class="text-muted">· {due.closed.count} {due.closed.count === 1 ? "entry" : "entries"} ·</span>
                                 <span class="font-mono tabular-nums">{totalsText(due.closed.totals)}</span>
-                                <span class="ml-auto text-xs text-base-content/60">post as one adjustment today</span>
+                                <span class="ml-auto text-xs text-muted">post as one adjustment today</span>
                             </label>
                         {/if}
                     {/if}
                 </div>
             {:else if accrual.tab === "needs"}
                 <div class="flex flex-wrap items-center gap-2 border-b border-base-content/10 px-4 py-2">
-                    <p class="text-xs text-base-content/60">Deferred-revenue credits and prepaid debits with no schedule.</p>
+                    <p class="text-xs text-muted">Deferred-revenue credits and prepaid debits with no schedule.</p>
                     <label class="ml-auto flex items-center gap-1.5 text-sm">
                         Look back
                         <select class="select w-28 select-sm" value={String(accrual.needsLookback)} onchange={setLookback} data-testid="needs-lookback">
@@ -411,21 +411,21 @@
                 </div>
                 <div class="min-h-0 overflow-y-auto overscroll-contain px-3 py-2">
                     {#if needs === null}
-                        <div class="flex items-center justify-center gap-2 py-12 text-sm text-base-content/60" role="status">
+                        <div class="flex items-center justify-center gap-2 py-12 text-sm text-muted" role="status">
                             <span class="loading loading-sm loading-spinner"></span> Reading…
                         </div>
                     {:else if needs.items.length === 0}
-                        <p class="py-12 text-center text-sm text-base-content/60" data-testid="needs-empty">Every deferral in the lookback has a schedule.</p>
+                        <p class="py-12 text-center text-sm text-muted" data-testid="needs-empty">Every deferral in the lookback has a schedule.</p>
                     {:else}
                         <ul class="divide-y divide-base-content/10">
                             {#each needs.items as item (`${item.index}:${item.posting}`)}
                                 {@const detailKey = `${item.index}:${item.posting}`}
                                 <li class="flex flex-wrap items-center gap-3 py-2 text-sm" data-testid="needs-item">
-                                    <span class="w-16 shrink-0 font-mono text-base-content/60">{dayShort(item.date)}</span>
+                                    <span class="w-16 shrink-0 font-mono text-muted">{dayShort(item.date)}</span>
                                     <span class="min-w-0 grow truncate font-medium">{item.description || "(no description)"}</span>
                                     {#if item.party !== null}<span class="badge badge-ghost badge-sm">{item.party.name}</span>{/if}
                                     {#if item.invoice !== null}<span class="badge badge-ghost badge-sm">INV {item.invoice}</span>{/if}
-                                    <span class="truncate text-base-content/60">{item.account}</span>
+                                    <span class="truncate text-muted">{item.account}</span>
                                     <span class="font-mono tabular-nums">{sideAmount(item)}</span>
                                     <button
                                         type="button"

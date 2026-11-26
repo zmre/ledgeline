@@ -373,7 +373,7 @@
                              and ellipsised because a title runs to 60 characters
                              and an uncapped one squeezes the centre nav. -->
                         {#if connLabel !== ""}
-                            <span class="hidden max-w-64 truncate text-base-content/70 sm:inline">{connLabel}</span>
+                            <span class="hidden max-w-64 truncate text-muted sm:inline">{connLabel}</span>
                         {/if}
                     </span>
                     {#if conn === "error"}
