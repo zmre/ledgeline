@@ -556,6 +556,8 @@ mod tests {
             .with_file("tpl/_invoice_base.v1.html", BASE.source)
             .with_file("tpl/classic.html", STARTERS[0].source)
             .with_file("tpl/modern.html", STARTERS[1].source)
+            .with_file("tpl/classic-logo.html", STARTERS[2].source)
+            .with_file("tpl/modern-logo.html", STARTERS[3].source)
             .with_file(
                 "tpl/myco.html",
                 "{% extends \"_invoice_base.v1.html\" %}{% block ready %}{% endblock ready %}",
@@ -572,6 +574,8 @@ mod tests {
         for yes in [
             "tpl/classic.html",
             "tpl/modern.html",
+            "tpl/classic-logo.html",
+            "tpl/modern-logo.html",
             "tpl/whole.html",
             "tpl/_invoice_base.v1.html",
         ] {

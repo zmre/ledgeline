@@ -78,7 +78,7 @@ The app, `src/app/`, is one axum server, headless or in-process behind the windo
 
 mbr sits at the root so it needs no base path; the SPA is under `/app`. `app::watch` follows file changes and runs the reconciler on every journal or markdown change. `app::pdf` and `pdf.rs` drive mbr's PDF export through the shell's event loop.
 
-`starters.rs` embeds the starter templates and the invoice base from `templates/` (`classic.html`, `modern.html`, `_invoice_base.v1.html`); the base's comment header is its own documentation, mirrored for users on [Templates](../invoicer/templates.md). The fixtures carry a byte-identical copy of the base, which a test checks.
+`starters.rs` embeds the starter templates and the invoice base from `templates/` (`classic.html`, `modern.html`, `classic-logo.html`, `modern-logo.html`, `_invoice_base.v1.html`); the base's comment header is its own documentation, mirrored for users on [Templates](../invoicer/templates.md). The fixtures carry a byte-identical copy of the base, which a test checks. `app/preview.rs` renders every preview with `invoicer_preview: true` in the note's frontmatter (never saved), so a template can show something in the app's preview alone, as the "with logo" starters' "Your logo" box.
 
 `tests/cli.rs` runs the CLI on copies of the fixtures under `target/` and compares its JSON with `tests/snapshots/`. Those snapshots are worked examples of every `--json` shape.
 

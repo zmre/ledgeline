@@ -567,11 +567,19 @@ is the point, since a third party can render our invoices with plain `mbr`.
   alone. The base's comment header is the guide. It is versioned in its
   name because the user owns the copy: a fix ships as `v2`, and templates
   that extend `v1` keep it. A whole-page template (no base) works as well.
-- **Starter templates.** The invoicer ships two (Classic, Modern), both
-  children of the base. Each is copied into `invoices/tpl/` the first time
-  an invoice uses it, with the base beside it (create-new), and from then
-  on both are the user's files. Each starter adds its own print CSS
-  (`@page` size and margins) and look.
+- **Starter templates.** The invoicer ships four (Classic, Modern, Classic
+  with logo, Modern with logo), all children of the base. Each is copied
+  into `invoices/tpl/` the first time an invoice uses it, with the base
+  beside it (create-new), and from then on it is the user's file. Each
+  starter adds its own print CSS (`@page` size and margins) and look. The
+  "with logo" two are laid out around a large logo (PLAN D17).
+- **Preview vs. real output.** The invoicer's preview (`/api/preview` and
+  its page, so the picker and both editors) renders the note with
+  `invoicer_preview: true` added to its frontmatter, never saved. A
+  template may draw something for the preview alone under
+  `{% if fm.invoicer_preview %}`: the "with logo" starters draw a "Your
+  logo" box where an invoice has no logo. The PDF export, MBR's browser,
+  `mbr -o` and QuickLook render the saved file, so they never see the flag.
 - **MBR's chrome.** Served by MBR (`server_mode`), the base includes MBR's
   partials (`/.mbr/_head_markdown.html`, `_nav.html`, `_breadcrumbs.html`,
   the previous/next footer, `_footer.html`, `_scripts.html`), so an invoice
