@@ -18,14 +18,27 @@
 //!     [`linux_shortcut_for`] to one implementation per [`Shortcut`]. The Tokio
 //!     runtime keeps serving on its worker threads meanwhile.
 //!
+//! The webview's navigation policy has two layers, because wry's navigation
+//! handler sees every frame's navigations and cannot tell them apart:
+//!  - every frame stays on our origin ([`navigation_allowed`]), so an app's
+//!    sandboxed same-origin frames (the invoicer's MBR pages) still load;
+//!  - the MAIN frame shows only the app's own SPA, under
+//!    [`AppIdentity::spa_base`] ([`crate::security::in_spa`]). That is
+//!    enforced when the main frame commits to a page (wry's page-load
+//!    handler, which only the main frame fires): any other page is replaced
+//!    by the last SPA page it showed. The token's init script applies the
+//!    same rule, so such a page never holds the token, even for the moment
+//!    before it is replaced.
+//!
 //! Because the SPA is served same-origin and an app hot-swaps its state in
 //! place, opening another document needs NO server restart: the ephemeral
 //! port is stable for the whole session.
 //!
 //! [`token_init_script`]: crate::security::token_init_script
 
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::path::{Path, PathBuf};
+use std::rc::{Rc, Weak};
 
 use ledgeline_core::ui_prefs::BootAppearance;
 use muda::{
@@ -40,8 +53,9 @@ use tao::{
     window::{Window, WindowBuilder},
 };
 use url::Url;
-use wry::{NewWindowResponse, WebViewBuilder};
+use wry::{NewWindowResponse, PageLoadEvent, WebViewBuilder};
 
+use crate::security::in_spa;
 use crate::{AppDirs, AppIdentity, recents};
 
 #[cfg(target_os = "macos")]
@@ -693,7 +707,7 @@ impl RecentMenu {
     }
 }
 
-/// Should the WebView be allowed to navigate to `candidate`?
+/// Should any frame of the WebView be allowed to navigate to `candidate`?
 ///
 /// Only inside our own in-process origin. The window has no address bar, so an
 /// unconstrained WebView would happily render an attacker's page as if it were
@@ -701,6 +715,12 @@ impl RecentMenu {
 /// still be the user's whole visible UI. `base` is `http://host:port/`, and the
 /// required trailing slash is what stops `http://127.0.0.1:5000@evil.example/`
 /// from passing as a prefix match.
+///
+/// This is the rule for EVERY frame, because wry asks the same handler about
+/// subframes and does not say which frame is navigating: an app's sandboxed
+/// frames (the invoicer's MBR notes and invoice pages) are same-origin pages
+/// outside its SPA, and must load. The main frame is held to the narrower
+/// [`in_spa`] separately ([`MainFrame`]).
 #[must_use]
 pub fn navigation_allowed(base: &str, candidate: &str) -> bool {
     candidate == base.trim_end_matches('/') || candidate.starts_with(base)
@@ -794,6 +814,47 @@ pub fn appearance_init_script(origin: &str, appearance: &BootAppearance) -> Stri
     )
 }
 
+/// The main frame's half of the navigation policy: it may show only the app's
+/// own SPA ([`in_spa`] under [`AppIdentity::spa_base`]).
+///
+/// Fed every page the main frame commits to; it remembers the last one that
+/// was the SPA, and names it as the page to return to when the main frame
+/// lands anywhere else (an MBR page, `about:blank`). Pure state, so the
+/// decision is testable without a webview.
+#[derive(Debug)]
+struct MainFrame {
+    origin: String,
+    spa_base: &'static str,
+    last: String,
+}
+
+impl MainFrame {
+    /// A main frame that opens on `start`, which must be the SPA.
+    fn new(origin: String, spa_base: &'static str, start: &str) -> Result<Self, GuiError> {
+        if !in_spa(&origin, spa_base, start) {
+            return Err(GuiError(format!(
+                "the start page {start} is outside the app's pages ({origin}{spa_base})"
+            )));
+        }
+        Ok(Self {
+            origin,
+            spa_base,
+            last: start.to_string(),
+        })
+    }
+
+    /// The main frame committed to `page`. `None` when that is the SPA (and
+    /// now the page to return to); otherwise the page to load instead.
+    fn committed(&mut self, page: &str) -> Option<String> {
+        if in_spa(&self.origin, self.spa_base, page) {
+            page.clone_into(&mut self.last);
+            None
+        } else {
+            Some(self.last.clone())
+        }
+    }
+}
+
 /// The webview's own origin for `url` (`http://127.0.0.1:<port>`), the value
 /// every initialization script is guarded by.
 ///
@@ -808,16 +869,24 @@ pub fn webview_origin(url: &str) -> Result<String, GuiError> {
 
 /// Build the wry webview for `window`: the app at `url`, opened on `start`,
 /// with `init_scripts` run at document start (the token, the appearance —
-/// each guarded by its own origin check).
+/// each guarded by its own origin check, the token's by the SPA's path too).
 ///
-/// Navigation is confined to `url`'s origin ([`navigation_allowed`]). A link
-/// outside it is offered to `open_external`, which opens it in the user's
-/// browser and returns `true` when the app's allowlist allows it; the webview
-/// itself never leaves. Pop-ups are always denied. Downloads ask where to
-/// save ([`choose_download_destination`]).
+/// Every frame's navigation is confined to `url`'s origin
+/// ([`navigation_allowed`]). A link outside it is offered to `open_external`,
+/// which opens it in the user's browser and returns `true` when the app's
+/// allowlist allows it; the webview itself never leaves. The main frame may
+/// show only the app's SPA, under [`AppIdentity::spa_base`]: when it commits
+/// to any other page, even one on our origin, the last SPA page it showed is
+/// loaded instead. Pop-ups are always denied. Downloads ask where to save
+/// ([`choose_download_destination`]); a download never commits a page, so the
+/// main-frame rule does not touch it.
+///
+/// Answered in an [`Rc`] because the main-frame rule needs the webview back
+/// to load that page; every `&wry::WebView` use derefs through it.
 ///
 /// # Errors
-/// A [`GuiError`] when the webview cannot be created.
+/// A [`GuiError`] when `url` does not parse, when `start` is not under the
+/// app's SPA base, or when the webview cannot be created.
 pub fn build_webview<F>(
     app: &'static AppIdentity,
     window: &Window,
@@ -825,11 +894,15 @@ pub fn build_webview<F>(
     start: &str,
     init_scripts: Vec<String>,
     open_external: F,
-) -> Result<wry::WebView, GuiError>
+) -> Result<Rc<wry::WebView>, GuiError>
 where
     F: Fn(&str) -> bool + Clone + 'static,
 {
     let base = url.to_string();
+    let main_frame = RefCell::new(MainFrame::new(webview_origin(url)?, app.spa_base, start)?);
+    // Filled once the webview exists; the page-load handler cannot run before.
+    let handle: Rc<OnceCell<Weak<wry::WebView>>> = Rc::default();
+    let loader = Rc::clone(&handle);
     let (navigating, new_window) = (open_external.clone(), open_external);
     let mut builder = WebViewBuilder::new();
     for script in init_scripts {
@@ -845,6 +918,25 @@ where
                 eprintln!("{}: blocked navigation to {candidate}", app.log_prefix);
             }
             allowed
+        })
+        // The main frame's rule. wry fires this for the main frame only (on
+        // commit: `didCommitNavigation`, webkitgtk's `Committed`), with the
+        // main frame's URL, so a subframe's page never reaches it.
+        .with_on_page_load_handler(move |event, page| {
+            if !matches!(event, PageLoadEvent::Started) {
+                return;
+            }
+            // The borrow ends before `load_url`, which only queues the load.
+            let Some(back) = main_frame.borrow_mut().committed(&page) else {
+                return;
+            };
+            eprintln!(
+                "{}: refused {page} in the main window; back to {back}",
+                app.log_prefix
+            );
+            if let Some(webview) = loader.get().and_then(Weak::upgrade) {
+                let _ = webview.load_url(&back);
+            }
         })
         // No pop-ups at all: a new window would be a second WebView outside the
         // navigation handler above. An allowlisted link (`target=_blank`) goes
@@ -906,6 +998,8 @@ where
         }
         .map_err(|error| GuiError(format!("creating webview: {error}")))?
     };
+    let webview = Rc::new(webview);
+    let _ = handle.set(Rc::downgrade(&webview));
     Ok(webview)
 }
 
@@ -1181,8 +1275,8 @@ pub mod perf {
 #[cfg(test)]
 mod tests {
     use super::{
-        BootAppearance, Zoom, appearance_init_script, first_file_path, navigation_allowed,
-        plain_https, webview_origin, zoom_script,
+        BootAppearance, MainFrame, Zoom, appearance_init_script, first_file_path,
+        navigation_allowed, plain_https, webview_origin, zoom_script,
     };
     use std::path::PathBuf;
     use url::Url;
@@ -1304,6 +1398,109 @@ mod tests {
             BASE,
             "http://127.0.0.1:5000.evil.example/"
         ));
+        // Opaque-origin documents are never ours, in any frame.
+        for refused in [
+            "about:blank",
+            "about:srcdoc",
+            "data:text/html,<script>alert(1)</script>",
+            "javascript:alert(1)",
+            "https://127.0.0.1:5000/",
+            "http://localhost:5000/",
+        ] {
+            assert!(!navigation_allowed(BASE, refused), "{refused}");
+        }
+    }
+
+    /// Any frame may still load our origin's other pages: the invoicer's
+    /// sandboxed MBR frames are exactly that. The main frame is held to the
+    /// SPA by [`MainFrame`] instead.
+    #[test]
+    fn frames_may_load_same_origin_pages_outside_the_spa() {
+        assert!(navigation_allowed(
+            BASE,
+            "http://127.0.0.1:5000/notes/acme.md"
+        ));
+        assert!(navigation_allowed(
+            BASE,
+            "http://127.0.0.1:5000/.ledgeline-invoicer/preview?x=1"
+        ));
+    }
+
+    const ORIGIN: &str = "http://127.0.0.1:5000";
+
+    #[test]
+    fn the_main_frame_must_start_in_the_spa() {
+        assert!(MainFrame::new(ORIGIN.into(), "/app/", "http://127.0.0.1:5000/app/").is_ok());
+        assert!(MainFrame::new(ORIGIN.into(), "/", "http://127.0.0.1:5000/new").is_ok());
+        for outside in [
+            "http://127.0.0.1:5000/",
+            "http://127.0.0.1:5000/notes/acme.md",
+            "http://127.0.0.1:5001/app/",
+            "about:blank",
+        ] {
+            assert!(
+                MainFrame::new(ORIGIN.into(), "/app/", outside).is_err(),
+                "{outside}"
+            );
+        }
+    }
+
+    /// SEC-6: the main frame shows only the SPA. Any other page it commits
+    /// to, on our origin or not, sends it back to the last SPA page it showed.
+    #[test]
+    fn the_main_frame_returns_to_its_last_spa_page_from_anything_else() {
+        let home = "http://127.0.0.1:5000/app/";
+        let mut frame = MainFrame::new(ORIGIN.into(), "/app/", home).expect("starts in the SPA");
+        assert_eq!(frame.committed(home), None);
+        assert_eq!(
+            frame.committed("http://127.0.0.1:5000/app/invoices/7"),
+            None
+        );
+        for refused in [
+            "http://127.0.0.1:5000/customers/contracts/sow.html",
+            "http://127.0.0.1:5000/app/../notes/acme.md",
+            "http://127.0.0.1:5000/app/%2e%2e/notes/acme.md",
+            "http://127.0.0.1:5000/.mbr/notes",
+            "http://127.0.0.1:5000/api/books",
+            "http://127.0.0.1:5001/app/",
+            "http://evil.example/app/",
+            "about:blank",
+            "data:text/html,x",
+            "javascript:alert(1)",
+        ] {
+            assert_eq!(
+                frame.committed(refused).as_deref(),
+                Some("http://127.0.0.1:5000/app/invoices/7"),
+                "{refused}"
+            );
+        }
+        // A refused page is not remembered: the SPA page still is.
+        assert_eq!(frame.committed("http://127.0.0.1:5000/app/customers"), None);
+        assert_eq!(
+            frame
+                .committed("http://127.0.0.1:5000/notes/x.md")
+                .as_deref(),
+            Some("http://127.0.0.1:5000/app/customers")
+        );
+    }
+
+    /// Ledgeline's SPA is the whole origin: every page on it is fine, so its
+    /// window behaves exactly as before.
+    #[test]
+    fn a_whole_origin_spa_main_frame_refuses_only_other_origins() {
+        let mut frame = MainFrame::new(ORIGIN.into(), "/", "http://127.0.0.1:5000/")
+            .expect("starts in the SPA");
+        for page in [
+            "http://127.0.0.1:5000/reports?tab=1",
+            "http://127.0.0.1:5000/settings",
+            "http://127.0.0.1:5000/new",
+        ] {
+            assert_eq!(frame.committed(page), None, "{page}");
+        }
+        assert_eq!(
+            frame.committed("about:blank").as_deref(),
+            Some("http://127.0.0.1:5000/new")
+        );
     }
 
     #[test]

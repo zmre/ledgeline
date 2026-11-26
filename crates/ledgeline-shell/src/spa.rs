@@ -183,6 +183,7 @@ mod tests {
         token_env: "LEDGELINE_TOKEN",
         token_global: "__LEDGELINE_TOKEN__",
         embedded_global: "__LEDGELINE_EMBEDDED__",
+        spa_base: "/",
     };
 
     /// Ledgeline's SPA reads exactly this; the bytes are part of its CSP.
