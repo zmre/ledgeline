@@ -215,10 +215,12 @@ ledger_customer: Customer X
 contracts:
   - "[[Customer X MSA 2026]]"
   - "/customers/contracts/Customer X SOW 3 renewal (signed).pdf"
+  - "~/Documents/Legal/Customer X NDA.pdf"
 open_pos:
   - reference: "PO #PY75334"
     amount: $40,000
     expires: 2027-06-30
+    attachment: "/customers/pos/PO PY75334.pdf"
 billing_portal:
   name: Coupa
   url: https://customerx.coupahost.com/
@@ -241,12 +243,16 @@ Fred Smith is the champion.
 | `revenue_account`               | The account rows book to when nothing more specific says otherwise.                                                                                                                                                         |
 | `invoice_template`              | The template new invoices for this customer use. Without it, they use the [Default template](settings.md#new-invoices).                                                                                                     |
 | `ledger_customer`               | The customer's name in the books, the value of the `customer:` tag. Without it, the note's title. Set it before renaming a note, so the books keep one name.                                                                |
-| `contracts`                     | Links to notes, or paths to files such as signed PDFs. The customer page lists them, and `check` reports paths that don't exist.                                                                                            |
-| `open_pos`                      | Purchase orders: `reference`, `amount` and `expires`. The invoice editor suggests them for Reference, and the customer page shows how much of each is left.                                                                 |
+| `contracts`                     | Links to notes, or files such as signed PDFs: a path from the books folder (`/customers/contracts/MSA.pdf`), relative to the note, or a file outside the books folder (see below). The customer page lists them, and `check` reports any that don't exist. |
+| `open_pos`                      | Purchase orders: `reference`, `amount`, `expires` and `attachment`, a file with the PO's details written as a contract is. The invoice editor suggests them for Reference, and the customer page shows how much of each is left. |
 | `billing_portal`                | A vendor portal the customer takes invoices through: `name`, `url`, `login` (the user name only, never a password), `supplier_id`, `requires_reference` (refuse to send an invoice without a reference) and `instructions`. |
 | `snippets`                      | Snippets new invoices for this customer start with.                                                                                                                                                                         |
 
-Closing a purchase order on the customer page removes it from `open_pos` and adds a line about it under a "Closed POs" heading at the end of the note.
+The text below the frontmatter is your notes on the customer. The customer page shows them, and Edit changes them along with the other fields.
+
+Closing a purchase order on the customer page removes it from `open_pos` and adds a line about it under a "Closed POs" heading at the end of the note, naming its attachment if it had one.
+
+**Files outside the books folder.** In the desktop app, **Choose a file…** takes a contract or PO attachment from anywhere. A file under your home folder is written as `~/Documents/Legal/NDA.pdf`; anywhere else as a `file:///` address, such as `file:///Volumes/Share/NDA%202026.pdf`. The customer page marks these "outside the books". They don't travel with the books folder, so `check` warns when one is missing, and the app opens one only when a customer note names it. In a browser (`--server`), the page shows the file's name and place but can't open it.
 
 ## Your company
 
