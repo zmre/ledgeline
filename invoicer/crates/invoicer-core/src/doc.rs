@@ -414,6 +414,22 @@ pub struct TableSummary {
     pub rows: usize,
     /// Written amounts that disagree with the arithmetic.
     pub discrepancies: usize,
+    /// Every non-total row with an account and an amount, in table order:
+    /// what the deposits panel counts (`InvoiceBooks::open_deposits`)
+    /// without reading the file again.
+    #[serde(skip)]
+    pub booked: Vec<BookedRow>,
+}
+
+/// A bill-table row booked to an account, as the index keeps it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BookedRow {
+    /// The books column's account.
+    pub account: String,
+    /// The row's description.
+    pub description: String,
+    /// Its amount, as computed.
+    pub amount: Dec,
 }
 
 /// An invoice (or estimate, or credit note) document.
@@ -636,11 +652,21 @@ impl Invoice {
         let style = money.for_table(table);
         let recalc = table.recompute(words, &style).ok()?;
         let mut accounts: Vec<String> = Vec::new();
+        let mut booked: Vec<BookedRow> = Vec::new();
         for row in &recalc.evaluation.rows {
             if let Some(books) = &row.books {
                 let name = books.account().as_str();
                 if !accounts.iter().any(|a| a == name) {
                     accounts.push(name.to_string());
+                }
+                if let Some(amount) = row.amount
+                    && row.kind != RowKind::Total
+                {
+                    booked.push(BookedRow {
+                        account: name.to_string(),
+                        description: row.at.description.clone(),
+                        amount,
+                    });
                 }
             }
         }
@@ -651,6 +677,7 @@ impl Invoice {
             accounts,
             rows: recalc.evaluation.rows.len(),
             discrepancies: recalc.changes.len(),
+            booked,
         })
     }
 

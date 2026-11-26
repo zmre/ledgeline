@@ -158,7 +158,7 @@ async fn options(State(state): State<AppState>) -> ApiResult {
                 })
             })
             .collect();
-        let catalog: Vec<Value> = edit::catalogs(index, session.vault())
+        let catalog: Vec<Value> = edit::catalogs(index)
             .iter()
             .flat_map(|c| &c.items)
             .map(|item| {

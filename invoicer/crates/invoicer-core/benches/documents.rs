@@ -2,21 +2,25 @@
 //! (`invoicer_corpus.rs`: 5,000 invoices, 500 customers, 10 years of
 //! journal), against the ARCHITECTURE §5.6 budgets.
 //!
-//! | Bench                            | What it is                                                     | Budget it feeds                         |
-//! |----------------------------------|----------------------------------------------------------------|-----------------------------------------|
-//! | `invoicer/open`                  | walk, read and parse every note; index every document          | open → list shown (300 ms)              |
-//! | `invoicer/list_json`             | the newest-first list, serialized (`list --json` on a warm index) | `list --json` (300 ms)               |
-//! | `invoicer/check`                 | documents `check` on a warm index                              | `check` (1 s)                           |
-//! | `invoicer/next_number`           | numbering over the index                                       | —                                       |
-//! | `invoicer/refresh_one`           | one changed file re-read and re-indexed (a watcher event)      | save a draft (20 ms)                    |
-//! | `invoicer/save_draft`            | verify, conditional atomic write, re-index                     | save a draft (20 ms)                    |
-//! | `invoicer/preview`               | what a draft would book (the books panel; load the journal + derive) | keystroke → books panel (10 ms, warm in the app) |
-//! | `invoicer/send`                  | send a draft: load, book, write the journal, update the markdown | send (300 ms, relaxed; goal 150 ms) |
-//! | `invoicer/reconcile_change`      | a payment linked in Ledgeline: reload, book states, diff, mirror the one invoice | a journal change → `paid:` (100 ms) |
-//! | `invoicer/books_check`           | the books checks over every invoice, on loaded books (`check`'s books half) | `check` (1 s)                |
-//! | `invoicer/dashboard`             | `GET /api/dashboard`'s work: the books' recognition loaded from the open journal, what is due, receivables, aging, serialized | open → dashboard shown (300 ms) |
-//! | `ledgeline/journal_open`         | ledgeline-core opens the corpus journal                        | open; a journal change (100 ms)         |
-//! | `ledgeline/journal_reopen`       | the reload a journal change triggers                           | a journal change → `paid:` (100 ms)     |
+//! | Bench                              | What it is                                                                                                                    | Budget it feeds                                  |
+//! |------------------------------------|-------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------|
+//! | `invoicer/open`                    | walk, read and parse every note; index every document                                                                         | open → list shown (300 ms)                       |
+//! | `invoicer/list_json`               | the newest-first list, serialized (`list --json` on a warm index)                                                             | `list --json` (300 ms)                           |
+//! | `invoicer/check`                   | documents `check` on a warm index                                                                                             | `check` (1 s)                                    |
+//! | `invoicer/next_number`             | numbering over the index                                                                                                      | —                                                |
+//! | `invoicer/refresh_one`             | one changed file re-read and re-indexed (a watcher event)                                                                     | save a draft (20 ms)                             |
+//! | `invoicer/save_draft`              | verify, conditional atomic write, re-index                                                                                    | save a draft (20 ms)                             |
+//! | `invoicer/preview`                 | what a draft would book (the books panel; load the journal + derive)                                                          | keystroke → books panel (10 ms, warm in the app) |
+//! | `invoicer/send`                    | send a draft: load, book, write the journal, update the markdown                                                              | send (300 ms, relaxed; goal 150 ms)              |
+//! | `invoicer/reconcile_change`        | a payment linked in Ledgeline: reload, book states, diff, mirror the one invoice                                              | a journal change → `paid:` (100 ms)              |
+//! | `invoicer/books_check`             | the books checks over every invoice, on loaded books (`check`'s books half)                                                   | `check` (1 s)                                    |
+//! | `invoicer/dashboard`               | `GET /api/dashboard`'s work: the books' recognition loaded from the open journal, what is due, receivables, aging, serialized | open → dashboard shown (300 ms)                  |
+//! | `invoicer/document_problems`       | what every list and show request checks: documents, templates, catalogs, on the session                                       | `list --json` (300 ms)                           |
+//! | `invoicer/customers`               | `GET /api/customers`: every customer with its account, serialized                                                             | open → list shown (300 ms)                       |
+//! | `invoicer/heavy_document_problems` | `document_problems` on `heavy_books.rs` (30 templates)                                                                        | `list --json` (300 ms)                           |
+//! | `invoicer/heavy_open_deposits`     | the open-deposits panel, two customers with 3,300 deposit applications                                                        | keystroke → books panel (10 ms)                  |
+//! | `ledgeline/journal_open`           | ledgeline-core opens the corpus journal                                                                                       | open; a journal change (100 ms)                  |
+//! | `ledgeline/journal_reopen`         | the reload a journal change triggers                                                                                          | a journal change → `paid:` (100 ms)              |
 //!
 //! ```text
 //! nix develop -c cargo bench -p invoicer-core --bench documents
@@ -25,6 +29,7 @@
 
 #[path = "../../../../crates/ledgeline-core/benches/corpus.rs"]
 mod corpus;
+mod heavy_books;
 mod invoicer_corpus;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
@@ -34,8 +39,10 @@ use invoicer_core::draft;
 use invoicer_core::index::{DocumentIndex, ListFilter};
 use invoicer_core::problem::ProblemCode;
 use invoicer_core::reconcile::{self, BookStates, ReconcileOptions};
+use invoicer_core::session::Session;
 use invoicer_core::settings::Settings;
 use invoicer_core::views::dashboard::{DashboardOptions, dashboard, recognition_view};
+use invoicer_core::views::{self, account};
 use ledgeline_core::edit::JournalEditor;
 use ledgeline_core::vault::{LocalVault, Vault, VaultPath};
 use std::hint::black_box;
@@ -364,6 +371,52 @@ fn benches(c: &mut Criterion) {
             serde_json::to_string(&view).unwrap_or_default()
         });
     });
+
+    // What every list, show and customer request computes, on the session
+    // the app holds (RA-3, RC-5): the documents' problems (templates and
+    // catalogs included), and the customer list with each account.
+    let session = Session::open_local(&main).expect("the corpus session opens");
+    let _ = session.book_states();
+    group.sample_size(10);
+    group.bench_function(BenchmarkId::new("document_problems", &label), |b| {
+        b.iter(|| views::document_problems(black_box(&session)));
+    });
+    group.bench_function(BenchmarkId::new("customers", &label), |b| {
+        b.iter(|| {
+            let rows = account::customer_accounts(black_box(&session), today);
+            serde_json::to_string(&rows).unwrap_or_default()
+        });
+    });
+    drop(session);
+
+    // A heavy user's folder (`heavy_books.rs`): 30 templates, and two
+    // customers billed with a deposit every month for years (RA-3, RC-15).
+    let heavy = heavy_books::build();
+    let heavy_session = Session::open_local(&heavy.journal()).expect("the heavy books open");
+    let heavy_label = format!("{}", heavy_books::DOCUMENTS);
+    let heavy_books_bridge = heavy_session.invoice_books();
+    let open = heavy_books_bridge
+        .open_deposits(heavy_session.index(), heavy_books::DEPOSIT_TARGET)
+        .expect("lists the deposits");
+    assert_eq!(open.customer, "Wingtip");
+    group.bench_function(
+        BenchmarkId::new("heavy_document_problems", &heavy_label),
+        |b| {
+            b.iter(|| views::document_problems(black_box(&heavy_session)));
+        },
+    );
+    group.bench_function(BenchmarkId::new("heavy_open_deposits", &heavy_label), |b| {
+        b.iter(|| {
+            heavy_books_bridge
+                .open_deposits(
+                    black_box(heavy_session.index()),
+                    heavy_books::DEPOSIT_TARGET,
+                )
+                .expect("lists the deposits")
+        });
+    });
+    drop(heavy_session);
+    drop(heavy);
     group.finish();
 
     let mut group = c.benchmark_group("ledgeline");

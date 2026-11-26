@@ -31,20 +31,19 @@
 
 use super::lifecycle::{Basis, received_by_account};
 use super::spec::deposit_account;
-use super::{BooksError, Document, InvoiceBooks};
+use super::{BooksError, Document, InvoiceBooks, customer_of};
 use crate::doc::Status;
 use crate::draft;
 use crate::index::DocumentIndex;
 use crate::settings::CashDeposits;
-use crate::table::books::BooksEntry;
+use crate::table::BillTable;
 use crate::table::columns::Role;
 use crate::table::gfm::{self, Grid, Table, escape_cell};
-use crate::table::{BillTable, RowKind};
 use ledgeline_core::Dec;
 use ledgeline_core::accrual::{CUSTOMER_TAG, INVOICE_TAG, VOID_TAG, tag_value};
 use ledgeline_core::vault::VaultPath;
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// One deposit with something left on it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -161,50 +160,56 @@ impl InvoiceBooks {
             && settings.cash_deposits == CashDeposits::IncomeOnReceipt;
 
         // Every document by number, and the applications this customer's
-        // other documents make.
+        // other documents make: from the index (each document's header and
+        // booked rows), never the files (review RC-15).
         let mut statuses: BTreeMap<String, Option<Status>> = BTreeMap::new();
         let mut paths: BTreeMap<String, VaultPath> = BTreeMap::new();
         let mut uses: Vec<Use> = Vec::new();
         let mut deposits: Vec<OpenDeposit> = Vec::new();
+        // Whether a customer note is this customer, by the note a link
+        // resolves to (a customer's documents all name the same note).
+        let mut same_customer: HashMap<VaultPath, bool> = HashMap::new();
         for doc in index.docs() {
             let Some(n) = doc.number() else { continue };
             statuses.insert(n.to_string(), doc.header.status);
             paths.insert(n.to_string(), doc.path.clone());
-            let mentions_account = doc
+            let Some(summary) = doc
                 .summary
                 .as_ref()
-                .is_some_and(|s| s.accounts.contains(&account));
-            if n == number || doc.header.status == Some(Status::Void) || !mentions_account {
-                continue;
-            }
-            let Ok(other) = self.document(index, n) else {
+                .filter(|s| s.accounts.contains(&account))
+            else {
                 continue;
             };
-            if self
-                .customer(index, &other)
-                .map_or(true, |c| c.ledger_customer != customer.ledger_customer)
+            // A number two documents share names neither (`document`).
+            if n == number
+                || doc.header.status == Some(Status::Void)
+                || index.by_number(n).len() != 1
             {
                 continue;
             }
-            let Ok(Some(evaluation)) = other.invoice.evaluate(&settings.words, money) else {
+            let link = doc.header.invoicee.link.as_deref();
+            let Some(note) = link.and_then(|l| index.site().resolve_wikilink(&doc.path, l)) else {
                 continue;
             };
+            let mine = *same_customer.entry(note.path.clone()).or_insert_with(|| {
+                customer_of(index, &doc.path, link)
+                    .is_ok_and(|c| c.ledger_customer == customer.ledger_customer)
+            });
+            if !mine {
+                continue;
+            }
             let mut deposited = Dec::zero();
-            for row in &evaluation.rows {
-                let books = row.books.as_ref().map(BooksEntry::account);
-                if let (Some(books), Some(amount)) = (books, row.amount)
-                    && books.as_str() == account
-                    && row.kind != RowKind::Total
-                {
-                    if amount.mantissa < 0 {
-                        uses.push(Use {
-                            date: other.invoice.header().date.clone().unwrap_or_default(),
-                            description: row.at.description.clone(),
-                            amount: amount.neg().map_err(|_| BooksError::Overflow)?,
-                        });
-                    } else {
-                        deposited = deposited.add(amount).map_err(|_| BooksError::Overflow)?;
-                    }
+            for row in summary.booked.iter().filter(|r| r.account == account) {
+                if row.amount.mantissa < 0 {
+                    uses.push(Use {
+                        date: doc.header.date.clone().unwrap_or_default(),
+                        description: row.description.clone(),
+                        amount: row.amount.neg().map_err(|_| BooksError::Overflow)?,
+                    });
+                } else {
+                    deposited = deposited
+                        .add(row.amount)
+                        .map_err(|_| BooksError::Overflow)?;
                 }
             }
             if cash && deposited.mantissa > 0 && doc.header.status == Some(Status::Sent) {

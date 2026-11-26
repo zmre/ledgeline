@@ -513,7 +513,7 @@ fn new_rows(
     let catalogs = if args.from_catalog.is_empty() {
         Vec::new()
     } else {
-        edit::catalogs(session.index(), session.vault())
+        edit::catalogs(session.index())
     };
     let typed = args
         .row
