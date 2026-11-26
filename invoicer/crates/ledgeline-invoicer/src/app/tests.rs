@@ -224,7 +224,7 @@ async fn mbr_pages_need_the_token_or_the_session_cookie() {
         .unwrap()
         .to_str()
         .unwrap();
-    assert_eq!(csp, super::mbr::MBR_CSP);
+    assert_eq!(csp, super::mbr::SANDBOXED_CSP);
 
     let session = Request::post("/api/session")
         .header(header::HOST, HOST)
@@ -835,8 +835,11 @@ async fn mbr_serves_an_invoice_page_through_its_template() {
     }
     assert_eq!(
         headers.get(header::CONTENT_SECURITY_POLICY).unwrap(),
-        super::mbr::MBR_CSP
+        super::mbr::SANDBOXED_CSP
     );
+    // MBR's chrome and the base template run no inline script.
+    let violations = mbr_core::csp::strict_script_violations(&page, &[]);
+    assert!(violations.is_empty(), "{violations:#?}");
 }
 
 /// The company's logo (`logo:` on its note, snapshotted as `invoicer_logo`):
@@ -1104,19 +1107,39 @@ async fn the_export_link_opens_the_page_once() {
         .to_string();
     let (status, headers, _) = send(&app.router, get(&path).body(Body::empty()).unwrap()).await;
     assert_eq!(status, StatusCode::SEE_OTHER);
-    assert_eq!(
-        headers.get(header::LOCATION).unwrap(),
-        "/invoices/2026-11-10%20Customer%20X%20Invoice%20105/"
-    );
+    let location = headers
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let pass = location
+        .strip_prefix(
+            "/invoices/2026-11-10%20Customer%20X%20Invoice%20105/?ledgeline-invoicer-export=",
+        )
+        .unwrap_or_else(|| panic!("the page, with an export pass: {location}"));
+    assert!(pass.len() >= 32, "{pass}");
     let cookie = headers.get(header::SET_COOKIE).unwrap().to_str().unwrap();
     let pair = cookie.split(';').next().unwrap().to_string();
-    let page = get("/invoices/2026-11-10%20Customer%20X%20Invoice%20105/")
-        .header(header::COOKIE, pair)
-        .body(Body::empty())
-        .unwrap();
-    let (status, _, body) = send(&app.router, page).await;
+    let page = || {
+        get(&location)
+            .header(header::COOKIE, &pair)
+            .body(Body::empty())
+            .unwrap()
+    };
+    // The export page runs MBR's own scripts (its export-ready signal):
+    // the strict policy, without the sandbox.
+    let (status, headers, body) = send(&app.router, page()).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("Bill to Customer X"), "{body}");
+    assert!(body.contains("mbr-bootstrap.js"), "{body}");
+    let violations = mbr_core::csp::strict_script_violations(&body, &[]);
+    assert!(violations.is_empty(), "{violations:#?}");
+    assert_eq!(csp_of(&headers), super::mbr::STRICT_CSP);
+    // The pass is spent: the same page again is sandboxed.
+    let (status, headers, _) = send(&app.router, page()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(csp_of(&headers), super::mbr::SANDBOXED_CSP);
     // Spent.
     let (status, headers, _) = send(&app.router, get(&path).body(Body::empty()).unwrap()).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -1532,8 +1555,10 @@ async fn a_preview_is_a_gated_page_under_mbrs_policy() {
         .unwrap();
         let (status, headers, page) = send(&app.router, request).await;
         assert_eq!(status, StatusCode::OK, "{template}: {page}");
-        assert_eq!(csp_of(&headers), super::mbr::MBR_CSP, "{template}");
-        assert!(super::mbr::MBR_CSP.contains("frame-ancestors 'self'"));
+        assert_eq!(csp_of(&headers), super::mbr::SANDBOXED_CSP, "{template}");
+        assert!(super::mbr::SANDBOXED_CSP.contains("frame-ancestors 'self'"));
+        let violations = mbr_core::csp::strict_script_violations(&page, &[]);
+        assert!(violations.is_empty(), "{template}: {violations:#?}");
         assert!(page.contains(marker), "{template}: {page}");
         assert!(page.contains("Platform subscription, 1 year"), "{template}");
         assert!(
@@ -1562,7 +1587,7 @@ async fn a_preview_is_a_gated_page_under_mbrs_policy() {
         .unwrap();
     let (status, headers, page) = send(&app.router, request).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{page}");
-    assert_eq!(csp_of(&headers), super::mbr::MBR_CSP);
+    assert_eq!(csp_of(&headers), super::mbr::SANDBOXED_CSP);
     assert!(page.contains("Couldn't preview it"), "{page}");
     let request = get("/.ledgeline-invoicer/preview?number=108&source=x")
         .header(header::COOKIE, &cookie)

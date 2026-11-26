@@ -94,8 +94,8 @@ rust-embed = { version = "8", features = ["interpolate-folder-path"], optional =
 # embedded JS bundles exist only in the published package (PLAN I16). Exact
 # pins: MBR's crates make no API stability promise. `watcher` keeps MBR's
 # index and live reload current as files change.
-mbr-core = { version = "=0.7.4", optional = true }
-mbr-server = { version = "=0.7.4", features = ["watcher"], optional = true }
+mbr-core = { version = "=0.7.5", optional = true }
+mbr-server = { version = "=0.7.5", features = ["watcher"], optional = true }
 
 # The desktop window (`gui`). The same versions as ledgeline-shell's.
 wry = { version = "0.57", optional = true }
@@ -106,7 +106,7 @@ rfd = { version = "0.17", optional = true }
 # started on the app's own tao event loop (MBR-CHANGES M4). The lean feature
 # set: the webview export and nothing else (no ffmpeg, no CLI, no SSG). Its
 # wry and tao are the versions above, which is what lets it take our loop.
-mbr-markdown-browser = { version = "=0.7.4", default-features = false, features = ["gui"], optional = true }
+mbr-markdown-browser = { version = "=0.7.5", default-features = false, features = ["gui"], optional = true }
 
 # Share… and Copy file (`gui`, macOS): `NSSharingServicePicker` and a file
 # URL on the general pasteboard. The same objc2 crates tao and MBR link.
