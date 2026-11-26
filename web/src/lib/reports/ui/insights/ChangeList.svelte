@@ -54,11 +54,11 @@
 <div class="card border border-base-content/5 bg-base-200 shadow-sm" data-testid={testid}>
     <div class="card-body gap-2 p-4">
         <div class="flex items-center gap-1">
-            <div class="text-xs font-semibold tracking-wide text-base-content/60 uppercase">{title}</div>
+            <div class="text-xs font-semibold tracking-wide text-muted uppercase">{title}</div>
             {#if help !== undefined}<InfoTip {...help} placement="bottom-start" />{/if}
         </div>
         {#if rows.length === 0}
-            <div class="text-sm text-base-content/50">
+            <div class="text-sm text-muted">
                 {hasPrevious ? "No notable changes" : "Not enough history — the previous period has nothing to compare against."}
             </div>
         {:else}

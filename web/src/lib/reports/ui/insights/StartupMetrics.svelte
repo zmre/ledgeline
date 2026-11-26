@@ -57,9 +57,9 @@
 
 <section class="flex flex-col gap-4" data-testid="startup-metrics" aria-label="Startup metrics">
     <div class="flex items-center gap-3">
-        <h2 class="text-sm font-semibold tracking-wide text-base-content/70 uppercase">Startup metrics</h2>
+        <h2 class="text-sm font-semibold tracking-wide text-muted uppercase">Startup metrics</h2>
         {#if closedThrough !== null}
-            <span class="flex items-center gap-1 text-xs text-base-content/50" data-testid="startup-closed-through">
+            <span class="flex items-center gap-1 text-xs text-muted" data-testid="startup-closed-through">
                 Closed through {closedThrough}<InfoTip {...METRIC_HELP["closed-through"]} placement="bottom-start" />
             </span>
         {/if}
@@ -152,7 +152,7 @@
     {/if}
 
     {#if note !== null}
-        <p class="text-sm text-base-content/60" data-testid="startup-customers-hidden">
+        <p class="text-sm text-muted" data-testid="startup-customers-hidden">
             {note.before}{#if note.tag}<code>customer:</code>{/if}{note.after}
             <!-- An external docs URL (`STARTUP_DOCS`), not an app route: resolve() doesn't apply. -->
             <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -->
@@ -176,7 +176,7 @@
             <dl class="grid grid-cols-1 gap-x-6 gap-y-1 text-sm sm:grid-cols-2 lg:grid-cols-3">
                 {#each more as metric (metric.key)}
                     <div class="flex justify-between gap-3 border-b border-base-content/5 py-1">
-                        <dt class="flex items-center gap-1 text-base-content/70">
+                        <dt class="flex items-center gap-1 text-muted">
                             {metric.label}<InfoTip {...METRIC_HELP[metric.key]} placement="bottom-start" />
                         </dt>
                         <dd class="font-mono tabular-nums" data-testid="startup-more-{metric.key}">{metric.value}</dd>
@@ -187,7 +187,7 @@
     {/if}
 
     {#if billed?.windowShort === true}
-        <p class="text-xs text-base-content/60" data-testid="startup-window-short-note">Counts may be low until there are 12 months of history.</p>
+        <p class="text-xs text-muted" data-testid="startup-window-short-note">Counts may be low until there are 12 months of history.</p>
     {/if}
     {#if inferredMark !== ""}
         <p class="text-xs text-warning/80" data-testid="startup-inferred-note">

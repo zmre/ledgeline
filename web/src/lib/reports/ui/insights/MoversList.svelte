@@ -27,11 +27,11 @@
 <div class="card border border-base-content/5 bg-base-200 shadow-sm" data-testid={testid}>
     <div class="card-body gap-2 p-4">
         <div class="flex items-center gap-1">
-            <div class="text-xs font-semibold tracking-wide text-base-content/60 uppercase">Biggest Movers</div>
+            <div class="text-xs font-semibold tracking-wide text-muted uppercase">Biggest Movers</div>
             <InfoTip {...METRIC_HELP.movers} placement="bottom-start" />
         </div>
         {#if rows.length === 0}
-            <div class="text-sm text-base-content/50">No priced holdings</div>
+            <div class="text-sm text-muted">No priced holdings</div>
         {:else}
             <ul class="flex flex-col gap-1.5">
                 {#each rows as row (row.symbol)}
@@ -43,7 +43,7 @@
                                 >{/if}
                         </span>
                         <span class="ml-auto flex flex-wrap items-center justify-end gap-x-2 whitespace-nowrap">
-                            <span class="font-mono text-base-content/70 tabular-nums">{fmtSignedAmount(row.gain, base, styles)}</span>
+                            <span class="font-mono text-muted tabular-nums">{fmtSignedAmount(row.gain, base, styles)}</span>
                             <span class="{signClass(row.gainPct)} w-16 text-right font-medium">{fmtSignedPct(row.gainPct)}</span>
                         </span>
                     </li>

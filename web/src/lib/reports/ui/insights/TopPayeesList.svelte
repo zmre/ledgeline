@@ -36,11 +36,11 @@
 <div class="card border border-base-content/5 bg-base-200 shadow-sm" data-testid={testid}>
     <div class="card-body gap-2 p-4">
         <div class="flex items-center gap-1">
-            <div class="text-xs font-semibold tracking-wide text-base-content/60 uppercase">Top Payees</div>
+            <div class="text-xs font-semibold tracking-wide text-muted uppercase">Top Payees</div>
             <InfoTip {...METRIC_HELP.toppayees} placement="bottom-start" />
         </div>
         {#if rows.length === 0}
-            <div class="text-sm text-base-content/50">No spending this period</div>
+            <div class="text-sm text-muted">No spending this period</div>
         {:else}
             <ul class="flex flex-col">
                 {#each rows as row (row.payee)}
@@ -56,7 +56,7 @@
                         >
                             <span class="min-w-0">
                                 <span class="block truncate font-medium">{row.payee}</span>
-                                <span class="text-xs text-base-content/50">
+                                <span class="text-xs text-muted">
                                     {row.previous === null ? "new" : `prev ${fmt(base, row.previous, styles)}`}
                                 </span>
                             </span>

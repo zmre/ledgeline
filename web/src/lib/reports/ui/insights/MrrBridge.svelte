@@ -56,8 +56,8 @@
 <div class="card border border-base-content/5 bg-base-200 shadow-sm" data-testid={testid}>
     <div class="card-body gap-2 p-4">
         <div class="flex flex-wrap items-baseline justify-between gap-x-3">
-            <span class="text-xs font-semibold tracking-wide text-base-content/60 uppercase">MRR bridge</span>
-            <span class="text-xs text-base-content/50">{periodLabel}</span>
+            <span class="text-xs font-semibold tracking-wide text-muted uppercase">MRR bridge</span>
+            <span class="text-xs text-muted">{periodLabel}</span>
         </div>
         <ul class="flex flex-col text-sm">
             <li class="flex justify-between gap-3 py-1 font-medium" data-testid="{testid}-start">
@@ -74,8 +74,8 @@
                         <div class="-mx-2 flex items-center justify-between gap-3 rounded px-2 py-1 transition-colors hover:bg-base-300/60">
                             <span class="flex items-center gap-1">
                                 <button type="button" class="cursor-pointer text-left" aria-expanded={open === category} onclick={() => toggle(category)}>
-                                    <span class="mr-1 inline-block w-3 text-base-content/50">{open === category ? "▾" : "▸"}</span
-                                    >{line.label}{#if line.count !== null}<span class="ml-1 text-base-content/50">({line.count})</span>{/if}
+                                    <span class="mr-1 inline-block w-3 text-muted">{open === category ? "▾" : "▸"}</span
+                                    >{line.label}{#if line.count !== null}<span class="ml-1 text-muted">({line.count})</span>{/if}
                                 </button>
                                 <InfoTip {...METRIC_HELP[`bridge-${category}`]} placement="bottom-start" />
                             </span>
@@ -95,7 +95,7 @@
                                         >
                                             <span class="truncate">
                                                 {row.name}{#if row.inferred}<span class="ml-0.5 text-warning" title="Inferred from the payee">*</span>{/if}
-                                                {#if row.segment !== null}<span class="ml-1 text-base-content/50">{row.segment}</span>{/if}
+                                                {#if row.segment !== null}<span class="ml-1 text-muted">{row.segment}</span>{/if}
                                             </span>
                                             <span class="font-mono tabular-nums">{fmt(base, row.amount, styles)}</span>
                                         </a>
@@ -106,9 +106,9 @@
                         {/if}
                     {:else}
                         <div class="flex items-center justify-between gap-3 py-1">
-                            <span class="flex items-center gap-1 pl-4 {category === 'other' ? 'text-base-content/70' : ''}"
+                            <span class="flex items-center gap-1 pl-4 {category === 'other' ? 'text-muted' : ''}"
                                 ><span
-                                    >{line.label}{#if line.count !== null}<span class="ml-1 text-base-content/50">({line.count})</span>{/if}</span
+                                    >{line.label}{#if line.count !== null}<span class="ml-1 text-muted">({line.count})</span>{/if}</span
                                 ><InfoTip {...METRIC_HELP[`bridge-${category}`]} placement="bottom-start" /></span
                             >
                             <span class="font-mono tabular-nums">{fmtSignedAmount(line.amount, base, styles)}</span>

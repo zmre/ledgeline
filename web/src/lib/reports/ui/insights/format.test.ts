@@ -71,7 +71,7 @@ describe("insights format helpers", () => {
     test("deltaLine: no change is neutral with no percent", () => {
         const flat = deltaLine(metric(100000n, 100000n, null), "$", styles, true);
         expect(flat.arrow).toBe("▪");
-        expect(flat.klass).toBe("text-base-content/50");
+        expect(flat.klass).toBe("text-muted");
         expect(flat.text).toBe("$0.00");
     });
 
@@ -94,9 +94,9 @@ describe("insights format helpers", () => {
     test("signClass maps sign to a colour, for numbers and bigints", () => {
         expect(signClass(5)).toBe("text-success");
         expect(signClass(-1)).toBe("text-error");
-        expect(signClass(0n)).toBe("text-base-content/50");
+        expect(signClass(0n)).toBe("text-muted");
         expect(signClass(3n)).toBe("text-success");
-        expect(signClass(null)).toBe("text-base-content/50");
+        expect(signClass(null)).toBe("text-muted");
     });
 });
 
@@ -138,7 +138,7 @@ describe("startup-metrics format helpers (plans/37)", () => {
     });
 
     test("growthLine: a percentage that is itself the change", () => {
-        expect(growthLine(0, true)).toEqual({arrow: "▪", text: "0.0% growth", klass: "text-base-content/50"});
+        expect(growthLine(0, true)).toEqual({arrow: "▪", text: "0.0% growth", klass: "text-muted"});
         expect(growthLine(12.5, true)?.klass).toBe("text-success");
         expect(growthLine(-12.5, true)).toEqual({arrow: "▼", text: "12.5% growth", klass: "text-error"});
         expect(growthLine(null, true)).toBeNull();
