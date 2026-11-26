@@ -149,7 +149,7 @@ faster. Push that layer to Cachix (below) and CI + teammates skip it entirely.
 | `nix build .#invoicerWithSpa` | The `ledgeline-invoicer` binary with its real SPA (macOS and Linux). `linuxDist` and `macDist` (each `.#default`) install it beside Ledgeline.                                          |
 | `nix build` (bare, macOS)     | **macOS only** `.#default` — the combined `result/{bin/ledgeline, bin/ledgeline-invoicer, Applications/Ledgeline.app, Applications/Ledgeline Invoicer.app}` (CLIs on PATH + both apps). |
 | `nix flake check`             | Runs all of the checks above                                                                                                                                                            |
-| `nix run .`                   | **Build and run the real app.** On macOS runs `ledgelineWithSpa` (the **real** SPA embedded); on Linux runs the placeholder-SPA `ledgeline` (see below).                                |
+| `nix run .`                   | **Build and run the real app** (Ledgeline only). On macOS runs `ledgelineWithSpa`; on Linux runs `linuxDist`'s wrapped `ledgeline` (see below).                                         |
 
 The bare attribute (`.#clippy`, `.#tests`, …) resolves to the current system
 automatically (`x86_64-linux`, `aarch64-darwin`, …), which is how CI invokes
