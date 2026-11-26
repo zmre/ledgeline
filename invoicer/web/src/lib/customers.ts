@@ -40,6 +40,12 @@ export interface PoForm {
     amount: string | null;
     /** YYYY-MM-DD; null for never. */
     expires: string | null;
+    /**
+     * Its file (the PO's PDF, say): an entry as `contracts:` takes them
+     * (`[[Title]]`, a `/`-rooted path, `~/…` or `file:///…`); null for none.
+     * Left out of a request, the note keeps the one it has.
+     */
+    attachment?: string | null;
     was: string | null;
 }
 
@@ -56,11 +62,19 @@ export interface PoUsage {
     invoiced: string | null;
     /** The amount less what was invoiced; null without an amount. */
     remaining: string | null;
+    /** Its attachment, resolved; null (or absent) for none. */
+    attachment?: Attachment | null;
 }
 
-/** The form's POs for a usage list: each as read (`was` its own reference). */
+/** The form's POs for a usage list: each as read (`was` its own reference), its attachment kept. */
 export function posOf(usage: readonly PoUsage[]): PoForm[] {
-    return usage.map((po) => ({reference: po.reference, amount: po.amount, expires: po.expires, was: po.reference}));
+    return usage.map((po) => ({
+        reference: po.reference,
+        amount: po.amount,
+        expires: po.expires,
+        attachment: po.attachment == null ? null : entryOf(po.attachment),
+        was: po.reference,
+    }));
 }
 
 /**
@@ -82,6 +96,8 @@ export interface CustomerFields {
     contracts?: string[];
     billing_portal?: Portal | null;
     open_pos?: PoForm[];
+    /** The note's markdown body: the notes on the customer. */
+    body?: string;
 }
 
 /** The form with every field present: what the page edits. */
@@ -155,8 +171,25 @@ export interface Backlink {
     customer: boolean;
 }
 
-/** A `contracts:` entry as the server resolves it: `name` is what to show. */
-export type Contract = ({kind: "note"; link: string} | {kind: "file"; path: string}) & {found: string | null; name: string};
+/**
+ * A contract or PO attachment as the server resolves it
+ * (`invoicer_core::attachment::AttachmentView`): a note, a file in the books,
+ * or a file outside them (`path` as written, `location` where it is:
+ * `~/Documents/MSA.pdf`). `found` is the note's or file's path, or the
+ * outside file's, null when it doesn't exist; `name` is what to show.
+ */
+export type Attachment = ({kind: "note"; link: string} | {kind: "file"; path: string} | {kind: "outside"; path: string; location: string}) & {
+    found: string | null;
+    name: string;
+};
+
+/** A `contracts:` entry as the server resolves it. */
+export type Contract = Attachment;
+
+/** What the note writes for an attachment: its link or path as written. */
+export function entryOf(attachment: Attachment): string {
+    return attachment.kind === "note" ? attachment.link : attachment.path;
+}
 
 /** A note or file a contract may name (`GET /api/files`). */
 export interface FileCandidate {
@@ -164,8 +197,10 @@ export interface FileCandidate {
     name: string;
     /** A note's `type:`; null for a file (or a note without one). */
     kind: string | null;
-    /** What `contracts:` writes for it: `[[Title]]` or a `/`-rooted path. */
+    /** What `contracts:` writes for it: `[[Title]]`, a `/`-rooted path, or for a file outside the books `~/…` or `file:///…`. */
     entry: string;
+    /** Outside the books folder (`path` is then where it is: `~/Documents/MSA.pdf`). */
+    outside?: boolean;
 }
 
 /** `GET /api/files`: the candidates, and what this process can do natively. */
@@ -197,12 +232,24 @@ export interface CustomerDetail extends CustomerRow {
 /** A wikilink's name; one implementation, in links.ts (re-exported for the customer pages). */
 export {linkName} from "./links.js";
 
-/** A contract entry's name without the server: a link's target, a path's file name. */
+/** A contract entry's name without the server: a link's target, a path's file name (a `file:` URL's decoded). */
 export function contractName(entry: string): string {
     const text = entry.trim();
     if (text.startsWith("[[")) return linkName(text);
     const parts = text.replace(/\/+$/, "").split("/");
-    return parts[parts.length - 1] || text;
+    const last = parts[parts.length - 1] || text;
+    if (!/^file:/i.test(text)) return last;
+    try {
+        return decodeURIComponent(last);
+    } catch {
+        return last;
+    }
+}
+
+/** Whether an entry names a file outside the books folder (`~/…`, `file:///…`). */
+export function isOutsideEntry(entry: string): boolean {
+    const text = entry.trim();
+    return text.startsWith("~/") || /^file:/i.test(text);
 }
 
 /** What a note is, in words, from its `type:` ("Organization", "Credit note"). */
@@ -236,6 +283,7 @@ export function emptyForm(kind: ContactKind = "organization"): CustomerForm {
         contracts: [],
         billing_portal: null,
         open_pos: [],
+        body: "",
     };
 }
 
@@ -268,10 +316,23 @@ function normalPortal(portal: Portal | null): Portal | null {
 
 /** POs as the server will write them: text trimmed, empty as null, wholly blank rows dropped. */
 function normalPos(pos: PoForm[]): PoForm[] {
-    const text = (s: string | null): string | null => (trimmed(s) === "" ? null : trimmed(s));
+    const text = (s: string | null | undefined): string | null => (trimmed(s) === "" ? null : trimmed(s));
     return pos
-        .map((po) => ({reference: trimmed(po.reference), amount: text(po.amount), expires: text(po.expires), was: po.was}))
-        .filter((po) => po.reference !== "" || po.amount !== null || po.expires !== null);
+        .map((po) => ({reference: trimmed(po.reference), amount: text(po.amount), expires: text(po.expires), attachment: text(po.attachment), was: po.was}))
+        .filter((po) => po.reference !== "" || po.amount !== null || po.expires !== null || po.attachment !== null);
+}
+
+/**
+ * A body as the server compares it: `\n` line ends, no white space at line
+ * ends, no blank lines at either end. Edits in white space alone are no change.
+ */
+export function normalBody(body: string): string {
+    return body
+        .replace(/\r\n/g, "\n")
+        .split("\n")
+        .map((line) => line.trimEnd())
+        .join("\n")
+        .replace(/^\n+|\n+$/g, "");
 }
 
 /** Each field as the server compares it, so whitespace alone is no change. */
@@ -290,6 +351,7 @@ function normal(form: CustomerForm): CustomerForm {
         contracts: form.contracts.map(trimmed).filter((c) => c !== ""),
         billing_portal: normalPortal(form.billing_portal),
         open_pos: normalPos(form.open_pos ?? []),
+        body: normalBody(form.body ?? ""),
     };
 }
 
@@ -304,6 +366,8 @@ export function changedFields(original: CustomerForm, current: CustomerForm): Cu
     for (const key of Object.keys(after) as (keyof CustomerForm)[]) {
         if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) out[key] = after[key];
     }
+    // The body goes as typed (the server keeps its own white space rules).
+    if ("body" in out) out.body = current.body;
     return out as CustomerFields;
 }
 
@@ -433,7 +497,11 @@ export async function pickFile(): Promise<FileCandidate | null> {
     return body.cancelled || body.file === undefined ? null : body.file;
 }
 
-/** `POST /api/files/open`: a file in the books folder, in its default viewer (the window). */
+/**
+ * `POST /api/files/open`: a file in its default viewer (the window). `path`
+ * is a path in the books folder, or an outside file's entry as written
+ * (`~/…`, `file:///…`), which opens only when a customer names it.
+ */
 export async function openBooksFile(path: string): Promise<void> {
     await request<unknown>("POST", "/api/files/open", isObject, {path});
 }

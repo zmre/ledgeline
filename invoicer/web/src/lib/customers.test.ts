@@ -10,11 +10,14 @@ import {
     createCustomer,
     customerApiUrl,
     emptyForm,
+    entryOf,
     isDirty,
+    isOutsideEntry,
     kindLabel,
     lastPaymentText,
     linkName,
     newCustomerFields,
+    posOf,
     routeParam,
     saveCustomer,
     savedText,
@@ -37,6 +40,7 @@ function fabrikam(): CustomerForm {
         contracts: [],
         billing_portal: null,
         open_pos: [],
+        body: "Fabrikam pays by ACH.\n\n- Contact: Lee\n",
     };
 }
 
@@ -100,6 +104,56 @@ describe("UNIT customer form", () => {
         });
         // The kind is always sent: the server needs it to create.
         expect(newCustomerFields(emptyForm("organization"))).toEqual({kind: "organization"});
+        // Notes, when written.
+        const noted = emptyForm("organization");
+        noted.body = "Met at the expo.";
+        expect(newCustomerFields(noted)).toEqual({kind: "organization", body: "Met at the expo."});
+    });
+
+    it("sends the notes only when they changed, and not for white space alone", () => {
+        const original = fabrikam();
+        const edited = cloneForm(original);
+        edited.body = "\r\n\nFabrikam pays by ACH.   \r\n\r\n- Contact: Lee\n\n\n";
+        expect(changedFields(original, edited)).toEqual({});
+        expect(isDirty(original, edited)).toBe(false);
+        edited.body = "Fabrikam pays by **wire**.\n";
+        expect(changedFields(original, edited)).toEqual({body: "Fabrikam pays by **wire**.\n"});
+        edited.body = "";
+        expect(changedFields(original, edited)).toEqual({body: ""});
+    });
+
+    it("sends a PO's attachment with the PO list; an absent one is no change", () => {
+        const original = fabrikam();
+        original.open_pos = [{reference: "PO #1", amount: null, expires: null, attachment: null, was: "PO #1"}];
+        const edited = cloneForm(original);
+        edited.open_pos[0].attachment = " ~/Documents/PO 1.pdf ";
+        expect(changedFields(original, edited)).toEqual({
+            open_pos: [{reference: "PO #1", amount: null, expires: null, attachment: "~/Documents/PO 1.pdf", was: "PO #1"}],
+        });
+        const without = cloneForm(original);
+        delete without.open_pos[0].attachment;
+        expect(changedFields(original, without)).toEqual({});
+    });
+
+    it("keeps each PO's attachment entry when the view rebuilds the list", () => {
+        expect(
+            posOf([
+                {
+                    reference: "PO #1",
+                    amount: null,
+                    expires: null,
+                    expired: false,
+                    invoices: [],
+                    invoiced: null,
+                    remaining: null,
+                    attachment: {kind: "outside", path: "file:///Volumes/Share/PO%201.pdf", location: "/Volumes/Share/PO 1.pdf", found: null, name: "PO 1.pdf"},
+                },
+                {reference: "PO #2", amount: null, expires: null, expired: false, invoices: [], invoiced: null, remaining: null},
+            ])
+        ).toEqual([
+            {reference: "PO #1", amount: null, expires: null, attachment: "file:///Volumes/Share/PO%201.pdf", was: "PO #1"},
+            {reference: "PO #2", amount: null, expires: null, attachment: null, was: "PO #2"},
+        ]);
     });
 });
 
@@ -176,6 +230,18 @@ describe("UNIT names, never syntax", () => {
         expect(contractName("[[Customer X MSA 2026]]")).toBe("Customer X MSA 2026");
         expect(contractName("/customers/contracts/SOW 3 (signed).pdf")).toBe("SOW 3 (signed).pdf");
         expect(contractName("SOW.pdf")).toBe("SOW.pdf");
+        expect(contractName("~/Documents/MSA 2026.pdf")).toBe("MSA 2026.pdf");
+        expect(contractName("file:///Volumes/Share/MSA%202026%20%231.pdf")).toBe("MSA 2026 #1.pdf");
+        expect(contractName("file:///bad%ZZ.pdf")).toBe("bad%ZZ.pdf");
+    });
+
+    it("tells an outside file's entry, and an attachment's entry, apart", () => {
+        expect(isOutsideEntry("~/Documents/MSA.pdf")).toBe(true);
+        expect(isOutsideEntry(" FILE:///tmp/MSA.pdf")).toBe(true);
+        expect(isOutsideEntry("/customers/contracts/MSA.pdf")).toBe(false);
+        expect(isOutsideEntry("[[MSA]]")).toBe(false);
+        expect(entryOf({kind: "note", link: "[[MSA]]", found: null, name: "MSA"})).toBe("[[MSA]]");
+        expect(entryOf({kind: "outside", path: "~/MSA.pdf", location: "~/MSA.pdf", found: null, name: "MSA.pdf"})).toBe("~/MSA.pdf");
     });
 
     it("says what a note is from its type", () => {

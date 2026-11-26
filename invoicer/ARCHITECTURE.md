@@ -468,12 +468,14 @@ ledger_customer: Customer X         # the customer: tag value in the books; defa
 contracts:
   - "[[Customer X MSA 2026]]"                                    # a markdown note
   - "/customers/contracts/Customer X SOW 3 renewal (signed).pdf" # an executed PDF
+  - "~/Documents/Legal/Customer X NDA.pdf"                       # outside the books
 cadence: monthly
 renewal_date: 2027-11-17
 open_pos:
   - reference: "PO #PY75334"
     amount: $40,000
     expires: 2027-06-30
+    attachment: "/customers/pos/PO PY75334.pdf"   # optional; as a contract entry
 billing_portal:
   name: Coupa
   url: https://customerx.coupahost.com/
@@ -500,13 +502,37 @@ Fred Smith is the champion.
   plan 45's settlement ranking already use it. Renaming a note doesn't rename
   history unless the user asks; `ledgeline-invoicer customers rename` is
   later.
-- **Contracts.** Each entry is either a wikilink to a note or a path to any
-  file: `/`-rooted from the books folder, or relative to the customer note.
+- **Contracts.** Each entry is a wikilink to a note, a path to a file in
+  the books (`/`-rooted from the books folder, or relative to the customer
+  note), or a file outside the books folder: `~/rest/of/path.pdf` under the
+  user's home folder, else a percent-encoded `file:///abs/path.pdf` URL.
   Executed contracts are usually PDFs, so paths are the common case. The
-  invoicer lists them in the customer view and opens them with the system
-  viewer, and `check` reports paths that don't exist. Today MBR resolves
-  neither form in frontmatter. MBR-CHANGES M1 asks for both, so the
-  contract shows up in MBR as a link too.
+  desktop app's open dialog writes an outside entry for a file outside the
+  books folder (2026-11-26); one inside it is written as before. Entries are
+  read and written in one place, `invoicer_core::attachment` (a typed enum:
+  note, books path, outside path). The invoicer lists them in the customer
+  view (an outside file marked "outside the books") and opens them with
+  the system viewer, and `check` reports entries that don't exist, an
+  outside file included: it doesn't move with the books. Today MBR
+  resolves no form in frontmatter. MBR-CHANGES M1 asks for the first two,
+  so the contract shows up in MBR as a link too.
+- **Opening outside files.** `POST /api/files/open` opens a file outside
+  the books folder only when some customer note names it (a contract or a
+  PO attachment), comparing canonical paths with `~` expanded against the
+  real home folder, so the API can't open arbitrary files. SEC-5 still
+  holds: only a document opens, judged on the file a link leads to; any
+  other file is shown in Finder. In a browser there is no native open, so
+  the page shows an outside file's name and place as text.
+- **PO attachments.** An `open_pos` entry may name an `attachment`, written
+  as a contract entry is (the PO's PDF, say). The customer page shows it as
+  it shows a contract; `check` reports a missing one
+  (`missing-attachment`); closing the PO names it in the `## Closed POs`
+  line.
+- **Notes.** The note's markdown body is the user's notes on the customer.
+  The customer form edits it (sent only when it changed; white space alone
+  is no change) and the view renders it read-only with MBR's markdown
+  field. A save that edits the body and closes a PO adds the Closed POs
+  line to the new body.
 - **Vendor portals.** Some customers take invoices only through a portal
   (Coupa, Ariba, Tungsten, and so on). `billing_portal` records how:
   - `name` and `url`;

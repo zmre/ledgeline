@@ -26,6 +26,7 @@
     import {registerKeys} from "#ui/keys/keymap.svelte.js";
     import type {DataView} from "#ui/ui/dataView.js";
     import {ensureSession, fetchTemplates} from "#lib/api.js";
+    import {fetchEditorOptions} from "#lib/editorApi.js";
     import {onFilesChanged} from "#lib/changes.svelte.js";
     import {unsavedGuard} from "#lib/unsavedGuard.svelte.js";
     import {
@@ -33,6 +34,7 @@
         changedFields,
         cloneForm,
         emptyForm,
+        entryOf,
         fetchCustomer,
         fetchCustomers,
         fetchFiles,
@@ -73,6 +75,8 @@
 
     let templates = $state<TemplateEntry[]>([]);
     let companies = $state<string[]>([]);
+    /** The books' accounts, and those that are revenue, for the revenue account's suggestions. */
+    let accounts = $state<{all: string[]; revenue: string[]} | null>(null);
     /** The window can open a books file in its viewer. */
     let canOpenFiles = $state(false);
     let saving = $state(false);
@@ -193,6 +197,11 @@
         savedNote = null;
         form = cloneForm(original);
         editing = true;
+        if (accounts === null) {
+            fetchEditorOptions()
+                .then((o) => (accounts = {all: o.accounts, revenue: o.revenue_accounts ?? []}))
+                .catch((e: unknown) => console.warn("accounts:", e));
+        }
         if (companies.length === 0) {
             fetchCustomers()
                 .then((rows) => (companies = rows.filter((r) => r.kind === "organization" && r.path !== detail?.path).map((r) => r.title)))
@@ -279,9 +288,17 @@
 
     /** A person's company, when it is a customer: its page. */
     const companyHref = $derived(detail !== null && detail.kind === "person" && detail.billing.note !== detail.path ? customerHref(detail.billing.note) : null);
+    /** What to call each contract and PO attachment entry in the form. */
     const contractNames = $derived(
-        Object.fromEntries((detail?.contracts ?? []).map((c) => [c.kind === "note" ? c.link : c.path, c.name])) as Record<string, string>
+        Object.fromEntries(
+            [...(detail?.contracts ?? []), ...(detail?.po_usage ?? []).flatMap((po) => (po.attachment == null ? [] : [po.attachment]))].map((c) => [
+                entryOf(c),
+                c.name,
+            ])
+        ) as Record<string, string>
     );
+    /** The note's folder, so links in its notes resolve as on its page. */
+    const linkBase = $derived(detail === null ? "/" : pageUrl(detail.path).replace(/[^/]+\/$/, ""));
 </script>
 
 <svelte:head>
@@ -357,10 +374,26 @@
                 <div class="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
                     <div class="flex min-w-0 flex-col gap-4">
                         {#if editing}
-                            <CustomerFormView bind:form {templates} {companies} {contractNames} />
+                            <CustomerFormView
+                                bind:form
+                                {templates}
+                                {companies}
+                                {contractNames}
+                                {linkBase}
+                                accounts={accounts?.all ?? []}
+                                revenueAccounts={accounts?.revenue ?? []}
+                            />
                         {:else}
                             <CustomerView {customer} {templates} {companyHref} {noteHref} {fileHref} onOpenFile={canOpenFiles ? openFile : undefined} />
-                            <OpenPos usage={customer.po_usage} busy={saving} onSave={savePos} {invoiceHref} />
+                            <OpenPos
+                                usage={customer.po_usage}
+                                busy={saving}
+                                onSave={savePos}
+                                {invoiceHref}
+                                {noteHref}
+                                {fileHref}
+                                onOpenFile={canOpenFiles ? openFile : undefined}
+                            />
                         {/if}
                     </div>
                     <div class="flex min-w-0 flex-col gap-4">

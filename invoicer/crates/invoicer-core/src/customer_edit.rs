@@ -22,7 +22,8 @@
 //! [`CustomerFields`] is the request shape: every field optional, absent
 //! meaning "leave it". An empty string or list, or `null`, removes the key.
 
-use crate::customers::{BillingPortal, ContactKind, ContractRef, Customer, Labelled, is_customer};
+use crate::attachment::Attachment;
+use crate::customers::{BillingPortal, ContactKind, Customer, Labelled, is_customer};
 use crate::doc::Money;
 use crate::frontmatter::{self, EditError, FieldEdit};
 use crate::index::DocumentIndex;
@@ -93,7 +94,8 @@ pub struct CustomerFields {
     /// the title.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ledger_customer: Option<String>,
-    /// `contracts:`, wikilinks or file paths.
+    /// `contracts:`: wikilinks, paths in the books, or files outside them
+    /// (`~/…`, `file:///…`; [`Attachment`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contracts: Option<Vec<String>>,
     /// `billing_portal:`. Its keys the form doesn't know are kept.
@@ -104,6 +106,11 @@ pub struct CustomerFields {
     /// know are kept.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub open_pos: Option<Vec<PoFields>>,
+    /// The markdown body: the notes on the customer. A change in white
+    /// space alone (line ends, blank lines at either end, spaces at line
+    /// ends) is no change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
 }
 
 /// One `open_pos:` entry as the form edits it: the keys the core reads
@@ -117,6 +124,14 @@ pub struct PoFields {
     pub amount: Option<String>,
     /// When it expires (YYYY-MM-DD); empty for never.
     pub expires: Option<String>,
+    /// Its `attachment:` ([`Attachment`]): absent leaves it as the note has
+    /// it; `null` or empty removes it.
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    #[allow(
+        clippy::option_option,
+        reason = "absent (leave it) and null (remove it) are different requests"
+    )]
+    pub attachment: Option<Option<String>>,
     /// The reference it had when the form was filled (`None`: a new PO).
     /// The note's entry with that reference keeps its other keys.
     pub was: Option<String>,
@@ -202,9 +217,10 @@ pub fn content_hash(bytes: &[u8]) -> String {
 
 /// The form's values for a customer as its note writes them: what an update
 /// starts from. `ledger_customer` is the written key only (empty when the
-/// title is used); contracts are as written.
+/// title is used); contracts are as written; `source` is the note's text,
+/// whose body is the notes.
 #[must_use]
-pub fn fields_of(customer: &Customer, note: &Note) -> CustomerFields {
+pub fn fields_of(customer: &Customer, note: &Note, source: &str) -> CustomerFields {
     let text = |key: &str| {
         note.frontmatter
             .get(key)
@@ -223,16 +239,7 @@ pub fn fields_of(customer: &Customer, note: &Note) -> CustomerFields {
         revenue_account: Some(customer.revenue_account.clone().unwrap_or_default()),
         invoice_template: Some(customer.invoice_template.clone().unwrap_or_default()),
         ledger_customer: Some(text("ledger_customer")),
-        contracts: Some(
-            customer
-                .contracts
-                .iter()
-                .map(|c| match c {
-                    ContractRef::Note { link } => link.clone(),
-                    ContractRef::File { path } => path.clone(),
-                })
-                .collect(),
-        ),
+        contracts: Some(customer.contracts.iter().map(Attachment::entry).collect()),
         billing_portal: Some(customer.billing_portal.clone()),
         open_pos: Some(
             customer
@@ -242,11 +249,35 @@ pub fn fields_of(customer: &Customer, note: &Note) -> CustomerFields {
                     reference: po.reference.clone(),
                     amount: po.amount.clone(),
                     expires: po.expires.clone(),
+                    attachment: Some(po.attachment.as_ref().map(Attachment::entry)),
                     was: Some(po.reference.clone()),
                 })
                 .collect(),
         ),
+        body: Some(crate::snippets::body_of(source)),
     }
+}
+
+/// An attachment entry as written, checked to read ([`Attachment::parse`]);
+/// `None` for an empty one. `what` names it in a refusal ("a contract").
+fn clean_attachment(what: &str, entry: &str) -> Result<Option<String>, CustomerError> {
+    match Attachment::parse(entry) {
+        Ok(_) => Ok(Some(entry.trim().to_string())),
+        Err(crate::attachment::AttachmentError::Empty) => Ok(None),
+        Err(e) => Err(invalid(format!("{what}: {e}"))),
+    }
+}
+
+/// A body as the server compares it: `\n` line ends, no white space at line
+/// ends, no blank lines at either end.
+fn body_key(body: &str) -> String {
+    body.replace("\r\n", "\n")
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim_matches('\n')
+        .to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -483,6 +514,10 @@ fn open_pos_value(
         let Some(reference) = one_line("a PO's reference", &po.reference)? else {
             if po.amount.as_deref().is_some_and(|a| !a.trim().is_empty())
                 || po.expires.as_deref().is_some_and(|e| !e.trim().is_empty())
+                || po
+                    .attachment
+                    .as_ref()
+                    .is_some_and(|a| a.as_deref().is_some_and(|a| !a.trim().is_empty()))
             {
                 return Err(invalid("every open PO needs its reference (PO #105)"));
             }
@@ -517,6 +552,11 @@ fn open_pos_value(
                 "{reference}: the expiry date {e:?} isn't a date (YYYY-MM-DD)"
             )));
         }
+        let attachment = match &po.attachment {
+            None => None,
+            Some(None) => Some(None),
+            Some(Some(a)) => Some(clean_attachment(&format!("{reference}'s attachment"), a)?),
+        };
         let was = po
             .was
             .as_deref()
@@ -527,11 +567,16 @@ fn open_pos_value(
             .find(|m| entry_text(m, "reference").as_deref() == Some(was))
             .map(|m| (*m).clone())
             .unwrap_or_default();
-        for (k, v) in [
+        let mut keys = vec![
             ("reference", Some(reference.clone())),
             ("amount", amount),
             ("expires", expires),
-        ] {
+        ];
+        // Absent: the entry keeps the attachment it has.
+        if let Some(attachment) = attachment {
+            keys.push(("attachment", attachment));
+        }
+        for (k, v) in keys {
             match v {
                 Some(v) if entry_text(&map, k).as_deref() == Some(v.as_str()) => {}
                 Some(v) => {
@@ -636,7 +681,7 @@ fn wanted(
     if let Some(contracts) = &fields.contracts {
         let mut list = Vec::new();
         for entry in contracts {
-            if let Some(entry) = one_line("a contract", entry)? {
+            if let Some(entry) = clean_attachment("a contract", entry)? {
                 list.push(Value::String(entry));
             }
         }
@@ -735,9 +780,10 @@ fn saved(path: VaultPath, text: &str, written: bool, changed: Vec<String>) -> Cu
 pub const CLOSED_POS_HEADING: &str = "## Closed POs";
 
 /// A closed PO's line under [`CLOSED_POS_HEADING`]: `- PO #PY75334 —
-/// $40,000, expires 2027-06-30; invoiced $16,700.00; closed 2026-11-24.`
-/// The amount and expiry as written; what was invoiced in the books' money
-/// style ([`crate::views::PoUsage`]); the date when given.
+/// $40,000, expires 2027-06-30; attachment PO 75334.pdf; invoiced
+/// $16,700.00; closed 2026-11-24.` The amount and expiry as written; the
+/// attachment by name, when it had one; what was invoiced in the books'
+/// money style ([`crate::views::PoUsage`]); the date when given.
 #[must_use]
 pub fn closed_po_line(po: &crate::views::PoUsage, today: Option<&str>) -> String {
     let details: Vec<String> = [
@@ -751,6 +797,9 @@ pub fn closed_po_line(po: &crate::views::PoUsage, today: Option<&str>) -> String
     if !details.is_empty() {
         line.push_str(" — ");
         line.push_str(&details.join(", "));
+    }
+    if let Some(attachment) = &po.attachment {
+        line.push_str(&format!("; attachment {}", attachment.name));
     }
     match &po.invoiced {
         Some(invoiced) => line.push_str(&format!("; invoiced {invoiced}")),
@@ -846,7 +895,7 @@ impl NewCustomer {
 
 /// Create a customer: a new person or organization note in `customers-dir`
 /// named after its title, tagged with the customer tag, holding the form's
-/// fields in a fixed order, with an empty body. Indexed at once.
+/// fields in a fixed order, and its notes (`body`) below. Indexed at once.
 ///
 /// [`prepare`] then [`write_new`]: the app's `POST /api/customers` and the
 /// CLI's `customers new` and `customers import-csv` all write through here,
@@ -907,8 +956,13 @@ pub fn prepare(
             block.push(("tags", Value::Array(vec![Value::String(tag.clone())])));
         }
     }
-    let text = frontmatter::render_block(&block)?;
-    let keys = block.iter().map(|(k, _)| (*k).to_string()).collect();
+    let body = crate::snippet_edit::clean_body(fields.body.as_deref().unwrap_or_default());
+    let text = crate::snippet_edit::with_body(&frontmatter::render_block(&block)?, &body);
+    let keys = block
+        .iter()
+        .map(|(k, _)| (*k).to_string())
+        .chain((!body.is_empty()).then(|| "body".to_string()))
+        .collect();
     Ok(NewCustomer {
         title,
         path,
@@ -1056,7 +1110,16 @@ pub fn update_on(
         })
         .collect();
     let mut text = frontmatter::edit(&source, &edits)?;
-    // Closed POs: what the new list no longer names, noted in the body.
+    // The body (the notes), unless only its white space changed.
+    let body_changed = fields
+        .body
+        .as_deref()
+        .is_some_and(|body| body_key(body) != body_key(&crate::snippets::body_of(&source)));
+    if let Some(body) = fields.body.as_deref().filter(|_| body_changed) {
+        text = crate::snippet_edit::with_body(&text, &crate::snippet_edit::clean_body(body));
+    }
+    // Closed POs: what the new list no longer names, noted in the body (the
+    // new one, when the save edits it too).
     let closed: Vec<&crate::customers::OpenPo> = match &fields.open_pos {
         Some(pos) => customer
             .open_pos
@@ -1073,7 +1136,7 @@ pub fn update_on(
     let noted: Vec<String> = closed.iter().map(|po| po.reference.clone()).collect();
     if !closed.is_empty() {
         let docs = crate::views::billed_to(index, &customer);
-        let usage = crate::views::po_usage(index, &customer, &docs, today.unwrap_or(""));
+        let usage = crate::views::po_usage(index, vault, &customer, &docs, today.unwrap_or(""));
         let lines: Vec<String> = usage
             .iter()
             .filter(|u| noted.contains(&u.reference))
@@ -1091,6 +1154,7 @@ pub fn update_on(
         .map(|e| match e {
             FieldEdit::Set(key, _) | FieldEdit::Remove(key) => key.clone(),
         })
+        .chain(body_changed.then(|| "body".to_string()))
         .collect();
     if written {
         vault
@@ -1138,25 +1202,11 @@ pub struct ContractCandidate {
     pub entry: String,
 }
 
-/// What `contracts:` writes for the note or file at `path`: `[[Title]]`
-/// for a note whose title links to it and nothing else, otherwise the
-/// `/`-rooted path (ARCHITECTURE §3.4: a path is relative to the books
-/// folder when it starts with `/`).
+/// What `contracts:` (or a PO's `attachment:`) writes for the note or file
+/// at `path` in the books ([`Attachment::in_books`]).
 #[must_use]
 pub fn contract_entry(index: &DocumentIndex, path: &VaultPath) -> String {
-    if let Some(note) = index.site().note(path) {
-        let link = format!("[[{}]]", note.title);
-        let safe = link_safe_title(&note.title, "contract").is_ok();
-        if safe
-            && index
-                .site()
-                .resolve_wikilink(&VaultPath::root(), &link)
-                .is_some_and(|n| n.path == *path)
-        {
-            return link;
-        }
-    }
-    format!("/{path}")
+    Attachment::in_books(index.site(), path).entry()
 }
 
 /// Every note (but the invoices and other documents) and every document or

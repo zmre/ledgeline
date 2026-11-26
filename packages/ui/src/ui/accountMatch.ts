@@ -101,12 +101,17 @@ function tierFor(query: string, queryParts: readonly string[], name: string): Ti
  * popup is useful before the first keystroke. A trailing colon falls out
  * naturally: `expenses:` splits to `["expenses", ""]` and an empty segment
  * prefixes anything, so it lists that account's children.
+ *
+ * `preferred` (the revenue accounts, for a customer's revenue account) rank
+ * first within a tier, and first of all for an empty query; a better tier
+ * still wins, so an exact name is never pushed down.
  */
-export function matchAccounts(query: string, names: readonly string[], limit: number = LIMIT): AccountMatch[] {
+export function matchAccounts(query: string, names: readonly string[], limit: number = LIMIT, preferred?: ReadonlySet<string>): AccountMatch[] {
+    const rank = (name: string): number => (preferred?.has(name) === true ? 0 : 1);
     const needle = query.trim().toLowerCase();
     if (needle === "") {
         return [...names]
-            .sort((a, b) => a.localeCompare(b))
+            .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
             .slice(0, limit)
             .map((name) => ({name, tier: Tier.Exact}));
     }
@@ -122,7 +127,7 @@ export function matchAccounts(query: string, names: readonly string[], limit: nu
     // is more likely what you meant than one on a deeper account that merely
     // contains the same letters; then alphabetical, so the order is stable and
     // does not depend on the journal's account declaration order.
-    matches.sort((a, b) => a.tier - b.tier || a.name.length - b.name.length || a.name.localeCompare(b.name));
+    matches.sort((a, b) => a.tier - b.tier || rank(a.name) - rank(b.name) || a.name.length - b.name.length || a.name.localeCompare(b.name));
     return matches.slice(0, limit);
 }
 

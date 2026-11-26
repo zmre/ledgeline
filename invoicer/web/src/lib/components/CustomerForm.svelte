@@ -11,14 +11,21 @@
      to one column on a narrow window (J2: help text wraps instead of
      running under the next field).
 
-     Open POs (PLAN 5b, S5): a row each (reference, amount, expiry); Close
-     takes one off the list, Add PO adds a blank row. Saved with the form. -->
+     Open POs (PLAN 5b, S5): a row each (reference, amount, expiry, and a
+     file with its details, attached as a contract is); Close takes one off
+     the list, Add PO adds a blank row. Saved with the form.
+
+     The revenue account suggests the books' accounts, revenue first (by
+     declared type). Notes: the note's markdown body, in MBR's markdown
+     field (`ProseField`). -->
 <script lang="ts">
+    import AccountInput from "#ui/components/AccountInput.svelte";
     import DateInput from "#ui/components/DateInput.svelte";
-    import {contractName, emptyPortal, type CustomerForm, type FileCandidate} from "#lib/customers.js";
+    import {contractName, emptyPortal, isOutsideEntry, type CustomerForm, type FileCandidate} from "#lib/customers.js";
     import type {TemplateEntry} from "#lib/invoices.js";
     import ContractPicker from "./ContractPicker.svelte";
     import LabelledList from "./LabelledList.svelte";
+    import ProseField from "./ProseField.svelte";
 
     let {
         form = $bindable(),
@@ -26,6 +33,9 @@
         creating = false,
         companies = [],
         contractNames = {},
+        accounts = [],
+        revenueAccounts = [],
+        linkBase = "/",
     }: {
         form: CustomerForm;
         /** The invoice templates, for the default-template picker. */
@@ -34,21 +44,41 @@
         creating?: boolean;
         /** Organization names a person's company may be (suggestions). */
         companies?: string[];
-        /** What to call each contract entry (the server's names); else from the entry. */
+        /** What to call each contract or PO attachment entry (the server's names); else from the entry. */
         contractNames?: Record<string, string>;
+        /** The books' accounts, for the revenue account's suggestions. */
+        accounts?: string[];
+        /** Those that are revenue (by declared type): suggested first. */
+        revenueAccounts?: string[];
+        /** The note's folder URL, so links in its notes resolve as on its page. */
+        linkBase?: string;
     } = $props();
 
     const uid = $props.id();
-    let pickingContract = $state(false);
-    /** Names of contracts added here, before the server has named them. */
+    /** What the picker is open for: the contracts, or one PO's attachment (its row). */
+    let picking = $state<{for: "contract"} | {for: "po"; at: number} | null>(null);
+    /** Names of entries added here, before the server has named them. */
     const added = $state<Record<string, string>>({});
     const nameOf = (entry: string): string => contractNames[entry] ?? added[entry] ?? contractName(entry);
 
-    function addContract(file: FileCandidate): void {
+    function onPicked(file: FileCandidate): void {
         added[file.entry] = file.name;
-        if (!form.contracts.includes(file.entry)) form.contracts.push(file.entry);
-        pickingContract = false;
+        const target = picking;
+        picking = null;
+        if (target === null) return;
+        if (target.for === "contract") {
+            if (!form.contracts.includes(file.entry)) form.contracts.push(file.entry);
+        } else {
+            const po = (form.open_pos ?? [])[target.at];
+            if (po !== undefined) po.attachment = file.entry;
+        }
     }
+
+    const pickerTitle = $derived.by((): string => {
+        if (picking?.for !== "po") return "Add a contract";
+        const reference = (form.open_pos ?? [])[picking.at]?.reference.trim() ?? "";
+        return reference === "" ? "Attach a file to this PO" : `Attach a file to ${reference}`;
+    });
 
     const ADDRESS_PLACEHOLDER = "1 Main St\nSpringfield, CO 80000";
 
@@ -60,7 +90,7 @@
     }
 
     function addPo(): void {
-        form.open_pos = [...(form.open_pos ?? []), {reference: "", amount: null, expires: null, was: null}];
+        form.open_pos = [...(form.open_pos ?? []), {reference: "", amount: null, expires: null, attachment: null, was: null}];
     }
 
     function closePo(at: number): void {
@@ -155,11 +185,17 @@
                     {/if}
                 </select>
             </label>
-            <label class="fieldset min-w-0">
-                <span class="fieldset-legend">Revenue account</span>
-                <input class="input w-full input-sm" name="revenue_account" placeholder="revenue:consulting" bind:value={form.revenue_account} />
+            <div class="fieldset min-w-0" data-testid="customer-revenue-account">
+                <span class="fieldset-legend" aria-hidden="true">Revenue account</span>
+                <AccountInput
+                    bind:value={form.revenue_account}
+                    accountNames={accounts}
+                    preferred={revenueAccounts}
+                    label="Revenue account"
+                    placeholder="revenue:consulting"
+                />
                 <span class="label text-xs whitespace-normal">For invoice rows with no account of their own. Blank: the books' default.</span>
-            </label>
+            </div>
             <label class="fieldset min-w-0">
                 <span class="fieldset-legend">Name in the books</span>
                 <input class="input w-full input-sm" name="ledger_customer" placeholder={form.title || "the name"} bind:value={form.ledger_customer} />
@@ -175,6 +211,7 @@
                 {#each form.contracts as entry, at (`${at}:${entry}`)}
                     <li class="flex items-center gap-2 text-sm" data-testid="contract-row">
                         <span class="min-w-0 flex-1 truncate" title={nameOf(entry)}>{nameOf(entry)}</span>
+                        {#if isOutsideEntry(entry)}<span class="badge shrink-0 badge-ghost badge-sm">outside the books</span>{/if}
                         <button
                             type="button"
                             class="btn btn-ghost btn-sm"
@@ -185,13 +222,15 @@
                 {/each}
             </ul>
             <div>
-                <button type="button" class="btn btn-ghost btn-xs" onclick={() => (pickingContract = true)} data-testid="add-contract">Add contract…</button>
+                <button type="button" class="btn btn-ghost btn-xs" onclick={() => (picking = {for: "contract"})} data-testid="add-contract"
+                    >Add contract…</button
+                >
             </div>
         </fieldset>
-        {#if pickingContract}
-            <ContractPicker onPick={addContract} onClose={() => (pickingContract = false)} exclude={form.contracts} />
-        {/if}
     </section>
+    {#if picking !== null}
+        <ContractPicker onPick={onPicked} onClose={() => (picking = null)} title={pickerTitle} exclude={picking.for === "contract" ? form.contracts : []} />
+    {/if}
 
     <section class="rounded-box border border-base-300 p-4" data-testid="form-open-pos" aria-labelledby="{uid}-pos">
         <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -205,6 +244,7 @@
         {/if}
         <ul class="flex flex-col gap-3">
             {#each form.open_pos ?? [] as po, at (at)}
+                {@const poName = po.reference.trim() === "" ? "this PO" : po.reference.trim()}
                 <li class="grid items-end gap-2 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_auto]" data-testid="form-po-row">
                     <label class="flex min-w-0 flex-col gap-1 text-sm"
                         >Reference
@@ -236,6 +276,29 @@
                         aria-label="Close {po.reference.trim() === '' ? 'this PO' : po.reference}"
                         data-testid="form-po-close">Close</button
                     >
+                    <div class="flex min-w-0 flex-wrap items-center gap-2 text-sm sm:col-span-4" data-testid="form-po-attachment">
+                        {#if po.attachment != null && po.attachment.trim() !== ""}
+                            {@const entry = po.attachment}
+                            <span class="text-base-content/60">Attachment:</span>
+                            <span class="min-w-0 truncate" title={nameOf(entry)} data-testid="form-po-attachment-name">{nameOf(entry)}</span>
+                            {#if isOutsideEntry(entry)}<span class="badge shrink-0 badge-ghost badge-sm">outside the books</span>{/if}
+                            <button
+                                type="button"
+                                class="btn btn-ghost btn-xs"
+                                aria-label="Remove the attachment from {poName}"
+                                onclick={() => (po.attachment = null)}
+                                data-testid="form-po-detach">✕</button
+                            >
+                        {:else}
+                            <button
+                                type="button"
+                                class="btn btn-ghost btn-xs"
+                                aria-label="Attach a file to {poName}"
+                                onclick={() => (picking = {for: "po", at})}
+                                data-testid="form-po-attach">Attach…</button
+                            >
+                        {/if}
+                    </div>
                 </li>
             {/each}
         </ul>
@@ -286,5 +349,17 @@
                 </label>
             </div>
         {/if}
+    </section>
+
+    <section class="rounded-box border border-base-300 p-4" data-testid="form-notes">
+        <h2 class="mb-2 text-sm font-semibold tracking-wide text-base-content/70 uppercase">Notes</h2>
+        <ProseField
+            value={form.body ?? ""}
+            label="Notes"
+            placeholder="Who to talk to, how they like to be billed, anything worth remembering"
+            {linkBase}
+            onChange={(value) => (form.body = value)}
+            testid="customer-notes"
+        />
     </section>
 </div>

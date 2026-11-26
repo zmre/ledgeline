@@ -6,11 +6,16 @@
      suggesting it, invoices that quote it keep their reference, and the
      server notes it under `## Closed POs` in the note's body.
 
+     A PO's attachment (its PDF, say) shows as a contract does
+     (`AttachmentLink`); editing a PO here keeps it (the form attaches and
+     removes them).
+
      The edit row is part of the page's form element, so its buttons are
      `type="button"` and Enter in a field saves the row, not the page. -->
 <script lang="ts">
     import DateInput from "#ui/components/DateInput.svelte";
     import {posOf, type PoForm, type PoUsage} from "#lib/customers.js";
+    import AttachmentLink from "./AttachmentLink.svelte";
     import ConfirmDialog from "./ConfirmDialog.svelte";
 
     let {
@@ -18,12 +23,21 @@
         busy = false,
         onSave,
         invoiceHref,
+        noteHref,
+        fileHref,
+        onOpenFile,
     }: {
         usage: PoUsage[];
         busy?: boolean;
         /** Write the whole list; true when saved. */
         onSave: (pos: PoForm[]) => Promise<boolean>;
         invoiceHref: (number: string) => string;
+        /** The app's view of a note (an attachment that is one). */
+        noteHref: (path: string) => string;
+        /** Where a file in the books opens in a browser tab. */
+        fileHref: (path: string) => string;
+        /** Open a file in its viewer (the window); absent: a link, or text outside the books. */
+        onOpenFile?: (path: string) => void;
     } = $props();
 
     /** The row being edited: its index, or `null` for a new PO. */
@@ -146,6 +160,11 @@
                                 .filter((t) => t !== null)
                                 .join(" · ")}
                         </div>
+                        {#if po.attachment != null}
+                            <div class="text-xs" data-testid="po-attachment">
+                                <AttachmentLink attachment={po.attachment} {noteHref} {fileHref} {onOpenFile} testid="po-attachment-link" />
+                            </div>
+                        {/if}
                         {#if po.invoices.length > 0}
                             <div class="text-xs text-base-content/70">
                                 Invoiced on

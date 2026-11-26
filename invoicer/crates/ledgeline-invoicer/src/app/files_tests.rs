@@ -6,6 +6,8 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 
+use invoicer_core::attachment::Attachment;
+
 use super::native::Native;
 use super::native::mock::MockNative;
 use super::tests::{App, app_on, authed, books_root, json_of, post_json};
@@ -151,18 +153,114 @@ async fn the_open_dialog_answers_a_file_in_the_books_and_refuses_one_outside() {
     let (_, body) = json_of(&app, post_json("/api/files/pick", &json!({}))).await;
     assert_eq!(body["file"]["entry"], "[[Customer X MSA 2026]]");
 
-    // Outside the books folder: refused, saying why.
+    // Outside the books folder (a hidden folder is fine there): its
+    // `~/` path or `file:///` URL, and where it is.
     let elsewhere = tempfile::tempdir().expect("tempdir");
-    let outside = elsewhere.path().join("Contract.pdf");
+    std::fs::create_dir_all(elsewhere.path().join(".private")).expect("dir");
+    let outside = elsewhere.path().join(".private/Contract #1.pdf");
     std::fs::write(&outside, b"%PDF-1.7\n").expect("writes");
-    *native.pick.lock().unwrap() = Some(outside);
+    *native.pick.lock().unwrap() = Some(outside.clone());
+    let (status, body) = json_of(&app, post_json("/api/files/pick", &json!({}))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["file"]["outside"], true, "{body}");
+    assert_eq!(body["file"]["name"], "Contract #1.pdf");
+    let entry = body["file"]["entry"].as_str().expect("entry");
+    let Ok(Attachment::Outside(place)) = Attachment::parse(entry) else {
+        panic!("{entry} reads as an outside file");
+    };
+    let home = invoicer_core::attachment::home_dir().map(|h| h.canonicalize().unwrap_or(h));
+    assert_eq!(
+        place.expand(home.as_deref()),
+        Some(outside.canonicalize().expect("canonical")),
+        "{entry}"
+    );
+    assert_eq!(body["file"]["path"], place.location());
+
+    // A hidden folder in the books is still refused.
+    std::fs::create_dir_all(root.join(".hidden")).expect("dir");
+    std::fs::write(root.join(".hidden/x.pdf"), b"%PDF-").expect("writes");
+    *native.pick.lock().unwrap() = Some(root.join(".hidden/x.pdf"));
     let (status, body) = json_of(&app, post_json("/api/files/pick", &json!({}))).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
-    assert!(
-        body["error"]
-            .as_str()
-            .is_some_and(|e| e.contains("isn't in the books folder")),
-        "{body}"
+}
+
+/// A `file:///` URL for `path`, as a pick writes it.
+fn url_of(path: &std::path::Path) -> String {
+    Attachment::outside(&path.canonicalize().expect("canonical"), None).entry()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn open_shows_an_outside_file_only_when_a_customer_names_it() {
+    let (app, native) = mocked();
+    let elsewhere = tempfile::tempdir().expect("tempdir");
+    let dir = elsewhere.path().canonicalize().expect("canonical");
+    for name in ["MSA 2026.pdf", "Unnamed.pdf", "PO 9.pdf", "Tool.command"] {
+        std::fs::write(dir.join(name), b"%PDF-1.7\n").expect("writes");
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(dir.join("Tool.command"), dir.join("Looks like.pdf"))
+        .expect("links");
+    let (status, made) = json_of(
+        &app,
+        post_json(
+            "/api/customers",
+            &json!({
+                "title": "Outside Co",
+                "kind": "organization",
+                "contracts": [url_of(&dir.join("MSA 2026.pdf")), url_of(&dir.join("Looks like.pdf"))],
+                "open_pos": [{"reference": "PO 9", "attachment": url_of(&dir.join("PO 9.pdf"))}],
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let open = |path: String| {
+        let app = &app;
+        async move { json_of(app, post_json("/api/files/open", &json!({ "path": path }))).await }
+    };
+    // Named by a contract, and by a PO's attachment: opened.
+    let (status, body) = open(url_of(&dir.join("MSA 2026.pdf"))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["revealed"], false);
+    assert_eq!(
+        native.opened_files.lock().unwrap().last(),
+        Some(&dir.join("MSA 2026.pdf"))
+    );
+    let (status, _) = open(url_of(&dir.join("PO 9.pdf"))).await;
+    assert_eq!(status, StatusCode::OK);
+    // A link whose target isn't a document: shown in Finder, never run.
+    let (status, body) = open(url_of(&dir.join("Looks like.pdf"))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["revealed"], true, "{body}");
+    // Not named by any customer: refused, though it is there.
+    let opened = native.opened_files.lock().unwrap().len();
+    let (status, body) = open(url_of(&dir.join("Unnamed.pdf"))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    // The file a named link leads to is the same file: named, so shown,
+    // and still only in Finder.
+    let (status, body) = open(url_of(&dir.join("Tool.command"))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["revealed"], true, "{body}");
+    // Not there at all.
+    let (status, _) = open("file:///nowhere/at/all.pdf".to_string()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(native.opened_files.lock().unwrap().len(), opened);
+
+    // The customer page: outside, found, where it is.
+    let (status, detail) = json_of(&app, authed("/api/customers/Outside%20Co")).await;
+    assert_eq!(status, StatusCode::OK, "{detail}");
+    let msa = &detail["contracts"][0];
+    assert_eq!(msa["kind"], "outside", "{detail}");
+    assert_eq!(msa["name"], "MSA 2026.pdf");
+    assert_eq!(
+        msa["location"],
+        dir.join("MSA 2026.pdf").display().to_string()
+    );
+    assert!(msa["found"].is_string(), "{detail}");
+    assert_eq!(detail["po_usage"][0]["attachment"]["name"], "PO 9.pdf");
+    assert_eq!(
+        detail["form"]["open_pos"][0]["attachment"],
+        url_of(&dir.join("PO 9.pdf"))
     );
 }
 

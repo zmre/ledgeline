@@ -1,16 +1,21 @@
-//! Files in the books folder, for the customer page's contracts (Phase 4
+//! Files for the customer page's contracts and PO attachments (Phase 4
 //! feedback J5, J6): what to pick from, the system's open dialog, and
-//! opening a contract in its viewer.
+//! opening one in its viewer.
 //!
 //! | Route                   | Does                                                          |
 //! |-------------------------|---------------------------------------------------------------|
 //! | `GET /api/files[?list=false]` | `{pick, open, files}`: the notes and documents a contract may name (`ContractCandidate`), and whether this process can show the open dialog (`pick`) and open a file (`open`). |
-//! | `POST /api/files/pick`  | The system's open dialog at the books folder (the window, macOS): `{cancelled: true}`, or `{cancelled: false, file: ContractCandidate}`; `422` for a file outside the books folder. |
-//! | `POST /api/files/open`  | `{path}`: open a document in the books folder in its default viewer, or show any other file in Finder (the window, macOS). `ledgeline.toml` works even when it keeps the books from opening (the Settings page's "Open the settings file"). |
+//! | `POST /api/files/pick`  | The system's open dialog at the books folder (the window, macOS): `{cancelled: true}`, or `{cancelled: false, file: ContractCandidate}`; a file outside the books folder answers `{path, name, kind: null, entry, outside: true}`, `path` being where it is (`~/Documents/MSA.pdf`). `422` for a file in a hidden folder of the books. |
+//! | `POST /api/files/open`  | `{path}`: a path in the books folder, or an outside entry as written (`~/…`, `file:///…`). A document opens in its default viewer; any other file is shown in Finder (the window, macOS). `ledgeline.toml` works even when it keeps the books from opening (the Settings page's "Open the settings file"). |
 //!
-//! A contract is stored relative to the books folder (`/customers/contracts/SOW.pdf`)
-//! or as a `[[Title]]` link for a note, never as a path outside it: the
-//! books folder is what moves between machines.
+//! An entry is written by `invoicer_core::attachment`: relative to the books
+//! folder (`/customers/contracts/SOW.pdf`), a `[[Title]]` link for a note,
+//! or, for a file outside the books folder, `~/…` under the home folder,
+//! else a `file:///` URL.
+//!
+//! Outside files are opened only when some customer note names them
+//! (a contract or a PO attachment), compared after resolving links, so the
+//! API can't be used to open any file on the machine.
 
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
@@ -21,6 +26,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
+use invoicer_core::attachment::{self, Attachment, OutsidePath};
 use invoicer_core::customer_edit::{self, ContractCandidate};
 use ledgeline_core::ledger_file;
 use ledgeline_core::vault::{Vault, VaultPath};
@@ -86,6 +92,32 @@ fn root_of(vault: &dyn Vault) -> Result<PathBuf, ApiError> {
     })
 }
 
+/// Where a chosen file is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Chosen {
+    /// In the books folder.
+    Books(VaultPath),
+    /// Outside it: the file, links resolved.
+    Outside(PathBuf),
+}
+
+/// Where the chosen `file` (absolute) is, links resolved: in the books
+/// folder, or outside it. A file in a hidden folder of the books is refused
+/// (the books don't read those); one outside them is fine.
+pub(crate) fn locate(root: &FsPath, file: &FsPath) -> Result<Chosen, String> {
+    match in_books(root, file) {
+        Ok(path) => Ok(Chosen::Books(path)),
+        Err(e) => {
+            let canonical = file.canonicalize().map_err(|_| e.clone())?;
+            if canonical.starts_with(root) {
+                Err(e)
+            } else {
+                Ok(Chosen::Outside(canonical))
+            }
+        }
+    }
+}
+
 /// `file` (absolute) as a path in the books folder, or why it can't be one.
 pub(crate) fn in_books(root: &FsPath, file: &FsPath) -> Result<VaultPath, String> {
     let shown = file.file_name().map_or_else(
@@ -95,12 +127,7 @@ pub(crate) fn in_books(root: &FsPath, file: &FsPath) -> Result<VaultPath, String
     let canonical = file
         .canonicalize()
         .map_err(|e| format!("{shown} can't be read: {e}"))?;
-    let outside = || {
-        format!(
-            "{shown} isn't in the books folder. Contracts are kept with the books: \
-             move or copy it into the books folder (customers/contracts/, say), then choose it again."
-        )
-    };
+    let outside = || format!("{shown} isn't in the books folder");
     let relative = canonical.strip_prefix(root).map_err(|_| outside())?;
     let text = relative
         .components()
@@ -123,13 +150,33 @@ async fn pick(State(state): State<AppState>) -> ApiResult {
     blocking(StatusCode::OK, move || {
         let root = books_root(&books)?;
         let Some(chosen) = native
-            .pick_file(&root, "Choose a contract in the books folder")
+            .pick_file(&root, "Choose a file to attach")
             .map_err(|e| ApiError::status(StatusCode::INTERNAL_SERVER_ERROR, e))?
         else {
             return Ok(json!({ "cancelled": true }));
         };
-        let path = in_books(&root, &chosen)
-            .map_err(|e| ApiError::status(StatusCode::UNPROCESSABLE_ENTITY, e))?;
+        let path = match locate(&root, &chosen)
+            .map_err(|e| ApiError::status(StatusCode::UNPROCESSABLE_ENTITY, e))?
+        {
+            Chosen::Books(path) => path,
+            Chosen::Outside(file) => {
+                let home = home();
+                let entry = Attachment::outside(&file, home.as_deref());
+                let Attachment::Outside(outside) = &entry else {
+                    return Err(ApiError::internal("an outside file read as another kind"));
+                };
+                return Ok(json!({
+                    "cancelled": false,
+                    "file": {
+                        "path": outside.location(),
+                        "name": entry.name(),
+                        "kind": null,
+                        "entry": entry.entry(),
+                        "outside": true,
+                    },
+                }));
+            }
+        };
         let session = books.session();
         let index = session.index();
         let note = index.site().note(&path);
@@ -164,6 +211,19 @@ async fn open(
 ) -> ApiResult {
     let Json(body) = body.map_err(|e| ApiError::bad_request(e.body_text()))?;
     let native = native_for(&state, |c| c.open_file, "Opening a file")?;
+    if let Ok(Attachment::Outside(outside)) = Attachment::parse(&body.path) {
+        let books = state.open_books()?;
+        return blocking(StatusCode::OK, move || {
+            let named = {
+                let session = books.session();
+                let index = session.index();
+                invoicer_core::customers::outside_attachments(index.site(), &index.settings().words)
+            };
+            let file = named_outside_file(&outside, &named, home().as_deref())?;
+            show(&*native, &file)
+        })
+        .await;
+    }
     let path = VaultPath::new(body.path.trim().trim_start_matches('/'))
         .map_err(|e| ApiError::bad_request(format!("{}: {e}", body.path)))?;
     // The books' settings file opens even while it keeps them from opening
@@ -190,18 +250,54 @@ async fn open(
         // A link out of the folder is refused like a path out of it.
         in_books(&root, &file)
             .map_err(|e| ApiError::status(StatusCode::UNPROCESSABLE_ENTITY, e))?;
-        // SEC-5: only a document opens; anything else (`.command`,
-        // `.terminal`, `.app`, a script) is shown in Finder, never run.
-        let revealed = !is_document(&file);
-        if revealed {
-            native.reveal_file(&file)
-        } else {
-            native.open_file(&file)
-        }
-        .map_err(|e| ApiError::status(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-        Ok(json!({ "done": true, "revealed": revealed }))
+        show(&*native, &file)
     })
     .await
+}
+
+/// The user's home folder, links resolved, where `~/` entries start.
+fn home() -> Option<PathBuf> {
+    attachment::home_dir().map(|h| h.canonicalize().unwrap_or(h))
+}
+
+/// The file `outside` names, links resolved, when some customer names the
+/// same file (`named`: every outside contract and PO attachment); `~/`
+/// starts at `home`. Anything else is refused: the API opens only what the
+/// notes name.
+pub(crate) fn named_outside_file(
+    outside: &OutsidePath,
+    named: &[OutsidePath],
+    home: Option<&FsPath>,
+) -> Result<PathBuf, ApiError> {
+    let shown = outside.location();
+    let resolved = |o: &OutsidePath| o.expand(home).and_then(|p| p.canonicalize().ok());
+    let file = resolved(outside).filter(|p| p.is_file()).ok_or_else(|| {
+        ApiError::status(StatusCode::NOT_FOUND, format!("{shown} can't be found"))
+    })?;
+    if named.iter().filter_map(resolved).any(|n| n == file) {
+        Ok(file)
+    } else {
+        Err(ApiError::status(
+            StatusCode::FORBIDDEN,
+            format!("{shown} isn't attached to a customer"),
+        ))
+    }
+}
+
+/// Show `file` (absolute): a document in its viewer; anything else in
+/// Finder. SEC-5: only a document opens, judged by the file a link leads
+/// to; anything else (`.command`, `.terminal`, `.app`, a script) is shown
+/// in Finder, never run.
+fn show(native: &dyn super::native::Native, file: &FsPath) -> Result<serde_json::Value, ApiError> {
+    let target = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+    let revealed = !is_document(&target);
+    if revealed {
+        native.reveal_file(file)
+    } else {
+        native.open_file(file)
+    }
+    .map_err(|e| ApiError::status(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(json!({ "done": true, "revealed": revealed }))
 }
 
 /// Extensions `POST /api/files/open` opens in their viewer: documents,

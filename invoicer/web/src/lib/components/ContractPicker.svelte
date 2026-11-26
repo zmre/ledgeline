@@ -1,10 +1,11 @@
-<!-- Add a contract (Phase 4 feedback J5): a dialog to find a note or file
-     in the books folder by name. In the window it also offers the system's
-     open dialog ("Choose a file…"), which only accepts a file inside the
-     books folder and says so otherwise. The chosen entry is what
-     `contracts:` writes (`[[Title]]` for a note, a `/`-rooted path for a
-     file); the user only ever sees names. A daisyUI modal drawn open (a
-     div, so it mounts in jsdom); Escape closes it. -->
+<!-- Attach a note or file (Phase 4 feedback J5): a contract, or a PO's
+     attachment. A dialog to find a note or file in the books folder by
+     name; in the window it also offers the system's open dialog ("Choose a
+     file…"), which takes a file anywhere (one outside the books folder is
+     recorded as `~/…` or a `file:///` URL). The chosen entry is what the note
+     writes (`[[Title]]` for a note, a `/`-rooted path for a file); the user
+     only ever sees names. A daisyUI modal drawn open (a div, so it mounts in
+     jsdom); Escape closes it. -->
 <script lang="ts">
     import {onMount} from "svelte";
     import {fetchFiles, kindLabel, pickFile, type FileCandidate, type FileList} from "#lib/customers.js";
@@ -14,6 +15,7 @@
         onPick,
         onClose,
         exclude = [],
+        title = "Add a contract",
         load = fetchFiles,
         pick = pickFile,
     }: {
@@ -21,6 +23,8 @@
         onClose: () => void;
         /** Entries already in the list, not offered again. */
         exclude?: string[];
+        /** The dialog's heading ("Add a contract", "Attach a file to PO #105"). */
+        title?: string;
         load?: () => Promise<FileList>;
         pick?: () => Promise<FileCandidate | null>;
     } = $props();
@@ -83,8 +87,10 @@
 
 <div class="modal modal-open" role="presentation" onkeydown={onKeydown}>
     <div class="modal-box flex max-h-[85vh] flex-col gap-3" role="dialog" aria-modal="true" aria-labelledby="{uid}-title" data-testid="contract-picker">
-        <h2 id="{uid}-title" class="text-lg font-semibold">Add a contract</h2>
-        <p class="text-sm text-base-content/70">A note or a file (a signed PDF, say) in the books folder.</p>
+        <h2 id="{uid}-title" class="text-lg font-semibold">{title}</h2>
+        <p class="text-sm text-base-content/70">
+            {list?.pick ? "A note or file in the books folder, or choose any file." : "A note or file (a signed PDF, say) in the books folder."}
+        </p>
         {#if list?.pick}
             <div>
                 <button type="button" class="btn btn-sm" disabled={picking} onclick={() => void choose()} data-testid="contract-choose-file">

@@ -38,6 +38,7 @@
 //! Plan 26 rules apply: no globals, no platform `cfg`, and all IO through a
 //! Ledgeline `Vault`.
 
+pub mod attachment;
 pub mod booking;
 pub mod books;
 pub mod catalog;

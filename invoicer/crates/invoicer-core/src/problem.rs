@@ -63,6 +63,8 @@ pub enum ProblemCode {
     DuplicateNumber,
     /// A `contracts:` entry that doesn't exist.
     MissingContract,
+    /// An open PO's `attachment:` that doesn't exist.
+    MissingAttachment,
     /// A `billing_portal:` that can't be read, or holds a secret.
     BadPortal,
     /// A catalog row that can't be read, or a duplicate code.

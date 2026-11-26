@@ -302,6 +302,12 @@ async fn detail(
         let customer = Customer::from_note(&note).ok_or_else(|| {
             ApiError::status(StatusCode::NOT_FOUND, format!("{path}: not a contact"))
         })?;
+        // The body (the customer's notes) is in the file, not the index.
+        let source = session
+            .vault()
+            .read(&path)
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .map_err(|e| ApiError::internal(format!("{path}: {e}")))?;
         let problems = views::document_problems(&session);
         let detail = views::customer_detail(&session, &customer, &problems, &today);
         let open = account::open_items(&session, &today);
@@ -314,7 +320,7 @@ async fn detail(
             map.insert("hash".into(), json!(note.stamp.fingerprint.token()));
             map.insert(
                 "form".into(),
-                to_value(customer_edit::fields_of(&customer, &note))?,
+                to_value(customer_edit::fields_of(&customer, &note, &source))?,
             );
             map.insert("backlinks".into(), to_value(&links)?);
         }
