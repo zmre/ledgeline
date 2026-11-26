@@ -19,9 +19,10 @@
      Links move only the frame, never the app. Outside links work as in
      NoteFrame: https through the shell's `frame-src` (the desktop window
      opens it in the browser and the frame stays put; a plain browser in
-     `--server` mode loads it in the frame), mailto through this window
-     (`handMailtoLinks`, lib/frameLinks.ts), since a sandboxed frame may not
-     load it itself. -->
+     `--server` mode loads it in the frame), mailto rewritten on each load to
+     a same-origin hand-off (`handMailtoLinks`, lib/frameLinks.ts), which the
+     desktop window opens in the mail app; in `--server` mode mailto links do
+     nothing. -->
 <script lang="ts">
     import {handMailtoLinks} from "../frameLinks";
 

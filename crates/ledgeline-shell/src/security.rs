@@ -220,6 +220,23 @@ impl AccessToken {
     }
 }
 
+/// The same-origin stand-in for a link a sandboxed frame may not follow
+/// itself: `<origin>/.ledgeline/open?url=<the link, percent-encoded>`.
+///
+/// WebKit refuses every custom-protocol load (`mailto:`) from a frame
+/// sandboxed without `allow-scripts`, and runs no script there, not even the
+/// parent's listeners. So the invoicer's SPA rewrites such a link in its
+/// note and invoice frames to this path (`invoicer/web/src/lib/frameLinks.ts`
+/// carries the same string), a same-origin navigation WebKit allows. The
+/// desktop window's navigation handler recognises it
+/// (`gui::handoff_target`), hands the target to the app's own
+/// allowlist and keeps the frame where it is. A plain browser (`--server`)
+/// has no such handler: the server answers the path with `204 No Content`,
+/// so the frame stays put and nothing opens.
+///
+/// Under a dotted prefix no books folder is served from by MBR's router.
+pub const HANDOFF_PATH: &str = "/.ledgeline/open";
+
 /// `raw` re-serialized when it is a plain https URL: no port, no credentials.
 /// The first test an app's "open this in the system browser" allowlist
 /// applies, before its own hosts. The one judge of such URLs, for the
@@ -958,7 +975,7 @@ mod tests {
         token_global: "__LEDGELINE_TOKEN__",
         embedded_global: "__LEDGELINE_EMBEDDED__",
         spa_base: "/app/",
-        spa_frame_src: Some("'self' https: mailto:"),
+        spa_frame_src: Some("'self' https:"),
     };
 
     #[test]
@@ -1179,7 +1196,7 @@ mod tests {
         assert_eq!(
             with.to_str().expect("ascii"),
             format!(
-                "{}; frame-src 'self' https: mailto:",
+                "{}; frame-src 'self' https:",
                 without.to_str().expect("ascii")
             )
         );

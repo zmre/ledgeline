@@ -10,6 +10,7 @@
 //! | `/api/*`                 | The invoicer API ([`api`]): bearer token required.           |
 //! | `/app/*`                 | The invoicer SPA (`invoicer/web`, SvelteKit base `/app`).    |
 //! | `/.ledgeline-invoicer/*` | Export links ([`mbr`]) and the preview page ([`preview`]).   |
+//! | `/.ledgeline/open`       | The frames' link hand-off: `204`, nothing opens (`handoff`).   |
 //! | the rest                 | MBR's router, unmodified ([`mbr`]): behind a session cookie. |
 //!
 //! Every response passes the shell's Host guard and security headers. The
@@ -73,13 +74,15 @@ pub(crate) static APP: AppIdentity = AppIdentity {
     // `SPA_BASE` with its trailing slash: MBR's pages share the origin, so
     // the window shows, and the token reaches, only the SPA under `/app/`.
     spa_base: "/app/",
-    // A link clicked in a note or invoice frame must reach the desktop
-    // window's navigation handler, which opens https and mailto links in the
-    // default app (`gui::external_url`) and keeps the frame where it is.
-    // Without these WebKit refuses the navigation first, silently. In
-    // `--server` mode (a plain browser) such a link loads in the sandboxed
-    // frame.
-    spa_frame_src: Some("'self' https: mailto:"),
+    // An https link clicked in a note or invoice frame must reach the
+    // desktop window's navigation handler, which opens it in the default
+    // browser (`gui::external_url`) and keeps the frame where it is. Without
+    // `https:` WebKit refuses the navigation first, silently. In `--server`
+    // mode (a plain browser) such a link loads in the sandboxed frame.
+    // mailto links never navigate a frame: WebKit refuses custom protocols
+    // from a sandboxed one, so they go through the same-origin hand-off
+    // (`security::HANDOFF_PATH`) instead.
+    spa_frame_src: Some("'self' https:"),
 };
 
 /// `--server`'s default port. Ledgeline's e2e uses 5099 and 4173, so the
@@ -264,9 +267,21 @@ pub(crate) fn router_with_gate(state: AppState, security: Security, gate: Arc<Mb
         // A preview through another template, as a page for the SPA's
         // frame (behind MBR's gate, under MBR's CSP).
         .route(preview::PREVIEW_PAGE, get(preview::page))
+        .route(security::HANDOFF_PATH, get(handoff))
         .fallback(mbr::fallback)
         .layer(Extension(gate));
     security::harden(router, security).with_state(state)
+}
+
+/// `GET /.ledgeline/open` ([`security::HANDOFF_PATH`]): a link a note or
+/// invoice frame could not follow (a `mailto:`), rewritten by the SPA to this
+/// same-origin path. The desktop window's navigation handler takes it before
+/// it is ever requested and opens the link in the default app; only a plain
+/// browser (`--server` mode) gets here. `204 No Content` keeps the frame
+/// where it is, and nothing is opened: in `--server` mode, mailto links in
+/// notes and invoices do nothing.
+async fn handoff() -> StatusCode {
+    StatusCode::NO_CONTENT
 }
 
 /// The SPA under [`SPA_BASE`]: the shell's SPA serving, with the base

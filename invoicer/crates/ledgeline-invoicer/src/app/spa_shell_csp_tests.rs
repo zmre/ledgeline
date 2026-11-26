@@ -47,15 +47,15 @@ async fn spa_shell_csp_admits_exactly_the_inline_scripts_it_serves() {
 }
 
 /// The note and invoice frames' links must reach the desktop window's
-/// navigation handler: the shell lets its frames navigate to https and
-/// mailto (and our own origin), and nothing else. Responses that are not the
+/// navigation handler: the shell lets its frames navigate to https (and our
+/// own origin), and nothing else; mailto goes through the hand-off. Responses that are not the
 /// shell keep the shared policy, with no `frame-src`.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_spa_shell_lets_its_frames_reach_https_and_mailto() {
+async fn the_spa_shell_lets_its_frames_reach_https() {
     let app = app();
     for (path, expected) in [
-        ("/app/", vec!["'self'", "https:", "mailto:"]),
-        ("/app/invoices/105", vec!["'self'", "https:", "mailto:"]),
+        ("/app/", vec!["'self'", "https:"]),
+        ("/app/invoices/105", vec!["'self'", "https:"]),
         ("/api/invoices", vec![]),
     ] {
         let request = Request::get(path)

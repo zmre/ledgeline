@@ -726,7 +726,27 @@ pub fn navigation_allowed(base: &str, candidate: &str) -> bool {
     candidate == base.trim_end_matches('/') || candidate.starts_with(base)
 }
 
-pub use crate::security::{plain_https, plain_mailto};
+pub use crate::security::{HANDOFF_PATH, plain_https, plain_mailto};
+
+/// The link a hand-off asks the window to open ([`HANDOFF_PATH`]), decoded,
+/// or `None` when `candidate` is not one: it must be on our origin
+/// ([`navigation_allowed`]), at exactly the hand-off path, with a `url`
+/// query value. The target is NOT vetted here; the caller hands it to the
+/// app's allowlist like any outside link.
+#[must_use]
+pub fn handoff_target(base: &str, candidate: &str) -> Option<String> {
+    if !navigation_allowed(base, candidate) {
+        return None;
+    }
+    let url = Url::parse(candidate).ok()?;
+    if url.path() != HANDOFF_PATH {
+        return None;
+    }
+    url.query_pairs()
+        .find(|(key, _)| key == "url")
+        .map(|(_, value)| value.into_owned())
+        .filter(|target| !target.is_empty())
+}
 
 /// Open a URL (already vetted by the app's allowlist) in the user's default
 /// app for it: an https page in the browser, a `mailto:` in the mail app.
@@ -878,7 +898,8 @@ pub fn webview_origin(url: &str) -> Result<String, GuiError> {
 /// `true` when the app's allowlist allows it; the webview itself never leaves. The main frame may
 /// show only the app's SPA, under [`AppIdentity::spa_base`]: when it commits
 /// to any other page, even one on our origin, the last SPA page it showed is
-/// loaded instead. Pop-ups are always denied. Downloads ask where to save
+/// loaded instead. A same-origin hand-off ([`handoff_target`]) is offered to
+/// `open_external` too, and never loads. Pop-ups are always denied. Downloads ask where to save
 /// ([`choose_download_destination`]); a download never commits a page, so the
 /// main-frame rule does not touch it.
 ///
@@ -900,6 +921,7 @@ where
     F: Fn(&str) -> bool + Clone + 'static,
 {
     let base = url.to_string();
+    let popup_base = base.clone();
     let main_frame = RefCell::new(MainFrame::new(webview_origin(url)?, app.spa_base, start)?);
     // Filled once the webview exists; the page-load handler cannot run before.
     let handle: Rc<OnceCell<Weak<wry::WebView>>> = Rc::default();
@@ -912,6 +934,14 @@ where
     let builder = builder
         .with_url(start)
         .with_navigation_handler(move |candidate| {
+            // A link a sandboxed frame could not follow, handed off through
+            // our own origin: the app's allowlist decides, the frame stays.
+            if let Some(target) = handoff_target(&base, &candidate) {
+                if !navigating(&target) {
+                    eprintln!("{}: blocked hand-off of {target}", app.log_prefix);
+                }
+                return false;
+            }
             let allowed = navigation_allowed(&base, &candidate);
             // An allowlisted external link leaves the webview where it is and
             // opens in the user's browser instead.
@@ -943,6 +973,12 @@ where
         // navigation handler above. An allowlisted link (`target=_blank`) goes
         // to the user's browser instead.
         .with_new_window_req_handler(move |candidate, _features| {
+            if let Some(target) = handoff_target(&popup_base, &candidate) {
+                if !new_window(&target) {
+                    eprintln!("{}: blocked hand-off of {target}", app.log_prefix);
+                }
+                return NewWindowResponse::Deny;
+            }
             if !new_window(&candidate) {
                 eprintln!("{}: blocked new window for {candidate}", app.log_prefix);
             }
@@ -1276,8 +1312,8 @@ pub mod perf {
 #[cfg(test)]
 mod tests {
     use super::{
-        BootAppearance, MainFrame, Zoom, appearance_init_script, first_file_path,
-        navigation_allowed, plain_https, webview_origin, zoom_script,
+        BootAppearance, HANDOFF_PATH, MainFrame, Zoom, appearance_init_script, first_file_path,
+        handoff_target, navigation_allowed, plain_https, webview_origin, zoom_script,
     };
     use std::path::PathBuf;
     use url::Url;
@@ -1428,6 +1464,43 @@ mod tests {
     }
 
     const ORIGIN: &str = "http://127.0.0.1:5000";
+
+    /// The string the invoicer's SPA writes (`invoicer/web/src/lib/frameLinks.ts`).
+    #[test]
+    fn the_handoff_path_is_pinned() {
+        assert_eq!(HANDOFF_PATH, "/.ledgeline/open");
+    }
+
+    #[test]
+    fn a_same_origin_handoff_names_its_decoded_target() {
+        assert_eq!(
+            handoff_target(
+                BASE,
+                "http://127.0.0.1:5000/.ledgeline/open?url=mailto%3Aap%40example.com%3Fsubject%3DInvoice%2520108"
+            )
+            .as_deref(),
+            Some("mailto:ap@example.com?subject=Invoice%20108")
+        );
+    }
+
+    #[test]
+    fn anything_else_is_no_handoff() {
+        for candidate in [
+            "http://127.0.0.1:5001/.ledgeline/open?url=mailto%3Aa%40b.c",
+            "http://localhost:5000/.ledgeline/open?url=mailto%3Aa%40b.c",
+            "https://127.0.0.1:5000/.ledgeline/open?url=mailto%3Aa%40b.c",
+            "http://127.0.0.1:5000/.ledgeline/open/x?url=mailto%3Aa%40b.c",
+            "http://127.0.0.1:5000/.ledgeline/opener?url=mailto%3Aa%40b.c",
+            "http://127.0.0.1:5000/.ledgeline/open",
+            "http://127.0.0.1:5000/.ledgeline/open?link=mailto%3Aa%40b.c",
+            "http://127.0.0.1:5000/.ledgeline/open?url=",
+            "http://127.0.0.1:5000/notes/acme.md?url=mailto%3Aa%40b.c",
+            "http://127.0.0.1:5000/app/",
+            "mailto:a@b.c",
+        ] {
+            assert_eq!(handoff_target(BASE, candidate), None, "{candidate}");
+        }
+    }
 
     #[test]
     fn the_main_frame_must_start_in_the_spa() {

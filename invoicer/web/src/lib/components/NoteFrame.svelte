@@ -8,11 +8,12 @@
      (`frame-src`) lets through so that the desktop window's navigation
      handler sees it, opens it in the default browser and keeps the frame
      where it is; in `--server` mode, in a plain browser, it loads in the
-     sandboxed frame. A mailto link would be refused in a sandboxed frame, so
-     `handMailtoLinks` (lib/frameLinks.ts) turns its click into a navigation
-     of this window: the desktop window hands it to the mail app, a plain
-     browser to its mail client, and the page stays. `height` in pixels; 0
-     fills the space left (at least 24rem). -->
+     sandboxed frame. A sandboxed frame may not load a mailto link at all,
+     so on each load `handMailtoLinks` (lib/frameLinks.ts) rewrites the
+     frame's mailto links to a same-origin hand-off, which the desktop
+     window opens in the mail app while the frame stays put; in `--server`
+     mode the server answers it with nothing, so mailto links do nothing
+     there. `height` in pixels; 0 fills the space left (at least 24rem). -->
 <script lang="ts">
     import {handMailtoLinks} from "../frameLinks";
 

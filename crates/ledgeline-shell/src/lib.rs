@@ -62,12 +62,14 @@ pub struct AppIdentity {
     /// 'self'` governs the shell's frames, as it does for Ledgeline, which
     /// frames nothing.
     ///
-    /// The invoicer's note and invoice frames need `https:` and `mailto:`
-    /// here: WebKit checks a frame's navigation against the parent's
-    /// `frame-src` before the desktop window's navigation handler sees it, so
-    /// without them a link clicked in a frame dies silently instead of
-    /// reaching [`gui::build_webview`]'s handler, which keeps the frame on our
-    /// origin and opens the link in the default app. A static source list,
-    /// with no `;`.
+    /// The invoicer's note and invoice frames need `https:` here: WebKit
+    /// checks a frame's navigation against the parent's `frame-src` before
+    /// the desktop window's navigation handler sees it, so without it an
+    /// https link clicked in a frame dies silently instead of reaching
+    /// [`gui::build_webview`]'s handler, which keeps the frame on our origin
+    /// and opens the link in the browser. (`mailto:` does not belong here:
+    /// WebKit refuses it from a sandboxed frame whatever the CSP says, so it
+    /// goes through [`security::HANDOFF_PATH`].) A static source list, with
+    /// no `;`.
     pub spa_frame_src: Option<&'static str>,
 }

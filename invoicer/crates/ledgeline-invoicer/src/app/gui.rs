@@ -192,9 +192,10 @@ fn external_url(candidate: &str) -> Option<String> {
 /// and invoice frames, an https link reaches this as the frame's own
 /// navigation, which the SPA's CSP lets through (`APP.spa_frame_src`;
 /// WebKit would refuse it before the navigation handler otherwise). A
-/// mailto link arrives as a navigation of the main window instead: WebKit
-/// refuses custom protocols from a sandboxed frame, so the SPA cancels the
-/// click there and navigates the main window (`invoicer/web/src/lib/frameLinks.ts`).
+/// mailto link arrives through the same-origin hand-off instead
+/// (`security::HANDOFF_PATH`, unwrapped by the shell's navigation handler):
+/// WebKit refuses custom protocols from a sandboxed frame, so the SPA
+/// rewrites the frames' mailto links to it (`invoicer/web/src/lib/frameLinks.ts`).
 fn open_if_external(candidate: &str) -> bool {
     external_url(candidate)
         .map(|url| shell::open_in_browser(&APP, &url))
