@@ -14,8 +14,18 @@
      while the page still loads MBR's assets with the session cookie and stays
      readable for sizing. A template needs no script to show an invoice; MBR's
      export-ready partial only matters inside a PDF export, which has its own
-     webview. The frame grows to its page's height once it loads. -->
+     webview. The frame grows to its page's height once it loads.
+
+     Links move only the frame, never the app. Outside links work as in
+     NoteFrame: https through the shell's `frame-src` (the desktop window
+     opens it in the browser and the frame stays put; a plain browser in
+     `--server` mode loads it in the frame), mailto rewritten on each load to
+     a same-origin hand-off (`handMailtoLinks`, lib/frameLinks.ts), which the
+     desktop window opens in the mail app; in `--server` mode mailto links do
+     nothing. -->
 <script lang="ts">
+    import {handMailtoLinks} from "../frameLinks";
+
     let {src, title, mode = "page"}: {src?: string; title: string; mode?: "page" | "preview"} = $props();
 
     let frame = $state<HTMLIFrameElement | null>(null);
@@ -25,6 +35,11 @@
         const doc = frame?.contentDocument;
         const measured = doc?.documentElement?.scrollHeight ?? 0;
         if (measured > 0) height = measured;
+    }
+
+    function loaded(): void {
+        fit();
+        if (frame) handMailtoLinks(frame);
     }
 </script>
 
@@ -36,7 +51,7 @@
         sandbox="allow-same-origin"
         class="w-full rounded-box border border-base-300 bg-white"
         style="height: {height}px"
-        onload={fit}
+        onload={loaded}
         data-testid="invoice-frame"
         data-mode={mode}
     ></iframe>

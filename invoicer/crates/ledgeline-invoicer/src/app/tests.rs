@@ -1538,6 +1538,33 @@ fn csp_of(headers: &axum::http::HeaderMap) -> String {
         .to_string()
 }
 
+/// The frames' link hand-off, as a plain browser (`--server`) requests it:
+/// the desktop window's navigation handler takes it first, so the server
+/// only answers `204 No Content` (the frame stays put) and opens nothing.
+/// Only the exact path; a near miss is MBR's, behind its gate.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_link_handoff_is_an_empty_204_in_a_plain_browser() {
+    let app = app();
+    let handoff = format!(
+        "{}?url=mailto%3Aap%40example.com%3Fsubject%3DInvoice%2520108",
+        ledgeline_shell::security::HANDOFF_PATH
+    );
+    let (status, headers, body) =
+        send(&app.router, get(&handoff).body(Body::empty()).unwrap()).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(body.is_empty(), "{body}");
+    assert!(headers.get(header::LOCATION).is_none(), "no redirect");
+
+    let (status, _, _) = send(
+        &app.router,
+        get("/.ledgeline/open/x?url=mailto%3Aa%40b.c")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_ne!(status, StatusCode::NO_CONTENT, "only the exact path");
+}
+
 /// Patrick's blank starter preview (2026-11-23): the SPA showed a preview
 /// as `srcdoc`, which inherits the SPA's CSP, whose `frame-ancestors 'none'`
 /// WebKit applies to it. A preview is now a page of its own, framed by URL

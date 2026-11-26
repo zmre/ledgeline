@@ -2770,7 +2770,7 @@ dependencies = [
 
 [[package]]
 name = "invoicer-core"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "criterion",
  "csv",
@@ -2994,7 +2994,7 @@ checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 
 [[package]]
 name = "ledgeline"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -3034,7 +3034,7 @@ dependencies = [
 
 [[package]]
 name = "ledgeline-core"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "base64 0.23.1",
  "calamine",
@@ -3060,7 +3060,7 @@ dependencies = [
 
 [[package]]
 name = "ledgeline-ffi"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "axum",
  "futures",
@@ -3076,7 +3076,7 @@ dependencies = [
 
 [[package]]
 name = "ledgeline-invoicer"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "axum",
@@ -3111,7 +3111,7 @@ dependencies = [
 
 [[package]]
 name = "ledgeline-shell"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "axum",
  "base64 0.23.1",

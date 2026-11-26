@@ -220,6 +220,23 @@ impl AccessToken {
     }
 }
 
+/// The same-origin stand-in for a link a sandboxed frame may not follow
+/// itself: `<origin>/.ledgeline/open?url=<the link, percent-encoded>`.
+///
+/// WebKit refuses every custom-protocol load (`mailto:`) from a frame
+/// sandboxed without `allow-scripts`, and runs no script there, not even the
+/// parent's listeners. So the invoicer's SPA rewrites such a link in its
+/// note and invoice frames to this path (`invoicer/web/src/lib/frameLinks.ts`
+/// carries the same string), a same-origin navigation WebKit allows. The
+/// desktop window's navigation handler recognises it
+/// (`gui::handoff_target`), hands the target to the app's own
+/// allowlist and keeps the frame where it is. A plain browser (`--server`)
+/// has no such handler: the server answers the path with `204 No Content`,
+/// so the frame stays put and nothing opens.
+///
+/// Under a dotted prefix no books folder is served from by MBR's router.
+pub const HANDOFF_PATH: &str = "/.ledgeline/open";
+
 /// `raw` re-serialized when it is a plain https URL: no port, no credentials.
 /// The first test an app's "open this in the system browser" allowlist
 /// applies, before its own hosts. The one judge of such URLs, for the
@@ -234,6 +251,17 @@ pub fn plain_https(raw: &str) -> Option<url::Url> {
         && url.username().is_empty()
         && url.password().is_none();
     plain.then_some(url)
+}
+
+/// `raw` re-serialized when it is a `mailto:` URL with an address, such as
+/// `mailto:ap@example.com?subject=Invoice%20108`. Headers (`subject`, `body`,
+/// …) are fine; a bare `mailto:` or one with only headers is refused. The
+/// sibling of [`plain_https`] for an app's "open this in the mail app" links.
+#[must_use]
+pub fn plain_mailto(raw: &str) -> Option<url::Url> {
+    let url = url::Url::parse(raw.trim()).ok()?;
+    let addressed = url.scheme() == "mailto" && !url.path().trim().is_empty();
+    addressed.then_some(url)
 }
 
 /// The process's token together with where it came from. `from_env` is what
@@ -602,26 +630,33 @@ pub fn no_store_json<T: serde::Serialize>(body: T) -> Response {
 /// (JSON, static assets, errors).
 #[must_use]
 pub fn base_csp() -> HeaderValue {
-    csp_value("")
+    csp_value(CSP_TAIL)
 }
 
 /// The policy for one rendering of the SPA shell: the base policy plus a
-/// `'sha256-…'` source for each inline `<script>` the shell actually contains.
+/// `'sha256-…'` source for each inline `<script>` the shell actually contains,
+/// and the app's `frame-src` when it has one ([`AppIdentity::spa_frame_src`]).
 ///
 /// Computed from the served bytes rather than baked in, so it stays correct
 /// across SPA rebuilds (SvelteKit's bootstrap script changes every build) and
 /// across the token we inject into it.
 #[must_use]
-pub fn shell_csp(html: &str) -> HeaderValue {
+pub fn shell_csp(app: &AppIdentity, html: &str) -> HeaderValue {
     let hashes = inline_script_hashes(html)
         .iter()
         .map(|hash| format!(" '{hash}'"))
         .collect::<String>();
-    csp_value(&hashes)
+    let frames = app
+        .spa_frame_src
+        .map(|sources| format!("; frame-src {sources}"))
+        .unwrap_or_default();
+    csp_value(&format!("{hashes}{CSP_TAIL}{frames}"))
 }
 
-fn csp_value(script_sources: &str) -> HeaderValue {
-    HeaderValue::from_str(&format!("{CSP_HEAD}{script_sources}{CSP_TAIL}"))
+/// [`CSP_HEAD`] followed by `rest` (the script hashes, [`CSP_TAIL`], and any
+/// per-app directives), or [`FALLBACK_CSP`] if that is no header value.
+fn csp_value(rest: &str) -> HeaderValue {
+    HeaderValue::from_str(&format!("{CSP_HEAD}{rest}"))
         .unwrap_or_else(|_| HeaderValue::from_static(FALLBACK_CSP))
 }
 
@@ -783,6 +818,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn plain_mailto_needs_an_address() {
+        for allowed in [
+            " mailto:ap@example.com ",
+            "mailto:ap@example.com?subject=Invoice%20108&body=Hello",
+            "MAILTO:ap@example.com",
+        ] {
+            assert!(plain_mailto(allowed).is_some(), "{allowed}");
+        }
+        assert_eq!(
+            plain_mailto("mailto:ap@example.com?subject=Invoice 108")
+                .map(String::from)
+                .as_deref(),
+            Some("mailto:ap@example.com?subject=Invoice%20108"),
+            "answered re-serialized"
+        );
+        for refused in [
+            "mailto:",
+            "mailto:?subject=hi",
+            "https://example.com/",
+            "tel:+15551234567",
+            "javascript:alert(1)",
+            "not a url",
+        ] {
+            assert!(plain_mailto(refused).is_none(), "{refused}");
+        }
+    }
+
+    #[test]
     fn generated_tokens_are_long_and_unique() {
         let first = AccessToken::generate().expect("entropy available");
         let second = AccessToken::generate().expect("entropy available");
@@ -901,6 +964,7 @@ mod tests {
         token_global: "__LEDGELINE_TOKEN__",
         embedded_global: "__LEDGELINE_EMBEDDED__",
         spa_base: "/",
+        spa_frame_src: None,
     };
 
     const UNDER_APP: AppIdentity = AppIdentity {
@@ -911,6 +975,7 @@ mod tests {
         token_global: "__LEDGELINE_TOKEN__",
         embedded_global: "__LEDGELINE_EMBEDDED__",
         spa_base: "/app/",
+        spa_frame_src: Some("'self' https:"),
     };
 
     #[test]
@@ -1088,13 +1153,70 @@ mod tests {
     #[test]
     fn shell_csp_carries_every_inline_hash_and_the_exfiltration_guard() {
         let html = "<head><script>a</script></head><body><script>b</script></body>";
-        let csp = shell_csp(html);
-        let csp = csp.to_str().expect("ascii");
-        assert!(csp.contains(&format!("'{}'", csp_sha256("a"))));
-        assert!(csp.contains(&format!("'{}'", csp_sha256("b"))));
-        assert!(csp.contains("connect-src 'self'"));
-        assert!(csp.contains("frame-ancestors 'none'"));
-        assert!(!csp.contains("unsafe-eval"));
+        for app in [&WHOLE_ORIGIN, &UNDER_APP] {
+            let csp = shell_csp(app, html);
+            let csp = csp.to_str().expect("ascii");
+            assert!(csp.contains(&format!("'{}'", csp_sha256("a"))));
+            assert!(csp.contains(&format!("'{}'", csp_sha256("b"))));
+            assert!(csp.contains("connect-src 'self'"));
+            assert!(csp.contains("frame-ancestors 'none'"));
+            assert!(!csp.contains("unsafe-eval"));
+        }
+    }
+
+    /// An app without `spa_frame_src` (Ledgeline) gets exactly the shared
+    /// policy, byte for byte: no `frame-src`, so `default-src 'self'` rules.
+    #[test]
+    fn shell_csp_has_no_frame_src_unless_the_app_asks() {
+        let html = "<script>a</script>";
+        let hash = csp_sha256("a");
+        assert_eq!(
+            shell_csp(&WHOLE_ORIGIN, html).to_str().expect("ascii"),
+            format!(
+                "default-src 'self'; script-src 'self' '{hash}'; \
+                 style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
+                 connect-src 'self'; font-src 'self'; object-src 'none'; \
+                 base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+            )
+        );
+        assert_eq!(
+            base_csp().to_str().expect("ascii"),
+            "default-src 'self'; script-src 'self'; \
+             style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
+             connect-src 'self'; font-src 'self'; object-src 'none'; \
+             base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        );
+    }
+
+    #[test]
+    fn shell_csp_appends_the_apps_frame_src() {
+        let html = "<script>a</script>";
+        let with = shell_csp(&UNDER_APP, html);
+        let without = shell_csp(&WHOLE_ORIGIN, html);
+        assert_eq!(
+            with.to_str().expect("ascii"),
+            format!(
+                "{}; frame-src 'self' https:",
+                without.to_str().expect("ascii")
+            )
+        );
+        assert!(
+            !base_csp().to_str().expect("ascii").contains("frame-src"),
+            "only the shell carries the app's frame-src"
+        );
+    }
+
+    /// A per-app directive that cannot be a header value fails closed.
+    #[test]
+    fn a_bad_frame_src_falls_back_to_the_tighter_policy() {
+        let broken = AppIdentity {
+            spa_frame_src: Some("'self'\n"),
+            ..UNDER_APP
+        };
+        assert_eq!(
+            shell_csp(&broken, "").to_str().expect("ascii"),
+            FALLBACK_CSP
+        );
     }
 
     fn sample_token() -> AccessToken {

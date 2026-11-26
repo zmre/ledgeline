@@ -95,6 +95,16 @@ async fn the_shell_csp_admits_exactly_the_inline_scripts_it_serves() {
     );
 }
 
+/// Ledgeline frames nothing, so its shell carries no `frame-src`:
+/// `default-src 'self'` governs frames. (The invoicer's shell adds one for
+/// its note and invoice frames; Ledgeline's policy must not follow.)
+#[tokio::test]
+async fn the_shell_csp_has_no_frame_src() {
+    let (csp, _) = served_shell().await;
+    assert!(!csp.contains("frame-src"), "{csp}");
+    assert_eq!(directive(&csp, "default-src"), vec!["'self'"], "{csp}");
+}
+
 /// The scanner is the oracle, so it gets its own known answers.
 #[test]
 fn the_independent_scanner_reads_attributes_the_way_a_browser_does() {
