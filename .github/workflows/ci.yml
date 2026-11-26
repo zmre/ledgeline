@@ -749,7 +749,9 @@ jobs:
       # Under Xvfb: on Linux the PDF export is a WebKitGTK webview, which
       # needs a display (without one the server turns export off and the
       # three PDF specs fail with 503). `xvfb-run` comes from the flake's own
-      # nixpkgs (`--inputs-from .`), so it is pinned with everything else.
+      # nixpkgs (`--inputs-from .`), so it is pinned with everything else, and
+      # so does poppler-utils: the PDF specs read the export back with
+      # `pdftotext`, as the dev shell provides it locally.
       #
       # Runs even when Ledgeline's contract tests or e2e failed, so one red
       # suite does not hide the other; but not when the binaries or the
@@ -761,7 +763,7 @@ jobs:
           LEDGELINE_INVOICER_BIN: ${{ github.workspace }}/result-linux/bin/ledgeline-invoicer
           REQUIRE_REAL_SPA: "1"
         run: >-
-          nix shell --inputs-from . nixpkgs#xvfb-run --command
+          nix shell --inputs-from . nixpkgs#xvfb-run nixpkgs#poppler-utils --command
           xvfb-run --auto-servernum --server-args="-screen 0 1280x1024x24"
           bun run test:e2e
 
