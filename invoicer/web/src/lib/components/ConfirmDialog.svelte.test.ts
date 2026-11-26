@@ -66,4 +66,20 @@ describe("COMPONENT ConfirmDialog", () => {
         await view.rerender({busy: true});
         expect(document.activeElement).toBe(screen.getByTestId("confirm-dialog"));
     });
+
+    it("lands on the safe choice when it opened busy and then stops being busy", async () => {
+        // A question with no fields, as the Settings page's "Create a settings file?".
+        const text = createRawSnippet(() => ({render: () => `<p>These books have no settings file yet. Create it?</p>`}));
+        const view = render(ConfirmDialog, {
+            title: "Create a settings file?",
+            confirmLabel: "Create",
+            busy: true,
+            onConfirm: vi.fn(),
+            onCancel: vi.fn(),
+            children: text,
+        });
+        expect(document.activeElement).toBe(screen.getByTestId("confirm-dialog"));
+        await view.rerender({busy: false});
+        expect(document.activeElement).toBe(screen.getByRole("button", {name: "Cancel"}));
+    });
 });

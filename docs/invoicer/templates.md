@@ -26,7 +26,8 @@ A starter is copied into your books folder, under `invoices/tpl/`, the first tim
 
 - **For one invoice.** In the invoice editor, the Template field (<kbd>t</kbd> jumps to it). On a saved invoice, the template picker previews another template, and **Use this template** switches to it.
 - **For a customer.** The customer's default template is what their new invoices start with.
-- **For everything else.** A new invoice for a customer with no default uses the first template in your books, or Classic when there is none.
+- **For these books.** A new invoice for a customer with no default uses the Default template [setting](settings.md#new-invoices), in **Settings → These books → New invoices**. It can be one of your templates or a starter.
+- **For everything else.** With no Default template set, a new invoice uses the first template in your books, or Classic when there is none. The same happens when the Default template is no longer in your books, and the app says so.
 
 ## The Templates page
 
@@ -241,7 +242,7 @@ Templates use the [Tera](https://keats.github.io/tera/docs/) template language. 
 
 ## Your logo
 
-Put the logo on your company's note, the organization note named by the `company` [setting](settings.md):
+Put the logo on your company's note, the organization note named by the Your company [setting](settings.md#company):
 
 ```yaml
 logo: logo.png

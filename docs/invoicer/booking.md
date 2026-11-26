@@ -99,9 +99,11 @@ Applying replaces the deposit's income side with the invoice's accounts, each ta
     revenue:consulting:delivery  $-1200.00  ; customer: Contoso
 ```
 
-When one payment doesn't cover the whole invoice, the `payment-allocation` [setting](settings.md) decides how it is split over the rows. The default moves each account toward its row's amount, so the payment that settles the invoice leaves every account exactly at its row. `pro-rata` splits each payment in the rows' proportions instead. Each share is rounded half away from zero, and the largest row takes the cent or two left over, so the shares add up exactly. A discount spread over rows at booking uses the same rule, so both put the odd cent on the same row.
+When one payment doesn't cover the whole invoice, the Splitting a payment over rows [setting](settings.md#payments) (`payment-allocation`) decides how it is split over the rows. The default moves each account toward its row's amount, so the payment that settles the invoice leaves every account exactly at its row. `pro-rata` splits each payment in the rows' proportions instead. Each share is rounded half away from zero, and the largest row takes the cent or two left over, so the shares add up exactly. A discount spread over rows at booking uses the same rule, so both put the odd cent on the same row.
 
 In the app, a sent invoice that isn't paid in full has **Apply payment…** in its Books panel (or press <kbd>a</kbd>). It lists the deposits that might pay it, best match first, and shows how the one you choose would be split and what would still be due before you apply it. To undo an applied payment, use `apply-payment N --undo`.
+
+The list holds deposits that arrived from 4 days before the invoice's date to 180 days after it. To change that window, use How far back to look for payments and Payment before invoice in [Settings → These books → Payments](settings.md#payments). Ledgeline's [invoice matching](../journal/invoice-matching.md) uses the same two settings, so changing them in either app changes both. On the command line, `apply-payment` takes them from the same place, and `--lookback-days` and `--lead-days` override them for one run.
 
 ## The paid status
 
@@ -153,7 +155,7 @@ Billing part of a job up front is a separate **deposit invoice**, not a discount
 
 The final invoice bills the whole job and takes the deposit off with a row booked to the same account: `Less deposit (Invoice 104)` in invoice 105 above. **Apply deposit** in the invoice editor lists the customer's deposits not yet used and writes that row for you, just above the total.
 
-The deposit account is the `deposit-account` [setting](settings.md). Without it, the invoicer uses the account declared `kpi: deferred-revenue`, else `liabilities:deferred-revenue`.
+The deposit account is the Deposit account [setting](settings.md#accounts) (`deposit-account`). Without it, the invoicer uses the account declared `kpi: deferred-revenue`, else `liabilities:deferred-revenue`.
 
 ### In accrual books
 
@@ -163,9 +165,15 @@ The deposit invoice books a receivable against the deposit account when you send
 
 By default a deposit is income the day it arrives. Applying its payment books it to revenue (the row's account, or the customer's revenue account when the row names the deposit account), and the final invoice's deposit row books nothing.
 
-If you prefer to hold deposits as a liability until the work is billed, set `cash-deposits = "liability-until-final"`. The deposit's payment then goes to the deposit account, and the final invoice's payment clears it.
+If you prefer to hold deposits as a liability until the work is billed, choose **Hold a deposit as owed until its final invoice** for Deposit payments in [Settings](settings.md#payments) (`cash-deposits = "liability-until-final"` in the file). The deposit's payment then goes to the deposit account, and the final invoice's payment clears it.
+
+The app won't save that change, in either direction, while a deposit you have received is still waiting for its final invoice: the deposit would count as income twice, or leave the deposit account below zero. The Settings page lists the deposits that are waiting. See [Deposit payments while a deposit is waiting](settings.md#deposit-payments-while-a-deposit-is-waiting).
 
 Voiding a final invoice gives its deposit back, so a reissued invoice can apply it again.
+
+## Changing a booking setting
+
+The accounts, Deposit payments and Splitting a payment over rows settings change how new bookings are made. A change applies from then on only: invoices you send and payments you apply after saving it book the new way, and everything already in your books keeps how it was booked. The Settings page lists what each change will do and asks before it saves. To move a sent invoice onto a new account, re-book it. See [Changes that affect new bookings](settings.md#changes-that-affect-new-bookings).
 
 ## Checking that the books and the files agree
 

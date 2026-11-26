@@ -77,9 +77,10 @@ e2e:
     cd web && bun run test:e2e
 
 # The invoicer's suite (invoicer/web/e2e), set up as `e2e`'s is but on the
-# invoicer's ports, 5199 (the server, over a scratch copy of
-# invoicer/fixtures/accrual in target/e2e-invoicer-accrual/) and 4273 (the
-# SPA's `vite preview`), so it can run beside Ledgeline's. The SPA is built
+# invoicer's own ports so it can run beside Ledgeline's: servers on 5199
+# (accrual), 5198 (empty), 5197 (cash), 5196 (Settings, over cash) and 5195
+# (Settings with no ledgeline.toml), each over a scratch copy under target/,
+# and 4273 (the SPA's `vite preview`). playwright.config.ts lists them. The SPA is built
 # before the binary for the same reason: e2e/csp.same-origin.e2e.ts loads the
 # SPA the server embeds. $LEDGELINE_INVOICER_BIN overrides the binary.
 # Run the invoicer's e2e tests (playwright)

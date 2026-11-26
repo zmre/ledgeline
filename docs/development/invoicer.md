@@ -89,7 +89,7 @@ A SvelteKit SPA with `paths.base = "/app"`, built to static files and embedded i
 - `src/routes/`: the dashboard (`+page.svelte`), invoices, customers, catalog, snippets, templates and the new-invoice page.
 - `src/lib/components/`: the pages' parts, each with its component test beside it.
 - `src/lib/keys/`: the invoicer's key bindings, registered with the shared keymap. `groups.ts` sets the order of the `?` sheet.
-- `e2e/`: Playwright specs, run by `just invoicer-e2e` against a server over a scratch copy of the accrual fixture.
+- `e2e/`: Playwright specs, run by `just invoicer-e2e` against five servers (ports 5195–5199), each over a scratch copy of a fixture under `target/`. `playwright.config.ts` lists them.
 
 ## `packages/ui`
 

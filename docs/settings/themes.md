@@ -14,6 +14,10 @@ Open **Settings → Appearance**. Each theme's card is drawn in its own colours.
 
 Tick **Use for this ledger only** to give the open ledger its own theme, so you can tell your books apart at a glance. Ledgeline saves it in a `ledgeline.toml` beside the journal, creating the file if needed. Untick it to go back to your usual theme.
 
+## Shared with Ledgeline Invoicer
+
+[Ledgeline Invoicer](../invoicer/index.md) uses the same theme and text size. Its **Settings → Appearance** tab has the same theme cards and text size control, and a change made in either app shows in both. Its box is labelled **Use for these books only** and keeps the theme or the text size for the open books, as Ledgeline's does: a ledger kept on its own theme opens in that theme in both apps. See [Invoicer settings](../invoicer/settings.md#appearance).
+
 ## Follow the system, or pick one
 
 Six themes come in a light and a dark version. Choose one of these by its family name and Ledgeline follows your system: the light version while your computer is in light mode, the dark one in dark mode, switching when the system does. Choose a version by its own name to keep it whatever the system says.
@@ -45,7 +49,7 @@ The last four are dark only, so they stay dark when your system is in light mode
 | ⌘ −        | Ctrl −                | Smaller     |
 | ⌘ 0        | Ctrl 0                | Actual size |
 
-In the desktop app the same commands are in the **View** menu. The size is saved as `uiScale` (a percentage, `100` by default) and can be kept for one ledger like the theme.
+In the desktop app the same commands are in the **View** menu. Ledgeline Invoicer has the same keys and menu items, and shares the size with Ledgeline. The size is saved as `uiScale` (a percentage, `100` by default) and can be kept for one ledger like the theme.
 
 ## The `theme` key
 

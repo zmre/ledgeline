@@ -23,14 +23,20 @@ A capital letter means Shift: <kbd>N</kbd> is <kbd>Shift</kbd>+<kbd>N</kbd>. A s
 
 ## Everywhere
 
-| Keys           | Does                                                                           |
-|----------------|--------------------------------------------------------------------------------|
-| <kbd>?</kbd>   | Show the keyboard shortcuts                                                    |
-| <kbd>n</kbd>   | New invoice                                                                    |
-| <kbd>d</kbd>   | New deposit invoice                                                            |
-| <kbd>N</kbd>   | Open the New menu (deposit invoice, customer, catalog item, snippet, template) |
-| <kbd>/</kbd>   | Search this list (on pages with a search box)                                  |
-| <kbd>Esc</kbd> | Leave the field you are typing in                                              |
+| Keys                        | Does                                                                           |
+|-----------------------------|--------------------------------------------------------------------------------|
+| <kbd>?</kbd>                | Show the keyboard shortcuts                                                    |
+| <kbd>n</kbd>                | New invoice                                                                    |
+| <kbd>d</kbd>                | New deposit invoice                                                            |
+| <kbd>N</kbd>                | Open the New menu (deposit invoice, customer, catalog item, snippet, template) |
+| <kbd>/</kbd>                | Search this list (on pages with a search box)                                  |
+| <kbd>Esc</kbd>              | Leave the field you are typing in                                              |
+| <kbd>Cmd</kbd>+<kbd>,</kbd> | Open Settings, from inside a field too                                         |
+| <kbd>Cmd</kbd>+<kbd>+</kbd> | Larger text                                                                    |
+| <kbd>Cmd</kbd>+<kbd>−</kbd> | Smaller text                                                                   |
+| <kbd>Cmd</kbd>+<kbd>0</kbd> | Actual size                                                                    |
+
+The text size keys work from inside a field too, and over a dialog. The desktop app's View menu has the same three. See [Appearance](settings.md#appearance).
 
 ## Go to
 
@@ -42,6 +48,7 @@ A capital letter means Shift: <kbd>N</kbd> is <kbd>Shift</kbd>+<kbd>N</kbd>. A s
 | <kbd>g</kbd> <kbd>k</kbd> | Catalog   |
 | <kbd>g</kbd> <kbd>s</kbd> | Snippets  |
 | <kbd>g</kbd> <kbd>t</kbd> | Templates |
+| <kbd>g</kbd> <kbd>,</kbd> | Settings  |
 
 ## Dashboard
 
@@ -122,6 +129,16 @@ Inside the table, <kbd>Option</kbd>+<kbd>↑</kbd> and <kbd>Option</kbd>+<kbd>�
 | <kbd>Option</kbd>+<kbd>↑</kbd> / <kbd>Option</kbd>+<kbd>↓</kbd> | Move the catalog row you are in |
 
 In a template's code, <kbd>Tab</kbd> indents. To move on to the next control, press <kbd>Esc</kbd> and then <kbd>Tab</kbd>.
+
+## Settings
+
+| Keys                        | Does                                   |
+|-----------------------------|----------------------------------------|
+| <kbd>Cmd</kbd>+<kbd>S</kbd> | Save the changes on These books        |
+| <kbd>1</kbd> / <kbd>2</kbd> | These books / Appearance               |
+| <kbd>←</kbd> / <kbd>→</kbd> | The other tab, with the focus on a tab |
+
+<kbd>Tab</kbd> moves through every setting in screen order. In a list of choices, <kbd>↑</kbd> and <kbd>↓</kbd> pick one. In a word list, <kbd>Enter</kbd> or <kbd>,</kbd> adds the word you typed. See [Settings](settings.md).
 
 ## Dialogs
 

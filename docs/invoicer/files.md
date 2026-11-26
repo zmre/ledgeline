@@ -13,7 +13,7 @@ The files are markdown notes with a frontmatter block at the top, the same kind 
 
 ## Where things live
 
-The invoicer finds files by what they say, not by where they are. Any note in the books folder with `type: invoice` is an invoice, wherever it sits. The folders below only decide where **new** files go, and each one is a [setting](settings.md).
+The invoicer finds files by what they say, not by where they are. Any note in the books folder with `type: invoice` is an invoice, wherever it sits. The folders below only decide where **new** files go, and each one is a [setting](settings.md#files-and-folders) under Files and folders on the Settings page.
 
 | What          | New files go in          | A file counts when it…                                                     |
 |---------------|--------------------------|----------------------------------------------------------------------------|
@@ -102,7 +102,7 @@ Keys are lowercase with underscores, dates are `YYYY-MM-DD`, and amounts never a
 | `invoicer`                                      | yes      | A link to your company's note.                                                                                           |
 | `invoicer_name`, `_email`, `_address`, `_phone` | as above | Your company's details, copied the same way from its note.                                                               |
 | `invoicer_logo`                                 | no       | Your logo's path, copied from the company note's `logo:`. See [Templates](templates.md#your-logo).                       |
-| `terms`                                         | no       | Net days, a whole number. Copied from the customer.                                                                      |
+| `terms`                                         | no       | Net days, a whole number. Copied from the customer, else the Default payment terms setting.                              |
 | `due_date`                                      | no       | The date plus the terms, unless you set it yourself. "Overdue" is worked out from it, never stored.                      |
 | `reference`                                     | no       | What the customer quotes back, such as a purchase order: `PO #PY75334`.                                                  |
 | `deposit_for`                                   | no       | On a deposit invoice, what it is a deposit for.                                                                          |
@@ -237,9 +237,9 @@ Fred Smith is the champion.
 |---------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `emails`, `phones`, `addresses` | Labelled lists. The invoice uses the entry labelled `billing`, then `work`, then the first. An address may be text or a map with `street`, `city`, `region`, `postcode` and `country`.                                      |
 | `company`                       | On a person: a link to the organization they work for. Invoices to the person bill the organization.                                                                                                                        |
-| `terms`                         | Net days for new invoices.                                                                                                                                                                                                  |
+| `terms`                         | Net days for new invoices. Without it, new invoices get the [Default payment terms](settings.md#new-invoices), if set.                                                                                                      |
 | `revenue_account`               | The account rows book to when nothing more specific says otherwise.                                                                                                                                                         |
-| `invoice_template`              | The template new invoices for this customer use.                                                                                                                                                                            |
+| `invoice_template`              | The template new invoices for this customer use. Without it, they use the [Default template](settings.md#new-invoices).                                                                                                     |
 | `ledger_customer`               | The customer's name in the books, the value of the `customer:` tag. Without it, the note's title. Set it before renaming a note, so the books keep one name.                                                                |
 | `contracts`                     | Links to notes, or paths to files such as signed PDFs. The customer page lists them, and `check` reports paths that don't exist.                                                                                            |
 | `open_pos`                      | Purchase orders: `reference`, `amount` and `expires`. The invoice editor suggests them for Reference, and the customer page shows how much of each is left.                                                                 |

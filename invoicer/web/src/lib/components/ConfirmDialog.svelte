@@ -46,10 +46,16 @@
     let box = $state<HTMLDivElement | null>(null);
 
     // While busy both buttons are disabled, which drops their focus: keep it
-    // in the dialog, so Tab and Escape still land here.
+    // in the dialog, so Tab and Escape still land here. When it stops being
+    // busy with the focus still parked on the box (it opened busy, as a
+    // question asked mid-save does), hand it to the safe choice.
     $effect(() => {
-        if (!busy || box === null) return;
+        if (box === null) return;
         const active = document.activeElement;
+        if (!busy) {
+            if (active === box) box.querySelector<HTMLElement>("[data-safe-choice]")?.focus();
+            return;
+        }
         if (active instanceof HTMLElement && box.contains(active) && !(active instanceof HTMLButtonElement && active.disabled)) return;
         box.tabIndex = -1;
         box.focus();

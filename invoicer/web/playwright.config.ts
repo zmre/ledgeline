@@ -2,9 +2,15 @@ import {defineConfig} from "@playwright/test";
 
 /**
  * The invoicer's e2e suite (invoicer PLAN 3b), set up as web/playwright.config.ts
- * is, on the invoicer's own ports (PLAN 3a): the server on 5199, this SPA's
- * `vite preview` on 4273. Ledgeline's suite uses 5092–5099 and 4173, so both
- * can run at once.
+ * is, on the invoicer's own ports (PLAN 3a). Ledgeline's suite uses 5092–5099
+ * and 4173, so both can run at once. The ports, each over its own scratch copy
+ * of a fixture under target/:
+ *   - 5199: the main server, the accrual books (most specs);
+ *   - 5198: the empty books (empty.e2e.ts);
+ *   - 5197: the cash books with an import appended (cash.e2e.ts);
+ *   - 5196: the cash books for the Settings page (settings.e2e.ts);
+ *   - 5195: books with no ledgeline.toml (settings-new-file.e2e.ts);
+ *   - 4273: this SPA's `vite preview`, proxying to 5199.
  *
  * Run it with `just invoicer-e2e` (it builds the SPA, then the debug binary,
  * which embeds that build, then runs this). $LEDGELINE_INVOICER_BIN overrides
@@ -43,6 +49,25 @@ export const EMPTY_COPY = "../../target/e2e-invoicer-empty";
  */
 export const CASH_SERVER_URL = "http://127.0.0.1:5197";
 export const CASH_COPY = "../../target/e2e-invoicer-cash";
+
+/**
+ * The fourth server: `--server` on 5196 over a scratch copy of
+ * invoicer/fixtures/cash, with one customer added to the copy
+ * (e2e/fixtures/settings-adatum.md: no terms, no template), for
+ * settings.e2e.ts. That spec saves the copy's ledgeline.toml and edits it
+ * from outside, so it has books of its own. Like CASH_SERVER_URL, its spec
+ * loads the SPA the server embeds.
+ */
+export const SETTINGS_SERVER_URL = "http://127.0.0.1:5196";
+export const SETTINGS_COPY = "../../target/e2e-invoicer-settings";
+
+/**
+ * The fifth server: `--server` on 5195 over a scratch copy of
+ * invoicer/fixtures/empty with its ledgeline.toml deleted from the copy, for
+ * settings-new-file.e2e.ts: Save asks before it creates the settings file.
+ */
+export const NEW_FILE_SERVER_URL = "http://127.0.0.1:5195";
+export const NEW_FILE_COPY = "../../target/e2e-invoicer-no-settings";
 
 const BIN = process.env.LEDGELINE_INVOICER_BIN ?? "../../target/debug/ledgeline-invoicer";
 
@@ -86,6 +111,20 @@ export default defineConfig({
             url: `${CASH_SERVER_URL}/app/`,
             reuseExistingServer: false,
         },
+        {
+            // The cash books again, for the Settings page, with a customer that sets no terms.
+            command: `rm -rf ${SETTINGS_COPY} && mkdir -p ../../target && cp -R ../fixtures/cash ${SETTINGS_COPY} && cp e2e/fixtures/settings-adatum.md ${SETTINGS_COPY}/customers/Adatum.md && exec ${BIN} --server ${SETTINGS_COPY}/books.journal --port 5196`,
+            env: SERVER_ENV,
+            url: `${SETTINGS_SERVER_URL}/app/`,
+            reuseExistingServer: false,
+        },
+        {
+            // The empty books with no settings file: deleted from the copy, never the fixture.
+            command: `rm -rf ${NEW_FILE_COPY} && mkdir -p ../../target && cp -R ../fixtures/empty ${NEW_FILE_COPY} && rm ${NEW_FILE_COPY}/ledgeline.toml && exec ${BIN} --server ${NEW_FILE_COPY}/books.journal --port 5195`,
+            env: SERVER_ENV,
+            url: `${NEW_FILE_SERVER_URL}/app/`,
+            reuseExistingServer: false,
+        },
         {command: "bun run build && bun run preview", port: 4273},
     ],
     // timezoneId matches vitest's pin (vite.config.ts); dark, like Ledgeline's suite.
@@ -115,12 +154,15 @@ export default defineConfig({
     //      sends and exports an invoice for Fabrikam without the mouse; last,
     //      since every figure above would see it.
     // empty.e2e.ts has its own server and books (5198), so it runs alongside;
-    // so does cash.e2e.ts (5197, the cash books).
+    // so do cash.e2e.ts (5197, the cash books), settings.e2e.ts (5196, its
+    // own cash books) and settings-new-file.e2e.ts (5195, no settings file).
     projects: [
         {name: "dashboard", testMatch: "**/dashboard.e2e.ts"},
         {name: "customers", testMatch: "**/customers.e2e.ts", dependencies: ["dashboard"]},
         {name: "empty", testMatch: "**/empty.e2e.ts"},
         {name: "cash", testMatch: "**/cash.e2e.ts"},
+        {name: "settings", testMatch: "**/settings.e2e.ts"},
+        {name: "settings-new-file", testMatch: "**/settings-new-file.e2e.ts"},
         {
             name: "pages",
             testIgnore: [
@@ -130,6 +172,8 @@ export default defineConfig({
                 "**/library.e2e.ts",
                 "**/empty.e2e.ts",
                 "**/cash.e2e.ts",
+                "**/settings.e2e.ts",
+                "**/settings-new-file.e2e.ts",
                 "**/templates.e2e.ts",
                 "**/lists.e2e.ts",
                 "**/keyboard.e2e.ts",
