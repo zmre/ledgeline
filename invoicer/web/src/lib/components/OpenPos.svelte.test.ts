@@ -95,7 +95,7 @@ describe("COMPONENT OpenPos", () => {
         const onOpenFile = vi.fn();
         render(OpenPos, {usage: ATTACHED, onSave, ...hrefs, onOpenFile});
         const [first, second] = screen.getAllByTestId("po-attachment");
-        expect(within(first).getByTestId("po-attachment-link-outside").textContent).toBe("outside the books");
+        expect(within(first).getByTestId("po-attachment-link-outside").textContent).toBe("Outside the books");
         expect(first.textContent).not.toContain("[[");
         await fireEvent.click(within(first).getByRole("button", {name: "PO PY75334.pdf"}));
         expect(onOpenFile).toHaveBeenLastCalledWith("~/Documents/PO PY75334.pdf");

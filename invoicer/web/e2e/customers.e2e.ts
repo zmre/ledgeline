@@ -137,6 +137,51 @@ test.describe("customers over the accrual fixture (:5199)", () => {
         await expect(page).toHaveURL(/\/app\/invoices\/105$/);
     });
 
+    test("the contact card: who, what to do now, what is owed; its keys", async ({page}) => {
+        await open(page);
+        await page.goto("/app/customers/customers/Customer%20X");
+        await expect(page.getByTestId("customer-monogram")).toHaveText("CX");
+        await expect(page.getByTestId("customer-subtitle")).toHaveText(/^Organization · Billed via Coupa · Net 30$/);
+        // Labels for people, values as actions.
+        await expect(page.getByTestId("view-emails")).toContainText("Billing");
+        await expect(page.getByTestId("view-emails").getByRole("link", {name: "accounts_receivable@customerx.com"})).toHaveAttribute(
+            "href",
+            "mailto:accounts_receivable@customerx.com"
+        );
+        await expect(page.getByTestId("action-email")).toHaveAttribute("href", "mailto:accounts_receivable@customerx.com");
+        await expect(page.getByTestId("action-portal")).toHaveText(/Open Coupa/);
+        await expect(page.getByTestId("view-portal-supplier").getByRole("button", {name: "Copy supplier ID"})).toBeAttached();
+        // The ? sheet lists the page's keys.
+        await page.keyboard.press("?");
+        const sheet = page.getByTestId("key-help");
+        await expect(sheet).toContainText("Email the customer");
+        await expect(sheet).toContainText("Open the customer's portal");
+        await expect(sheet).toContainText("New invoice for this customer");
+        await expect(sheet).toContainText("Copy the supplier ID");
+        await expect(sheet).toContainText("Next invoice");
+        await page.keyboard.press("Escape");
+        // n: a new invoice for this customer, Create ready for Enter.
+        await page.keyboard.press("n");
+        await expect(page).toHaveURL(/\/app\/new\?customer=Customer%20X$/);
+        await expect(page.getByTestId("new-customer")).toHaveValue("Customer X");
+        await expect(page.getByTestId("new-create")).toBeFocused();
+    });
+
+    test("a narrow window: the card is one column, nothing scrolls sideways", async ({page}) => {
+        await page.setViewportSize({width: 375, height: 900});
+        await open(page);
+        await page.goto("/app/customers/customers/Customer%20X");
+        await expect(page.getByTestId("customer-heading")).toHaveText("Customer X");
+        const monogram = await page.getByTestId("customer-monogram").boundingBox();
+        const name = await page.getByTestId("customer-heading").boundingBox();
+        expect(monogram).not.toBeNull();
+        expect(name).not.toBeNull();
+        // The name sits under the monogram row, not beside it.
+        if (monogram !== null && name !== null) expect(name.y).toBeGreaterThanOrEqual(monogram.y + monogram.height);
+        const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+        expect(overflow).toBeLessThanOrEqual(0);
+    });
+
     test("links stay inside the app: a customer's page, a note's in-app view, and back", async ({page}) => {
         await open(page);
         await page.goto("/app/customers/customers/Customer%20X");
@@ -175,7 +220,7 @@ test.describe("customers over the accrual fixture (:5199)", () => {
         const account = page.getByRole("combobox", {name: "Revenue account"});
         await expect(account).toHaveValue("revenue:consulting");
         await account.fill("rev");
-        await expect(page.getByRole("listbox", {name: "Account suggestions"}).getByRole("option").first()).toContainText("revenue:");
+        await expect(page.getByRole("listbox", {name: "Account suggestions"}).getByRole("option").first()).toHaveText(/^revenue/);
         await account.press("Escape");
         await account.fill("revenue:consulting");
         // The notes, editable.
@@ -258,7 +303,7 @@ test.describe("customers over the accrual fixture (:5199)", () => {
         expect(after.endsWith("\nPays by ACH.\n")).toBe(true);
         // The view shows the save.
         await expect(page.getByTestId("view-phones")).toContainText("+1 206 555 0100");
-        await expect(page.getByTestId("view-terms")).toContainText("Net 30 days");
+        await expect(page.getByTestId("view-terms")).toContainText("Net 30");
     });
 
     test("adds a contract from the books folder by name", async ({page}) => {
