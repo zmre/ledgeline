@@ -172,6 +172,103 @@ describe("InvoiceEditor", () => {
         editor.dispose();
     });
 
+    // TW-4: the server wrote the file, then re-booking it failed.
+    const writeThen = (reply: Reply) => (body: Record<string, unknown>) => {
+        onDisk = {...onDisk, revision: `${onDisk.revision}+`, form: body.form as EditorState["form"]};
+        return reply;
+    };
+    const TODAY =
+        "the invoice was saved, but re-booking it failed: hledger rejected the journal: `amount` doesn't balance; fix it, then Re-book (or `ledgeline-invoicer rebook 108`)";
+
+    it("a save written but not re-booked is clean, says so, and its write is no conflict", async () => {
+        onDisk = state("r1", "Senior architect hours", "sent");
+        const editor = await opened();
+        rename(editor, "Mine");
+        saveReply = writeThen({status: 409, body: {error: TODAY, code: "refused"}});
+        expect(await editor.save({rebook: true})).toBeNull();
+        expect(editor.dirty).toBe(false);
+        expect(editor.revision).toBe("r1+");
+        expect(editor.confirmRebook).toBe(false);
+        expect(editor.saveError).toMatch(/^Saved, but not re-booked: hledger rejected the journal: /);
+        expect(editor.saveError).toMatch(/choose Re-book\.$/);
+        expect(editor.saveError).not.toMatch(/`|ledgeline-invoicer|fix it, then/);
+        // Its own write coming back.
+        await editor.diskChanged([onDisk.path]);
+        expect(editor.conflict).toBeNull();
+        expect(editor.form?.table?.rows[0][0]).toBe("Mine");
+        // The next save is over the new revision: no 409 `changed`.
+        saveReply = null;
+        rename(editor, "Mine again");
+        expect(await editor.save()).toBe("108");
+        expect(saves.at(-1)?.revision).toBe("r1+");
+        editor.dispose();
+    });
+
+    it("a change event while the save is in flight is looked at once it is done", async () => {
+        onDisk = state("r1", "Senior architect hours", "sent");
+        const editor = await opened();
+        rename(editor, "Mine");
+        saveReply = (body) => {
+            const reply = writeThen({status: 500, body: {error: TODAY, code: "hledger"}})(body);
+            void editor.diskChanged([onDisk.path]); // the watcher, before the answer
+            return reply;
+        };
+        await editor.save({rebook: true});
+        await vi.waitFor(() => expect(saves).toHaveLength(1));
+        await vi.runAllTimersAsync();
+        expect(editor.conflict).toBeNull();
+        expect(editor.dirty).toBe(false);
+        editor.dispose();
+    });
+
+    it("trusts a new server's error that names the written revision, even if the file reads back differently", async () => {
+        onDisk = state("r1", "Senior architect hours", "sent");
+        const editor = await opened();
+        rename(editor, "Mine");
+        saveReply = () => {
+            onDisk = state("r7", "Mine (normalised)", "sent");
+            return {
+                status: 422,
+                body: {error: "Saved, but not re-booked: the books are closed through 2026-12-31.", code: "saved-not-rebooked", revision: "r7"},
+            };
+        };
+        await editor.save({rebook: true});
+        expect(editor.revision).toBe("r7");
+        expect(editor.dirty).toBe(false);
+        expect(editor.saveError).toBe(
+            "Saved, but not re-booked: the books are closed through 2026-12-31. The file has your changes; the books don't yet. Fix the problem, then choose Re-book."
+        );
+        editor.dispose();
+    });
+
+    it("a save refused before anything is written stays unsaved, with the server's reason", async () => {
+        onDisk = state("r1", "Senior architect hours", "sent");
+        const editor = await opened();
+        rename(editor, "Mine");
+        saveReply = () => ({status: 409, body: {error: "it is dated on or before the books' closed-through date", code: "refused"}});
+        await editor.save({rebook: true});
+        expect(editor.dirty).toBe(true);
+        expect(editor.revision).toBe("r1");
+        expect(editor.saveError).toBe("It is dated on or before the books' closed-through date");
+        editor.dispose();
+    });
+
+    it("a failed save that meets someone else's write keeps the edits, and the write is a conflict", async () => {
+        const editor = await opened();
+        rename(editor, "Mine");
+        saveReply = () => {
+            onDisk = state("r2", "Theirs");
+            return {status: 500, body: {error: "the disk is full"}};
+        };
+        await editor.save();
+        expect(editor.dirty).toBe(true);
+        expect(editor.revision).toBe("r1");
+        expect(editor.saveError).toBe("The disk is full");
+        await editor.diskChanged([onDisk.path]);
+        expect(editor.conflict?.revision).toBe("r2");
+        editor.dispose();
+    });
+
     it("drops a compute answer for a form edited since", async () => {
         const editor = await opened();
         rename(editor, "One");

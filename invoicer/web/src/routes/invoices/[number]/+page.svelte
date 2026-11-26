@@ -12,7 +12,7 @@
      Keyboard (PLAN 5k): `e` edits it; Shift+P exports its PDF (SendPanel); `a`
      applies a payment (cash books, a sent invoice not paid in full). -->
 <script lang="ts">
-    import {onMount, untrack} from "svelte";
+    import {onMount} from "svelte";
     import {goto} from "$app/navigation";
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
@@ -26,7 +26,7 @@
     import SendSection from "#lib/components/SendSection.svelte";
     import TemplatePicker from "#lib/components/TemplatePicker.svelte";
     import TotalsNotice from "#lib/components/TotalsNotice.svelte";
-    import {changes} from "#lib/changes.svelte.js";
+    import {onFilesChanged} from "#lib/changes.svelte.js";
     import StatusBadge from "#lib/components/StatusBadge.svelte";
     import ApplyPaymentDialog from "#lib/components/ApplyPaymentDialog.svelte";
     import {errorText} from "#lib/labels.js";
@@ -135,15 +135,9 @@
 
     // Live reload: a file changed on disk (this invoice, its template, a
     // wikilinked note, the journal), so show it all again.
-    let seenSeq = changes.seq;
-    $effect(() => {
-        const seq = changes.seq;
-        if (seq === seenSeq) return;
-        seenSeq = seq;
-        untrack(() => {
-            refreshAll(number);
-            loadTemplates();
-        });
+    onFilesChanged(() => {
+        refreshAll(number);
+        loadTemplates();
     });
 
     // The invoice's own writes: its template, its amounts (F9, F10).

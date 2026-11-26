@@ -17,7 +17,7 @@
     import AsyncSection from "#ui/components/AsyncSection.svelte";
     import type {DataView} from "#ui/ui/dataView.js";
     import {fetchDashboard, openInLedgeline} from "#lib/api.js";
-    import {changes} from "#lib/changes.svelte.js";
+    import {onFilesChanged} from "#lib/changes.svelte.js";
     import {paidDaysParam, paidDaysQuery, type Dashboard} from "#lib/dashboard.js";
     import {errorText} from "#lib/labels.js";
     import DashboardView from "#lib/components/DashboardView.svelte";
@@ -78,13 +78,7 @@
     }
 
     // Live reload: again after a change on disk, the old one on screen meanwhile.
-    let seenSeq = changes.seq;
-    $effect(() => {
-        const seq = changes.seq;
-        if (seq === seenSeq) return;
-        seenSeq = seq;
-        untrack(() => load(paidDays));
-    });
+    onFilesChanged(() => load(paidDays));
 
     function openLedgeline(): void {
         opening = true;

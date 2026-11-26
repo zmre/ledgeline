@@ -13,7 +13,7 @@
     import {goto} from "$app/navigation";
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
-    import {changes} from "#lib/changes.svelte.js";
+    import {onFilesChanged} from "#lib/changes.svelte.js";
     import {errorText} from "#lib/labels.js";
     import {createTemplate, fetchTemplateList, templateParam, type TemplateListEntry} from "#lib/templates.js";
     import EmptyState from "#lib/components/EmptyState.svelte";
@@ -78,13 +78,7 @@
 
     onMount(() => void load());
 
-    let seenSeq = changes.seq;
-    $effect(() => {
-        const seq = changes.seq;
-        if (seq === seenSeq) return;
-        seenSeq = seq;
-        untrack(() => void load());
-    });
+    onFilesChanged(() => void load());
 </script>
 
 <svelte:head>

@@ -12,7 +12,7 @@
     import AsyncSection from "#ui/components/AsyncSection.svelte";
     import type {DataView} from "#ui/ui/dataView.js";
     import {fetchInvoices} from "#lib/api.js";
-    import {changes} from "#lib/changes.svelte.js";
+    import {onFilesChanged} from "#lib/changes.svelte.js";
     import {fetchCustomers} from "#lib/customers.js";
     import type {InvoiceEntry} from "#lib/invoices.js";
     import {
@@ -106,15 +106,9 @@
 
     // Live reload: the list again after a change on disk, the old one on
     // screen meanwhile; the customer names too.
-    let seenSeq = changes.seq;
-    $effect(() => {
-        const seq = changes.seq;
-        if (seq === seenSeq) return;
-        seenSeq = seq;
-        untrack(() => {
-            load(queryString);
-            loadCustomers();
-        });
+    onFilesChanged(() => {
+        load(queryString);
+        loadCustomers();
     });
 
     const shown = $derived(shownInvoiceSort(query));
