@@ -22,6 +22,7 @@
     import {today} from "#lib/reports/periods.js";
     import {METRIC_HELP} from "./metricHelp";
     import {boxVisibility, runwayText, sameSpan, showsStartup} from "./startup";
+    import TopPayeesList from "./TopPayeesList.svelte";
     import TopTxnsList from "./TopTxnsList.svelte";
 
     let {params = $bindable(), serverUrl, styles}: {params: ReportParams; serverUrl: string | null; styles: ReadonlyMap<string, AmountStyle>} = $props();
@@ -212,7 +213,7 @@
                     {/snippet}
                 </AsyncSection>
 
-                <!-- Boxes 7–10: the "biggest / top" lists (current period). `hasPrevious`
+                <!-- Boxes 7–11: the "biggest / top" lists (current period). `hasPrevious`
              lets an empty list say "not enough history" rather than "no changes". -->
                 <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <ChangeList
@@ -239,6 +240,7 @@
                         testid="insights-box-revenuechanges"
                     />
                     <TopTxnsList rows={report.topTxns} {base} {styles} testid="insights-box-toptxns" />
+                    <TopPayeesList rows={report.topPayees} {base} {styles} from={period.currStart} to={period.currEnd} testid="insights-box-toppayees" />
                 </div>
             {/snippet}
         </AsyncSection>

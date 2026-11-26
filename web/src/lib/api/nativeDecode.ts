@@ -174,6 +174,7 @@ import type {
     InvestmentPerf,
     MetricDelta,
     MoverRow,
+    PayeeRow,
     PerfPoint,
     Subscription,
     SubscriptionsReport,
@@ -909,6 +910,14 @@ interface RawTopTxn {
     recognition?: {month?: unknown; count?: unknown};
 }
 
+interface RawPayeeRow {
+    payee?: string;
+    current?: RawDec;
+    previous?: RawDec | null;
+    delta?: RawDec | null;
+    pct?: number | null;
+}
+
 interface RawInsightsReport {
     period?: RawInsightsPeriod;
     base?: string;
@@ -923,6 +932,7 @@ interface RawInsightsReport {
     revenueChanges?: RawChangeRow[];
     movers?: RawMoverRow[];
     topTxns?: RawTopTxn[];
+    topPayees?: RawPayeeRow[];
     hasHoldings?: boolean;
 }
 
@@ -3511,6 +3521,18 @@ function decodeTopTxn(raw: RawTopTxn | undefined, context: string): TopTxn {
     });
 }
 
+/** A Top Payees row; `previous`/`delta`/`pct` are null for a payee new this period. */
+function decodePayeeRow(raw: RawPayeeRow | undefined, context: string): PayeeRow {
+    if (raw === undefined || raw === null || typeof raw.payee !== "string") throw new ApiShapeError(`${context}: missing payee`);
+    return Object.freeze({
+        payee: raw.payee,
+        current: decodeDec(raw.current, `${context} current`),
+        previous: decodeOptDec(raw.previous, `${context} previous`),
+        delta: decodeOptDec(raw.delta, `${context} delta`),
+        pct: typeof raw.pct === "number" ? raw.pct : null,
+    });
+}
+
 /** Plan 45 Q7, additive: `{month: "YYYY-MM", count}` on a line standing for a month of recognition entries. */
 function decodeTopRecognition(raw: RawTopTxn["recognition"], context: string): {month: string; count: number} | null {
     if (raw === undefined) return null;
@@ -3587,6 +3609,7 @@ export function decodeInsightsReport(raw: unknown): InsightsReport {
         revenueChanges: frozen((report.revenueChanges ?? []).map((row, i) => decodeChangeRow(row, `insights revenueChanges[${i}]`))),
         movers: frozen((report.movers ?? []).map((row, i) => decodeMoverRow(row, `insights movers[${i}]`))),
         topTxns: frozen((report.topTxns ?? []).map((row, i) => decodeTopTxn(row, `insights topTxns[${i}]`))),
+        topPayees: frozen((report.topPayees ?? []).map((row, i) => decodePayeeRow(row, `insights topPayees[${i}]`))),
         hasHoldings: decodeBoolean(report.hasHoldings, "insights hasHoldings"),
     });
 }

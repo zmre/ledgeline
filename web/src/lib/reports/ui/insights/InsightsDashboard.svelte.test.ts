@@ -93,6 +93,7 @@ function insightsReport(over: Partial<InsightsReport> = {}): InsightsReport {
         revenueChanges: [],
         movers: [{symbol: "VTI", name: "Vanguard Total", gain: dec(1000, 2), gainPct: 3.1, startEstimated: false}],
         topTxns: [],
+        topPayees: [],
         hasHoldings: true,
         ...over,
     };
@@ -114,7 +115,19 @@ beforeEach(() => {
 describe("COMPONENT InsightsDashboard — hide rules", () => {
     it("a household journal keeps all of today's boxes and shows no startup section", () => {
         mount(insightsReport(), householdReport());
-        for (const box of ["revenue", "expenses", "networth", "costofliving", "investment", "cash", "expensechanges", "movers", "revenuechanges", "toptxns"]) {
+        for (const box of [
+            "revenue",
+            "expenses",
+            "networth",
+            "costofliving",
+            "investment",
+            "cash",
+            "expensechanges",
+            "movers",
+            "revenuechanges",
+            "toptxns",
+            "toppayees",
+        ]) {
             expect(screen.getByTestId(`insights-box-${box}`)).toBeTruthy();
         }
         expect(screen.queryByTestId("insights-box-runway")).toBeNull();
@@ -191,7 +204,19 @@ describe("COMPONENT InsightsDashboard — (i) help", () => {
     it("every box and list of a household's dashboard has its help", () => {
         mount(insightsReport(), householdReport());
         expect(expectEveryBoxHelped().sort()).toEqual(
-            ["cash", "costofliving", "expensechanges", "expenses", "investment", "movers", "networth", "revenue", "revenuechanges", "toptxns"].sort()
+            [
+                "cash",
+                "costofliving",
+                "expensechanges",
+                "expenses",
+                "investment",
+                "movers",
+                "networth",
+                "revenue",
+                "revenuechanges",
+                "toptxns",
+                "toppayees",
+            ].sort()
         );
     });
 

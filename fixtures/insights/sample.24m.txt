@@ -471,6 +471,180 @@ InsightsReport {
             recognition: None,
         },
     ],
+    top_payees: [
+        PayeeRow {
+            payee: "Oakview Properties",
+            current: Dec {
+                mantissa: 2250000,
+                places: 2,
+            },
+            previous: Some(
+                Dec {
+                    mantissa: 2340000,
+                    places: 2,
+                },
+            ),
+            delta: Some(
+                Dec {
+                    mantissa: -90000,
+                    places: 2,
+                },
+            ),
+            pct: Some(
+                -3.8461538461538463,
+            ),
+        },
+        PayeeRow {
+            payee: "vehicle depreciation FY2026",
+            current: Dec {
+                mantissa: 350000,
+                places: 2,
+            },
+            previous: None,
+            delta: None,
+            pct: None,
+        },
+        PayeeRow {
+            payee: "City Power & Light",
+            current: Dec {
+                mantissa: 142327,
+                places: 2,
+            },
+            previous: Some(
+                Dec {
+                    mantissa: 141079,
+                    places: 2,
+                },
+            ),
+            delta: Some(
+                Dec {
+                    mantissa: 1248,
+                    places: 2,
+                },
+            ),
+            pct: Some(
+                0.8846107500053175,
+            ),
+        },
+        PayeeRow {
+            payee: "Safeway",
+            current: Dec {
+                mantissa: 87110,
+                places: 2,
+            },
+            previous: Some(
+                Dec {
+                    mantissa: 105298,
+                    places: 2,
+                },
+            ),
+            delta: Some(
+                Dec {
+                    mantissa: -18188,
+                    places: 2,
+                },
+            ),
+            pct: Some(
+                -17.272882675834296,
+            ),
+        },
+        PayeeRow {
+            payee: "Costco",
+            current: Dec {
+                mantissa: 86650,
+                places: 2,
+            },
+            previous: Some(
+                Dec {
+                    mantissa: 84571,
+                    places: 2,
+                },
+            ),
+            delta: Some(
+                Dec {
+                    mantissa: 2079,
+                    places: 2,
+                },
+            ),
+            pct: Some(
+                2.4582894845750864,
+            ),
+        },
+        PayeeRow {
+            payee: "Hotel Adlon",
+            current: Dec {
+                mantissa: 699825000,
+                places: 6,
+            },
+            previous: None,
+            delta: None,
+            pct: None,
+        },
+        PayeeRow {
+            payee: "Trader Joe's",
+            current: Dec {
+                mantissa: 62055,
+                places: 2,
+            },
+            previous: Some(
+                Dec {
+                    mantissa: 77002,
+                    places: 2,
+                },
+            ),
+            delta: Some(
+                Dec {
+                    mantissa: -14947,
+                    places: 2,
+                },
+            ),
+            pct: Some(
+                -19.41118412508766,
+            ),
+        },
+        PayeeRow {
+            payee: "Delta Airlines",
+            current: Dec {
+                mantissa: 41280,
+                places: 2,
+            },
+            previous: None,
+            delta: None,
+            pct: None,
+        },
+        PayeeRow {
+            payee: "Hotel Laimer Hof",
+            current: Dec {
+                mantissa: 239820000,
+                places: 6,
+            },
+            previous: None,
+            delta: None,
+            pct: None,
+        },
+        PayeeRow {
+            payee: "Bistro Nouveau",
+            current: Dec {
+                mantissa: 22665,
+                places: 2,
+            },
+            previous: Some(
+                Dec {
+                    mantissa: 21705,
+                    places: 2,
+                },
+            ),
+            delta: Some(
+                Dec {
+                    mantissa: 960,
+                    places: 2,
+                },
+            ),
+            pct: Some(
+                4.422944022114717,
+            ),
+        },
+    ],
     has_holdings: true,
     meta: None,
 }

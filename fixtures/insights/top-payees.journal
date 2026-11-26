@@ -1,0 +1,110 @@
+; Top Payees fixture (Insights Box 11).
+;
+; Asked for over 2025-01-01 .. 2025-12-31, the dashboard splits the year at
+; 2025-06-30: previous = Jan–Jun, current = Jul–Dec. Expected current-period
+; ranking with the default tax exclusion:
+;
+;   Wells Fargo    $880.00  prev $900.00   mortgage INTEREST is an expense posting
+;   Costco         $700.00  prev $500.00   $800 of purchases less a $100 refund
+;   Whole Foods    $400.00  prev $150.00   the cashback leg does not hide it
+;   Hardware Store  $75.00  new            costs booked outside expenses:, by type
+;   Cafe Roma       $60.00  new
+;
+; Never listed: Chase (card payments move money between accounts and have no
+; expense leg), Acme Corp (a paycheck; its withholding is not spending at the
+; employer) and IRS (taxes are excluded by default; with `exclude=` it tops the
+; list at $2,500.00).
+
+account assets:checking               ; type: C
+account liabilities:card              ; type: L
+account liabilities:mortgage          ; type: L
+account equity:opening                ; type: E
+account income:salary                 ; type: R
+account income:rewards                ; type: R
+account expenses                      ; type: X
+account expenses:groceries
+account expenses:shopping
+account expenses:insurance:health
+account expenses:interest:mortgage
+account expenses:taxes:federal
+account household:supplies            ; type: X
+
+2025-01-02 Opening balances
+    assets:checking               $50,000.00
+    equity:opening
+
+; ---------- previous half (Jan–Jun) ----------
+
+2025-02-10 Costco | groceries
+    expenses:groceries               $300.00
+    liabilities:card
+
+2025-03-10 Costco | household
+    expenses:shopping                $200.00
+    liabilities:card
+
+2025-03-15 Whole Foods | groceries
+    expenses:groceries               $150.00
+    liabilities:card
+
+2025-04-01 Wells Fargo | mortgage payment
+    expenses:interest:mortgage       $900.00
+    liabilities:mortgage             $600.00
+    assets:checking
+
+2025-04-15 Chase | card payment
+    liabilities:card                 $650.00
+    assets:checking
+
+2025-05-01 Acme Corp | May salary
+    income:salary                 $-5,000.00
+    expenses:taxes:federal         $1,000.00
+    expenses:insurance:health        $200.00
+    assets:checking
+
+2025-06-01 IRS | estimated tax
+    expenses:taxes:federal         $2,500.00
+    assets:checking
+
+; ---------- current half (Jul–Dec) ----------
+
+2025-07-10 Costco | groceries and household
+    expenses:groceries               $500.00
+    expenses:shopping                $300.00
+    liabilities:card
+
+2025-08-10 Costco | return
+    expenses:shopping               $-100.00
+    liabilities:card
+
+2025-08-12 Whole Foods | groceries
+    expenses:groceries               $400.00
+    income:rewards                    $-8.00
+    liabilities:card
+
+2025-09-01 Wells Fargo | mortgage payment
+    expenses:interest:mortgage       $880.00
+    liabilities:mortgage             $620.00
+    assets:checking
+
+2025-09-15 Chase | card payment
+    liabilities:card               $1,092.00
+    assets:checking
+
+2025-10-01 Acme Corp | October salary
+    income:salary                 $-5,000.00
+    expenses:taxes:federal         $1,000.00
+    expenses:insurance:health        $200.00
+    assets:checking
+
+2025-10-05 IRS | estimated tax
+    expenses:taxes:federal         $2,500.00
+    assets:checking
+
+2025-11-03 Hardware Store | cleaning supplies
+    household:supplies                $75.00
+    liabilities:card
+
+2025-12-06 Cafe Roma | lunch
+    expenses:groceries                $60.00
+    liabilities:card

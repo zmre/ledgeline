@@ -19,6 +19,7 @@ import {
     fmtSignedPct,
     growthLine,
     monthlyAverage,
+    payeeChange,
     pointsLine,
     signClass,
 } from "./format";
@@ -163,5 +164,26 @@ describe("startup-metrics format helpers (plans/37)", () => {
         expect(metric.delta.get("$")).toEqual(d(27000n, 0));
         expect(metric.pct).toBeCloseTo(62.5, 10);
         expect(baseMetric(d(1n, 0), d(0n, 0), "$").pct).toBeNull();
+    });
+});
+
+describe("payeeChange", () => {
+    test("reads like the other deltas: spending up is red, with the engine's percent", () => {
+        const change = payeeChange({payee: "Costco", current: d(70000n, 2), previous: d(50000n, 2), delta: d(20000n, 2), pct: 40}, "$", styles);
+        expect(change).toEqual({arrow: "▲", text: "$200.00 (40.0%)", klass: "text-error"});
+    });
+
+    test("spending down is green", () => {
+        const change = payeeChange({payee: "Rent", current: d(88000n, 2), previous: d(90000n, 2), delta: d(-2000n, 2), pct: -2.2222}, "$", styles);
+        expect(change).toEqual({arrow: "▼", text: "$20.00 (2.2%)", klass: "text-success"});
+    });
+
+    test("a previous total of zero has a change but no percent", () => {
+        const change = payeeChange({payee: "Even", current: d(2000n, 2), previous: d(0n, 0), delta: d(2000n, 2), pct: null}, "$", styles);
+        expect(change?.text).toBe("$20.00");
+    });
+
+    test("a payee new this period has no change line at all", () => {
+        expect(payeeChange({payee: "Cafe", current: d(6000n, 2), previous: null, delta: null, pct: null}, "$", styles)).toBeNull();
     });
 });
