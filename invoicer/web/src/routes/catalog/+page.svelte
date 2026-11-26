@@ -17,11 +17,12 @@
      focused item. -->
 <script lang="ts">
     import {onMount, tick, untrack} from "svelte";
-    import {beforeNavigate, goto} from "$app/navigation";
+    import {goto} from "$app/navigation";
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
     import {registerKeys} from "#ui/keys/keymap.svelte.js";
-    import {changes} from "#lib/changes.svelte.js";
+    import {onFilesChanged} from "#lib/changes.svelte.js";
+    import {unsavedGuard} from "#lib/unsavedGuard.svelte.js";
     import type {GridForm} from "#lib/editor.js";
     import {EditorApiError, fetchEditorOptions} from "#lib/editorApi.js";
     import {
@@ -64,9 +65,15 @@
     /** The hash this page last wrote: its own save coming back isn't a conflict. */
     let lastSaved = "";
 
-    /** What waits on Save / Discard / Cancel over unsaved edits: leaving, or another catalog. */
-    let pending = $state<{then: () => void} | null>(null);
-    let pendingError = $state<string | null>(null);
+    /** Save / Discard / Cancel over unsaved edits: leaving, or another catalog. */
+    const guard = unsavedGuard({
+        dirty: () => dirty,
+        save: async () => ((await save()) ? "saved" : "failed"),
+        discard: () => discard(),
+        saveError: () => saveError,
+        conflict: () => conflict !== null,
+        noun: "catalog",
+    });
 
     const ownProblems = $derived(table === null ? [] : catalogProblems(table));
     const problems = $derived([...ownProblems, ...serverProblems.filter((p) => !ownProblems.some((o) => o.row === p.row && o.column === p.column))]);
@@ -193,26 +200,7 @@
             chosen = path;
             if (list !== null) adopt(list);
         };
-        if (dirty) ask(open);
-        else open();
-    }
-
-    function ask(then: () => void): void {
-        pending = {then};
-        pendingError = null;
-    }
-
-    function carryOn(): void {
-        const then = pending?.then;
-        pending = null;
-        pendingError = null;
-        then?.();
-    }
-
-    async function saveAndCarryOn(): Promise<void> {
-        if (pending === null) return;
-        if (await save()) carryOn();
-        else pendingError = saveError ?? (conflict !== null ? "The catalog changed on disk; reload it or keep yours first." : null);
+        guard.proceed(open);
     }
 
     function discard(): void {
@@ -238,36 +226,14 @@
         ],
     });
 
-    beforeNavigate(({cancel, to, type}) => {
-        // The same page with another query (the New menu's `?new=1`) isn't leaving.
-        if (to === null || to.url.pathname === page.url.pathname || !dirty) return;
-        cancel();
-        // Closing the window or reloading: the browser's own prompt.
-        if (type === "leave") return;
-        const href = to.url.pathname + to.url.search + to.url.hash;
-        // eslint-disable-next-line svelte/no-navigation-without-resolve -- a URL SvelteKit itself was navigating to
-        ask(() => void goto(href));
-    });
-
     onMount(() => {
         void load();
         fetchEditorOptions()
             .then((o) => (accounts = o.accounts))
             .catch((e: unknown) => console.warn("accounts:", e));
-        const warn = (event: BeforeUnloadEvent): void => {
-            if (dirty) event.preventDefault();
-        };
-        window.addEventListener("beforeunload", warn);
-        return () => window.removeEventListener("beforeunload", warn);
     });
 
-    let seenSeq = changes.seq;
-    $effect(() => {
-        const seq = changes.seq;
-        if (seq === seenSeq) return;
-        seenSeq = seq;
-        untrack(() => void refresh());
-    });
+    onFilesChanged(() => void refresh());
 </script>
 
 <svelte:head>
@@ -379,19 +345,13 @@
     {/if}
 </div>
 
-{#if pending !== null}
+{#if guard.pending !== null}
     <SaveDiscardDialog
         message="The catalog has unsaved changes. Save them first?"
         {saving}
-        error={pendingError}
-        onSave={() => void saveAndCarryOn()}
-        onDiscard={() => {
-            discard();
-            carryOn();
-        }}
-        onCancel={() => {
-            pending = null;
-            pendingError = null;
-        }}
+        error={guard.error}
+        onSave={() => void guard.save()}
+        onDiscard={() => void guard.discard()}
+        onCancel={() => guard.cancel()}
     />
 {/if}

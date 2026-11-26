@@ -9,7 +9,7 @@
     import {page} from "$app/state";
     import AsyncSection from "#ui/components/AsyncSection.svelte";
     import type {DataView} from "#ui/ui/dataView.js";
-    import {changes} from "#lib/changes.svelte.js";
+    import {onFilesChanged} from "#lib/changes.svelte.js";
     import {fetchCustomers, routeParam, type CustomerRow} from "#lib/customers.js";
     import {
         clearCustomerFilters,
@@ -86,13 +86,7 @@
     }
 
     // Live reload: the list again after a change on disk.
-    let seenSeq = changes.seq;
-    $effect(() => {
-        const seq = changes.seq;
-        if (seq === seenSeq) return;
-        seenSeq = seq;
-        untrack(() => load(queryString));
-    });
+    onFilesChanged(() => load(queryString));
 
     const shown = $derived(shownCustomerSort(query));
     // The New button shows with any customers, or while filters may be hiding them (H21).
