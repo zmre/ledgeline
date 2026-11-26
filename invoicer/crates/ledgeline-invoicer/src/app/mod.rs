@@ -68,6 +68,9 @@ pub(crate) static APP: AppIdentity = AppIdentity {
     token_env: "LEDGELINE_INVOICER_TOKEN",
     token_global: "__LEDGELINE_TOKEN__",
     embedded_global: "__LEDGELINE_EMBEDDED__",
+    // `SPA_BASE` with its trailing slash: MBR's pages share the origin, so
+    // the window shows, and the token reaches, only the SPA under `/app/`.
+    spa_base: "/app/",
 };
 
 /// `--server`'s default port. Ledgeline's e2e uses 5099 and 4173, so the
@@ -250,3 +253,42 @@ mod payments_tests;
 mod spa_shell_csp_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod identity_tests {
+    use ledgeline_shell::security::{AccessToken, in_spa, token_init_script};
+
+    use super::{APP, SPA_BASE};
+
+    /// The shell's SPA base is the router's mount with its trailing slash, so
+    /// the window and the token follow wherever the SPA is served.
+    #[test]
+    fn the_shells_spa_base_is_the_routers_mount() {
+        assert_eq!(APP.spa_base, format!("{SPA_BASE}/"));
+    }
+
+    /// SEC-6: the window and the token reach the SPA only, never an MBR page
+    /// on the same origin.
+    #[test]
+    fn only_the_spa_is_the_app() {
+        let origin = "http://127.0.0.1:5199";
+        assert!(in_spa(origin, APP.spa_base, "http://127.0.0.1:5199/app/"));
+        assert!(in_spa(
+            origin,
+            APP.spa_base,
+            "http://127.0.0.1:5199/app/new"
+        ));
+        assert!(!in_spa(origin, APP.spa_base, "http://127.0.0.1:5199/"));
+        assert!(!in_spa(
+            origin,
+            APP.spa_base,
+            "http://127.0.0.1:5199/customers/contracts/sow.html"
+        ));
+        let token = AccessToken::parse("token-for-unit-tests").expect("well-formed");
+        let script = token_init_script(&APP, origin, &token);
+        assert!(
+            script.contains("window.location.pathname.startsWith(\"/app/\")"),
+            "{script}"
+        );
+    }
+}

@@ -408,6 +408,44 @@ impl Security {
     }
 }
 
+/// Is `candidate` a document of the app's own SPA: on `origin` exactly
+/// (`http://127.0.0.1:<port>`, no trailing slash) and under `spa_base`
+/// ([`AppIdentity::spa_base`])?
+///
+/// The test the desktop window applies to every page its main frame commits
+/// to. `candidate` is parsed the way the WebView parses it (WHATWG URL rules,
+/// via `url`), so dot segments are resolved first, `%2e%2e` included, and
+/// `/app/../note.md` is judged as `/note.md`. A percent-encoded slash stays
+/// encoded, so `/app%2f..` is not under `/app/`; the server routes on the
+/// same encoded path, so whatever this accepts, the server hands to the SPA.
+/// The comparison is case-sensitive, as the server's routes are.
+///
+/// Refused: any other scheme, host or port (credentials in the URL change the
+/// host, not the origin, so they cannot smuggle one in), `about:`, `data:`
+/// and `javascript:` URLs (their origins are opaque), `blob:` URLs (even our
+/// own: a blob document is not the SPA), and on our own
+/// origin any path outside `spa_base`, except the base itself without its
+/// trailing slash (`/app`, which the invoicer's router also serves the SPA
+/// on).
+#[must_use]
+pub fn in_spa(origin: &str, spa_base: &str, candidate: &str) -> bool {
+    let Ok(url) = url::Url::parse(candidate) else {
+        return false;
+    };
+    // `blob:http://…` has its creator's (tuple) origin, so the scheme is
+    // checked too: only an http(s) document is ever the SPA.
+    let candidate_origin = url.origin();
+    matches!(url.scheme(), "http" | "https")
+        && candidate_origin.is_tuple()
+        && candidate_origin.ascii_serialization() == origin
+        && path_in_spa(spa_base, url.path())
+}
+
+/// Is the (already normalized) `path` under `spa_base`? `/` covers every path.
+fn path_in_spa(spa_base: &str, path: &str) -> bool {
+    spa_base == "/" || path.starts_with(spa_base) || path == spa_base.trim_end_matches('/')
+}
+
 /// The initialization script that hands the WebView its access token, as the
 /// `window` global the app's SPA reads ([`AppIdentity::token_global`]).
 ///
@@ -418,20 +456,38 @@ impl Security {
 /// the shell is served unauthenticated, so anything that can reach loopback can
 /// read it, and it used to carry the token for exactly that reason. wry runs this
 /// at document start, before the page's own scripts, outside the page's CSP —
-/// but on EVERY document the main frame loads, whatever its origin. The
-/// navigation handler already confines the WebView to our origin; the
-/// `location.origin` check means a document from anywhere else would still get
-/// nothing, should one ever load.
+/// but on EVERY document the main frame loads, whatever it is. So the script
+/// checks two things before it hands anything over:
 ///
-/// Both values are serialized as JSON string literals rather than interpolated
+/// * `location.origin` is ours exactly. The navigation handler already keeps
+///   the WebView on our origin; this means a document from anywhere else would
+///   still get nothing, should one ever load.
+/// * `location.pathname` is under the app's SPA base
+///   ([`AppIdentity::spa_base`], the same rule as [`in_spa`]), so a page that
+///   shares the origin but is not the SPA (the invoicer's MBR pages) gets
+///   nothing either, even if it reached the main frame. An app whose SPA is
+///   the whole origin (`/`) gets the origin check alone, which keeps its
+///   script, the iOS host's included, exactly as it was.
+///
+/// The values are serialized as JSON string literals rather than interpolated
 /// raw. [`AccessToken::parse`] already restricts the token to a safe character
-/// set, and the origin is ours, so this is belt and braces — but it costs
-/// nothing and does not depend on either staying true.
+/// set, and the origin and base are ours, so this is belt and braces — but it
+/// costs nothing and does not depend on any of them staying true.
 #[must_use]
 pub fn token_init_script(app: &AppIdentity, origin: &str, token: &AccessToken) -> String {
     let literal = |value: &str| serde_json::Value::from(value).to_string();
+    let path_guard = if app.spa_base == "/" {
+        String::new()
+    } else {
+        format!(
+            " && (window.location.pathname === {bare} \
+             || window.location.pathname.startsWith({base}))",
+            bare = literal(app.spa_base.trim_end_matches('/')),
+            base = literal(app.spa_base),
+        )
+    };
     format!(
-        "if (window.location.origin === {origin}) {{ window.{global} = {token}; }}",
+        "if (window.location.origin === {origin}{path_guard}) {{ window.{global} = {token}; }}",
         origin = literal(origin),
         global = app.token_global,
         token = literal(token.as_str()),
@@ -837,22 +893,178 @@ mod tests {
     /// The token goes to the WebView by initialization script, and only to a
     /// document on our exact origin — the script itself runs on every document
     /// the main frame loads.
+    const WHOLE_ORIGIN: AppIdentity = AppIdentity {
+        name: "Ledgeline",
+        bundle_id: "com.zmre.ledgeline",
+        log_prefix: "ledgeline",
+        token_env: "LEDGELINE_TOKEN",
+        token_global: "__LEDGELINE_TOKEN__",
+        embedded_global: "__LEDGELINE_EMBEDDED__",
+        spa_base: "/",
+    };
+
+    const UNDER_APP: AppIdentity = AppIdentity {
+        name: "Ledgeline Invoicer",
+        bundle_id: "com.zmre.ledgeline.invoicer",
+        log_prefix: "ledgeline-invoicer",
+        token_env: "LEDGELINE_INVOICER_TOKEN",
+        token_global: "__LEDGELINE_TOKEN__",
+        embedded_global: "__LEDGELINE_EMBEDDED__",
+        spa_base: "/app/",
+    };
+
     #[test]
     fn the_token_script_is_guarded_by_our_exact_origin() {
-        let app = AppIdentity {
-            name: "Ledgeline",
-            bundle_id: "com.zmre.ledgeline",
-            log_prefix: "ledgeline",
-            token_env: "LEDGELINE_TOKEN",
-            token_global: "__LEDGELINE_TOKEN__",
-            embedded_global: "__LEDGELINE_EMBEDDED__",
-        };
-        let script = token_init_script(&app, "http://127.0.0.1:5000", &sample_token());
+        // A SPA that is the whole origin: the origin check alone, unchanged
+        // from before the path guard (the iOS host relies on this).
+        let script = token_init_script(&WHOLE_ORIGIN, "http://127.0.0.1:5000", &sample_token());
         assert_eq!(
             script,
             "if (window.location.origin === \"http://127.0.0.1:5000\") \
              { window.__LEDGELINE_TOKEN__ = \"token-for-unit-tests\"; }"
         );
+    }
+
+    /// SEC-6: a SPA under a base hands the token only to documents under it,
+    /// not to every page that shares the origin.
+    #[test]
+    fn the_token_script_is_guarded_by_the_spa_base_too() {
+        let script = token_init_script(&UNDER_APP, "http://127.0.0.1:5000", &sample_token());
+        assert_eq!(
+            script,
+            "if (window.location.origin === \"http://127.0.0.1:5000\" \
+             && (window.location.pathname === \"/app\" \
+             || window.location.pathname.startsWith(\"/app/\"))) \
+             { window.__LEDGELINE_TOKEN__ = \"token-for-unit-tests\"; }"
+        );
+    }
+
+    /// The script's guard and [`in_spa`] are one rule: evaluate the guard
+    /// against what `location` would hold for each URL (`url` parses as WebKit
+    /// does) and compare.
+    #[test]
+    fn the_token_scripts_path_guard_agrees_with_in_spa() {
+        let origin = "http://127.0.0.1:5000";
+        for candidate in [
+            "http://127.0.0.1:5000/app",
+            "http://127.0.0.1:5000/app/",
+            "http://127.0.0.1:5000/app/invoices/7?x=1#y",
+            "http://127.0.0.1:5000/app/../notes/x.md",
+            "http://127.0.0.1:5000/app/%2e%2e/notes/x.md",
+            "http://127.0.0.1:5000/app%2f../notes/x.md",
+            "http://127.0.0.1:5000/apps/",
+            "http://127.0.0.1:5000/App/",
+            "http://127.0.0.1:5000/customers/contracts/sow.html",
+            "http://127.0.0.1:5000/",
+        ] {
+            let url = url::Url::parse(candidate).expect("test URL parses");
+            let pathname = url.path();
+            let guard = pathname == "/app" || pathname.starts_with("/app/");
+            assert_eq!(
+                guard,
+                in_spa(origin, UNDER_APP.spa_base, candidate),
+                "{candidate}"
+            );
+        }
+    }
+
+    #[test]
+    fn in_spa_allows_only_documents_under_the_base_on_our_origin() {
+        let origin = "http://127.0.0.1:5000";
+        let base = UNDER_APP.spa_base;
+        for allowed in [
+            "http://127.0.0.1:5000/app",
+            "http://127.0.0.1:5000/app/",
+            "http://127.0.0.1:5000/app/new",
+            "http://127.0.0.1:5000/app/invoices/2026-001?tab=pdf#top",
+            "http://127.0.0.1:5000/app/customers/a%20b",
+            // Dot segments that stay inside the base.
+            "http://127.0.0.1:5000/app/x/../y",
+            "http://127.0.0.1:5000/./app/",
+            // An encoded slash is not a separator: the server routes this
+            // under `/app/` too, to the SPA.
+            "http://127.0.0.1:5000/app/..%2fnotes",
+            // The host is case-insensitive and `url` lowercases it.
+            "HTTP://127.0.0.1:5000/app/",
+        ] {
+            assert!(in_spa(origin, base, allowed), "{allowed}");
+        }
+        for refused in [
+            // Our origin, but not the SPA: MBR's notes, files, UI and the API.
+            "http://127.0.0.1:5000/",
+            "http://127.0.0.1:5000",
+            "http://127.0.0.1:5000/customers/contracts/sow.html",
+            "http://127.0.0.1:5000/notes/acme.md",
+            "http://127.0.0.1:5000/.mbr/notes",
+            "http://127.0.0.1:5000/.ledgeline-invoicer/preview",
+            "http://127.0.0.1:5000/api/books",
+            // Prefix and case tricks.
+            "http://127.0.0.1:5000/apps",
+            "http://127.0.0.1:5000/app.html",
+            "http://127.0.0.1:5000/application/",
+            "http://127.0.0.1:5000/App/",
+            "http://127.0.0.1:5000/APP/",
+            "http://127.0.0.1:5000//app/",
+            // Dot segments that climb out, plain and encoded.
+            "http://127.0.0.1:5000/app/../notes/acme.md",
+            "http://127.0.0.1:5000/app/%2e%2e/notes/acme.md",
+            "http://127.0.0.1:5000/app/%2E%2E/notes/acme.md",
+            "http://127.0.0.1:5000/app/.%2e/notes/acme.md",
+            "http://127.0.0.1:5000/app/..\\notes/acme.md",
+            "http://127.0.0.1:5000/app%2f../notes/acme.md",
+            "http://127.0.0.1:5000/%61pp/",
+            // Other ports, hosts and schemes.
+            "http://127.0.0.1:5001/app/",
+            "http://127.0.0.1:50000/app/",
+            "http://127.0.0.1/app/",
+            "https://127.0.0.1:5000/app/",
+            "http://localhost:5000/app/",
+            "http://[::1]:5000/app/",
+            "http://127.0.0.1:5000.evil.example/app/",
+            "http://127.0.0.1:5000@evil.example/app/",
+            "http://evil.example/app/",
+            "https://evil.example/app/",
+            "file:///app/",
+            "ws://127.0.0.1:5000/app/",
+            // Opaque origins.
+            "about:blank",
+            "about:srcdoc",
+            "data:text/html,<script>alert(1)</script>",
+            "javascript:alert(1)",
+            "blob:http://127.0.0.1:5000/0b0e6a4c-0000-4000-8000-000000000000",
+            // Not URLs at all.
+            "",
+            "/app/",
+            "not a url",
+        ] {
+            assert!(!in_spa(origin, base, refused), "{refused}");
+        }
+    }
+
+    #[test]
+    fn a_whole_origin_spa_allows_every_path_on_our_origin_and_nothing_else() {
+        let origin = "http://127.0.0.1:5000";
+        let base = WHOLE_ORIGIN.spa_base;
+        for allowed in [
+            "http://127.0.0.1:5000/",
+            "http://127.0.0.1:5000",
+            "http://127.0.0.1:5000/reports?tab=1",
+            "http://127.0.0.1:5000/new",
+            "http://127.0.0.1:5000/settings?rule=x",
+        ] {
+            assert!(in_spa(origin, base, allowed), "{allowed}");
+        }
+        for refused in [
+            "http://127.0.0.1:5001/",
+            "http://127.0.0.1:5000@evil.example/",
+            "https://evil.example/",
+            "about:blank",
+            "data:text/html,x",
+            "javascript:alert(1)",
+            "blob:http://127.0.0.1:5000/0b0e6a4c-0000-4000-8000-000000000000",
+        ] {
+            assert!(!in_spa(origin, base, refused), "{refused}");
+        }
     }
 
     #[test]

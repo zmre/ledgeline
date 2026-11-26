@@ -129,6 +129,9 @@ pub static APP: AppIdentity = AppIdentity {
     token_env: "LEDGELINE_TOKEN",
     token_global: "__LEDGELINE_TOKEN__",
     embedded_global: "__LEDGELINE_EMBEDDED__",
+    // The SPA is the whole origin: everything else on it is `/api`, behind
+    // the token. No other content shares it.
+    spa_base: "/",
 };
 
 /// Environment variable holding a caller-chosen token. Set it when a
