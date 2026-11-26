@@ -475,7 +475,7 @@ perf-probe size="200000":
 # MBR_VERSION; keep the two in step), run through nix so nothing is installed.
 # `--accept-flake-config` lets nix use mbr's binary cache instead of compiling
 # ffmpeg and pdfium.
-mbr := "nix run --accept-flake-config github:zmre/mbr-markdown-browser/v0.7.4#mbr --"
+mbr := "nix run --accept-flake-config github:zmre/mbr-markdown-browser/v0.7.5#mbr --"
 
 # Preview the docs site locally (mbr prints the URL)
 docs:

@@ -49,4 +49,12 @@ pub struct AppIdentity {
     pub token_global: &'static str,
     /// The `window` global that tells the SPA it is served embedded.
     pub embedded_global: &'static str,
+    /// The path the app's SPA is served under, with a leading and a trailing
+    /// slash: `/` when the SPA is the whole origin (Ledgeline), `/app/` when
+    /// other content shares it (the invoicer, beside MBR's pages).
+    ///
+    /// The desktop window shows only documents under it
+    /// ([`gui::build_webview`]), and only they are handed the token
+    /// ([`security::token_init_script`]). [`security::in_spa`] is the test.
+    pub spa_base: &'static str,
 }

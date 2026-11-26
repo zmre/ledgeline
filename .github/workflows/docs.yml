@@ -32,7 +32,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Pinned to a RELEASE's commit (tag v0.7.4) so a new mbr can't change the
+  # Pinned to a RELEASE's commit (tag v0.7.5) so a new mbr can't change the
   # site between two tags. A release commit, because mbr's CI pushes each
   # release's `#mbr` to the zmre Cachix, so this substitutes in seconds (the
   # earlier pin was a commit no cache held, and "Build mbr" compiled it from
@@ -44,7 +44,7 @@ env:
   # 'refs/tags/vX.Y.Z^{}'`, and keep the tag in this comment.
   # The release's Linux binary is no shortcut: it links into /nix/store (see
   # the header above).
-  MBR_FLAKE: github:zmre/mbr-markdown-browser/82eb596545bb477564b714ff350e947b39096684#mbr # v0.7.4
+  MBR_FLAKE: github:zmre/mbr-markdown-browser/896740222b688a63ace0b2982406c914d6d939c6#mbr # v0.7.5
 
 jobs:
   build:

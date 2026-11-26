@@ -103,7 +103,7 @@ Choices made before anything is drawn. Two are useful:
 
 ### ready
 
-Tells the PDF export when the page is ready to print, after fonts and images have loaded. Leave it alone. An empty `ready` block prints as soon as the page loads, which can print before a web font arrives.
+Tells the PDF export when the page is ready to print, after fonts and images have loaded. Leave it alone. An empty `ready` block prints as soon as the page loads, which can print before a font or image has loaded.
 
 ### head
 
@@ -239,6 +239,15 @@ A template reads the invoice's fields through `fm`. Write a field as `{{ fm.name
 - Addresses go through `| trim | escape | linebreaksbr | safe`, as in the parties example, so their lines stay apart.
 
 Templates use the [Tera](https://keats.github.io/tera/docs/) template language. Its documentation lists everything else you can write.
+
+## What a template can't do
+
+Templates are files people share, so a template can only show the invoice:
+
+- Images, stylesheets and fonts load from your books folder only. One from a web address doesn't load, in the app or in the PDF, so a template can't send an invoice's details anywhere. Put the file in the books folder and write its path, such as `/assets/fonts.css`.
+- A `<script>` written in a template doesn't run, and the preview runs no scripts at all.
+- Tera's `get_env`, which reads the computer's environment variables, is turned off.
+- HTML in an invoice's text or in a bill-table cell is cleaned before it shows. Formatting such as `<br>` and `<b>` stays; scripts, `style` attributes, forms and frames are removed. To show such HTML as text instead, put `raw_html = "escape"` in `.mbr/config.toml` in your books folder.
 
 ## Your logo
 

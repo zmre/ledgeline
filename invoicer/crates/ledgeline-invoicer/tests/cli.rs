@@ -1718,3 +1718,36 @@ fn apply_payment_takes_the_matching_flags() {
         assert_eq!(list(&bad).status.code(), Some(2), "{bad:?}");
     }
 }
+
+/// A starter keeps the base's `ready` block (MBR's export-ready script),
+/// unlike the fixture's own template: the export page must run that script
+/// under the invoicer's CSP (scripts from the server only, its export pass
+/// lifting the sandbox), or the export waits out MBR's whole readiness
+/// timeout (30 s) before printing.
+#[cfg(feature = "gui")]
+#[test]
+#[ignore = "prints through the system webview: needs a desktop session (see above)"]
+fn pdf_prints_a_starter_on_its_ready_signal() {
+    let books = Books::of("accrual");
+    let invoice = "invoices/2026-11-10 Customer X Invoice 105.md";
+    let source = books.read(invoice).replace(
+        "template: /invoices/tpl/myco-default.html",
+        "template: /invoices/tpl/classic.html",
+    );
+    assert!(source.contains("tpl/classic.html"));
+    fs::write(books.file(invoice), source).unwrap();
+    let copy = books.dir.path().join("classic.pdf");
+    let started = std::time::Instant::now();
+    let out = books.json(&["pdf", "105", "-o", copy.to_str().unwrap()], 0);
+    let took = started.elapsed();
+    assert_eq!(out["destination"], "copy", "{out}");
+    assert!(fs::read(&copy).unwrap().starts_with(b"%PDF-"));
+    assert!(
+        took < std::time::Duration::from_secs(20),
+        "{took:?}: the page never said it was ready"
+    );
+    if let Some(text) = pdf_text(&copy) {
+        assert!(text.contains("Customer X"), "{text}");
+        assert!(text.contains("No. 105"), "{text}");
+    }
+}

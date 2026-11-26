@@ -18,6 +18,7 @@ use invoicer_core::settings::{Settings, SettingsError};
 use ledgeline_core::accrual::books_config;
 use ledgeline_core::vault::{Vault, VaultPath};
 use mbr_core::Config as MbrConfig;
+use mbr_core::raw_html::RawHtmlPolicy;
 use mbr_core::standalone::Renderer;
 use mbr_server::{LiveServer, Server};
 use serde::Serialize;
@@ -540,14 +541,29 @@ fn same_file(a: &Path, b: &Path) -> bool {
 }
 
 /// MBR's configuration for the books folder `root`: its own
-/// `.mbr/config.toml` and `MBR_*` read at that root (no search upward), with
-/// MBR's in-browser editing off. The invoicer writes the files through its
-/// own API, where every write is token-gated and hash-checked.
+/// `.mbr/config.toml` and `MBR_*` read at that root (no search upward), then
+/// what the invoicer decides whatever those say:
+///
+/// - MBR's in-browser editing is off. The invoicer writes the files through
+///   its own API, where every write is token-gated and hash-checked.
+/// - Raw HTML in a note is at least sanitized ([`RAW_HTML_FLOOR`]).
+/// - MBR's `Content-Security-Policy` is the invoicer's
+///   ([`super::mbr::content_security_policy`]).
 fn mbr_config(root: &Path) -> Result<MbrConfig, mbr_core::errors::MbrError> {
     let mut config = MbrConfig::read_at_root(root)?;
     config.edit_enabled = false;
+    config.raw_html = config.raw_html.strictest(RAW_HTML_FLOOR);
+    config.content_security_policy = super::mbr::content_security_policy();
     Ok(config)
 }
+
+/// The least MBR does with raw HTML in a note (SEC-1): a pasted timesheet
+/// cell, a shared customer note or an invoice body can hold `<script>` or
+/// `<img onerror=…>`. `sanitize` keeps formatting (`<br>` in a table cell,
+/// `<details>`) and drops scripts, handlers, `style`, frames, forms and
+/// script URLs; a books folder can ask for `escape` in its
+/// `.mbr/config.toml` (`raw_html = "escape"`), never for less.
+pub(crate) const RAW_HTML_FLOOR: RawHtmlPolicy = RawHtmlPolicy::Sanitize;
 
 /// MBR over `root`: a [`LiveServer`], so a change to the folder's
 /// `.mbr/config.toml` applies without a restart (read with the same

@@ -114,7 +114,7 @@ The most important thing to know though is that <kbd>?</kbd> will show you the c
 
 It has a bill table that does its own discounts, subtotals, tax and deposits; PDF export through templates you can [customize](https://zmre.github.io/ledgeline/invoicer/templates/) without writing a whole page; a receivables [dashboard](https://zmre.github.io/ledgeline/invoicer/dashboard/) with aging, DSO and what was paid recently; Ledgeline's keyboard shortcuts; and a [command line](https://zmre.github.io/ledgeline/invoicer/cli/) that does nearly everything the app does, with JSON output for [scripts](https://zmre.github.io/ledgeline/invoicer/scripting/). It shares Ledgeline's themes and settings file.
 
-The invoicer isn't in a release download yet. It builds from this repository with `just build-invoicer` and `cargo run -p ledgeline-invoicer -- path/to/books.journal`, for Apple silicon Macs and Linux.
+Download `LedgelineInvoicer-<version>-arm64.dmg` from the [latest GitHub release](https://github.com/zmre/ledgeline/releases/latest) (Apple silicon only). The Nix package installs it beside Ledgeline on macOS and Linux. It isn't on crates.io; see [Getting it](https://zmre.github.io/ledgeline/invoicer/#getting-it) for running it from source.
 
 ## Documentation
 

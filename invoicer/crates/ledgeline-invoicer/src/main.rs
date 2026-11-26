@@ -1287,56 +1287,12 @@ fn run_reconcile(cli: &Cli, args: &ReconcileArgs) -> Result<ExitCode, Failure> {
     })
 }
 
-/// Names a variable holding a secret, by the usual naming conventions
-/// (`GITHUB_TOKEN`, `AWS_SECRET_ACCESS_KEY`, `OPENAI_API_KEY`,
-/// `DATABASE_PASSWORD`). Ledgeline's own (`LEDGELINE_*`, such as the
-/// invoicer's token variable, which the server reads later) are kept.
-fn secret_name(name: &str) -> bool {
-    const MARKERS: [&str; 9] = [
-        "TOKEN",
-        "SECRET",
-        "PASSWORD",
-        "PASSWD",
-        "PASSPHRASE",
-        "CREDENTIAL",
-        "API_KEY",
-        "APIKEY",
-        "PRIVATE_KEY",
-    ];
-    let name = name.to_ascii_uppercase();
-    !name.starts_with("LEDGELINE_")
-        && (name.starts_with("AWS_")
-            || name.ends_with("_KEY")
-            || MARKERS.iter().any(|m| name.contains(m)))
-}
-
-/// SEC-2: every Tera engine offers templates `get_env(name=…)`, and the
-/// engines that render invoices are MBR's (mbr-core =0.7.4), which gives no
-/// way to replace that function. A template is a file people share, so
-/// before the app or `pdf` renders any, the process forgets the variables
-/// named like secrets ([`secret_name`]); `get_env` then finds nothing to
-/// leak. Other variables stay readable until MBR can disable `get_env`.
-fn forget_secret_env() {
-    let secrets: Vec<std::ffi::OsString> = std::env::vars_os()
-        .map(|(name, _)| name)
-        .filter(|name| name.to_str().is_some_and(secret_name))
-        .collect();
-    for name in secrets {
-        // SAFETY: called first thing in `main`, before this process starts
-        // any thread, so nothing reads the environment concurrently.
-        unsafe { std::env::remove_var(name) };
-    }
-}
-
 fn main() -> ExitCode {
     let matches = Cli::command().get_matches();
     let cli = match Cli::from_arg_matches(&matches) {
         Ok(cli) => cli,
         Err(e) => e.exit(),
     };
-    if matches!(cli.command, None | Some(Command::Pdf(_))) {
-        forget_secret_env();
-    }
     let sub = matches.subcommand().map(|(_, m)| m);
     match run(&cli, sub) {
         Ok(code) => code,
@@ -1351,42 +1307,6 @@ fn main() -> ExitCode {
                 eprintln!("ledgeline-invoicer: error: {message}");
             }
             ExitCode::from(2)
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::secret_name;
-
-    #[test]
-    fn secret_names_are_forgotten_and_others_kept() {
-        for name in [
-            "GITHUB_TOKEN",
-            "AWS_SECRET_ACCESS_KEY",
-            "AWS_PROFILE",
-            "OPENAI_API_KEY",
-            "anthropic_api_key",
-            "DATABASE_PASSWORD",
-            "NPM_AUTH_TOKEN",
-            "GPG_PASSPHRASE",
-            "STRIPE_KEY",
-            "GOOGLE_APPLICATION_CREDENTIALS",
-        ] {
-            assert!(secret_name(name), "{name}");
-        }
-        for name in [
-            "PATH",
-            "HOME",
-            "TMPDIR",
-            "LANG",
-            "XDG_CONFIG_HOME",
-            "LEDGELINE_FIXTURE",
-            "LEDGELINE_CONFIG_DIR",
-            "LEDGELINE_INVOICER_TOKEN",
-            "KEYBOARD_LAYOUT",
-        ] {
-            assert!(!secret_name(name), "{name}");
         }
     }
 }

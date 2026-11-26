@@ -238,7 +238,8 @@ jobs:
 
       # Produces result-macapp/Applications/<appName>.app: the real SvelteKit
       # SPA baked in, the phantom libiconv link retargeted at /usr/lib, and
-      # `hledger` bundled beside the binary in Contents/MacOS/. The flake
+      # (Ledgeline only) `hledger` bundled beside the binary in
+      # Contents/MacOS/. The flake
       # (`mkMacApp`, shared by both apps) asserts that no Nix store path
       # survives in either Mach-O, so this cannot silently produce a bundle that
       # only launches on the build machine.
@@ -267,15 +268,16 @@ jobs:
       #
       # `lipo -archs` reports what is actually in the Mach-O, so this is the
       # artifact speaking for itself rather than an inference from the matrix.
-      # Covers the bundled hledger too — it is fetched per-system from a
+      # Covers Ledgeline's bundled hledger too — it is fetched per-system from a
       # different upstream tarball, an independent chance to get it wrong.
+      # Every Mach-O in Contents/MacOS/, so the invoicer (no hledger) needs no
+      # matrix flag.
       - name: Assert the bundle is really ${{ matrix.arch }}
         env:
           WANT: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          for macho in "$APP_BUNDLE/Contents/MacOS/$APP_EXE" \
-                       "$APP_BUNDLE/Contents/MacOS/hledger"; do
+          for macho in "$APP_BUNDLE"/Contents/MacOS/*; do
             got=$(lipo -archs "$macho")
             echo "$macho: $got"
             if [ "$got" != "$WANT" ]; then
@@ -407,8 +409,11 @@ jobs:
           # Nested code first, the bundle last — a signature over the bundle
           # seals its contents, so signing a nested binary afterwards invalidates
           # the outer one. The same Developer ID identity signs both apps: it
-          # is the team's, not tied to a bundle id.
-          sign "$APP_BUNDLE/Contents/MacOS/hledger"
+          # is the team's, not tied to a bundle id. Ledgeline's bundled
+          # hledger is the only nested binary; the invoicer has none.
+          if [ -e "$APP_BUNDLE/Contents/MacOS/hledger" ]; then
+            sign "$APP_BUNDLE/Contents/MacOS/hledger"
+          fi
           sign "$APP_BUNDLE/Contents/MacOS/$APP_EXE"
           sign "$APP_BUNDLE"
 
@@ -682,7 +687,7 @@ jobs:
           Apple, so they open normally — no right-click-Open workaround needed.
           `SHA256SUMS.txt` lists the checksum of each.
 
-          `hledger` is bundled inside the app, so CSV/statement imports work with
+          `hledger` is bundled inside Ledgeline, so CSV/statement imports work with
           nothing else installed. If you prefer your own build, point at it in
           Settings.
 
@@ -703,7 +708,7 @@ jobs:
           ```
 
           Install `hledger` yourself for imports; everything else works without it.
-          On Linux the Nix package installs Ledgeline Invoicer too
+          The Nix package installs Ledgeline Invoicer too
           (`ledgeline-invoicer`).
           EOF
           )

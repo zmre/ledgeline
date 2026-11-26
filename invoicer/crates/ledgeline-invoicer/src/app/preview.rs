@@ -19,9 +19,10 @@
 //! inherits its parent's CSP, and the SPA's (the shell's) has
 //! `frame-ancestors 'none'`, which WebKit applies to the inherited policy, so
 //! the window showed a blank frame (2026-11-23). As a page of its own it
-//! gets MBR's policy ([`super::mbr::MBR_CSP`]: `frame-ancestors 'self'`,
-//! remote images), passes the same gate as MBR's pages (the session cookie),
-//! and its relative links resolve from the note's own page (`<base>`).
+//! gets the policy of MBR's pages ([`super::mbr::SANDBOXED_CSP`]: no script
+//! runs, nothing loads from another host, `frame-ancestors 'self'`), passes
+//! the same gate as MBR's pages (the session cookie), and its relative links
+//! resolve from the note's own page (`<base>`).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -370,7 +371,7 @@ pub(crate) async fn page(
             (header::CACHE_CONTROL, ledgeline_shell::security::no_store()),
             (
                 header::CONTENT_SECURITY_POLICY,
-                HeaderValue::from_static(mbr::MBR_CSP),
+                HeaderValue::from_static(mbr::SANDBOXED_CSP),
             ),
         ],
         Html(html),
@@ -418,7 +419,7 @@ fn problem_page(status: StatusCode, message: &str) -> Response {
             (header::CACHE_CONTROL, ledgeline_shell::security::no_store()),
             (
                 header::CONTENT_SECURITY_POLICY,
-                HeaderValue::from_static(mbr::MBR_CSP),
+                HeaderValue::from_static(mbr::SANDBOXED_CSP),
             ),
         ],
         Html(format!(

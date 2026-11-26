@@ -144,8 +144,8 @@ faster. Push that layer to Cachix (below) and CI + teammates skip it entirely.
 | `nix build .#tests`       | `cargo test` over the whole workspace (`crates/*` and `invoicer/crates/*`)                                                                               |
 | `nix build .#fmt`         | `cargo fmt --all --check` (crane's `cargoFmt`; `--all` is required — the workspace root has no targets of its own)                                       |
 | `nix build .#macApp`      | **macOS only** — just the `result/Applications/Ledgeline.app` bundle, **real** SPA embedded (see below).                                                 |
-| `nix build .#invoicerMacApp` | **macOS only** — `result/Applications/Ledgeline Invoicer.app`, the invoicer's real SPA embedded, hledger bundled; what the release signs.           |
-| `nix build .#invoicerWithSpa` | The `ledgeline-invoicer` binary with its real SPA (macOS and Linux). On Linux, `linuxDist` (`.#default`) installs it beside Ledgeline.              |
+| `nix build .#invoicerMacApp` | **macOS only** — `result/Applications/Ledgeline Invoicer.app`, the invoicer's real SPA embedded (no hledger); what the release signs. `macDist` installs it. |
+| `nix build .#invoicerWithSpa` | The `ledgeline-invoicer` binary with its real SPA (macOS and Linux). `linuxDist` and `macDist` (each `.#default`) install it beside Ledgeline.              |
 | `nix build` (bare, macOS) | **macOS only** `.#default` — the combined `result/{bin/ledgeline, Applications/Ledgeline.app}` (CLI on PATH + the app).                                  |
 | `nix flake check`         | Runs all of the checks above                                                                                                                             |
 | `nix run .`               | **Build and run the real app.** On macOS runs `ledgelineWithSpa` (the **real** SPA embedded); on Linux runs the placeholder-SPA `ledgeline` (see below). |
@@ -454,7 +454,7 @@ nix build --json .#ledgeline | jq -r '.[].outputs | to_entries[].value' | cachix
 
 | What the user runs | darwin resolves to | linux resolves to |
 | --- | --- | --- |
-| `nix build` / `nix profile install` | `macDist` (→ `macApp` → `ledgelineWithSpa`) | `ledgeline` |
+| `nix build` / `nix profile install` | `macDist` (→ `macApp` + `invoicerMacApp`) | `ledgeline` |
 | `nix run` | `ledgelineWithSpa` | `ledgeline` |
 
 So the `macos` job pushes `.#macDist` **and** `.#ledgelineWithSpa` (plus `.#bundledHledger`).
@@ -479,7 +479,7 @@ churn kept evicting the one path that actually saves CI time. Pushes are now exp
 | `.#cargoArtifactsInvoicer` (the invoicer's release delta) | `build` (Linux), `macos` | pushes **and** PRs | Same, for the invoicer; holds only what it adds to `.#cargoArtifacts`. Not pinned. |
 | `.#linuxDist`, `.#ledgelineWithSpa` | `build` (Linux) | pushes to `main` | What a Linux user substitutes (linuxDist holds both apps). Pinned. |
 | `.#macDist`, `.#ledgelineWithSpa`, `.#bundledHledger` | `macos` | pushes to `main` | What a Mac user substitutes. Pinned. |
-| `.#invoicerMacApp`, `.#invoicerWithSpa` | `macos` | pushes to `main` | `nix build …#invoicerMacApp`. Not pinned. |
+| `.#invoicerMacApp`, `.#invoicerWithSpa` | `macos` | pushes to `main` | `nix build …#invoicerMacApp`. Not pinned itself, but `macDist` (pinned) holds `invoicerMacApp` by symlink. |
 
 Both layers are exposed under `packages` for exactly this purpose. Push them by hand with:
 

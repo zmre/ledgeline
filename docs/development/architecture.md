@@ -53,12 +53,13 @@ An axum `Router` over an `AppState`. The library is what every host links; `main
 
 ## Shell: `crates/ledgeline-shell`
 
-What sits between "a router plus a built SPA" and "a hardened local server in a desktop window", shared by Ledgeline and the invoicer. An app describes itself once in an `AppIdentity` (name, bundle id, its token variable and the SPA's two `window` globals; Ledgeline's is `ledgeline::APP`).
+What sits between "a router plus a built SPA" and "a hardened local server in a desktop window", shared by Ledgeline and the invoicer. An app describes itself once in an `AppIdentity` (name, bundle id, its token variable, the SPA's two `window` globals and the path its SPA is served under; Ledgeline's is `ledgeline::APP`, whose SPA is the whole origin, `/`, and the invoicer's is under `/app/`).
 
 - **`security`.** The bearer token, the `Host` guard, the CORS allowlist and the security headers, with `protect` (token + CORS over the explicit routes) and `harden` (everything else) to put them on a router; `SecurityPlan` for the bind posture.
 - **`spa`.** `spa::fallback::<E>(&APP)` serves a `RustEmbed`-ed SPA with the embedded marker and a per-response CSP.
 - **`app_dirs`, `recents`.** One config directory for every app, so recents and `ui-prefs.toml` are shared.
 - **`gui`** (feature). `spawn_server`, `AppMenu`, `RecentMenu`, `build_window`, `build_webview` and the Linux and macOS glue; an app's own `gui` module strings them together around its state.
+  The webview's navigation policy has two layers. Every frame stays on the app's own origin, and an allowlisted external link opens in the system browser instead. The main frame may show only the SPA under `AppIdentity::spa_base`: if it commits to any other page, even one on the same origin (an MBR page in the invoicer), the last SPA page is loaded back. wry's navigation handler can't tell frames apart, so the main-frame rule runs on commit; the invoicer's sandboxed MBR iframes still load. The token's init script (`security::token_init_script`) checks the origin and, for a base other than `/`, `location.pathname` too, so a non-SPA page never receives the token.
 
 ## Hosts
 
