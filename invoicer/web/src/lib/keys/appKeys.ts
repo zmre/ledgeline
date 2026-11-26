@@ -47,7 +47,9 @@ function leaveField(): void {
 export function appLayer(): Layer {
     return {
         id: "invoicer-app",
-        priority: PRIORITY.page,
+        // Below every page's layer, so a page's own `n` (New invoice for this
+        // customer) shadows the app's, however the page was reached.
+        priority: PRIORITY.app,
         bindings: [
             {keys: "?", label: "Show keyboard shortcuts", group: "Global", run: () => keymap.toggleHelp()},
             {keys: "/", label: "Search this list", group: "Global", enabled: () => pageSearch.present, run: () => pageSearch.focus()},
