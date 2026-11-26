@@ -14,11 +14,20 @@
      Live reload: an outside change shows at once when the form is clean;
      with unsaved changes the page says the note changed and keeps them.
 
-     Keyboard (PLAN 5k): `e` edits; while editing, Cmd/Ctrl+S saves and
-     Escape cancels (from a field too, once a list in it is closed), asking
-     first when something is unsaved. -->
+     The view is a contact card (contact design, 2026-11-26): the header
+     (`CustomerCardHeader`: who, what to do now, what is owed), the body
+     (`CustomerView`, with `OpenPos` in it), and the invoices beside it
+     (`CustomerAccount`, sticky on a wide window).
+
+     Keyboard (PLAN 5k): `e` edits; `m` emails the default address, `p`
+     opens the portal, `n` starts an invoice for this customer (over the
+     app's `n`), `y e` / `y p` / `y a` / `y s` copy the default email, phone,
+     address or supplier ID, `j`/`k`/`o` walk the invoices; each is also a
+     button. While editing, Cmd/Ctrl+S saves and Escape cancels (from a
+     field too, once a list in it is closed), asking first when something is
+     unsaved. Focus goes back to Edit after a save or Cancel. -->
 <script lang="ts">
-    import {onMount, untrack} from "svelte";
+    import {onMount, tick, untrack} from "svelte";
     import {goto} from "$app/navigation";
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
@@ -26,13 +35,16 @@
     import {registerKeys} from "#ui/keys/keymap.svelte.js";
     import type {DataView} from "#ui/ui/dataView.js";
     import {ensureSession, fetchTemplates} from "#lib/api.js";
+    import {copyValue} from "#lib/copy.svelte.js";
     import {fetchEditorOptions} from "#lib/editorApi.js";
+    import {handoffHref} from "#lib/frameLinks.js";
     import {onFilesChanged} from "#lib/changes.svelte.js";
     import {unsavedGuard} from "#lib/unsavedGuard.svelte.js";
     import {
         ApiStatusError,
         changedFields,
         cloneForm,
+        defaultOf,
         emptyForm,
         entryOf,
         fetchCustomer,
@@ -40,10 +52,13 @@
         fetchFiles,
         isDirty,
         linkName,
+        mailtoHref,
         openBooksFile,
+        openCustomerPortal,
         routeParam,
         saveCustomer,
         savedText,
+        telHref,
         type CustomerDetail,
         type CustomerFields,
         type CustomerForm,
@@ -52,6 +67,7 @@
     import {pageUrl, type InvoiceEntry, type TemplateEntry} from "#lib/invoices.js";
     import {fieldList, friendlyMessage} from "#lib/labels.js";
     import CustomerAccount from "#lib/components/CustomerAccount.svelte";
+    import CustomerCardHeader from "#lib/components/CustomerCardHeader.svelte";
     import CustomerFormView from "#lib/components/CustomerForm.svelte";
     import CustomerView from "#lib/components/CustomerView.svelte";
     import OpenPos from "#lib/components/OpenPos.svelte";
@@ -230,10 +246,54 @@
     }
 
     let formEl = $state<HTMLFormElement | null>(null);
+
+    // Back to Edit after a save or Cancel: the form that had focus is gone.
+    let wasEditing = false;
+    $effect(() => {
+        const now = editing;
+        if (wasEditing && !now) void tick().then(() => formEl?.querySelector<HTMLElement>('[data-testid="edit-customer"]')?.focus());
+        wasEditing = now;
+    });
+
+    /** Click one of the header's actions (a key does what its button does). */
+    function act(testid: string): void {
+        formEl?.querySelector<HTMLElement>(`[data-testid="${testid}"]`)?.click();
+    }
+
+    const viewing = (): boolean => detail !== null && !editing;
+    const hasEmail = (): boolean => viewing() && (detail?.form.emails ?? []).some((e) => mailtoHref(e.value) !== null);
+    const hasPhone = (): boolean => viewing() && (detail?.form.phones ?? []).some((p) => telHref(p.value) !== null);
+    /** The default email, phone or address (billing, then work, then the first), to copy. */
+    const defaultValue = (list: "emails" | "phones" | "addresses"): string | null => defaultOf(detail?.form[list] ?? [])?.value ?? null;
+    const supplierId = (): string | null => detail?.form.billing_portal?.supplier_id ?? null;
+    const copyKey = (keys: string, what: string, value: () => string | null) => ({
+        keys,
+        label: `Copy the ${what}`,
+        group: "Customer" as const,
+        enabled: () => viewing() && value() !== null,
+        run: () => {
+            const text = value();
+            if (text !== null) void copyValue(text, what);
+        },
+    });
+
     registerKeys({
         id: "customer-page",
         bindings: [
             {keys: "e", label: "Edit the customer", group: "Customer", enabled: () => detail !== null && !editing, run: startEditing},
+            {keys: "m", label: "Email the customer", group: "Customer", enabled: hasEmail, run: () => act("action-email")},
+            {
+                keys: "p",
+                label: "Open the customer's portal",
+                group: "Customer",
+                enabled: () => viewing() && (detail?.portal_url ?? null) !== null,
+                run: () => act("action-portal"),
+            },
+            {keys: "n", label: "New invoice for this customer", group: "Customer", enabled: viewing, run: () => act("action-new-invoice")},
+            copyKey("y e", "default email", () => (hasEmail() ? defaultValue("emails") : null)),
+            copyKey("y p", "default phone", () => (hasPhone() ? defaultValue("phones") : null)),
+            copyKey("y a", "default address", () => defaultValue("addresses")),
+            copyKey("y s", "supplier ID", supplierId),
             {
                 keys: "Escape",
                 label: "Cancel editing",
@@ -286,6 +346,16 @@
         openBooksFile(path).catch((e: unknown) => (openError = messageOf(e)));
     }
 
+    function openPortal(): void {
+        if (detail === null) return;
+        openError = null;
+        openCustomerPortal(detail.path).catch((e: unknown) => (openError = messageOf(e)));
+    }
+
+    /** A mailto or tel link as this window follows it: the desktop window's hand-off, else as is. */
+    const external = (href: string): string => (canOpenFiles ? handoffHref(href) : href);
+    const newInvoiceHref = (title: string): string => `${resolve("/new")}?customer=${encodeURIComponent(title)}`;
+
     /** A person's company, when it is a customer: its page. */
     const companyHref = $derived(detail !== null && detail.kind === "person" && detail.billing.note !== detail.path ? customerHref(detail.billing.note) : null);
     /** What to call each contract and PO attachment entry in the form. */
@@ -318,13 +388,17 @@
     >
         {#snippet children(customer)}
             <form class="flex flex-col gap-4" onsubmit={onSubmit} bind:this={formEl} data-testid="customer-page" data-mode={editing ? "edit" : "view"}>
-                <header class="flex flex-wrap items-center gap-x-3 gap-y-2">
-                    <h1 class="min-w-0 text-2xl font-semibold tracking-tight break-words" data-testid="customer-heading">{customer.title}</h1>
-                    <span class="badge badge-outline badge-sm">{customer.kind === "person" ? "Person" : "Organization"}</span>
-                    {#if customer.account.overdue > 0}<span class="badge badge-sm badge-error">Overdue</span>{/if}
-                    <div class="ml-auto flex flex-wrap items-center gap-2">
+                <CustomerCardHeader
+                    {customer}
+                    {editing}
+                    {companyHref}
+                    {external}
+                    newInvoiceHref={newInvoiceHref(customer.title)}
+                    onOpenPortal={customer.portal_url == null ? undefined : openPortal}
+                >
+                    {#snippet controls()}
                         {#if editing}
-                            {#if dirty}<span class="text-sm text-base-content/70" data-testid="unsaved">Unsaved changes</span>{/if}
+                            {#if dirty}<span class="text-sm text-muted" data-testid="unsaved">Unsaved changes</span>{/if}
                             <button type="button" class="btn btn-ghost btn-sm" disabled={saving} onclick={cancel} data-testid="cancel-edit">Cancel</button>
                             <button type="button" class="btn btn-outline btn-sm" disabled={!dirty || saving} onclick={discard} data-testid="discard-customer"
                                 >Discard</button
@@ -333,10 +407,17 @@
                                 {saving ? "Saving…" : "Save"}
                             </button>
                         {:else}
-                            <button type="button" class="btn btn-primary btn-sm" onclick={startEditing} data-testid="edit-customer">Edit</button>
+                            <button
+                                type="button"
+                                class="btn btn-sm"
+                                onclick={startEditing}
+                                title="Edit the customer (e)"
+                                aria-keyshortcuts="e"
+                                data-testid="edit-customer">Edit</button
+                            >
                         {/if}
-                    </div>
-                </header>
+                    {/snippet}
+                </CustomerCardHeader>
 
                 {#if stale && !conflict}
                     <div role="status" class="alert alert-soft alert-warning" data-testid="customer-stale">
@@ -371,7 +452,7 @@
                     </ul>
                 {/if}
 
-                <div class="grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+                <div class="mt-2 grid gap-8 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] lg:gap-10">
                     <div class="flex min-w-0 flex-col gap-4">
                         {#if editing}
                             <CustomerFormView
@@ -384,19 +465,30 @@
                                 revenueAccounts={accounts?.revenue ?? []}
                             />
                         {:else}
-                            <CustomerView {customer} {templates} {companyHref} {noteHref} {fileHref} onOpenFile={canOpenFiles ? openFile : undefined} />
-                            <OpenPos
-                                usage={customer.po_usage}
-                                busy={saving}
-                                onSave={savePos}
-                                {invoiceHref}
+                            <CustomerView
+                                {customer}
+                                {templates}
                                 {noteHref}
                                 {fileHref}
+                                {external}
                                 onOpenFile={canOpenFiles ? openFile : undefined}
-                            />
+                                onOpenPortal={customer.portal_url == null ? undefined : openPortal}
+                            >
+                                {#snippet pos()}
+                                    <OpenPos
+                                        usage={customer.po_usage}
+                                        busy={saving}
+                                        onSave={savePos}
+                                        {invoiceHref}
+                                        {noteHref}
+                                        {fileHref}
+                                        onOpenFile={canOpenFiles ? openFile : undefined}
+                                    />
+                                {/snippet}
+                            </CustomerView>
                         {/if}
                     </div>
-                    <div class="flex min-w-0 flex-col gap-4">
+                    <div class="flex min-w-0 flex-col gap-4 lg:sticky lg:top-4 lg:max-h-[calc(100dvh-2rem)] lg:self-start lg:overflow-y-auto">
                         <CustomerAccount {customer} {invoiceHref} {customerHref} {noteHref} onOpen={openInvoice} />
                     </div>
                 </div>

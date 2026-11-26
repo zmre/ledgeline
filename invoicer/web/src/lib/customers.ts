@@ -227,6 +227,8 @@ export interface CustomerDetail extends CustomerRow {
     hash: string;
     form: CustomerForm;
     backlinks: Backlink[];
+    /** The portal's link the page may offer: a plain https URL, else null. */
+    portal_url?: string | null;
 }
 
 /** A wikilink's name; one implementation, in links.ts (re-exported for the customer pages). */
@@ -504,4 +506,151 @@ export async function pickFile(): Promise<FileCandidate | null> {
  */
 export async function openBooksFile(path: string): Promise<void> {
     await request<unknown>("POST", "/api/files/open", isObject, {path});
+}
+
+// ---------------------------------------------------------------------------
+// The contact card (the read-only customer page): names, initials, links
+// ---------------------------------------------------------------------------
+
+/** Labels written in a service's own spelling (MBR's `humanize_label`). */
+const SERVICE_LABELS: Readonly<Record<string, string>> = {
+    linkedin: "LinkedIn",
+    github: "GitHub",
+    gitlab: "GitLab",
+    youtube: "YouTube",
+    tiktok: "TikTok",
+    whatsapp: "WhatsApp",
+    bluesky: "Bluesky",
+    x: "X",
+    imessage: "iMessage",
+    facetime: "FaceTime",
+};
+
+/**
+ * A contact label for people, as MBR's contact card writes it (a port of
+ * `mbr-core`'s `humanize_label`): `billing` → "Billing", `work_cell` → "Work
+ * cell", `linkedin` → "LinkedIn"; a label with a capital is kept as written.
+ */
+export function humanizeLabel(label: string): string {
+    const spaced = label.trim().replace(/[_-]/g, " ");
+    const service = SERVICE_LABELS[spaced.toLowerCase()];
+    if (service !== undefined) return service;
+    if (/\p{Lu}/u.test(spaced)) return spaced;
+    const [first = "", ...rest] = Array.from(spaced);
+    return first.toUpperCase() + rest.join("");
+}
+
+/** Words an organization's initials skip. */
+const ORG_FILLER = new Set(["the", "inc", "inc.", "llc", "ltd", "ltd.", "co", "co.", "corp", "corp."]);
+
+/**
+ * The monogram's letters: a person's first and last words ("Fred Smith" →
+ * "FS"); an organization's first two words, skipping "The", "Inc", "LLC" and
+ * "Ltd" ("Customer X" → "CX"); one word gives one letter. Whole characters,
+ * so an accented or non-Latin letter stays one.
+ */
+export function initials(title: string, kind: ContactKind): string {
+    const words = title
+        .split(/[\s,]+/)
+        .map((w) => w.replace(/^[^\p{L}\p{N}]+/u, ""))
+        .filter((w) => w !== "");
+    const chosen =
+        kind === "person"
+            ? words.length > 1
+                ? [words[0], words[words.length - 1]]
+                : words
+            : words.filter((w) => !ORG_FILLER.has(w.toLowerCase())).slice(0, 2);
+    const picked = chosen.length > 0 ? chosen : words.slice(0, 1);
+    return picked.map((w) => (Array.from(w)[0] ?? "").toLocaleUpperCase()).join("");
+}
+
+/** The labels a customer's default email, phone and address are chosen by, in order (the invoicer's billing rule). */
+const DEFAULT_LABELS = ["billing", "work"] as const;
+
+/** The default of a labelled list: labelled billing, then work, else the first; null for none. */
+export function defaultOf(items: readonly Labelled[]): Labelled | null {
+    for (const label of DEFAULT_LABELS) {
+        const found = items.find((i) => (i.label ?? "").toLowerCase() === label);
+        if (found !== undefined) return found;
+    }
+    return items[0] ?? null;
+}
+
+/** A `mailto:` link for an address that is one (MBR's rule); else null. */
+export function mailtoHref(value: string): string | null {
+    const v = value.trim();
+    return v.includes("@") && !/[\s:/?#<>"]/.test(v) ? `mailto:${v}` : null;
+}
+
+/**
+ * A `tel:` link for a number as people write one; null when it isn't one
+ * (MBR's rule: spaces, dots, dashes and brackets are layout; a letter means
+ * it isn't a number). An extension (`ext. 12`, `x12`) is dialled after a
+ * pause (`,12`), which the desktop window accepts.
+ */
+export function telHref(value: string): string | null {
+    const lower = value.trim().toLowerCase();
+    const ext = /^(.*?)\s*(?:extension|ext\.?|x)\s*(\d+)$/.exec(lower);
+    const number = ext === null ? lower : ext[1];
+    let out = "";
+    let digits = 0;
+    for (const [i, c] of Array.from(number).entries()) {
+        if (c === "+" && i === 0) out += c;
+        else if (/\d/.test(c)) {
+            digits += 1;
+            out += c;
+        } else if (",;pw".includes(c) && digits > 0) out += c;
+        else if (!" .()-\u00a0".includes(c)) return null;
+    }
+    return digits >= 3 ? `tel:${out}${ext === null ? "" : `,${ext[2]}`}` : null;
+}
+
+/** A portal URL's host, for the link's text (`https://customerx.coupahost.com/` → `customerx.coupahost.com`). */
+export function portalHost(url: string): string {
+    try {
+        return new URL(url).host;
+    } catch {
+        return url;
+    }
+}
+
+/** The heading the server notes closed POs under (`customer_edit::CLOSED_POS_HEADING`). */
+const CLOSED_POS = /^##\s+closed pos\s*$/i;
+
+/**
+ * The body split for the card: the user's notes, and the "## Closed POs"
+ * section the app writes (to its next heading of level 1 or 2), with how
+ * many POs it lists. Either may be empty.
+ */
+export function notesParts(body: string): {notes: string; closed: string; closedCount: number} {
+    const lines = body.replace(/\r\n/g, "\n").split("\n");
+    const start = lines.findIndex((l) => CLOSED_POS.test(l.trim()));
+    if (start === -1) return {notes: body.trim(), closed: "", closedCount: 0};
+    const after = lines.slice(start + 1);
+    const next = after.findIndex((l) => /^#{1,2}\s/.test(l));
+    const section = next === -1 ? after : after.slice(0, next);
+    const rest = next === -1 ? [] : after.slice(next);
+    const notes = [...lines.slice(0, start), ...rest].join("\n").trim();
+    const closed = section.join("\n").trim();
+    return {notes, closed, closedCount: section.filter((l) => /^\s*[-*]\s/.test(l)).length};
+}
+
+/** A date for people: "Dec 17", with the year when it isn't `today`'s ("Jun 30, 2027"). ISO in, as the server sends it. */
+export function shortDate(iso: string, today: string = localToday()): string {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+    if (m === null) return iso;
+    const date = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+    const sameYear = today.slice(0, 4) === m[1];
+    return date.toLocaleDateString("en-US", {month: "short", day: "numeric", timeZone: "UTC", ...(sameYear ? {} : {year: "numeric"})});
+}
+
+/**
+ * `POST /api/customer-portal`: the window opens the customer's portal in the
+ * browser; elsewhere the URL comes back and this opens it in a new tab.
+ */
+export async function openCustomerPortal(key: string): Promise<void> {
+    const body = await request<{url: string; opened: boolean}>("POST", "/api/customer-portal", (b) => isObject(b) && typeof b.url === "string", {
+        customer: key,
+    });
+    if (!body.opened) window.open(body.url, "_blank", "noopener,noreferrer");
 }

@@ -211,7 +211,7 @@
                 {#each form.contracts as entry, at (`${at}:${entry}`)}
                     <li class="flex items-center gap-2 text-sm" data-testid="contract-row">
                         <span class="min-w-0 flex-1 truncate" title={nameOf(entry)}>{nameOf(entry)}</span>
-                        {#if isOutsideEntry(entry)}<span class="badge shrink-0 badge-ghost badge-sm">outside the books</span>{/if}
+                        {#if isOutsideEntry(entry)}<span class="badge shrink-0 badge-ghost badge-sm">Outside the books</span>{/if}
                         <button
                             type="button"
                             class="btn btn-ghost btn-sm"
@@ -281,7 +281,7 @@
                             {@const entry = po.attachment}
                             <span class="text-base-content/60">Attachment:</span>
                             <span class="min-w-0 truncate" title={nameOf(entry)} data-testid="form-po-attachment-name">{nameOf(entry)}</span>
-                            {#if isOutsideEntry(entry)}<span class="badge shrink-0 badge-ghost badge-sm">outside the books</span>{/if}
+                            {#if isOutsideEntry(entry)}<span class="badge shrink-0 badge-ghost badge-sm">Outside the books</span>{/if}
                             <button
                                 type="button"
                                 class="btn btn-ghost btn-xs"

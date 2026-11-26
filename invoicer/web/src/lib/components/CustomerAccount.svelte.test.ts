@@ -1,6 +1,7 @@
-// A customer's account, mounted: owed, overdue, last payment, its open
-// invoices and the other ones (backlinked from `customer:`), and the other
-// notes linking it, each saying what it is and opening inside the app.
+// A customer's invoices, mounted: its open invoices and the other ones
+// (backlinked from `customer:`; owed and the last payment are the card
+// header's now), and the other notes linking it, each saying what it is and
+// opening inside the app.
 import {fireEvent, render, screen, within} from "@testing-library/svelte";
 import {describe, expect, it, vi} from "vitest";
 import CustomerAccount from "./CustomerAccount.svelte";
@@ -13,23 +14,24 @@ const hrefs = {
 };
 
 describe("COMPONENT CustomerAccount", () => {
-    it("shows the balance, the last payment, the open invoices and every invoice", () => {
+    it("shows the open invoices and every other one, dates for people", () => {
         render(CustomerAccount, {customer: customerX(), ...hrefs});
-        expect(screen.getByTestId("account-balance").textContent).toBe("$8,350.00");
-        expect(screen.queryByTestId("account-overdue")).toBeNull();
-        expect(screen.getByTestId("account-last-payment").textContent).toBe("$8,350.00 on 2026-10-08");
+        // The money line is the header's.
+        expect(screen.queryByTestId("account-balance")).toBeNull();
         // Open first: 105 only; Other is everything else, never 105 again (H18).
         const open = screen.getAllByTestId("customer-open-invoice-row");
         expect(open.map((r) => r.dataset.number)).toEqual(["105"]);
         expect(within(open[0]).getByTestId("status-badge").textContent).toBe("Open");
         expect(within(open[0]).getByText("$8,350.00")).toBeDefined();
-        expect(within(open[0]).getByText("2026-12-10")).toBeDefined();
+        // A formatted due date, the ISO date in its title.
+        const due = within(open[0]).getByTitle("2026-12-10");
+        expect(due.textContent).toMatch(/Dec 10/);
         expect(within(open[0]).getByRole("link", {name: "105"}).getAttribute("href")).toBe("/app/invoices/105");
         const rows = screen.getAllByTestId("customer-other-invoice-row");
         expect(rows.map((r) => r.dataset.number)).toEqual(["108", "104"]);
         expect(within(rows[0]).getByTestId("status-badge").textContent).toBe("Draft");
         expect(within(rows[1]).getByTestId("status-badge").textContent).toBe("Paid");
-        expect(screen.getByRole("heading", {name: "Open"})).toBeDefined();
+        expect(screen.getByRole("heading", {name: "Open"}).id).toBe("open-invoices");
         expect(screen.getByRole("heading", {name: "Other"})).toBeDefined();
         expect(screen.queryByText("All invoices")).toBeNull();
     });
@@ -47,7 +49,7 @@ describe("COMPONENT CustomerAccount", () => {
         expect(href("Quote 7")).toBe("/app/invoices/E7");
     });
 
-    it("flags overdue, says nothing is owed, and opens an invoice from its row", async () => {
+    it("marks an overdue invoice with a badge, and opens an invoice from its row", async () => {
         const onOpen = vi.fn();
         render(CustomerAccount, {
             customer: customerX({
@@ -57,10 +59,8 @@ describe("COMPONENT CustomerAccount", () => {
             ...hrefs,
             onOpen,
         });
-        expect(screen.getByTestId("account-balance").textContent).toBe("Nothing owed");
-        expect(screen.getByTestId("account-overdue").textContent?.trim()).toBe("2 overdue, since 2026-08-31");
         expect(screen.queryByTestId("customer-backlinks")).toBeNull();
-        await fireEvent.click(within(screen.getAllByTestId("customer-other-invoice-row")[1]).getByText("2026-10-31"));
+        await fireEvent.click(within(screen.getAllByTestId("customer-other-invoice-row")[1]).getByTitle("2026-10-31"));
         expect(onOpen.mock.calls[0][0].number).toBe("104");
     });
 
@@ -76,5 +76,17 @@ describe("COMPONENT CustomerAccount", () => {
         render(CustomerAccount, {customer: customerX({documents: settled}), ...hrefs});
         expect(screen.getByTestId("customer-nothing-open").textContent).toBe("Nothing open.");
         expect(screen.getAllByTestId("customer-other-invoice-row")).toHaveLength(2);
+    });
+
+    it("shows the newest five other invoices, then all of them on request", async () => {
+        const docs = customerX().documents;
+        const many = Array.from({length: 7}, (_, i) => ({...docs[2], path: `invoices/${200 + i}.md`, number: String(200 + i)}));
+        render(CustomerAccount, {customer: customerX({documents: many}), ...hrefs});
+        expect(screen.getAllByTestId("customer-other-invoice-row")).toHaveLength(5);
+        const more = screen.getByTestId("other-show-all");
+        expect(more.textContent).toBe("Show all 7");
+        expect(more.getAttribute("aria-expanded")).toBe("false");
+        await fireEvent.click(more);
+        expect(screen.getAllByTestId("customer-other-invoice-row")).toHaveLength(7);
     });
 });

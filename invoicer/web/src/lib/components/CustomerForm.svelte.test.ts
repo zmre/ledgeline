@@ -182,7 +182,7 @@ describe("COMPONENT CustomerForm PO attachments", () => {
         await vi.waitFor(() => expect(form.open_pos[0].attachment).toBe("~/Documents/PO 1 signed.pdf"));
         const attached = screen.getByTestId("form-po-attachment");
         expect(attached.textContent).toContain("PO 1 signed.pdf");
-        expect(attached.textContent).toContain("outside the books");
+        expect(attached.textContent).toContain("Outside the books");
         expect(attached.textContent).not.toContain("~/");
         vi.restoreAllMocks();
     });
@@ -192,7 +192,7 @@ describe("COMPONENT CustomerForm PO attachments", () => {
         render(CustomerForm, {form, templates});
         const row = screen.getByTestId("contract-row");
         expect(row.textContent).toContain("MSA 2026.pdf");
-        expect(row.textContent).toContain("outside the books");
+        expect(row.textContent).toContain("Outside the books");
         expect(row.textContent).not.toContain("file:");
     });
 });
