@@ -204,10 +204,7 @@ async fn books(State(state): State<AppState>, Query(params): Query<BooksParams>)
             .docs()
             .filter(|d| d.header.doc_type.unwrap_or(DocType::Invoice) == DocType::Invoice)
             .collect();
-        let catalog_items: usize = invoicer_core::edit::catalogs(index, session.vault())
-            .iter()
-            .map(|c| c.items.len())
-            .sum();
+        let catalog_items: usize = index.catalogs().map(|c| c.items.len()).sum();
         Ok(json!({
             "journal": books.journal().file_name().map(|n| n.to_string_lossy().into_owned()),
             "title": ledgeline_core::title::journal_title(session.journal()),

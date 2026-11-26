@@ -836,3 +836,72 @@ fn a_rebook_moves_between_a_zero_and_a_positive_total() {
         assert_eq!(out, "");
     }
 }
+
+/// Open deposits count applications from the index (review RC-15): a hand
+/// edit to a draft applying one counts once the index refreshes it, and a
+/// draft billed to another customer never counts.
+#[test]
+fn open_deposits_follow_the_index_after_a_hand_edit() {
+    let dir = scratch("accrual", "deposit-hand-edit");
+    write(
+        &dir,
+        "invoices/2026-11-12 Wingtip Invoice 109.md",
+        &wingtip(
+            "109",
+            "2026-11-12",
+            "draft",
+            "| Deposit on phase 2      | 1   | $1,500 | $1,500.00 | liabilities:customer-deposits |\n",
+            "$1,500.00",
+        ),
+    );
+    let (books, mut index) = open(&dir);
+    books
+        .send(&mut index, &send("109"))
+        .expect("sends the deposit");
+    let remaining = |index: &invoicer_core::index::DocumentIndex| -> Vec<Dec> {
+        books
+            .open_deposits(index, "106")
+            .expect("lists")
+            .deposits
+            .iter()
+            .map(|d| d.remaining)
+            .collect()
+    };
+    assert_eq!(remaining(&index), [Dec::new(150_000, 2)]);
+
+    let final_path = "invoices/2026-11-17 Wingtip Invoice 110.md";
+    let applying = |amount: &str| {
+        wingtip(
+            "110",
+            "2026-11-17",
+            "draft",
+            &format!(
+                "| Phase 2 build           | 1   | $4,000 | $4,000.00 | revenue:consulting            |\n\
+                 | Less deposit (Invoice 109) |  |      | -{amount} | liabilities:customer-deposits |\n"
+            ),
+            "$3,500.00",
+        )
+    };
+    write(&dir, final_path, &applying("$500.00"));
+    let path = VaultPath::new(final_path).expect("path");
+    index.refresh(books.vault(), std::slice::from_ref(&path));
+    assert_eq!(remaining(&index), [Dec::new(100_000, 2)]);
+
+    // Edited again by hand: the new amount counts once refreshed.
+    write(&dir, final_path, &applying("$1,200.00"));
+    index.refresh(books.vault(), std::slice::from_ref(&path));
+    assert_eq!(remaining(&index), [Dec::new(30_000, 2)]);
+
+    // The same row on another customer's draft uses none of Wingtip's.
+    let other = "invoices/2026-11-18 Contoso Invoice 111.md";
+    write(
+        &dir,
+        other,
+        &applying("$300.00")
+            .replace("invoice_num: 110", "invoice_num: 111")
+            .replace("[[Wingtip]]", "[[Contoso]]"),
+    );
+    let other_path = VaultPath::new(other).expect("path");
+    index.refresh(books.vault(), std::slice::from_ref(&other_path));
+    assert_eq!(remaining(&index), [Dec::new(30_000, 2)]);
+}

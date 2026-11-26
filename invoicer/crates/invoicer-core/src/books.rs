@@ -397,40 +397,11 @@ impl InvoiceBooks {
         index: &DocumentIndex,
         document: &Document,
     ) -> Result<Customer, BooksError> {
-        let words = &index.settings().words;
-        let site = index.site();
-        let link = document
-            .invoice
-            .header()
-            .invoicee
-            .link
-            .clone()
-            .ok_or_else(|| {
-                BooksError::Setup(format!("{}: `customer` is missing", document.path))
-            })?;
-        let customer = find_customer(site, &document.path, &link, words).map_err(|e| {
-            BooksError::Setup(match e {
-                CustomerLookup::NotFound => {
-                    format!("{}: `customer: {link}` names no note", document.path)
-                }
-                CustomerLookup::NotACustomer(note) => format!(
-                    "{}: `customer: {link}` is {note}, which isn't a person or organization \
-                     tagged `{}`",
-                    document.path, words.customer_tag
-                ),
-            })
-        })?;
-        let own_ledger_name = site
-            .note(&customer.contact.path)
-            .is_some_and(|note| note.frontmatter.get("ledger_customer").is_some());
-        if customer.contact.kind == ContactKind::Person
-            && !own_ledger_name
-            && let Some(company) = customer.contact.company.as_deref()
-            && let Ok(org) = find_customer(site, &customer.contact.path, company, words)
-        {
-            return Ok(org);
-        }
-        Ok(customer)
+        customer_of(
+            index,
+            &document.path,
+            document.invoice.header().invoicee.link.as_deref(),
+        )
     }
 
     /// Every catalog in the books folder (unreadable rows skipped: `check`
@@ -507,6 +478,43 @@ impl InvoiceBooks {
                 reason: error.to_string(),
             })
     }
+}
+
+/// The customer the document at `path` bills by its `customer:` link
+/// ([`InvoiceBooks::customer`]), from the index alone: the link may come
+/// from the file just read or from the index's header.
+///
+/// # Errors
+/// [`BooksError::Setup`] when `link` is missing or names no customer.
+pub(crate) fn customer_of(
+    index: &DocumentIndex,
+    path: &VaultPath,
+    link: Option<&str>,
+) -> Result<Customer, BooksError> {
+    let words = &index.settings().words;
+    let site = index.site();
+    let link = link.ok_or_else(|| BooksError::Setup(format!("{path}: `customer` is missing")))?;
+    let customer = find_customer(site, path, link, words).map_err(|e| {
+        BooksError::Setup(match e {
+            CustomerLookup::NotFound => format!("{path}: `customer: {link}` names no note"),
+            CustomerLookup::NotACustomer(note) => format!(
+                "{path}: `customer: {link}` is {note}, which isn't a person or organization \
+                 tagged `{}`",
+                words.customer_tag
+            ),
+        })
+    })?;
+    let own_ledger_name = site
+        .note(&customer.contact.path)
+        .is_some_and(|note| note.frontmatter.get("ledger_customer").is_some());
+    if customer.contact.kind == ContactKind::Person
+        && !own_ledger_name
+        && let Some(company) = customer.contact.company.as_deref()
+        && let Ok(org) = find_customer(site, &customer.contact.path, company, words)
+    {
+        return Ok(org);
+    }
+    Ok(customer)
 }
 
 /// Refuse unless the books are as `expected` (when given).

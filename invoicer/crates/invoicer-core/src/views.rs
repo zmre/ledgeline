@@ -11,7 +11,6 @@
 //! mirror. Overdue is open and due ([`crate::doc::Header::due_on`]) before
 //! `today`.
 
-use crate::catalog;
 use crate::customers::{self, BillingContact, ContactKind, ContractRef, Customer, CustomerLookup};
 use crate::doc::{Header, Invoice, Paid, Status};
 use crate::frontmatter::Fields;
@@ -634,18 +633,13 @@ pub struct CheckReport {
 }
 
 /// Every problem in the documents, customers and catalog, sorted by file and
-/// line, without the books checks (`list` and `show` count these).
+/// line, without the books checks (`list` and `show` count these). Reads
+/// the index's templates and catalogs, never their files.
 #[must_use]
 pub fn document_problems(session: &Session) -> Vec<Problem> {
     let index = session.index();
     let mut out = index.check(session.vault());
-    let (_, catalog) = catalog::load(
-        session.vault(),
-        index.site(),
-        &index.settings().words,
-        index.money(),
-    );
-    out.extend(catalog);
+    out.extend(index.catalog_problems().cloned());
     sort(&mut out);
     out
 }
@@ -728,18 +722,9 @@ pub struct CustomerEntry {
     pub open: usize,
 }
 
+/// `customer`'s documents, newest first ([`DocumentIndex::billed_to`]).
 pub(crate) fn billed_to<'a>(index: &'a DocumentIndex, customer: &Customer) -> Vec<&'a IndexedDoc> {
-    let site = index.site();
-    index
-        .list(&ListFilter::default())
-        .into_iter()
-        .filter(|d| {
-            d.header.invoicee.link.as_deref().is_some_and(|link| {
-                site.resolve_wikilink(&d.path, link)
-                    .is_some_and(|n| n.path == customer.contact.path)
-            })
-        })
-        .collect()
+    index.billed_to(&customer.contact.path)
 }
 
 fn customer_entry(

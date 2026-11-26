@@ -1,8 +1,12 @@
 {
   "benches": {
     "invoicer/books_check/5000": 276110000.0,
-    "invoicer/dashboard/5000": 11840000.0,
     "invoicer/check/5000": 3794955.0,
+    "invoicer/customers/5000": 9860000.0,
+    "invoicer/dashboard/5000": 11840000.0,
+    "invoicer/document_problems/5000": 2905000.0,
+    "invoicer/heavy_document_problems/5000": 8440000.0,
+    "invoicer/heavy_open_deposits/5000": 2790000.0,
     "invoicer/list_json/5000": 3230379.0,
     "invoicer/next_number/5000": 170071.0,
     "invoicer/open/5000": 121354557.0,

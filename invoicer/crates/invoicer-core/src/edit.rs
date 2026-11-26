@@ -15,7 +15,7 @@
 //!   recalculation after an outside edit ([`recalc_on_save`]) is drafts
 //!   only, always.
 
-use crate::catalog::{self, Catalog};
+use crate::catalog::Catalog;
 use crate::doc::{Invoice, InvoiceNumber, Status};
 use crate::draft::{self, DraftError, DraftRow, NewInvoice};
 use crate::frontmatter::{self, EditError, FieldEdit};
@@ -599,10 +599,11 @@ pub fn catalog_row(catalogs: &[Catalog], spec: &str) -> Result<DraftRow, WriteEr
         .ok_or_else(|| WriteError::UnknownItem(code.to_string()))
 }
 
-/// Every catalog in the books folder (problems are `check`'s to report).
+/// Every catalog in the books folder, as the index read it (problems are
+/// `check`'s to report).
 #[must_use]
-pub fn catalogs(index: &DocumentIndex, vault: &dyn Vault) -> Vec<Catalog> {
-    catalog::load(vault, index.site(), &index.settings().words, index.money()).0
+pub fn catalogs(index: &DocumentIndex) -> Vec<Catalog> {
+    index.catalogs().cloned().collect()
 }
 
 /// What `new` made.

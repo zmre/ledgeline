@@ -134,25 +134,35 @@ impl Template {
 
 /// Every template among the site's HTML files, sorted by path. Files that
 /// can't be read are skipped, and so are `_` files ([`is_partial`]), unread.
+///
+/// This reads every candidate file; the document index keeps the same list
+/// (`DocumentIndex::templates`), read once and refreshed per file, for
+/// whatever is asked often.
 #[must_use]
 pub fn discover(vault: &dyn Vault, site: &Site) -> Vec<Template> {
     site.others()
         .iter()
-        .filter(|other| {
-            other
-                .path
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("html"))
-                && !is_partial(&other.path)
-        })
-        .filter_map(|other| {
-            let (bytes, _) = vault
-                .read_pinned(&other.path, Some(MAX_TEMPLATE_BYTES))
-                .ok()?;
-            let source = String::from_utf8(bytes).ok()?;
-            Template::from_source(other.path.clone(), &source)
-        })
+        .filter(|other| is_candidate(&other.path))
+        .filter_map(|other| read(vault, &other.path))
         .collect()
+}
+
+/// Whether the file at `path` may be a template: an `.html` file that
+/// isn't a `_` file ([`is_partial`]).
+#[must_use]
+pub fn is_candidate(path: &VaultPath) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("html"))
+        && !is_partial(path)
+}
+
+/// The template at `path`, read now; `None` when it can't be read or isn't
+/// one.
+#[must_use]
+pub fn read(vault: &dyn Vault, path: &VaultPath) -> Option<Template> {
+    let (bytes, _) = vault.read_pinned(path, Some(MAX_TEMPLATE_BYTES)).ok()?;
+    let source = String::from_utf8(bytes).ok()?;
+    Template::from_source(path.clone(), &source)
 }
 
 /// The template a `template:` value names (`/`-rooted, as MBR reads it; a

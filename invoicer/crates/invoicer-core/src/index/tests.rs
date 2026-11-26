@@ -227,3 +227,120 @@ fn a_base_is_not_a_template_and_naming_one_says_so() {
     assert_eq!(unknown.len(), 1, "{problems:#?}");
     assert!(unknown[0].message.contains("is a base"), "{unknown:#?}");
 }
+
+/// Templates and catalogs are read at open and again only when a refresh
+/// names them (review RA-3): `check` and the sidebar read no file.
+#[test]
+fn templates_and_catalogs_follow_refresh() {
+    let vault = vault();
+    let catalog = vp("invoices/catalog.md");
+    vault.insert_file(
+        catalog.as_str(),
+        "---\ntype: catalog\n---\n\n| Code | Description | Rate |\n|---|---|---|\n| ARCH | Architect | $800 |\n",
+    );
+    let mut index = index(&vault);
+    let names = |index: &DocumentIndex| -> Vec<String> {
+        index.templates().iter().map(|t| t.name.clone()).collect()
+    };
+    let codes = |index: &DocumentIndex| -> Vec<String> {
+        index
+            .catalogs()
+            .flat_map(|c| c.items.iter().map(|i| i.code.clone()))
+            .collect()
+    };
+    assert_eq!(names(&index), ["myco-default"]);
+    assert_eq!(codes(&index), ["ARCH"]);
+    assert_eq!(index.catalog_problems().count(), 0);
+
+    // Written on disk but not refreshed yet: the index is as it was.
+    let tpl = vp("invoices/tpl/myco-default.html");
+    vault.insert_file(
+        tpl.as_str(),
+        "{# invoicer: name=\"Renamed\" #}\n{{ frontmatter.invoice_num }}",
+    );
+    let added = vp("invoices/tpl/other.html");
+    vault.insert_file(added.as_str(), "<p>{{ frontmatter.invoice_num }}</p>");
+    let partial = vp("invoices/tpl/_part.html");
+    vault.insert_file(partial.as_str(), "{{ frontmatter.invoice_num }}");
+    assert_eq!(names(&index), ["myco-default"]);
+    assert!(
+        !index.rebuild_and_diff(&vault).is_empty(),
+        "check --full sees it"
+    );
+
+    // Refreshed: an edit, a new file, and a partial (never a template).
+    index.refresh(&vault, &[tpl.clone(), added.clone(), partial.clone()]);
+    assert_eq!(names(&index), ["Renamed", "other"]);
+    assert!(index.rebuild_and_diff(&vault).is_empty());
+
+    // An edit that makes it no template, and a removal.
+    vault.insert_file(tpl.as_str(), "<p>a page</p>");
+    vault.remove_file(&added).expect("removes");
+    index.refresh(&vault, &[tpl.clone(), added.clone()]);
+    assert!(index.templates().is_empty());
+    let problems = index.check(&vault);
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.code == ProblemCode::UnknownTemplate),
+        "{problems:#?}"
+    );
+
+    // A catalog edit, a bad row, and a note that stops being a catalog.
+    vault.insert_file(
+        catalog.as_str(),
+        "---\ntype: catalog\n---\n\n| Code | Description | Rate |\n|---|---|---|\n| ARCH | Architect | $800 |\n| JR | Junior | ten |\n",
+    );
+    index.refresh(&vault, std::slice::from_ref(&catalog));
+    assert_eq!(codes(&index), ["ARCH", "JR"]);
+    assert_eq!(index.catalog_problems().count(), 1);
+    vault.insert_file(catalog.as_str(), "# notes now\n");
+    index.refresh(&vault, std::slice::from_ref(&catalog));
+    assert!(codes(&index).is_empty());
+    assert_eq!(index.catalog_problems().count(), 0);
+    assert!(index.rebuild_and_diff(&vault).is_empty());
+}
+
+/// The number and customer lookups are rebuilt after any refresh that
+/// changed something (review RC-5, RC-15).
+#[test]
+fn number_and_customer_lookups_follow_refresh() {
+    let vault = vault();
+    let mut index = index(&vault);
+    let customer = vp("customers/Customer X.md");
+    let numbers = |index: &DocumentIndex| -> Vec<String> {
+        index
+            .billed_to(&customer)
+            .iter()
+            .filter_map(|d| d.number().map(str::to_string))
+            .collect()
+    };
+    assert_eq!(numbers(&index), ["105", "104"], "newest first");
+    assert_eq!(index.by_number(" 104 ").len(), 1);
+    assert!(index.by_number("300").is_empty());
+
+    // A new document, a renumbered one, and one billed elsewhere.
+    let new = vp("invoices/new.md");
+    vault.insert_file(
+        new.as_str(),
+        INVOICE_105
+            .replace("invoice_num: 105", "invoice_num: 300")
+            .replace("date: 2026-11-17", "date: 2026-12-01"),
+    );
+    let old = vp("invoices/2026-11-01 Customer X Invoice 104.md");
+    vault.insert_file(
+        old.as_str(),
+        INVOICE_105.replace("[[Customer X]]", "[[My Company]]"),
+    );
+    index.refresh(&vault, &[new.clone(), old.clone()]);
+    assert_eq!(numbers(&index), ["300", "105"]);
+    assert_eq!(index.by_number("300").len(), 1);
+    assert!(index.by_number("104").is_empty());
+    assert_eq!(index.by_number("105").len(), 2, "two documents share it");
+
+    // A removal.
+    vault.remove_file(&new).expect("removes");
+    index.refresh(&vault, std::slice::from_ref(&new));
+    assert_eq!(numbers(&index), ["105"]);
+    assert!(index.by_number("300").is_empty());
+}
