@@ -17,14 +17,15 @@
      transaction; saving a sent invoice re-books it. -->
 <script lang="ts">
     import {onDestroy, onMount, untrack} from "svelte";
-    import {beforeNavigate, goto} from "$app/navigation";
+    import {goto} from "$app/navigation";
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
     import DateInput from "#ui/components/DateInput.svelte";
     import {hint} from "#ui/keys/hint.svelte.js";
     import {registerKeys} from "#ui/keys/keymap.svelte.js";
     import {fetchDelivery, fetchTemplates, sendInvoice} from "#lib/api.js";
-    import {changes} from "#lib/changes.svelte.js";
+    import {onFilesChanged} from "#lib/changes.svelte.js";
+    import {unsavedGuard} from "#lib/unsavedGuard.svelte.js";
     import {defaultVia, sendBlocker, VIA_CHOICES, type Delivery} from "#lib/delivery.js";
     import {DEFAULT_WORDS, isDepositTable, totalWords, type EditorForm} from "#lib/editor.js";
     import {fetchDeposits, fetchEditorOptions, fetchFieldValues, rebookInvoice, voidInvoice} from "#lib/editorApi.js";
@@ -63,69 +64,33 @@
         fetchTemplates()
             .then((t) => (templates = t))
             .catch((e: unknown) => console.warn("templates:", e));
-        const warn = (event: BeforeUnloadEvent): void => {
-            if (editor.dirty) event.preventDefault();
-        };
-        window.addEventListener("beforeunload", warn);
-        return () => window.removeEventListener("beforeunload", warn);
     });
     onDestroy(() => editor.dispose());
 
-    // Leaving with unsaved edits: Save / Discard / Cancel. Closing the window is the browser's own prompt (beforeunload).
-    let leaving = $state<URL | null>(null);
-    let leaveError = $state<string | null>(null);
-    let leavingNow = false;
-    beforeNavigate((navigation) => {
-        if (leavingNow || !editor.dirty || readonly || navigation.type === "leave" || navigation.to === null) return;
-        navigation.cancel();
-        leaveError = null;
-        leaving = navigation.to.url;
+    // Leaving with unsaved edits: Save / Discard / Cancel. A sent invoice's
+    // save asks to re-book first; that confirmation takes over from there.
+    // A save that wrote the file but didn't re-book it stays put with why.
+    const guard = unsavedGuard({
+        dirty: () => editor.dirty && !readonly,
+        save: async () => {
+            const after = await save();
+            if (editor.confirmRebook) return "asked";
+            return after !== null && !editor.dirty ? "saved" : "failed";
+        },
+        discard: () => editor.discard(),
+        saveError: () => editor.saveError,
+        conflict: () => editor.conflict !== null,
+        noun: "invoice",
     });
 
-    async function leaveTo(url: URL): Promise<void> {
-        leavingNow = true;
-        leaving = null;
-        try {
-            // eslint-disable-next-line svelte/no-navigation-without-resolve -- SvelteKit's own navigation target, already an app URL
-            await goto(url);
-        } finally {
-            leavingNow = false;
-        }
-    }
-
-    async function leaveWith(choice: "save" | "discard" | "cancel"): Promise<void> {
-        const url = leaving;
-        if (url === null) return;
-        if (choice === "cancel") {
-            leaving = null;
-            return;
-        }
-        if (choice === "discard") {
-            editor.discard();
-            await leaveTo(url);
-            return;
-        }
-        await save();
-        if (!editor.dirty) await leaveTo(url);
-        else if (editor.confirmRebook)
-            leaving = null; // the re-book confirmation asks next; the user goes on from there
-        else leaveError = editor.saveError ?? "It couldn't be saved.";
-    }
-
     // A change on disk (lib/events.ts): this file, or anything when `paths` is [].
-    let seenSeq = changes.seq;
-    $effect(() => {
-        const seq = changes.seq;
-        if (seq === seenSeq) return;
-        seenSeq = seq;
-        untrack(() => {
-            void editor.diskChanged(changes.paths);
-            sendReload += 1;
-            // The pickers follow the books: a catalog item or customer added elsewhere is offered at once.
-            fetchEditorOptions()
-                .then((o) => (editor.options = o))
-                .catch((e: unknown) => console.warn("editor options:", e));
-        });
+    onFilesChanged((paths) => {
+        void editor.diskChanged(paths);
+        sendReload += 1;
+        // The pickers follow the books: a catalog item or customer added elsewhere is offered at once.
+        fetchEditorOptions()
+            .then((o) => (editor.options = o))
+            .catch((e: unknown) => console.warn("editor options:", e));
     });
 
     const edit = (form: EditorForm): void => editor.edit(form);
@@ -135,11 +100,13 @@
     const commodity = $derived(editor.computed?.commodity ?? "$");
     const readonly = $derived(editor.status === "void");
 
-    async function save(rebook = false): Promise<void> {
+    /** Save (a sent invoice: and re-book it); the number afterwards, or null when it didn't save. */
+    async function save(rebook = false): Promise<string | null> {
         const before = editor.number;
         const after = await editor.save({rebook});
         if (after !== null && after !== before) await goto(resolve("/invoices/[number]/edit", {number: after}), {replaceState: true});
         if (after !== null) sendReload += 1;
+        return after;
     }
 
     // Send / Void / Re-book, each after a confirmation.
@@ -400,15 +367,15 @@
     />
 {/if}
 
-{#if leaving !== null}
+{#if guard.pending !== null}
     <SaveDiscardDialog
         title="Leave invoice {editor.number}?"
         message="Your changes aren't saved. Save them before leaving, or discard them?"
         saving={editor.saving}
-        error={leaveError}
-        onSave={() => void leaveWith("save")}
-        onDiscard={() => void leaveWith("discard")}
-        onCancel={() => void leaveWith("cancel")}
+        error={guard.error}
+        onSave={() => void guard.save()}
+        onDiscard={() => void guard.discard()}
+        onCancel={() => guard.cancel()}
     />
 {/if}
 

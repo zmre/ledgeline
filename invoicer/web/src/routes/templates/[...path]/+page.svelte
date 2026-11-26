@@ -21,15 +21,16 @@
      moves on. -->
 <script lang="ts">
     import {onMount, untrack} from "svelte";
-    import {beforeNavigate, goto} from "$app/navigation";
+    import {goto} from "$app/navigation";
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
     import {registerKeys} from "#ui/keys/keymap.svelte.js";
     import {ensureSession, fetchInvoices} from "#lib/api.js";
-    import {changes} from "#lib/changes.svelte.js";
+    import {onFilesChanged} from "#lib/changes.svelte.js";
     import {EditorApiError} from "#lib/editorApi.js";
     import type {InvoiceEntry} from "#lib/invoices.js";
     import {errorText} from "#lib/labels.js";
+    import {unsavedGuard} from "#lib/unsavedGuard.svelte.js";
     import {
         TEMPLATE_KINDS,
         baseText,
@@ -78,9 +79,6 @@
     let conflict = $state<string | null>(null);
     /** The hash this page last wrote: its own save coming back isn't a conflict. */
     let lastSaved = "";
-
-    let leaving = $state<{to: string} | null>(null);
-    let leaveError = $state<string | null>(null);
 
     let duplicating = $state(false);
     let copyName = $state("");
@@ -296,33 +294,13 @@
         ],
     });
 
-    function finishLeaving(to: string): void {
-        leaving = null;
-        leaveError = null;
-        // eslint-disable-next-line svelte/no-navigation-without-resolve -- a URL SvelteKit itself was navigating to
-        void goto(to);
-    }
-
-    async function saveAndLeave(): Promise<void> {
-        if (leaving === null) return;
-        const to = leaving.to;
-        if (await save()) finishLeaving(to);
-        else leaveError = saveError ?? (conflict !== null ? "The template changed on disk; reload it or keep yours first." : null);
-    }
-
-    function discardAndLeave(): void {
-        if (leaving === null) return;
-        const to = leaving.to;
-        discard();
-        finishLeaving(to);
-    }
-
-    beforeNavigate((navigation) => {
-        if (!dirty || navigation.to === null) return;
-        navigation.cancel();
-        // Closing the window or reloading: the browser's own prompt.
-        if (navigation.type === "leave") return;
-        leaving = {to: navigation.to.url.pathname + navigation.to.url.search + navigation.to.url.hash};
+    const guard = unsavedGuard({
+        dirty: () => dirty,
+        save: async () => ((await save()) ? "saved" : "failed"),
+        discard,
+        saveError: () => saveError,
+        conflict: () => conflict !== null,
+        noun: "template",
     });
 
     // Another template opened in this page (Duplicate, a link): read it.
@@ -342,23 +320,10 @@
         // The preview frame needs MBR's session cookie.
         ensureSession().catch((e: unknown) => console.warn("session:", e));
         void loadInvoices();
-        const warn = (event: BeforeUnloadEvent): void => {
-            if (dirty) event.preventDefault();
-        };
-        window.addEventListener("beforeunload", warn);
-        return () => {
-            window.removeEventListener("beforeunload", warn);
-            clearTimeout(previewTimer);
-        };
+        return () => clearTimeout(previewTimer);
     });
 
-    let seenSeq = changes.seq;
-    $effect(() => {
-        const seq = changes.seq;
-        if (seq === seenSeq) return;
-        seenSeq = seq;
-        untrack(() => void refresh());
-    });
+    onFilesChanged(() => void refresh());
 
     const usedInvoices = $derived(detail?.used_by.filter((u) => u.how === "invoice") ?? []);
     const usedCustomers = $derived(detail?.used_by.filter((u) => u.how === "customer") ?? []);
@@ -566,16 +531,13 @@
     </ConfirmDialog>
 {/if}
 
-{#if leaving !== null}
+{#if guard.pending !== null}
     <SaveDiscardDialog
         message="This template has unsaved changes. Save them before you leave?"
         {saving}
-        error={leaveError}
-        onSave={() => void saveAndLeave()}
-        onDiscard={discardAndLeave}
-        onCancel={() => {
-            leaving = null;
-            leaveError = null;
-        }}
+        error={guard.error}
+        onSave={() => void guard.save()}
+        onDiscard={() => void guard.discard()}
+        onCancel={() => guard.cancel()}
     />
 {/if}

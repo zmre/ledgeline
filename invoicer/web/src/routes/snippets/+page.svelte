@@ -17,10 +17,11 @@
      cursor and Enter or `o` opens the snippet. -->
 <script lang="ts">
     import {onMount, untrack} from "svelte";
-    import {beforeNavigate, goto} from "$app/navigation";
+    import {goto} from "$app/navigation";
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
-    import {changes} from "#lib/changes.svelte.js";
+    import {onFilesChanged} from "#lib/changes.svelte.js";
+    import {unsavedGuard} from "#lib/unsavedGuard.svelte.js";
     import {routeParam} from "#lib/customers.js";
     import {registerKeys} from "#ui/keys/keymap.svelte.js";
     import {CURSOR_ROW, rowKeys} from "#lib/keys/rowKeys.svelte.js";
@@ -74,9 +75,15 @@
     let deleting = $state(false);
     let deleteError = $state<string | null>(null);
 
-    /** What waits on Save / Discard / Cancel over unsaved edits: leaving, another snippet, a new one. */
-    let pending = $state<{then: () => void} | null>(null);
-    let pendingError = $state<string | null>(null);
+    /** Save / Discard / Cancel over unsaved edits: leaving, another snippet, a new one. */
+    const guard = unsavedGuard({
+        dirty: () => dirty,
+        save: async () => ((await save()) ? "saved" : "failed"),
+        discard: () => (form = {...original}),
+        saveError: () => saveError,
+        conflict: () => conflict !== null,
+        noun: "snippet",
+    });
 
     function select(path: string | null, from: SnippetEntry[] | null = list): void {
         chosen = path;
@@ -111,26 +118,7 @@
             savedNote = null;
             select(path);
         };
-        if (dirty) ask(open);
-        else open();
-    }
-
-    function ask(then: () => void): void {
-        pending = {then};
-        pendingError = null;
-    }
-
-    function carryOn(): void {
-        const then = pending?.then;
-        pending = null;
-        pendingError = null;
-        then?.();
-    }
-
-    async function saveAndCarryOn(): Promise<void> {
-        if (pending === null) return;
-        if (await save()) carryOn();
-        else pendingError = saveError ?? (conflict !== null ? "The snippet changed on disk; reload it or keep yours first." : null);
+        guard.proceed(open);
     }
 
     /** After a change on disk: adopt it when nothing is unsaved; else say so. */
@@ -192,8 +180,7 @@
             creating = true;
             createError = null;
         };
-        if (dirty) ask(open);
-        else open();
+        guard.proceed(open);
     }
 
     // `?new=1` from the New menu: drop the parameter, then open the form.
@@ -252,33 +239,9 @@
         open: () => (snippet) => choose(snippet.path),
     });
 
-    beforeNavigate(({cancel, to, type}) => {
-        // The same page with another query (the New menu's `?new=1`) isn't leaving.
-        if (to === null || to.url.pathname === page.url.pathname || !dirty) return;
-        cancel();
-        // Closing the window or reloading: the browser's own prompt.
-        if (type === "leave") return;
-        const href = to.url.pathname + to.url.search + to.url.hash;
-        // eslint-disable-next-line svelte/no-navigation-without-resolve -- a URL SvelteKit itself was navigating to
-        ask(() => void goto(href));
-    });
+    onMount(() => void load());
 
-    onMount(() => {
-        void load();
-        const warn = (event: BeforeUnloadEvent): void => {
-            if (dirty) event.preventDefault();
-        };
-        window.addEventListener("beforeunload", warn);
-        return () => window.removeEventListener("beforeunload", warn);
-    });
-
-    let seenSeq = changes.seq;
-    $effect(() => {
-        const seq = changes.seq;
-        if (seq === seenSeq) return;
-        seenSeq = seq;
-        untrack(() => void refresh());
-    });
+    onFilesChanged(() => void refresh());
 
     const customerHref = (use: SnippetUse): string => resolve("/customers/[...path]", {path: routeParam(use.path)});
     const invoiceHref = (use: SnippetUse): string => resolve("/invoices/[number]", {number: use.number ?? use.path});
@@ -438,19 +401,13 @@
     </ConfirmDialog>
 {/if}
 
-{#if pending !== null}
+{#if guard.pending !== null}
     <SaveDiscardDialog
         message="This snippet has unsaved changes. Save them first?"
         {saving}
-        error={pendingError}
-        onSave={() => void saveAndCarryOn()}
-        onDiscard={() => {
-            form = {...original};
-            carryOn();
-        }}
-        onCancel={() => {
-            pending = null;
-            pendingError = null;
-        }}
+        error={guard.error}
+        onSave={() => void guard.save()}
+        onDiscard={() => void guard.discard()}
+        onCancel={() => guard.cancel()}
     />
 {/if}

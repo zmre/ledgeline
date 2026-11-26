@@ -19,14 +19,15 @@
      first when something is unsaved. -->
 <script lang="ts">
     import {onMount, untrack} from "svelte";
-    import {beforeNavigate, goto} from "$app/navigation";
+    import {goto} from "$app/navigation";
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
     import AsyncSection from "#ui/components/AsyncSection.svelte";
     import {registerKeys} from "#ui/keys/keymap.svelte.js";
     import type {DataView} from "#ui/ui/dataView.js";
     import {ensureSession, fetchTemplates} from "#lib/api.js";
-    import {changes} from "#lib/changes.svelte.js";
+    import {onFilesChanged} from "#lib/changes.svelte.js";
+    import {unsavedGuard} from "#lib/unsavedGuard.svelte.js";
     import {
         ApiStatusError,
         changedFields,
@@ -82,10 +83,6 @@
     let stale = $state(false);
     let savedNote = $state<string | null>(null);
     let openError = $state<string | null>(null);
-
-    /** A navigation held while the Save / Discard / Cancel dialog asks; `null` for "back to the view". */
-    let leaving = $state<{to: string | null} | null>(null);
-    let leaveError = $state<string | null>(null);
 
     /** The note's form as the page edits it: the company by name (the server writes the link). */
     function editable(f: CustomerForm): CustomerForm {
@@ -210,31 +207,17 @@
     }
 
     /** Cancel: back to the view, asking first when something is unsaved. */
+    // Leaving, or Cancel, with unsaved changes asks Save / Discard / stay.
+    const guard = unsavedGuard({
+        dirty: () => dirty,
+        save: async () => (detail !== null && (await save(changedFields(original, form), detail.hash)) ? "saved" : "failed"),
+        discard: stopEditing,
+        saveError: () => saveError,
+        noun: "customer",
+    });
+
     function cancel(): void {
-        if (dirty) leaving = {to: null};
-        else stopEditing();
-    }
-
-    function finishLeaving(to: string | null): void {
-        leaving = null;
-        leaveError = null;
-        if (to === null) stopEditing();
-        // eslint-disable-next-line svelte/no-navigation-without-resolve -- a URL SvelteKit itself was navigating to
-        else void goto(to);
-    }
-
-    async function saveAndLeave(): Promise<void> {
-        if (leaving === null || detail === null) return;
-        const to = leaving.to;
-        if (await save(changedFields(original, form), detail.hash)) finishLeaving(to);
-        else leaveError = saveError;
-    }
-
-    function discardAndLeave(): void {
-        if (leaving === null) return;
-        const to = leaving.to;
-        stopEditing();
-        finishLeaving(to);
+        guard.proceed(stopEditing);
     }
 
     let formEl = $state<HTMLFormElement | null>(null);
@@ -248,7 +231,7 @@
                 group: "Customer",
                 fields: true,
                 within: () => formEl,
-                enabled: () => editing && !saving && leaving === null,
+                enabled: () => editing && !saving && guard.pending === null,
                 run: cancel,
             },
             {
@@ -264,26 +247,12 @@
         ],
     });
 
-    beforeNavigate((navigation) => {
-        if (!dirty || navigation.to === null) return;
-        // Closing the window or reloading: the browser's own prompt.
-        navigation.cancel();
-        if (navigation.type === "leave") return;
-        leaving = {to: navigation.to.url.pathname + navigation.to.url.search + navigation.to.url.hash};
-    });
-
     $effect(() => {
         const target = key;
         untrack(() => load(target));
     });
 
-    let seenSeq = changes.seq;
-    $effect(() => {
-        const seq = changes.seq;
-        if (seq === seenSeq) return;
-        seenSeq = seq;
-        untrack(() => refresh(key));
-    });
+    onFilesChanged(() => refresh(key));
 
     onMount(() => {
         fetchTemplates()
@@ -403,16 +372,13 @@
     </AsyncSection>
 </div>
 
-{#if leaving !== null}
+{#if guard.pending !== null}
     <SaveDiscardDialog
-        message={leaving.to === null ? "This customer has unsaved changes." : "This customer has unsaved changes. Save them before you leave?"}
+        message={guard.pending.leaving ? "This customer has unsaved changes. Save them before you leave?" : "This customer has unsaved changes."}
         {saving}
-        error={leaveError}
-        onSave={() => void saveAndLeave()}
-        onDiscard={discardAndLeave}
-        onCancel={() => {
-            leaving = null;
-            leaveError = null;
-        }}
+        error={guard.error}
+        onSave={() => void guard.save()}
+        onDiscard={() => void guard.discard()}
+        onCancel={() => guard.cancel()}
     />
 {/if}

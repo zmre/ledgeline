@@ -25,13 +25,43 @@ import {
     type EditorState,
     type WouldBook,
 } from "./editor.js";
-import {errorText} from "./labels.js";
+import {errorText, friendlyMessage} from "./labels.js";
 import {computeForm, draftPreview, EditorApiError, fetchForm, saveForm} from "./editorApi.js";
 
 /** Debounces, in milliseconds. */
 export const DELAYS = {amounts: 120, books: 500, preview: 400};
 
 const key = (form: EditorForm): string => JSON.stringify(form);
+
+/**
+ * Whether a refused save's error says the file was written anyway: the
+ * body's `written`/`saved` flag, its `revision` being the file's now, or a
+ * sentence that says it was saved ("the invoice was saved, but re-booking it
+ * failed: …", today's server).
+ */
+function saysSaved(error: unknown, revision: string): boolean {
+    if (!(error instanceof Error)) return false;
+    if (error instanceof EditorApiError && (error.body.written === true || error.body.saved === true || error.revision === revision)) return true;
+    return /\bwas saved\b|\bsaved, but\b/i.test(error.message);
+}
+
+/**
+ * What the user reads when the file was saved but its re-booking failed:
+ * the reason in plain words and what to do, without the server's lead-in or
+ * its CLI hint.
+ */
+export function notRebookedText(error: unknown): string {
+    const message = error instanceof Error ? error.message : String(error);
+    const reason = message
+        .replace(/^.*?\bsaved,? but (?:re-?booking it failed|it wasn't re-?booked|not re-?booked)\s*[:,—-]?\s*/i, "")
+        .replace(/;\s*fix it, then\b[\s\S]*$/i, "")
+        .replace(/\s*\(or `[^`]*`\)/g, "")
+        .trim()
+        .replace(/[.;:]+$/, "");
+    // friendlyMessage starts a sentence; here it follows a colon ("PO …" keeps its capitals).
+    const why = reason === "" ? "" : `: ${friendlyMessage(reason).replace(/^[A-Z](?=[a-z])/, (c) => c.toLowerCase())}`;
+    return `Saved, but not re-booked${why}. The file has your changes; the books don't yet. Fix the problem, then choose Re-book.`;
+}
 
 export class InvoiceEditor {
     number = $state("");
@@ -75,6 +105,8 @@ export class InvoiceEditor {
     // Pending debounces: bookkeeping, never shown, so not reactive on purpose.
     // eslint-disable-next-line svelte/prefer-svelte-reactivity
     #timers = new Map<string, ReturnType<typeof setTimeout>>();
+    /** Paths changed on disk while a save was in flight (`[]`: anything), for after it. */
+    #missed: string[] | null = null;
 
     /** Load invoice `number` (the URL's). */
     async load(number: string): Promise<void> {
@@ -150,20 +182,24 @@ export class InvoiceEditor {
     /**
      * Save over the revision read. Returns the invoice's number afterwards
      * (a renumbered draft has a new one), or null when it didn't save
-     * (a conflict, a refusal, or a confirmation to ask for first).
+     * cleanly: a conflict, a refusal, a confirmation to ask for first, or a
+     * write that landed but whose re-booking failed (`saveError` says so,
+     * and the form is clean: what is on disk is what was sent).
      */
     async save(options: {rebook?: boolean} = {}): Promise<string | null> {
         const form = this.form;
         if (form === null || this.saving) return null;
+        const sent = copyForm(form);
+        const over = this.revision;
         this.saving = true;
         this.saveError = null;
         try {
-            const saved = await saveForm(this.number, form, this.revision, options);
+            const saved = await saveForm(this.number, form, over, options);
             this.revision = saved.revision;
             this.status = saved.status;
             this.path = saved.path;
             this.number = saved.number;
-            this.baseline = copyForm(form);
+            this.baseline = sent;
             this.confirmRebook = false;
             this.savedAt = Date.now();
             this.schedule("books", 0, () => this.compute(true));
@@ -174,13 +210,45 @@ export class InvoiceEditor {
             } else if (error instanceof EditorApiError && error.code === "confirm-rebook") {
                 this.confirmRebook = true;
             } else {
-                this.saveError = errorText(error);
                 this.confirmRebook = false;
+                // The server may have written the file before the step that
+                // failed (re-booking a sent invoice): then the file is ours,
+                // and its next change event must not read as a conflict.
+                this.saveError = (await this.savedAnyway(sent, over, error)) ? notRebookedText(error) : errorText(error);
             }
             return null;
         } finally {
             this.saving = false;
+            const missed = this.#missed;
+            this.#missed = null;
+            if (missed !== null) void this.diskChanged(missed);
         }
+    }
+
+    /**
+     * After a refused save: did the file get written anyway? It did when the
+     * file is now at a new revision and holds what was sent (or the server
+     * says it saved it). Then the editor takes that revision, and the sent
+     * form as its baseline, as a clean save would.
+     */
+    async savedAnyway(sent: EditorForm, over: string, error: unknown): Promise<boolean> {
+        let theirs: EditorState;
+        try {
+            theirs = await fetchForm(this.number);
+        } catch {
+            return false; // can't tell: the next change event settles it
+        }
+        if (theirs.revision === over) return false; // nothing was written
+        if (formsDiffer(theirs.form, sent) && !saysSaved(error, theirs.revision)) return false; // someone else's write
+        this.revision = theirs.revision;
+        this.status = theirs.status;
+        this.path = theirs.path;
+        this.number = theirs.number;
+        this.title = theirs.title;
+        this.baseline = sent;
+        this.savedAt = Date.now();
+        this.schedule("books", 0, () => this.compute(true));
+        return true;
     }
 
     async showConflict(): Promise<void> {
@@ -194,11 +262,21 @@ export class InvoiceEditor {
     /** Files changed on disk (`paths` `[]`: anything may have). */
     async diskChanged(paths: string[]): Promise<void> {
         if (this.form === null || (paths.length > 0 && !paths.includes(this.path))) return;
+        // A save in flight: its own write may be this change, and its
+        // revision isn't known yet. Looked at again once it is done.
+        if (this.saving) {
+            this.#lookLater(paths);
+            return;
+        }
         let theirs: EditorState;
         try {
             theirs = await fetchForm(this.number);
         } catch (error) {
             console.warn("reload:", error);
+            return;
+        }
+        if (this.saving) {
+            this.#lookLater(paths);
             return;
         }
         switch (onDiskChange(this.revision, theirs.revision, this.dirty)) {
@@ -237,6 +315,12 @@ export class InvoiceEditor {
     dispose(): void {
         for (const timer of this.#timers.values()) clearTimeout(timer);
         this.#timers.clear();
+    }
+
+    /** Remember a change on disk for once the save in flight is done (`[]` swallows any paths). */
+    #lookLater(paths: string[]): void {
+        const missed = this.#missed;
+        this.#missed = missed === null ? paths : missed.length === 0 || paths.length === 0 ? [] : [...missed, ...paths];
     }
 
     private schedule(name: string, delay: number, run: () => Promise<void>): void {
