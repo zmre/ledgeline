@@ -12,11 +12,11 @@ import {resolve} from "$app/paths";
 import {page} from "$app/state";
 import {rulesStore} from "#lib/imports/rulesStore.svelte.js";
 import {isNative} from "#ui/native/detect.js";
-import {zoomIn, zoomOut, zoomReset} from "#ui/theme/zoom.svelte.js";
 import {keymap} from "#ui/keys/keymap.svelte.js";
+import {zoomBindings} from "#ui/keys/zoomBindings.js";
 import {PRIORITY, type Layer} from "#ui/keys/types.js";
 
-type Route = "/" | "/holdings" | "/budget" | "/projections" | "/reports" | "/imports";
+type Route = "/" | "/holdings" | "/budget" | "/projections" | "/reports" | "/imports" | "/settings";
 
 /**
  * No `svelte/no-navigation-without-resolve` disable is needed anywhere in this
@@ -43,17 +43,9 @@ export function globalLayer(): Layer {
         priority: PRIORITY.page,
         bindings: [
             {keys: "?", label: "Show keyboard shortcuts", group: "Global", run: () => keymap.toggleHelp()},
-            // Interface scale (plan 39). `always`: like the browser's own zoom
-            // they work from inside a field and over an overlay. The keymap
-            // `preventDefault`s them, which is what stops the browser zooming
-            // the page as well (and, in the macOS desktop app, what stops the
-            // View menu's identical key equivalent firing a second step).
-            // Cmd+= is the unshifted key on a US layout; Cmd++ is what a layout
-            // with a dedicated `+` key (German, numpad) sends.
-            {keys: "mod++", label: "Zoom in", group: "Global", run: zoomIn, always: true},
-            {keys: "mod+=", label: "Zoom in", group: "Global", run: zoomIn, always: true, help: false},
-            {keys: "mod+-", label: "Zoom out", group: "Global", run: zoomOut, always: true},
-            {keys: "mod+0", label: "Actual size", group: "Global", run: zoomReset, always: true},
+            // Interface scale (plan 39): Cmd/Ctrl + = - 0, shared with the
+            // invoicer (`#ui/keys/zoomBindings.ts` says why they are `always`).
+            ...zoomBindings("Global"),
             {keys: "g j", label: "Go to Journal", group: "Navigation", run: to("/")},
             {keys: "g h", label: "Go to Holdings", group: "Navigation", run: to("/holdings")},
             {keys: "g b", label: "Go to Budget", group: "Navigation", run: to("/budget")},
@@ -69,6 +61,8 @@ export function globalLayer(): Layer {
                 // (plan 42). A hidden destination should not be reachable.
                 enabled: () => rulesStore.available && !isNative(),
             },
+            // `g ,` as in the invoicer (Cmd/Ctrl+, is the desktop's Settings… key).
+            {keys: "g ,", label: "Go to Settings", group: "Navigation", run: to("/settings")},
         ],
     };
 }

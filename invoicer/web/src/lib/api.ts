@@ -9,18 +9,6 @@ import {isDashboard, type Dashboard} from "./dashboard.js";
 import type {Anchor, Delivery, Destination, Exported} from "./delivery.js";
 import {localToday, type BooksInfo, type InvoiceBooks, type InvoiceDetail, type InvoiceEntry, type Preview, type TemplateEntry} from "./invoices.js";
 
-/** `GET /api/ui-prefs`'s body: the shared theme and scale, among others. */
-export interface UiPrefsBody {
-    prefs: {theme?: unknown; uiScale?: unknown};
-}
-
-/** The saved theme and scale, or null when the body does not carry them. */
-export function appearanceFrom(body: UiPrefsBody): {theme: string; uiScale: number} | null {
-    const {theme, uiScale} = body.prefs ?? {};
-    if (typeof theme !== "string" || typeof uiScale !== "number") return null;
-    return {theme, uiScale};
-}
-
 /**
  * The server's own sentence for a failed request (`{"error": "…"}`), else the
  * status line: "no books are open; choose File → Open" says what to do, "HTTP
@@ -57,11 +45,6 @@ async function json<T>(method: string, path: string, check: (body: unknown) => b
 }
 
 const isObject = (body: unknown): body is Record<string, unknown> => typeof body === "object" && body !== null && !Array.isArray(body);
-
-/** The effective UI prefs. */
-export async function fetchUiPrefs(): Promise<UiPrefsBody> {
-    return json<UiPrefsBody>("GET", "/api/ui-prefs", (body) => isObject(body) && "prefs" in body);
-}
 
 let session: Promise<void> | null = null;
 

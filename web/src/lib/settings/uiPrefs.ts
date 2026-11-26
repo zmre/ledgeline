@@ -121,6 +121,9 @@ export const PINNABLE_UI_PREF_KEYS = [
     "syncKeepSourceDays",
     "manualRemindDays",
     "autoRecognize",
+    "settlementLookbackDays",
+    "settlementToleranceBps",
+    "settlementLeadDays",
 ] as const;
 
 export type PinnableUiPrefKey = (typeof PINNABLE_UI_PREF_KEYS)[number];

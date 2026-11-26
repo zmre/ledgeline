@@ -135,4 +135,13 @@ describe("COMPONENT Sidebar", () => {
         expect(screen.getByTestId("sidebar-books").textContent).toContain("No books open");
         expect(screen.getByTestId("sidebar-invoices").getAttribute("aria-current")).toBeNull();
     });
+
+    it("ends with Settings, after every section, and marks it while it is open", () => {
+        render(Sidebar, {links, books, settings: {id: "settings", href: "/app/settings", label: "Settings", active: true}});
+        const all = screen.getAllByRole("link");
+        const settings = screen.getByTestId("sidebar-settings");
+        expect(all[all.length - 1]).toBe(settings);
+        expect(settings.getAttribute("href")).toBe("/app/settings");
+        expect(settings.getAttribute("aria-current")).toBe("page");
+    });
 });

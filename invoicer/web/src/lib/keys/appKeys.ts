@@ -5,6 +5,8 @@
 // but declares none.
 //
 // `g g` and `G` stay free for lists (first and last row), as in Ledgeline.
+// Settings is `g ,` (`g s` is Snippets) and Cmd/Ctrl+, as in a desktop app;
+// the zoom keys are Ledgeline's (`#ui/keys/zoomBindings.ts`).
 //
 // Escape leaves a field (Y5): single-letter keys are off while typing, so
 // without a way out of a field a keyboard user would have to Tab to a
@@ -19,9 +21,10 @@ import {resolve} from "$app/paths";
 import {page} from "$app/state";
 import {keymap} from "#ui/keys/keymap.svelte.js";
 import {PRIORITY, type Layer} from "#ui/keys/types.js";
+import {zoomBindings} from "#ui/keys/zoomBindings.js";
 import {pageSearch} from "./pageSearch.svelte.js";
 
-type Section = "/" | "/invoices" | "/customers" | "/catalog" | "/snippets" | "/templates" | "/new";
+type Section = "/" | "/invoices" | "/customers" | "/catalog" | "/snippets" | "/templates" | "/new" | "/settings";
 
 /** Go to a page (with `search`, a query such as `?deposit=1`); already there, nothing. */
 function to(path: Section, search = ""): () => void {
@@ -51,12 +54,15 @@ export function appLayer(): Layer {
             {keys: "n", label: "New invoice", group: "Global", run: to("/new")},
             {keys: "d", label: "New deposit invoice", group: "Global", run: to("/new", "?deposit=1")},
             {keys: "Escape", label: "Leave the field", group: "Global", fields: true, run: leaveField},
+            {keys: "mod+,", label: "Open Settings", group: "Global", fields: true, run: to("/settings")},
+            ...zoomBindings("Global"),
             {keys: "g d", label: "Go to Dashboard", group: "Go to", run: to("/")},
             {keys: "g i", label: "Go to Invoices", group: "Go to", run: to("/invoices")},
             {keys: "g c", label: "Go to Customers", group: "Go to", run: to("/customers")},
             {keys: "g k", label: "Go to Catalog", group: "Go to", run: to("/catalog")},
             {keys: "g s", label: "Go to Snippets", group: "Go to", run: to("/snippets")},
             {keys: "g t", label: "Go to Templates", group: "Go to", run: to("/templates")},
+            {keys: "g ,", label: "Go to Settings", group: "Go to", run: to("/settings")},
         ],
     };
 }

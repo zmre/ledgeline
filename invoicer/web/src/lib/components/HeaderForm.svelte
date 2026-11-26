@@ -124,7 +124,10 @@
     function chooseCustomer(title: string): void {
         const chosen = (options?.customers ?? []).find((c) => c.title === title);
         const next: Partial<EditorForm> = {customer: chosen?.link ?? toLink(title, customerTitles, true)};
+        // Terms: the invoice's own, else the customer's, else the books' default
+        // (the server's, from the editor options; it fills a new invoice's itself).
         if (chosen?.terms != null) next.terms = chosen.terms;
+        else if (form.terms === null && options?.default_terms != null) next.terms = options.default_terms;
         if (form.template === null && chosen?.invoice_template) next.template = chosen.invoice_template;
         patch(next);
     }
