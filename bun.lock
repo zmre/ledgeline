@@ -7,7 +7,7 @@
     },
     "invoicer/web": {
       "name": "invoicer-web",
-      "version": "0.2.3",
+      "version": "0.3.0",
       "dependencies": {
         "@codemirror/commands": "6.11.1",
         "@codemirror/lang-html": "6.4.12",
@@ -74,7 +74,7 @@
     },
     "web": {
       "name": "web",
-      "version": "0.2.3",
+      "version": "0.3.0",
       "dependencies": {
         "@ledgeline/ui": "workspace:*",
         "exceljs": "^4.4.0",
