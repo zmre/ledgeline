@@ -65,7 +65,9 @@ async fn the_list_says_what_each_extends_and_who_uses_it() {
         [
             "/invoices/tpl/myco-default.html",
             "/invoices/tpl/classic.html",
-            "/invoices/tpl/modern.html"
+            "/invoices/tpl/modern.html",
+            "/invoices/tpl/classic-logo.html",
+            "/invoices/tpl/modern-logo.html"
         ]
     );
     let myco = &all[0];

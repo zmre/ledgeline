@@ -1,4 +1,4 @@
-//! The starter templates (invoicer PLAN 3b, ARCHITECTURE §3.5): two MBR page
+//! The starter templates (invoicer PLAN 3b, ARCHITECTURE §3.5): four MBR page
 //! templates shipped in the binary (`templates/` beside this crate's
 //! `Cargo.toml`) and copied into the books' `templates-dir` (default
 //! `invoices/tpl/`) the first time an invoice uses one. From then on they are
@@ -48,8 +48,11 @@ pub(crate) struct Starter {
     pub source: &'static str,
 }
 
-/// The starters, the default first.
-pub(crate) const STARTERS: [Starter; 2] = [
+/// The starters, the default first. The "with logo" ones are laid out
+/// around a large logo, and show a "Your logo" box in the app's preview
+/// where an invoice has none (the preview's `invoicer_preview` flag,
+/// `app::preview::PREVIEW_FLAG`).
+pub(crate) const STARTERS: [Starter; 4] = [
     Starter {
         file: "classic.html",
         name: "Classic",
@@ -59,6 +62,16 @@ pub(crate) const STARTERS: [Starter; 2] = [
         file: "modern.html",
         name: "Modern",
         source: include_str!("../templates/modern.html"),
+    },
+    Starter {
+        file: "classic-logo.html",
+        name: "Classic with logo",
+        source: include_str!("../templates/classic-logo.html"),
+    },
+    Starter {
+        file: "modern-logo.html",
+        name: "Modern with logo",
+        source: include_str!("../templates/modern-logo.html"),
     },
 ];
 

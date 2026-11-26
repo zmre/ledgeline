@@ -23,6 +23,17 @@
 //! runs, nothing loads from another host, `frame-ancestors 'self'`), passes
 //! the same gate as MBR's pages (the session cookie), and its relative links
 //! resolve from the note's own page (`<base>`).
+//!
+//! **The preview flag.** Every preview renders the note with
+//! `invoicer_preview: true` added to its frontmatter ([`PREVIEW_FLAG`],
+//! [`flagged`]; nothing is written). It is how a template tells the app's
+//! preview from real output: the "with logo" starters draw a "Your logo"
+//! box where an invoice has no logo only `{% if fm.invoicer_preview %}`.
+//! The PDF export prints MBR's page for the saved file, and MBR's browser,
+//! its static build and QuickLook render the saved file too, so none of
+//! them ever has the flag: the box's markup is never in what a customer
+//! gets, CSS or no CSS. A frontmatter that can't be edited safely is
+//! rendered as it is (no box, never a failed preview).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -48,6 +59,16 @@ pub(crate) const PREVIEW_PAGE: &str = "/.ledgeline-invoicer/preview";
 
 /// The largest unsaved source accepted.
 pub(crate) const MAX_SOURCE_BYTES: usize = 1024 * 1024;
+
+/// The frontmatter key only the app's preview sets (see the module docs).
+pub(crate) const PREVIEW_FLAG: &str = "invoicer_preview";
+
+/// `source` with [`PREVIEW_FLAG`] set to `true` in its frontmatter, for the
+/// render alone; as it is when its frontmatter can't be edited safely.
+fn flagged(source: String) -> String {
+    invoicer_core::frontmatter::set(&source, PREVIEW_FLAG, serde_json::Value::Bool(true))
+        .unwrap_or(source)
+}
 
 /// The request body.
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -156,6 +177,7 @@ pub(crate) fn render(books: &OpenBooks, request: PreviewRequest) -> Result<Previ
         (None, None) => None,
     };
 
+    let source = flagged(source);
     let renderer = books.renderer().map_err(PreviewError::Internal)?;
     let started = Instant::now();
     let note_rel = Path::new(note.as_str());
@@ -552,6 +574,23 @@ mod tests {
         ] {
             assert_eq!(with_base(kept, "/x/"), kept);
         }
+    }
+
+    #[test]
+    fn a_preview_flags_the_note_it_renders_and_nothing_else() {
+        let note = "---\ntitle: Invoice 101\ninvoice_num: 101\n---\n\nBody text.\n";
+        assert_eq!(
+            flagged(note.to_string()),
+            "---\ntitle: Invoice 101\ninvoice_num: 101\ninvoicer_preview: true\n---\n\nBody text.\n"
+        );
+        // A note's own value is the preview's while previewing.
+        assert_eq!(
+            flagged("---\ninvoicer_preview: false\nx: 1\n---\nB\n".to_string()),
+            "---\ninvoicer_preview: true\nx: 1\n---\nB\n"
+        );
+        // A frontmatter that can't be edited safely renders as it is.
+        let odd = "---\n[unclosed\n---\nB\n";
+        assert_eq!(flagged(odd.to_string()), odd);
     }
 
     #[test]

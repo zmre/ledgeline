@@ -1,0 +1,251 @@
+{# invoicer: name="Modern with logo" kinds="invoice,estimate,credit-note" #}
+{% extends "_invoice_base.v1.html" %}
+{#-
+  Ledgeline Invoicer's "Modern with logo" starter template: Modern's
+  sans-serif layout, accent colour and amount-due band, laid out around
+  your logo: the logo large at the top left, your company's name and
+  address beside it, and the document's title and number on the right.
+
+  It was copied into your books folder the first time an invoice used it,
+  and it is yours now: the invoicer never overwrites it. Edit freely. It is
+  an MBR page template (Tera), so it sees exactly what MBR sees:
+
+  - `frontmatter`: the invoice's frontmatter (`frontmatter.invoice_num`,
+    `frontmatter.invoicee_address`, your own custom fields, …);
+  - `markdown`: the rendered body, the bill table included.
+
+  It extends `_invoice_base.v1.html` beside it, which holds the page around
+  the sheet (MBR's chrome where it works, the print reset, the hidden books
+  column) and says what each block is for. This file changes the look
+  (`theme`), the top of the sheet (`header`), and puts the dates in a band
+  with the bill-to (`parties`; `details` is empty). For the sheet alone even
+  in MBR, add `{% block settings %}{% set chrome = false %}{% endblock settings %}`.
+
+  Your logo: put `logo: logo.png` on your company's note (the base's
+  comment says how); new invoices then carry it as `invoicer_logo`. It is
+  shown at most 2.6in wide and 1in tall (`.brand .logo` below).
+
+  The "Your logo" box: where an invoice has no logo, the invoicer's preview
+  shows a dashed box in the logo's place, so you can see the layout. Only
+  the preview: it renders the invoice with `invoicer_preview: true` added to
+  its frontmatter (never saved), and this file draws the box only
+  `{% if fm.invoicer_preview %}`. The PDF, MBR's pages and its static
+  build render the invoice as it is saved, without the box, and the
+  company's name and address move to the left edge. Don't add
+  `invoicer_preview` to an invoice: it would print the box.
+
+  Change `--accent` below to your brand colour. To print on A4, change
+  `size: letter` to `size: A4`.
+-#}
+{% block theme %}
+  @page { size: letter; margin: 0.6in 0.65in; }
+
+  :root {
+    --accent: #17785a;
+    --accent-soft: #e6f2ed;
+    --ink: #16191d;
+    --muted: #68707a;
+    --rule: #e3e6ea;
+    --paper: #fff;
+    --desk: #eef0f3;
+  }
+
+  .sheet {
+    font-family: "Inter", "SF Pro Text", system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    font-size: 10pt;
+    line-height: 1.5;
+    font-variant-numeric: tabular-nums;
+    position: relative;
+    background: var(--paper);
+  }
+  .sheet::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 6px;
+    background: var(--accent);
+  }
+
+  .top { display: flex; justify-content: space-between; align-items: center; gap: 2rem; padding-top: 0.6rem; }
+  .company-name { margin: 0; font-size: 15pt; font-weight: 700; letter-spacing: -0.01em; }
+  .company-contact { margin-top: 0.2rem; color: var(--muted); font-size: 9pt; }
+
+  /* The logo, large, with the company beside it. */
+  .brand { display: flex; align-items: center; gap: 1.25rem; }
+  .sheet .brand .logo { flex: none; max-width: 2.6in; max-height: 1in; margin: 0; }
+  /* The preview's "Your logo" box, where the invoice has no logo. */
+  .logo-slot {
+    display: flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    width: 1.9in;
+    height: 0.9in;
+    border: 1.5px dashed #c3cad2;
+    border-radius: 6px;
+    background: #f8f9fb;
+    color: #68707a;
+    font-size: 8pt;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .doc-title { text-align: right; }
+  .doc-title h1 { margin: 0; font-size: 26pt; font-weight: 300; line-height: 1.1; letter-spacing: -0.02em; }
+  .doc-number { margin-top: 0.2rem; color: var(--accent); font-size: 11pt; font-weight: 600; }
+  .badge {
+    display: inline-block;
+    margin-top: 0.45rem;
+    padding: 0.1rem 0.6rem;
+    border-radius: 999px;
+    font-size: 8pt;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .badge.draft { background: #eceef1; color: #4a525c; }
+  .badge.void { background: #fbe9e7; color: #a3271a; }
+  .badge.paid { background: var(--accent-soft); color: var(--accent); }
+
+  .meta {
+    display: grid;
+    grid-template-columns: 1.4fr 1fr 1fr;
+    gap: 1.5rem;
+    margin: 2rem 0 2rem;
+    padding: 1rem 0;
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+  }
+  .label {
+    display: block;
+    margin-bottom: 0.25rem;
+    color: var(--muted);
+    font-size: 7.5pt;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .meta .name { font-weight: 600; }
+  .meta :is(.email, .phone) { color: var(--muted); }
+  .meta .facts { margin: 0; }
+  .meta .fact { margin: 0 0 0.5rem; }
+
+  .body :is(section, main) > :first-child { margin-top: 0; }
+  .body p { margin: 0 0 0.8rem; }
+  .body h2 { margin: 1.8rem 0 0.5rem; font-size: 10pt; font-weight: 700; color: var(--accent); }
+  .body h3 { margin: 1.2rem 0 0.4rem; font-size: 10pt; }
+  .body a { color: var(--accent); }
+  .body table { width: 100%; margin: 0.6rem 0 1.4rem; border-collapse: collapse; }
+  .body thead th {
+    padding: 0.45rem 0.6rem;
+    background: #f6f7f9;
+    color: var(--muted);
+    font-size: 7.5pt;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .body td { padding: 0.55rem 0.6rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  .body tr { break-inside: avoid; }
+  .body thead { display: table-header-group; }
+  /* Subtotal and total rows (their cells are bold); the last one is the amount due. */
+  .body tbody tr:has(td strong) td { border-bottom: 1px solid var(--rule); }
+  .body tbody tr:last-child:has(td strong) td { border-bottom: none; background: var(--accent-soft); font-size: 12pt; }
+  .body tbody tr:last-child:has(td strong) strong { color: var(--accent); }
+
+  .footer { margin-top: 2.5rem; color: var(--muted); font-size: 8.5pt; }
+
+  @media screen {
+    .sheet {
+      max-width: 8.5in;
+      min-height: 11in;
+      margin: 0 auto;
+      padding: 0.6in 0.65in;
+      border-radius: 4px;
+      overflow: hidden;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 12px 32px rgba(16, 24, 40, 0.08);
+    }
+  }
+  @media screen and (max-width: 640px) {
+    .sheet { padding: 1.5rem 1.25rem; min-height: 0; }
+    .top { display: block; }
+    .brand { flex-wrap: wrap; }
+    .doc-title { margin-top: 1rem; text-align: left; }
+    .meta { grid-template-columns: 1fr; }
+  }
+{% endblock theme %}
+
+{% block header %}
+  <div class="top">
+    <div class="brand">
+      {%- if fm.invoicer_logo %}
+      <img class="logo" src="{{ fm.invoicer_logo | urlencode }}" alt="{{ fm.invoicer_name | default(value="") }}">
+      {%- elif fm.invoicer_preview %}
+      <div class="logo-slot">Your logo</div>
+      {%- endif %}
+      <div class="company">
+        <p class="company-name">{{ fm.invoicer_name | default(value="") }}</p>
+        <div class="company-contact">
+          {%- if fm.invoicer_address %}{{ fm.invoicer_address | trim | escape | linebreaksbr | safe }}{% endif %}
+          {%- if fm.invoicer_email %}<br>{{ fm.invoicer_email }}{% endif %}
+          {%- if fm.invoicer_phone %}<br>{{ fm.invoicer_phone }}{% endif %}
+        </div>
+      </div>
+    </div>
+    <div class="doc-title">
+      <h1>{{ kind }}</h1>
+      <div class="doc-number">#{{ fm.invoice_num }}</div>
+      {%- if fm.status == "void" %}
+      <span class="badge void">Void</span>
+      {%- elif fm.status == "draft" %}
+      <span class="badge draft">Draft</span>
+      {%- elif paid is matching("^\d{4}-\d{2}-\d{2}") %}
+      <span class="badge paid">Paid</span>
+      {%- endif %}
+    </div>
+  </div>
+{% endblock header %}
+
+{% block parties %}
+  <section class="meta">
+    <div>
+      <span class="label">Billed to</span>
+      <div class="name">{{ fm.invoicee_name | default(value="") }}</div>
+      {%- if fm.invoicee_address %}
+      <div>{{ fm.invoicee_address | trim | escape | linebreaksbr | safe }}</div>
+      {%- endif %}
+      {%- if fm.invoicee_email %}
+      <div class="email">{{ fm.invoicee_email }}</div>
+      {%- endif %}
+      {%- if fm.invoicee_phone %}
+      <div class="phone">{{ fm.invoicee_phone }}</div>
+      {%- endif %}
+    </div>
+    <div class="facts">
+      {%- if fm.date %}
+      <span class="label">Issued</span><div class="fact">{{ fm.date | date(format="%b %-d, %Y") }}</div>
+      {%- endif %}
+      {%- if fm.due_date and kind != "Credit note" %}
+      <span class="label">{% if kind == "Estimate" %}Valid until{% else %}Due{% endif %}</span><div class="fact">{{ fm.due_date | date(format="%b %-d, %Y") }}{% if fm.terms and kind == "Invoice" %} · Net {{ fm.terms }}{% endif %}</div>
+      {%- endif %}
+    </div>
+    <div class="facts">
+      {%- if fm.reference %}
+      <span class="label">Reference</span><div class="fact">{{ fm.reference }}</div>
+      {%- endif %}
+      {%- if fm.deposit_for %}
+      <span class="label">Deposit for</span><div class="fact">{{ fm.deposit_for }}</div>
+      {%- endif %}
+    </div>
+  </section>
+{% endblock parties %}
+
+{% block details %}{% endblock details %}
+
+{% block footer %}
+  {%- if fm.invoicer_email %}
+  <div class="footer">{{ fm.invoicer_name | default(value="") }} · {{ fm.invoicer_email }}</div>
+  {%- endif %}
+{% endblock footer %}
