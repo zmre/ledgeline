@@ -49,9 +49,9 @@ describe("COMPONENT SettingsEditor", () => {
     it("saves the shared matching settings without touching the settings file", async () => {
         const {api, editor} = harness();
         await editor.load();
-        editor.set("settlementToleranceBps", 250);
+        editor.set("settlementLookbackDays", 365);
         expect(await editor.save()).toBe("saved");
-        expect(api.saveMatching).toHaveBeenCalledWith({settlementToleranceBps: 250});
+        expect(api.saveMatching).toHaveBeenCalledWith({settlementLookbackDays: 365});
         expect(api.save).not.toHaveBeenCalled();
         expect(editor.dirty).toBe(false);
     });

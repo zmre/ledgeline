@@ -422,10 +422,11 @@ impl InvoiceBooks {
     }
 
     /// The deposits that might pay sent invoice `number` (cash books), best
-    /// first; none once it is paid. `settle` is how far back to look, how
-    /// short a payment may be and how early it may come: the user's
-    /// effective `settlementLookbackDays`, `settlementToleranceBps` and
-    /// `settlementLeadDays`, shared with Ledgeline's matcher (RC-10).
+    /// first; none once it is paid. `settle` is how far back to look and how
+    /// early a payment may come: the user's effective `settlementLookbackDays`
+    /// and `settlementLeadDays`, shared with Ledgeline's matcher (RC-10). Its
+    /// `tolerance_bps` changes nothing here: a deposit short of what is due
+    /// is offered as a part payment whatever it is.
     ///
     /// # Errors
     /// [`BooksError::Status`] for an invoice not sent;

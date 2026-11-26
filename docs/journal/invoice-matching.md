@@ -57,7 +57,7 @@ The list covers the last 180 days. Change it with **Look back** in the page head
 
 They apply to every ledger. Tick **Use for this ledger only** under one of them to keep its value for the open ledger alone: Ledgeline writes it into the `[ui]` table of that ledger's `ledgeline.toml`, creating the file if needed. Untick it to go back to the shared value. See [Keeping a setting for one ledger](../settings/settings-files.md#keeping-a-setting-for-one-ledger).
 
-[Ledgeline Invoicer](../invoicer/index.md) matches payments to invoices with the same three settings, under **Settings → These books → Payments** there. A change in either app, or a value kept for one ledger, applies to both. See [Payment matching, shared with Ledgeline](../invoicer/settings.md#payment-matching-shared-with-ledgeline).
+[Ledgeline Invoicer](../invoicer/index.md) matches payments to invoices with the same lookback and lead settings, under **Settings → These books → Payments** there. It doesn't use the fee tolerance: it offers a short payment as a part payment. A change in either app, or a value kept for one ledger, applies to both. See [Payment matching, shared with Ledgeline](../invoicer/settings.md#payment-matching-shared-with-ledgeline).
 
 ## Linking a pair
 

@@ -1,5 +1,5 @@
 // The UI prefs the invoicer shares with Ledgeline (SETTINGS-PLAN §2, D2, D4):
-// the theme and text size, and the three payment-matching settings. They live
+// the theme and text size, and two of the payment-matching settings. They live
 // in the shared `ui-prefs.toml`, or in the open books' `ledgeline.toml` for a
 // key pinned to them ("Use for these books only").
 //

@@ -153,10 +153,6 @@ export const SETTINGS: Readonly<Record<string, SettingLabel>> = {
         label: "How far back to look for payments",
         help: "How many days after an invoice a payment may arrive and still be offered as its payment. 0 looks back forever.",
     },
-    settlementToleranceBps: {
-        label: "Short-payment tolerance",
-        help: "A payment this much short of its invoice still counts as paid, with the difference booked as a fee.",
-    },
     settlementLeadDays: {label: "Payment before invoice", help: "How many days before an invoice's date a payment may arrive and still count for it."},
     // Editing.
     "recalc-on-save": {

@@ -8,7 +8,7 @@
      unsaved changes; below `lg`, the same links as a wrapping row. In accrual
      books the cash-books choices fold into one line. A read-only page (an
      unusable or invalid settings file) says why and disables every control.
-     The three payment-matching settings are shared with Ledgeline, each with
+     The two payment-matching settings are shared with Ledgeline, each with
      "Use for these books only". -->
 <script lang="ts">
     import AccountInput from "#ui/components/AccountInput.svelte";
@@ -17,7 +17,7 @@
     import {openBooksFile} from "#lib/customers.js";
     import {localToday, nextNumberReason} from "#lib/invoices.js";
     import {COMING_LATER, COMING_LATER_CHOICE, errorText, settingLabel, settingsMessage} from "#lib/labels.js";
-    import {bpsToPercent, MATCHING_SPEC, percentToBps, type MatchingKey} from "#lib/matching.js";
+    import {MATCHING_SPEC, type MatchingKey} from "#lib/matching.js";
     import type {ComingLater, SettingKey, SettingName} from "#lib/settings.js";
     import {SETTINGS_FILE} from "#lib/settingsApi.js";
     import type {SettingsEditor} from "#lib/settingsEditor.svelte.js";
@@ -223,49 +223,26 @@
 
 {#snippet matchingInput(key: MatchingKey, id: string)}
     {@const spec = MATCHING_SPEC[key]}
-    {#if key === "settlementToleranceBps"}
-        <span class="flex items-center gap-2">
-            <input
-                {id}
-                type="number"
-                class="input w-24 input-sm"
-                min={spec.min / 100}
-                max={spec.max / 100}
-                step="0.1"
-                value={bpsToPercent(matching(key))}
-                disabled={readOnly}
-                onchange={(e) => {
-                    const bps = percentToBps(e.currentTarget.valueAsNumber);
-                    const kept = bps === null ? matching(key) : Math.min(spec.max, Math.max(spec.min, bps));
-                    editor.set(key, kept);
-                    e.currentTarget.value = String(bpsToPercent(kept));
-                }}
-                data-testid="input-{key}"
-            />
-            <span class="text-sm">% short</span>
-        </span>
-    {:else}
-        <span class="flex items-center gap-2">
-            <input
-                {id}
-                type="number"
-                class="input w-24 input-sm"
-                min={spec.min}
-                max={spec.max}
-                step="1"
-                value={matching(key)}
-                disabled={readOnly}
-                onchange={(e) => {
-                    const n = e.currentTarget.valueAsNumber;
-                    const kept = Number.isFinite(n) ? Math.min(spec.max, Math.max(spec.min, Math.round(n))) : matching(key);
-                    editor.set(key, kept);
-                    e.currentTarget.value = String(kept);
-                }}
-                data-testid="input-{key}"
-            />
-            <span class="text-sm">{key === "settlementLookbackDays" ? "days after the invoice" : "days before the invoice"}</span>
-        </span>
-    {/if}
+    <span class="flex items-center gap-2">
+        <input
+            {id}
+            type="number"
+            class="input w-24 input-sm"
+            min={spec.min}
+            max={spec.max}
+            step="1"
+            value={matching(key)}
+            disabled={readOnly}
+            onchange={(e) => {
+                const n = e.currentTarget.valueAsNumber;
+                const kept = Number.isFinite(n) ? Math.min(spec.max, Math.max(spec.min, Math.round(n))) : matching(key);
+                editor.set(key, kept);
+                e.currentTarget.value = String(kept);
+            }}
+            data-testid="input-{key}"
+        />
+        <span class="text-sm">{key === "settlementLookbackDays" ? "days after the invoice" : "days before the invoice"}</span>
+    </span>
 {/snippet}
 
 {#snippet settingRow(key: string)}
@@ -499,7 +476,7 @@
                             </div>
                             {#if section.id === "payments"}
                                 <p class="mt-2 text-xs text-base-content/60" data-testid="settings-matching-shared">
-                                    How far back to look, the tolerance and payment before invoice are shared with Ledgeline{prefs.canPin
+                                    How far back to look and payment before invoice are shared with Ledgeline{prefs.canPin
                                         ? ", unless kept for these books only"
                                         : ""}.
                                 </p>

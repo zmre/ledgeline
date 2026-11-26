@@ -34,7 +34,8 @@ const prefsApi = vi.hoisted(() => ({
 }));
 vi.mock("#lib/uiPrefs.svelte.js", async (original) => {
     const real = await original<typeof import("#lib/uiPrefs.svelte.js")>();
-    const answer = () => ({prefs: {theme: "default", uiScale: 100}, storage: prefsApi.storage, localKeys: []});
+    // Ledgeline's tolerance comes back in the prefs; the page ignores it.
+    const answer = () => ({prefs: {theme: "default", uiScale: 100, settlementToleranceBps: 300}, storage: prefsApi.storage, localKeys: []});
     const uiPrefs = new real.UiPrefs(
         {
             load: () => Promise.resolve(answer()),
@@ -217,13 +218,15 @@ describe("COMPONENT the Settings page", () => {
         }
     });
 
-    it("edits the tolerance as a percentage and saves basis points; pins a matching setting", async () => {
+    it("edits and saves a matching setting, never the tolerance; pins a matching setting", async () => {
         await mount();
-        const tolerance = screen.getByTestId("input-settlementToleranceBps") as HTMLInputElement;
-        expect(tolerance.value).toBe("3");
-        await fireEvent.change(tolerance, {target: {value: "2.5"}});
+        expect(screen.queryByTestId("setting-settlementToleranceBps")).toBeNull();
+        expect(screen.getByTestId("settings-page").textContent).not.toMatch(/tolerance/i);
+        const lookback = screen.getByTestId("input-settlementLookbackDays") as HTMLInputElement;
+        expect(lookback.value).toBe("180");
+        await fireEvent.change(lookback, {target: {value: "365"}});
         await fireEvent.click(screen.getByTestId("settings-save"));
-        await waitFor(() => expect(prefsApi.patch).toHaveBeenCalledWith({settlementToleranceBps: 250}));
+        await waitFor(() => expect(prefsApi.patch).toHaveBeenCalledWith({settlementLookbackDays: 365}));
         expect(api.save).not.toHaveBeenCalled();
 
         await fireEvent.click(screen.getByTestId("pin-settlementLeadDays"));

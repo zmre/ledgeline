@@ -915,7 +915,7 @@ fn liability_until_final_books_a_covered_final_against_the_liability() {
 /// RC-10: the matcher takes the user's settings (shared with Ledgeline),
 /// not the built-in defaults. 203 is $1,200 to Wingtip, dated 2026-11-05.
 #[test]
-fn the_matcher_uses_the_lookback_tolerance_and_lead_it_is_given() {
+fn the_matcher_uses_the_lookback_and_lead_it_is_given_not_the_tolerance() {
     let dir = scratch("cash", "cash-settle-settings");
     let imports = "
 2026-11-16 * ACH WINGTIP PAYMENTS  ; id: ach-41

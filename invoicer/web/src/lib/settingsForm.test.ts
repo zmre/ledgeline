@@ -1,7 +1,7 @@
 // The Settings form's model (SETTINGS-PLAN §3, §4): what Save sends, the
 // Default / Use the default states, the file name's chips, and the numbers.
 import {describe, expect, it} from "vitest";
-import {bpsToPercent, clampMatching, defaultMatching, percentToBps} from "./matching.js";
+import {clampMatching, defaultMatching} from "./matching.js";
 import {
     agingBuckets,
     baselineOf,
@@ -95,22 +95,17 @@ describe("UNIT settingsForm", () => {
 
     it("keeps the shared matching settings apart, against their saved values", () => {
         const base = baselineOf(settingsPage());
-        const form = withValue(formOf(base), "settlementToleranceBps", 250);
-        expect(changesOf(base, form, saved)).toEqual({set: {}, unset: [], matching: {settlementToleranceBps: 250}});
-        expect(showsDefault(base, form, "settlementToleranceBps", saved)).toBe(false);
-        // Saved as 250 meanwhile: nothing left to send.
-        expect(isEmpty(changesOf(base, form, {...saved, settlementToleranceBps: 250}))).toBe(true);
-        expect(withDefault(form, base, "settlementToleranceBps").matching.settlementToleranceBps).toBe(300);
+        const form = withValue(formOf(base), "settlementLookbackDays", 365);
+        expect(changesOf(base, form, saved)).toEqual({set: {}, unset: [], matching: {settlementLookbackDays: 365}});
+        expect(showsDefault(base, form, "settlementLookbackDays", saved)).toBe(false);
+        // Saved as 365 meanwhile: nothing left to send.
+        expect(isEmpty(changesOf(base, form, {...saved, settlementLookbackDays: 365}))).toBe(true);
+        expect(withDefault(form, base, "settlementLookbackDays").matching.settlementLookbackDays).toBe(180);
     });
 
-    it("converts the tolerance between a percentage and basis points", () => {
-        expect(bpsToPercent(300)).toBe(3);
-        expect(bpsToPercent(250)).toBe(2.5);
-        expect(bpsToPercent(5)).toBe(0.1);
-        expect(percentToBps(2.5)).toBe(250);
-        expect(percentToBps(0.25)).toBe(25);
-        expect(percentToBps(Number.NaN)).toBeNull();
-        expect(clampMatching("settlementToleranceBps", 99_999)).toBe(10_000);
+    it("keeps the matching settings whole and in range", () => {
+        expect(clampMatching("settlementLookbackDays", 99_999)).toBe(3650);
+        expect(clampMatching("settlementLeadDays", -3)).toBe(0);
         expect(clampMatching("settlementLeadDays", 4.6)).toBe(5);
         expect(clampMatching("settlementLookbackDays", "x")).toBe(180);
     });

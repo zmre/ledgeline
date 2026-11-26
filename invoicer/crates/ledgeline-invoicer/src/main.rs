@@ -212,12 +212,6 @@ struct ApplyPaymentArgs {
     /// `ui-prefs.toml`'s, else 180).
     #[arg(long, value_name = "DAYS", value_parser = clap::value_parser!(u32).range(0..=3650))]
     lookback_days: Option<u32>,
-    /// How short of the invoice a payment may be, in percent (2.5). Cash
-    /// books offer any smaller deposit as a partial payment, so this is
-    /// Ledgeline's accrual settlement setting, shared (settlementToleranceBps;
-    /// default 3).
-    #[arg(long, value_name = "PERCENT", value_parser = parse_percent)]
-    tolerance_percent: Option<u32>,
     /// How many days before the invoice a payment may come (a draw, then
     /// its bill). Default: settlementLeadDays, shared as --lookback-days
     /// (4).
@@ -1077,28 +1071,15 @@ fn run_rebook(cli: &Cli, args: &RebookArgs) -> Result<ExitCode, Failure> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// `--tolerance-percent`: 0 to 100 percent, to basis points (2.5 → 250).
-fn parse_percent(text: &str) -> Result<u32, String> {
-    let percent: f64 = text
-        .trim()
-        .trim_end_matches('%')
-        .parse()
-        .map_err(|_| format!("{text:?} isn't a percentage (2.5)"))?;
-    if !(0.0..=100.0).contains(&percent) {
-        return Err(format!("{text}: give 0 to 100"));
-    }
-    // In range, so it fits.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    Ok((percent * 100.0).round() as u32)
-}
-
 /// The matcher's settings for `apply-payment`: each flag given, else the
-/// effective setting the app uses too (RC-10).
+/// effective setting the app uses too (RC-10). The tolerance has no flag: the
+/// matcher offers a short deposit as a part payment whatever it is, so it
+/// passes through as Ledgeline has it.
 fn settle_for(session: &Session, args: &ApplyPaymentArgs) -> SettleSettings {
     let effective = matching::settle_settings(&AppDirs::from_env(), session);
     SettleSettings {
         lookback_days: args.lookback_days.unwrap_or(effective.lookback_days),
-        tolerance_bps: args.tolerance_percent.unwrap_or(effective.tolerance_bps),
+        tolerance_bps: effective.tolerance_bps,
         lead_days: args.lead_days.unwrap_or(effective.lead_days),
     }
 }

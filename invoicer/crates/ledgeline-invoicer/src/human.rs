@@ -574,12 +574,13 @@ pub fn customer(detail: &CustomerDetail<'_>) -> String {
 /// # Errors
 /// When the settings don't serialize (they always should).
 /// The payment matcher's effective settings, as `config` shows them: the
-/// UI preference keys they are kept under (shared with Ledgeline).
+/// UI preference keys they are kept under (shared with Ledgeline). Not
+/// `settlementToleranceBps`: Ledgeline's, and no use to the invoicer's
+/// matcher, which offers a short deposit as a part payment.
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Matching {
     pub settlement_lookback_days: u32,
-    pub settlement_tolerance_bps: u32,
     pub settlement_lead_days: u32,
 }
 
@@ -589,7 +590,6 @@ impl Matching {
     pub fn of(settle: &ledgeline_core::accrual::settle::SettleSettings) -> Self {
         Self {
             settlement_lookback_days: settle.lookback_days,
-            settlement_tolerance_bps: settle.tolerance_bps,
             settlement_lead_days: settle.lead_days,
         }
     }
@@ -621,7 +621,6 @@ pub fn config(view: &ConfigView<'_>, matching: &Matching) -> Result<String, toml
     );
     for (key, value) in [
         ("settlementLookbackDays", matching.settlement_lookback_days),
-        ("settlementToleranceBps", matching.settlement_tolerance_bps),
         ("settlementLeadDays", matching.settlement_lead_days),
     ] {
         let _ = writeln!(out, "# {key} = {value}");

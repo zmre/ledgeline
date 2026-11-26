@@ -8,10 +8,10 @@
 // `ledgeline.toml [invoicer]` (`invoices-dir`, `words.quantity`): map keys and
 // list entries to look labels up by (lib/labels.ts), never text to show.
 //
-// The three payment-matching settings are not here: they are UI preferences
-// shared with Ledgeline (`settlementLookbackDays`, `settlementToleranceBps`,
-// `settlementLeadDays`), read and saved through `GET`/`PATCH /api/ui-prefs`
-// and kept for these books alone through `POST /api/ui-prefs/pin`.
+// The payment-matching settings are not here: they are UI preferences shared
+// with Ledgeline (`settlementLookbackDays`, `settlementLeadDays`), read and
+// saved through `GET`/`PATCH /api/ui-prefs` and kept for these books alone
+// through `POST /api/ui-prefs/pin` (lib/matching.ts).
 //
 // Errors use the one envelope every /api route answers with,
 // `{error, code, ...detail}`:

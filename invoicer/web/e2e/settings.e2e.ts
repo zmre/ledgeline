@@ -494,7 +494,7 @@ test.describe("Settings (:5196, cash books)", () => {
 
     test("no 'Use for these books only' pin in browser mode", async ({page}) => {
         await openSettings(page);
-        for (const key of ["settlementLookbackDays", "settlementToleranceBps", "settlementLeadDays"]) {
+        for (const key of ["settlementLookbackDays", "settlementLeadDays"]) {
             await expect(page.getByTestId(`pin-${key}`)).toHaveCount(0);
         }
         await expect(page.getByTestId("settings-matching-shared")).toContainText("shared with Ledgeline");

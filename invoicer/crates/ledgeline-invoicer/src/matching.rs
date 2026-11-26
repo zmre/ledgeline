@@ -7,6 +7,11 @@
 //! reads them: the books' `ledgeline.toml [ui]` when it pins one, else the
 //! shared `ui-prefs.toml`, else the default. So `apply-payment` lists the
 //! same deposits the app does, and both agree with Ledgeline.
+//!
+//! The invoicer shows and sets only the lookback and the lead. The tolerance
+//! stays in the schema, and pinnable, because the file is shared and
+//! Ledgeline writes it; the invoicer's matcher (`apply::candidates`) offers a
+//! short deposit as a part payment whatever it is.
 
 use invoicer_core::session::Session;
 use ledgeline_core::accrual::settle::SettleSettings;

@@ -92,7 +92,6 @@ Each account field suggests your books' accounts as you type. An account you lea
 | Deposit payments                  | In cash books, when a deposit counts as income.                                                                |
 | Splitting a payment over rows     | In cash books, how a payment that doesn't cover the whole invoice is shared among its rows.                    |
 | How far back to look for payments | How many days after an invoice a payment may arrive and still be offered as its payment. 0 looks back forever. |
-| Short-payment tolerance           | A payment this much short of its invoice still counts as paid, with the difference booked as a fee.            |
 | Payment before invoice            | How many days before an invoice's date a payment may arrive and still count for it.                            |
 
 Deposit payments has two choices:
@@ -107,7 +106,7 @@ Splitting a payment over rows has two choices:
 
 Both are cash-books settings and both affect new bookings. In accrual books the page folds them into one line: "These books use accrual; the cash-books choices don't apply." [Booking](booking.md#cash-books) explains what each choice books.
 
-The last three are the [payment-matching settings](#payment-matching-shared-with-ledgeline), shared with Ledgeline.
+The last two are the [payment-matching settings](#payment-matching-shared-with-ledgeline), shared with Ledgeline.
 
 ### Editing
 
@@ -217,12 +216,13 @@ A change to Ledgeline's own settings in the same file, such as closing the books
 
 ## Payment matching, shared with Ledgeline
 
-How far back to look for payments, Short-payment tolerance and Payment before invoice decide which payments **Apply payment…** offers for an invoice. Ledgeline's [invoice matching](../journal/invoice-matching.md) uses the same three settings, so a change in either app changes them in both. In Ledgeline they are under **Settings → Books**, as **Invoice matching**.
+How far back to look for payments and Payment before invoice decide which payments **Apply payment…** offers for an invoice. Ledgeline's [invoice matching](../journal/invoice-matching.md) uses the same two settings, so a change in either app changes them in both. In Ledgeline they are under **Settings → Books**, as **Invoice matching**.
+
+A payment short of its invoice is always offered as a part payment.
 
 | Setting                           | Default | Range                                |
 |-----------------------------------|---------|--------------------------------------|
 | How far back to look for payments | 180     | 0 to 3650 days; 0 looks back forever |
-| Short-payment tolerance           | 3%      | 0% to 100%                           |
 | Payment before invoice            | 4       | 0 to 60 days                         |
 
 They save with the rest of the form, when you press Save. They apply to every set of books you open, unless you tick **Use for these books only** under one of them. That keeps its value for the books you have open: the app saves it into their `ledgeline.toml` at once, creating the file if needed, and from then on changes to it in either app stay with these books. Untick it to share the value again. The box isn't offered when [view settings are kept in the browser](../settings/settings-files.md#keeping-view-settings-in-the-browser).
@@ -332,13 +332,12 @@ See [Dashboard](dashboard.md#settings).
 
 ### Payment-matching keys
 
-The three payment-matching settings aren't under `[invoicer]`. They are view settings shared with Ledgeline, kept in `ui-prefs.toml`, or under `[ui]` in `ledgeline.toml` for books that keep their own. See [Settings files](../settings/settings-files.md#the-keys).
+The two payment-matching settings aren't under `[invoicer]`. They are view settings shared with Ledgeline, kept in `ui-prefs.toml`, or under `[ui]` in `ledgeline.toml` for books that keep their own. See [Settings files](../settings/settings-files.md#the-keys).
 
-| Setting                  | On the page                       | Default | Allowed values                                    |
-|--------------------------|-----------------------------------|---------|---------------------------------------------------|
-| `settlementLookbackDays` | How far back to look for payments | `180`   | 0 to 3650 days. 0 means no limit                  |
-| `settlementToleranceBps` | Short-payment tolerance           | `300`   | 0 to 10000, in hundredths of a percent: 300 is 3% |
-| `settlementLeadDays`     | Payment before invoice            | `4`     | 0 to 60 days                                      |
+| Setting                  | On the page                       | Default | Allowed values                   |
+|--------------------------|-----------------------------------|---------|----------------------------------|
+| `settlementLookbackDays` | How far back to look for payments | `180`   | 0 to 3650 days. 0 means no limit |
+| `settlementLeadDays`     | Payment before invoice            | `4`     | 0 to 60 days                     |
 
 ```toml
 [ui]

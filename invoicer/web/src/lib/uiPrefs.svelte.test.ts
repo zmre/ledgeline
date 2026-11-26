@@ -5,7 +5,7 @@ import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {isVariantId} from "#ui/theme/catalog.js";
 import {resolveTheme} from "#ui/theme/resolve.js";
 import {DEDUPE_MS, resetZoomForTests, setScaleSink, zoomIn} from "#ui/theme/zoom.svelte.js";
-import {UiPrefs, type UiPrefsAnswer, type UiPrefsApi} from "./uiPrefs.svelte.js";
+import {type Matching, UiPrefs, type UiPrefsAnswer, type UiPrefsApi} from "./uiPrefs.svelte.js";
 
 function fakeApi(answer: Partial<UiPrefsAnswer> = {}) {
     const body = (prefs: Record<string, unknown> = {}): UiPrefsAnswer => ({
@@ -39,11 +39,20 @@ describe("COMPONENT UiPrefs", () => {
         expect(prefs.canPin).toBe(false);
     });
 
-    it("loads the saved theme, scale and matching settings", async () => {
+    it("loads the saved theme, scale and matching settings, leaving Ledgeline's tolerance out", async () => {
         const prefs = new UiPrefs(fakeApi(), 400);
         await prefs.load();
         expect([prefs.theme, prefs.uiScale, prefs.uiPrefsReady, prefs.canPin]).toEqual(["dracula", 125, true, true]);
-        expect(prefs.matching).toEqual({settlementLookbackDays: 365, settlementToleranceBps: 250, settlementLeadDays: 4});
+        // The prefs carry `settlementToleranceBps` (Ledgeline's); it does nothing here.
+        expect(prefs.matching).toEqual({settlementLookbackDays: 365, settlementLeadDays: 4});
+    });
+
+    it("never sends the tolerance, even when asked to save it", async () => {
+        const api = fakeApi();
+        const prefs = new UiPrefs(api, 400);
+        await prefs.load();
+        await prefs.saveMatching({settlementLeadDays: 6, settlementToleranceBps: 100} as Partial<Matching>);
+        expect(api.patch).toHaveBeenCalledWith({settlementLeadDays: 6});
     });
 
     it("saves the theme at once and the text size after a zoom burst settles", async () => {

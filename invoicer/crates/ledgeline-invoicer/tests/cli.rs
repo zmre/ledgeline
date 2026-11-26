@@ -1617,7 +1617,6 @@ fn config_shows_the_new_settings_and_the_shared_matching() {
         config["matching"],
         serde_json::json!({
             "settlementLookbackDays": 180,
-            "settlementToleranceBps": 300,
             "settlementLeadDays": 4,
         })
     );
@@ -1632,10 +1631,12 @@ fn config_shows_the_new_settings_and_the_shared_matching() {
     .expect("writes");
     fs::write(
         books.dir.path().join("config/ui-prefs.toml"),
-        "settlementLookbackDays = 365\nsettlementLeadDays = 2\n",
+        "settlementLookbackDays = 365\nsettlementToleranceBps = 100\nsettlementLeadDays = 2\n",
     )
     .expect("writes");
     let config = books.json(&["config"], 0);
+    // Ledgeline's tolerance does nothing in the invoicer: not shown.
+    assert_eq!(config["matching"].get("settlementToleranceBps"), None);
     assert_eq!(config["invoicer"]["default-terms"], 15);
     assert_eq!(
         config["invoicer"]["default-template"],
@@ -1647,6 +1648,7 @@ fn config_shows_the_new_settings_and_the_shared_matching() {
     let text = books.text(&["config"]);
     assert!(text.contains("default-terms = 15\n"), "{text}");
     assert!(text.contains("# settlementLeadDays = 9\n"), "{text}");
+    assert!(!text.contains("settlementToleranceBps"), "{text}");
 }
 
 /// RC-10: `apply-payment`'s matching flags, defaulting to the shared
@@ -1696,8 +1698,6 @@ fn apply_payment_takes_the_matching_flags() {
     assert!(found(&list(&[
         "--lookback-days",
         "365",
-        "--tolerance-percent",
-        "2.5",
         "--lead-days",
         "4"
     ])));
@@ -1712,8 +1712,9 @@ fn apply_payment_takes_the_matching_flags() {
     for bad in [
         ["--lookback-days", "4000"],
         ["--lead-days", "61"],
-        ["--tolerance-percent", "200"],
-        ["--tolerance-percent", "lots"],
+        // No tolerance flag: the matcher offers a short deposit as a part
+        // payment whatever the tolerance.
+        ["--tolerance-percent", "2.5"],
     ] {
         assert_eq!(list(&bad).status.code(), Some(2), "{bad:?}");
     }
