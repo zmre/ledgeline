@@ -1271,16 +1271,16 @@
         # SPA-in-Nix pieces they are assembled from. Guarded so `nix flake check`
         # / builds on Linux never force the platform-specific (aarch64-darwin) SPA
         # node_modules FOD. On darwin `default` is OVERRIDDEN to `macDist` —
-        # `result/bin/ledgeline` (CLI, real SPA) + `result/Applications/
-        # Ledgeline.app` — so a bare `nix build` (or a profile install) puts BOTH
-        # the binary on PATH and the app where nix-darwin / home-manager pick it
-        # up. `.#macApp` is the app bundle alone. On Linux `default` stays the
-        # headless `ledgeline` binary. `.#ledgeline` remains the binary on every
-        # system (CI); `apps.default` / `nix run .` run it.
+        # `result/bin/{ledgeline,ledgeline-invoicer}` (CLIs, real SPAs) +
+        # `result/Applications/{Ledgeline.app,Ledgeline Invoicer.app}` — so a
+        # bare `nix build` (or a profile install) puts BOTH binaries on PATH and
+        # both apps where nix-darwin / home-manager pick them up. `.#macApp` is
+        # the Ledgeline bundle alone. On Linux `default` is `linuxDist` (above).
+        # `.#ledgeline` remains the bare binary on every system (CI).
         // lib.optionalAttrs (pkgs.stdenv.hostPlatform.isDarwin && hasRealSpa) {
           inherit macApp macDist spaNodeModules spaBuild ledgelineWithSpa ledgelineIcns bundledHledger;
           # Ledgeline Invoicer.app (`result/Applications/Ledgeline Invoicer.app`)
-          # and what it is assembled from. Not part of `macDist`/`default`.
+          # and what it is assembled from. `macDist`/`default` installs it.
           inherit invoicerMacApp invoicerWithSpa invoicerSpaBuild invoicerIcns;
           default = macDist;
         };

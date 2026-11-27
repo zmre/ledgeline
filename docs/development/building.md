@@ -138,18 +138,18 @@ faster. Push that layer to Cachix (below) and CI + teammates skip it entirely.
 
 ### Outputs
 
-| Command                   | What it does                                                                                                                                             |
-|---------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `nix build .#ledgeline`   | The `ledgeline` binary (proves the GUI deps link: webkitgtk on Linux, system WebKit on macOS). It is `.#default` on Linux.                               |
-| `nix build .#clippy`      | `cargo clippy --all-targets -- -D warnings`                                                                                                              |
-| `nix build .#tests`       | `cargo test` over the whole workspace (`crates/*` and `invoicer/crates/*`)                                                                               |
-| `nix build .#fmt`         | `cargo fmt --all --check` (crane's `cargoFmt`; `--all` is required — the workspace root has no targets of its own)                                       |
-| `nix build .#macApp`      | **macOS only** — just the `result/Applications/Ledgeline.app` bundle, **real** SPA embedded (see below).                                                 |
-| `nix build .#invoicerMacApp` | **macOS only** — `result/Applications/Ledgeline Invoicer.app`, the invoicer's real SPA embedded (no hledger); what the release signs. `macDist` installs it. |
-| `nix build .#invoicerWithSpa` | The `ledgeline-invoicer` binary with its real SPA (macOS and Linux). `linuxDist` and `macDist` (each `.#default`) install it beside Ledgeline.              |
-| `nix build` (bare, macOS) | **macOS only** `.#default` — the combined `result/{bin/ledgeline, Applications/Ledgeline.app}` (CLI on PATH + the app).                                  |
-| `nix flake check`         | Runs all of the checks above                                                                                                                             |
-| `nix run .`               | **Build and run the real app.** On macOS runs `ledgelineWithSpa` (the **real** SPA embedded); on Linux runs the placeholder-SPA `ledgeline` (see below). |
+| Command                       | What it does                                                                                                                                                                            |
+|-------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `nix build .#ledgeline`       | The `ledgeline` binary (proves the GUI deps link: webkitgtk on Linux, system WebKit on macOS). It is `.#default` on Linux.                                                              |
+| `nix build .#clippy`          | `cargo clippy --all-targets -- -D warnings`                                                                                                                                             |
+| `nix build .#tests`           | `cargo test` over the whole workspace (`crates/*` and `invoicer/crates/*`)                                                                                                              |
+| `nix build .#fmt`             | `cargo fmt --all --check` (crane's `cargoFmt`; `--all` is required — the workspace root has no targets of its own)                                                                      |
+| `nix build .#macApp`          | **macOS only** — just the `result/Applications/Ledgeline.app` bundle, **real** SPA embedded (see below).                                                                                |
+| `nix build .#invoicerMacApp`  | **macOS only** — `result/Applications/Ledgeline Invoicer.app`, the invoicer's real SPA embedded (no hledger); what the release signs. `macDist` installs it.                            |
+| `nix build .#invoicerWithSpa` | The `ledgeline-invoicer` binary with its real SPA (macOS and Linux). `linuxDist` and `macDist` (each `.#default`) install it beside Ledgeline.                                          |
+| `nix build` (bare, macOS)     | **macOS only** `.#default` — the combined `result/{bin/ledgeline, bin/ledgeline-invoicer, Applications/Ledgeline.app, Applications/Ledgeline Invoicer.app}` (CLIs on PATH + both apps). |
+| `nix flake check`             | Runs all of the checks above                                                                                                                                                            |
+| `nix run .`                   | **Build and run the real app** (Ledgeline only). On macOS runs `ledgelineWithSpa`; on Linux runs `linuxDist`'s wrapped `ledgeline` (see below).                                         |
 
 The bare attribute (`.#clippy`, `.#tests`, …) resolves to the current system
 automatically (`x86_64-linux`, `aarch64-darwin`, …), which is how CI invokes
@@ -335,10 +335,12 @@ store that would each need vendoring. `flake.nix` asserts that rather than
 assuming it. See [releasing.md](releasing.md) for how to bump the pin.
 
 On macOS the **default** package — a bare `nix build` (or `nix profile install`)
-— is the combined `result/{bin/ledgeline, Applications/Ledgeline.app}`, so an
-install puts the CLI on `PATH` (via `bin/`) AND the app where nix-darwin /
-home-manager link it (via `Applications/`); both use the same real-SPA binary.
-On Linux the default is the headless `ledgeline` binary.
+— is the combined `result/{bin/ledgeline, Applications/Ledgeline.app}`, plus
+`bin/ledgeline-invoicer` and `Applications/Ledgeline Invoicer.app`, so an
+install puts the CLIs on `PATH` (via `bin/`) AND the apps where nix-darwin /
+home-manager link them (via `Applications/`); each CLI is a link to its app's
+real-SPA binary. On Linux the default is `linuxDist`: both binaries, wrapped
+for Mesa, with their desktop entries and icons.
 
 `just package-mac` wraps `.#macApp` and copies a writable copy to `dist/Ledgeline.app`.
 `just package-dmg` goes one step further and builds an **unsigned**
@@ -460,10 +462,10 @@ nix build --json .#ledgeline | jq -r '.[].outputs | to_entries[].value' | cachix
 
 `.#ledgeline` alone is not enough, because it is not what everyone resolves to:
 
-| What the user runs | darwin resolves to | linux resolves to |
-| --- | --- | --- |
-| `nix build` / `nix profile install` | `macDist` (→ `macApp` + `invoicerMacApp`) | `ledgeline` |
-| `nix run` | `ledgelineWithSpa` | `ledgeline` |
+| What the user runs                  | darwin resolves to                        | linux resolves to                                       |
+|-------------------------------------|-------------------------------------------|---------------------------------------------------------|
+| `nix build` / `nix profile install` | `macDist` (→ `macApp` + `invoicerMacApp`) | `linuxDist` (→ `ledgelineWithSpa` + `invoicerWithSpa`)  |
+| `nix run`                           | `ledgelineWithSpa`                        | `linuxDist`                                             |
 
 So the `macos` job pushes `.#macDist` **and** `.#ledgelineWithSpa` (plus `.#bundledHledger`).
 They are listed separately on purpose: `macApp` `cp`s the binaries into the bundle instead of
