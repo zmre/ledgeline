@@ -6,8 +6,38 @@ import {scopeToSearch, searchToScope, searchToState, stateToSearch} from "./urlC
 const TODAY = "2026-07-08";
 
 function scope(overrides: Partial<HoldingsScope> = {}): HoldingsScope {
-    return {accounts: new Set<string>(), mode: "include", asOf: TODAY, gainPeriod: "all", ...overrides};
+    return {accounts: new Set<string>(), mode: "include", asOf: TODAY, gainPeriod: "all", holdings: new Set<string>(), ...overrides};
 }
+
+describe("UNIT holdings urlCodec — the holdings filter (plan 47)", () => {
+    it("writes hold= sorted and percent-encoded per item, and omits it when empty", () => {
+        expect(scopeToSearch(scope(), TODAY)).toBe("");
+        expect(scopeToSearch(scope({holdings: new Set(["VTI", "AAPL"])}), TODAY)).toBe("hold=AAPL%2CVTI");
+        // An Other-tab account name with a comma survives the join.
+        expect(scopeToSearch(scope({holdings: new Set(["assets:house, lake"])}), TODAY)).toBe("hold=assets%253Ahouse%252C%2520lake");
+    });
+
+    it("round-trips through the query string", () => {
+        const holdings = new Set(["assets:house, lake", "assets:van"]);
+        const parsed = searchToScope(scopeToSearch(scope({holdings}), TODAY), TODAY);
+        expect([...parsed.holdings].sort()).toEqual([...holdings].sort());
+    });
+
+    it("reads an absent, empty or malformed hold= as no filter, never throwing", () => {
+        expect(searchToScope("", TODAY).holdings.size).toBe(0);
+        expect(searchToScope("hold=", TODAY).holdings.size).toBe(0);
+        expect([...searchToScope("hold=%", TODAY).holdings]).toEqual(["%"]);
+        expect([...searchToScope("hold=VTI,,AAPL", TODAY).holdings].sort()).toEqual(["AAPL", "VTI"]);
+    });
+
+    it("travels with the tab through the one writer", () => {
+        const state = {scope: scope({holdings: new Set(["assets:van"])}), tab: "other" as const};
+        expect(stateToSearch(state, TODAY)).toBe("hold=assets%253Avan&tab=other");
+        const back = searchToState(stateToSearch(state, TODAY), TODAY);
+        expect(back.tab).toBe("other");
+        expect([...back.scope.holdings]).toEqual(["assets:van"]);
+    });
+});
 
 describe("UNIT holdings urlCodec", () => {
     describe("scopeToSearch", () => {

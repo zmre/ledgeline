@@ -40,6 +40,20 @@ const summary = (slices: CategorySlice[]): [string, number][] => slices.map((s) 
 const total = (slices: CategorySlice[]): number => slices.reduce((sum, s) => sum + s.value, 0);
 
 describe("UNIT categorySlices", () => {
+    it("names every holding with any share in a slice, for a wedge click (plan 47 D7)", () => {
+        const slices = categorySlices(
+            [holding("BAL", 1000), holding("TECH", 500), holding("BARE", 100)],
+            profiles(profile("BAL", {sector: [w("Technology", 0.3), w("Bonds", 0.7)]}), profile("TECH", {sector: [w("Technology", 1)]})),
+            "sector",
+            SLOTS
+        );
+        expect(Object.fromEntries(slices.map((s) => [s.label, s.symbols]))).toEqual({
+            Bonds: ["BAL"],
+            Technology: ["BAL", "TECH"],
+            "(unclassified)": ["BARE"],
+        });
+    });
+
     it("splits a fund proportionally and the parts sum to the holding's value", () => {
         const slices = categorySlices(
             [holding("BAL", 1000)],

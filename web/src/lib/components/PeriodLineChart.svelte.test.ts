@@ -280,4 +280,38 @@ describe("COMPONENT PeriodLineChart gaps and fixed slots", () => {
         expect(lines(container)[0].class).toContain("stroke-[2.5px]");
         expect(lines(container)[1].class).toContain("[stroke-dasharray:4_3]");
     });
+
+    // The y-domain itself cannot be read back from a 0×0 render (see the top of
+    // this file); `holdings/ui/yAxis.test.ts` pins the numbers it is given.
+    describe("trend and yDomain (plan 47)", () => {
+        const renderWith = (props: {trend?: "up" | "down" | "flat" | null; yDomain?: readonly [number, number] | null; series?: PeriodSeries[]}) =>
+            render(PeriodLineChart, {
+                heading: "Value over time",
+                labels: MONTHS,
+                series: props.series ?? [{name: "Market value", values: ramp(MONTHS).map((n) => n + 100), hero: true}],
+                formatValue: money,
+                formatAxis: compact,
+                trend: props.trend,
+                yDomain: props.yDomain,
+                testid: "trend",
+            });
+
+        it("draws no fill and keeps the series' own colour without a trend", () => {
+            const {container} = renderWith({});
+            expect(container.querySelector("[data-trend-area]")).toBeNull();
+            expect(lines(container)[0].stroke).toBe(chartColors.colorAt(0));
+        });
+
+        it("colours and fills only the hero; an overlay keeps its slot and stays a bare line", () => {
+            const {container} = renderWith({
+                trend: "down",
+                series: [
+                    {name: "Your portfolio", values: [5, 4, 3], hero: true},
+                    {name: "S&P 500", values: [3, 4, 5], dashed: true, slot: 2},
+                ],
+            });
+            expect(lines(container).map((l) => l.stroke)).toEqual([chartColors.flowOut, chartColors.colorAt(2)]);
+            expect(container.querySelectorAll("[data-trend-area]")).toHaveLength(1);
+        });
+    });
 });

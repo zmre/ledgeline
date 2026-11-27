@@ -26,9 +26,11 @@ const TREND: HoldingsSeries = {
         basis: null,
     })),
     hasBasis: false,
+    anchor: null,
+    liveAt: null,
 };
 
-const SCOPE: HoldingsScope = {accounts: new Set(), mode: "include", asOf: "2026-09-28", gainPeriod: "12mo"};
+const SCOPE: HoldingsScope = {accounts: new Set(), mode: "include", asOf: "2026-09-28", gainPeriod: "12mo", holdings: new Set()};
 
 /** The engine's catalog (`GET /api/holdings/benchmarks/catalog`), as benchmarks_api.rs serves it. */
 const CATALOG = [
@@ -94,10 +96,10 @@ afterEach(() => {
     vi.unstubAllGlobals();
 });
 
-const mount = () =>
+const mount = (scope: HoldingsScope = SCOPE) =>
     render(StocksTrend, {
         trend: TREND,
-        scope: SCOPE,
+        scope,
         serverUrl: FAKE_ENGINE,
         formatValue: (n: number) => `$${n.toFixed(2)}`,
         formatAxis: (n: number) => `$${n}`,
@@ -127,15 +129,39 @@ describe("COMPONENT StocksTrend benchmark overlay", () => {
         expect(params.get("since")).toBe("2025-09-28");
         expect(params.get("asOf")).toBe("2026-09-28");
 
+        expect(params.get("holdings")).toBeNull(); // no holdings filter → every holding seeds the line
+
         const [portfolio, spy] = lines();
-        expect(portfolio.getAttribute("stroke")).toBe(chartColors.flowNet);
+        // The portfolio rose over the window, so it is drawn up-green (plan 47 D4)…
+        expect(portfolio.getAttribute("stroke")).toBe(chartColors.flowIn);
         expect(spy.getAttribute("stroke")).toBe(chartColors.colorAt(0));
         expect(spy.getAttribute("class")).toContain("[stroke-dasharray:4_3]");
+        // …and only the portfolio is filled: the benchmark stays a bare dashed line.
+        expect(document.querySelectorAll("path[data-trend-area]")).toHaveLength(1);
 
         const legend = document.querySelector('[data-testid="holdings-trend-legend"]')?.textContent ?? "";
         expect(legend).toContain("Your portfolio");
         expect(legend).toContain("S&P 500 (SPY)");
         expect(settings.benchmarks).toEqual(["SPY"]);
+    });
+
+    it("seeds the line from the filtered holdings' own flows under a holdings filter (plan 47 D8)", async () => {
+        mount({...SCOPE, holdings: new Set(["VTI", "AAPL"])});
+        await fireEvent.click(await screen.findByTestId("benchmark-SPY"));
+
+        await waitFor(() => expect(benchmarkRequests).toHaveLength(1));
+        const params = benchmarkRequests[0].searchParams;
+        expect(params.get("symbols")).toBe("SPY");
+        expect(params.get("holdings")).toBe("AAPL,VTI");
+    });
+
+    it("reads as a button: Compare is a primary button (plan 47 D5)", async () => {
+        mount();
+        const compare = await screen.findByTestId("benchmark-compare");
+
+        expect(compare.className).toContain("btn-primary");
+        expect(compare.className).not.toContain("btn-ghost");
+        expect(compare.textContent).toContain("Compare");
     });
 
     it("unticking removes the line without refetching, and re-ticking reuses it", async () => {

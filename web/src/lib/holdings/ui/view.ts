@@ -83,6 +83,8 @@ export interface PieSlice {
     share: number;
     /** Exact formatted market value. */
     formatted: string;
+    /** The holdings this slice is made of: its own symbol, or every symbol folded into the tail (what a click on it selects). */
+    symbols: string[];
 }
 
 /**
@@ -98,10 +100,10 @@ export function pieSlices(holdings: readonly Holding[], format: (v: Dec) => stri
     const named = priced.slice(0, maxNamed);
     const tail = priced.slice(maxNamed);
 
-    const slices = named.map((h) => ({symbol: h.symbol, name: h.name, value: toNumber(h.marketValue), formatted: format(h.marketValue)}));
+    const slices = named.map((h) => ({symbol: h.symbol, name: h.name, value: toNumber(h.marketValue), formatted: format(h.marketValue), symbols: [h.symbol]}));
     if (tail.length > 0) {
         const sum = tail.reduce((acc, h) => add(acc, h.marketValue), dec(0n, 0));
-        slices.push({symbol: PIE_OTHER, name: PIE_OTHER, value: toNumber(sum), formatted: format(sum)});
+        slices.push({symbol: PIE_OTHER, name: PIE_OTHER, value: toNumber(sum), formatted: format(sum), symbols: tail.map((h) => h.symbol).sort()});
     }
     const total = slices.reduce((acc, s) => acc + s.value, 0);
     return slices.map((s) => ({...s, share: total > 0 ? (s.value / total) * 100 : 0}));
@@ -299,8 +301,8 @@ export function sortOtherHoldings(holdings: readonly OtherHolding[], key: OtherS
 
 /**
  * The scope bar's line when it is folded below `sm` (`FoldedControls`): which
- * accounts, the gain window, and the as-of date. One account is named; more
- * are counted.
+ * accounts, the holdings filter when one is set, the gain window, and the
+ * as-of date. One account (or holding) is named; more are counted.
  */
 export function scopeSummary(scope: HoldingsScope, periodLabel: string): string {
     const accounts = [...scope.accounts].sort();
@@ -308,7 +310,8 @@ export function scopeSummary(scope: HoldingsScope, periodLabel: string): string 
         accounts.length === 0
             ? "All accounts"
             : `${scope.mode === "include" ? "Only" : "All except"} ${accounts.length === 1 ? accounts[0] : `${accounts.length} accounts`}`;
-    return [which, periodLabel, `as of ${scope.asOf}`].join(" · ");
+    const charting = scope.holdings.size === 0 ? [] : [`charting ${scope.holdings.size === 1 ? [...scope.holdings][0] : `${scope.holdings.size} holdings`}`];
+    return [which, ...charting, periodLabel, `as of ${scope.asOf}`].join(" · ");
 }
 
 /**

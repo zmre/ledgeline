@@ -49,8 +49,11 @@ export function startHoldingsUrlSync(): () => void {
         // serializes to what the URL parses to, skip the writes entirely — no
         // replaced scope object, no re-fired subscription, no mirror debounce.
         if (stateToSearch(restored, today) === stateToSearch({scope: holdingsScope.value, tab: holdingsTab.value}, today)) return;
-        holdingsScope.replace(restored.scope);
+        // Tab FIRST: switching tab clears the holdings filter (it names rows
+        // of one tab only), so setting it after the scope would erase the
+        // `hold=` the URL just restored.
         holdingsTab.value = restored.tab;
+        holdingsScope.replace(restored.scope);
     };
 
     restore();

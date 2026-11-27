@@ -50,3 +50,18 @@ export function benchmarkOverlays(trend: HoldingsSeries, picked: readonly string
         return [{name: line.label, values: line.points.map((p) => p.value), dashed: true, slot: line.slot}];
     });
 }
+
+/**
+ * The heading-note suffix while the chart's last point is an intraday quote
+ * (plan 47 D10): " · live 2:35 PM (delayed)", in the reader's local time. "" when
+ * `liveAt` is null (every price a saved one). `formatTime` is injectable so the
+ * wording is testable without pinning a timezone.
+ */
+export function liveNote(liveAt: number | null, formatTime: (date: Date) => string = localTime): string {
+    return liveAt === null ? "" : ` · live ${formatTime(new Date(liveAt * 1000))} (delayed)`;
+}
+
+/** "2:35 PM" (or the reader's locale's equivalent). */
+function localTime(date: Date): string {
+    return date.toLocaleTimeString(undefined, {hour: "numeric", minute: "2-digit"});
+}

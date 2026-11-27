@@ -32,6 +32,8 @@ const series = (cents: readonly number[]): HoldingsSeries => ({
     base: "$",
     points: MONTHS.map((label, i) => point(label, cents[i] ?? 0)),
     hasBasis: false,
+    anchor: null,
+    liveAt: null,
 });
 
 const money = (n: number): string => `$${n.toFixed(2)}`;
@@ -61,16 +63,40 @@ describe("COMPONENT HoldingsTrend", () => {
         expect(document.querySelector('[data-testid="holdings-trend-legend"]')).toBeNull();
     });
 
-    it("draws the line in the foreground ink by default, and in the colour it is given", () => {
-        const values = MONTHS.map((_, i) => 100_000 + i * 1_000);
-        const {unmount} = mount(series(values));
+    it("paints the line by the window's direction: green up, red down, ink when unchanged (D4)", () => {
         const stroke = (): string | null => document.querySelector("path.lc-path")?.getAttribute("stroke") ?? null;
-        expect(stroke()).toBe(chartColors.flowNet);
-        unmount();
+        const up = mount(series(MONTHS.map((_, i) => 100_000 + i * 1_000)));
+        expect(stroke()).toBe(chartColors.flowIn);
+        expect(document.querySelector("[data-trend-area]")?.getAttribute("data-trend-area")).toBe("up");
+        up.unmount();
 
-        render(HoldingsTrend, {trend: series(values), formatValue: money, formatAxis: compact, color: chartColors.categorical[0]});
-        expect(stroke()).toBe(chartColors.categorical[0]);
-        expect(chartColors.categorical[0]).not.toBe(chartColors.flowNet);
+        const down = mount(series(MONTHS.map((_, i) => 100_000 - i * 1_000)));
+        expect(stroke()).toBe(chartColors.flowOut);
+        expect(document.querySelector("[data-trend-area]")?.getAttribute("data-trend-area")).toBe("down");
+        down.unmount();
+
+        mount(series(MONTHS.map(() => 100_000)));
+        expect(stroke()).toBe(chartColors.flowNet);
+        expect(chartColors.flowIn).not.toBe(chartColors.flowOut);
+    });
+
+    it("fills the area under the line with a gradient of the line's colour, fading to nothing", () => {
+        mount(series(MONTHS.map((_, i) => 100_000 + i * 1_000)));
+        const area = document.querySelector("path[data-trend-area]");
+        const fill = area?.getAttribute("fill") ?? "";
+        const id = /^url\(#(.+)\)$/.exec(fill)?.[1];
+        const stops = [...document.querySelectorAll(`linearGradient[id="${id}"] stop`)];
+
+        expect(id).toBeDefined();
+        expect(stops.map((stop) => stop.getAttribute("stop-color"))).toEqual([chartColors.flowIn, chartColors.flowIn]);
+        expect(stops.map((stop) => stop.getAttribute("stop-opacity"))).toEqual(["0.4", "0"]);
+    });
+
+    it("says when the last point is a live quote", () => {
+        const trend = {...series(MONTHS.map((_, i) => 100_000 + i * 1_000)), liveAt: 1_795_000_000};
+        render(HoldingsTrend, {trend, formatValue: money});
+
+        expect(document.querySelector("h3")?.textContent).toMatch(/· last 12 months · live .+ \(delayed\)/);
     });
 
     it("says nothing is priced rather than drawing a flat line along zero", () => {
@@ -93,6 +119,8 @@ describe("COMPONENT HoldingsTrend", () => {
             base: "$",
             points: days.map((date, i) => ({date, bucket: date, label: date, marketValue: dec(100_000 + i, 2), basis: null})),
             hasBasis: false,
+            anchor: null,
+            liveAt: null,
         };
         render(HoldingsTrend, {trend: week, period: "1wk", formatValue: money});
         const labels = [...document.querySelectorAll('[data-placement="bottom"] .lc-axis-tick-label')].map((t) => t.textContent?.trim());
