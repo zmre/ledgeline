@@ -496,3 +496,103 @@ async fn the_route_requires_the_token() {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{auth:?}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Crypto (plan 48 WP5)
+// ---------------------------------------------------------------------------
+
+/// A chart feed whose every reply says the instrument is a coin.
+struct CoinChart;
+
+#[async_trait]
+impl ledgeline::PriceFeed for CoinChart {
+    async fn latest_close(
+        &self,
+        _ticker: &str,
+        _as_of: &str,
+    ) -> Result<Option<ledgeline::FetchedPrice>, ledgeline::YahooError> {
+        Ok(None)
+    }
+
+    async fn daily_closes(
+        &self,
+        _ticker: &str,
+        _from: &str,
+    ) -> Result<Vec<ledgeline::FetchedPrice>, ledgeline::YahooError> {
+        Ok(Vec::new())
+    }
+
+    async fn market_quote(
+        &self,
+        _ticker: &str,
+    ) -> Result<ledgeline::ChartReply<()>, ledgeline::YahooError> {
+        Ok(ledgeline::ChartReply {
+            instrument: Some(ledgeline::Instrument {
+                instrument_type: Some("CRYPTOCURRENCY".to_string()),
+                name: Some("Bitcoin USD".to_string()),
+                exchange: Some("CCC".to_string()),
+            }),
+            ..ledgeline::ChartReply::bare(())
+        })
+    }
+}
+
+/// An untagged coin with only a `yahoo:` ticker, quoteSummary unavailable:
+/// once any chart reply has said it is a `CRYPTOCURRENCY`, it is Crypto in
+/// every view of the pie rather than Unclassified.
+#[tokio::test]
+async fn a_coin_is_classified_from_the_chart_reply_without_quote_summary() {
+    let dir = TempDir::new().expect("temp dir");
+    std::fs::write(
+        dir.path().join("main.journal"),
+        "\
+commodity 1.00000000 BTC  ; yahoo: BTC-USD
+
+2026-01-05 buy
+    assets:crypto    0.5 BTC @ $60000.00
+    assets:cash
+",
+    )
+    .expect("write journal");
+    let state = AppState::from_journal_path(dir.path().join("main.journal"))
+        .expect("the scratch journal opens")
+        .with_profile_source(FakeFeed::new([("BTC-USD", Answer::Fail)]))
+        .with_price_source(Arc::new(CoinChart));
+
+    // Unclassified before any chart reply.
+    let (_, before) = get(state.clone(), "/api/holdings/profiles?symbols=BTC").await;
+    assert_eq!(
+        profile(&before, "BTC")["breakdown"]["assetClass"],
+        json!([])
+    );
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/prices/intraday")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(r#"{"symbols":["BTC"]}"#))
+        .expect("request builds");
+    let response = router_with_state(state.clone())
+        .oneshot(request)
+        .await
+        .expect("router responds");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let (status, body) = get(state, "/api/holdings/profiles?symbols=BTC").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let breakdown = &profile(&body, "BTC")["breakdown"];
+    for dimension in [
+        "assetClass",
+        "sector",
+        "industry",
+        "securityType",
+        "category",
+        "risk",
+    ] {
+        assert_eq!(
+            labels(&breakdown[dimension]),
+            vec![l("Crypto", 1.0)],
+            "{dimension}: {body}"
+        );
+    }
+}

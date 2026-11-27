@@ -48,6 +48,7 @@ use std::time::Duration;
 use crate::AppState;
 use crate::commodity_profile::{Breakdown, fully_tagged, resolve};
 use crate::error::AppError;
+use crate::intraday::QuoteCache;
 use crate::reports_api::unix_now;
 use crate::security::no_store_json;
 use crate::sidecar::{FETCH_CONCURRENCY, Sidecar, SidecarCache, parse_symbol_list};
@@ -260,21 +261,50 @@ pub(crate) async fn profiles(
         yahoo,
         profiles: planned
             .into_iter()
-            .map(|plan| wire_profile(plan, &cache))
+            .map(|plan| wire_profile(plan, &cache, state.quotes()))
             .collect(),
     };
     Ok(no_store_json(body))
 }
 
-fn wire_profile(plan: Planned, cache: &ProfileCache) -> WireProfile {
-    let yahoo = plan
+fn wire_profile(plan: Planned, cache: &ProfileCache, quotes: &QuoteCache) -> WireProfile {
+    let cached = plan
         .wants_yahoo
         .then(|| cache.0.get(&plan.ticker))
         .flatten()
-        .and_then(|entry| entry.profile.as_ref());
+        .and_then(|entry| entry.profile.clone());
+    let remembered = plan
+        .wants_yahoo
+        .then(|| quotes.instrument(&plan.ticker))
+        .flatten()
+        .and_then(|instrument| instrument.instrument_type);
+    let yahoo = with_chart_type(cached, remembered);
     WireProfile {
-        breakdown: resolve(&plan.tags, yahoo),
+        breakdown: resolve(&plan.tags, yahoo.as_ref()),
         symbol: plan.symbol,
+    }
+}
+
+/// `profile` with its security type filled from the chart endpoint's
+/// `instrumentType` (plan 48 C7) when quoteSummary gave none — or when
+/// there is no quoteSummary answer at all, because its crumb handshake is
+/// rate-limited far more often than the chart endpoint every price fetch
+/// already reads. `remembered` is what this process's last chart reply for
+/// the ticker said ([`QuoteCache::instrument`]); with neither, nothing.
+fn with_chart_type(
+    profile: Option<YahooProfile>,
+    remembered: Option<String>,
+) -> Option<YahooProfile> {
+    match (profile, remembered) {
+        (Some(profile), Some(kind)) if profile.quote_type.is_none() => Some(YahooProfile {
+            quote_type: Some(kind),
+            ..profile
+        }),
+        (None, Some(kind)) => Some(YahooProfile {
+            quote_type: Some(kind),
+            ..YahooProfile::default()
+        }),
+        (profile, _) => profile,
     }
 }
 
@@ -340,6 +370,34 @@ async fn fetch_all(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_charts_instrument_type_fills_a_missing_security_type() {
+        let coin = Some("CRYPTOCURRENCY".to_string());
+        assert_eq!(
+            with_chart_type(None, coin.clone()).and_then(|p| p.quote_type),
+            coin
+        );
+        let typeless = YahooProfile {
+            category: Some("Large Blend".to_string()),
+            ..YahooProfile::default()
+        };
+        let filled = with_chart_type(Some(typeless), coin.clone()).expect("a profile");
+        assert_eq!(filled.quote_type, coin);
+        assert_eq!(filled.category.as_deref(), Some("Large Blend"));
+        let etf = YahooProfile {
+            quote_type: Some("ETF".to_string()),
+            ..YahooProfile::default()
+        };
+        assert_eq!(
+            with_chart_type(Some(etf), coin)
+                .and_then(|p| p.quote_type)
+                .as_deref(),
+            Some("ETF"),
+            "quoteSummary's own answer wins"
+        );
+        assert_eq!(with_chart_type(None, None), None);
+    }
 
     fn entry(fetched_at: u64, found: bool) -> CacheEntry {
         CacheEntry {

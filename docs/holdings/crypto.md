@@ -27,7 +27,8 @@ commodity 1.00 USDC        ; type: crypto
   on Yahoo Finance as the coin's pair in your journal's base currency: `BTC`
   becomes `BTC-USD` in a dollar ledger and `BTC-EUR` in a euro one, so the
   price is Yahoo's own euro price, not a dollar price converted. It also puts
-  the coin in the **Crypto** slice of the pie (see
+  the coin in the **Crypto** slice of the pie in every view: asset class,
+  sector, industry, security type, category and risk (see
   [Allocation by category](allocation.md)). `assetclass: crypto` does the same.
 - **The number format** (`1.00000000`) sets how many decimals the coin's
   quantities show. Eight places is a satoshi.
