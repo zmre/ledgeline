@@ -27,13 +27,65 @@
 //! Tag names are **roles** ([`TagRole`]) looked up through [`TagNames`], which
 //! `[time.tags]` can override (T15). No call site spells a tag literally.
 
+pub mod accounts;
+pub mod book;
+pub mod files;
+pub mod model;
+pub mod query;
 pub mod timeclock;
 pub mod timedot;
+pub mod write;
 
 use crate::decimal::Dec;
 use crate::view::wire::plain_decimal;
 use std::collections::BTreeMap;
 use std::fmt;
+use thiserror::Error;
+
+/// Why a time operation did nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum TimeError {
+    /// A configured or requested path is unusable.
+    #[error("`{path}` can't be used: {reason}")]
+    Path {
+        /// The path as given.
+        path: String,
+        /// Why.
+        reason: String,
+    },
+    /// The roll-up (or a journal it includes) doesn't parse.
+    #[error("the time roll-up does not parse: {0}")]
+    Parse(String),
+    /// `ledgeline.toml` can't be read or written; the phrase says why.
+    #[error("ledgeline.toml {0}")]
+    Settings(String),
+    /// A file to be created already exists.
+    #[error("{0} already exists")]
+    Exists(String),
+    /// A file the edit needs isn't there.
+    #[error("{0} does not exist")]
+    Missing(String),
+    /// A value can't be written as asked; the message says why.
+    #[error("{0}")]
+    Invalid(String),
+    /// Nothing matched: no such entry, line, marker or session.
+    #[error("{0}")]
+    NotFound(String),
+    /// The edited text did not read back as intended, so nothing is written.
+    #[error("the edit did not read back as intended: {0}")]
+    Verify(String),
+    /// A file changed on disk since it was read; nothing was written.
+    #[error("{0} changed on disk since it was read; nothing was written")]
+    ExternalChange(String),
+    /// Storage failed.
+    #[error("could not read or write {path}: {kind:?}")]
+    Storage {
+        /// The file.
+        path: String,
+        /// What failed.
+        kind: std::io::ErrorKind,
+    },
+}
 
 /// Nanoseconds per second.
 const NANOS_PER_SECOND: i128 = 1_000_000_000;
@@ -344,6 +396,78 @@ impl TagNames {
     }
 }
 
+/// Check an account name before it is written into a time file (F-files
+/// writing rules): not empty, no `;` (it would start a comment), no tab or
+/// double space (they end the name), no leading `*` (an org heading), no
+/// leading or trailing space, no control character, and not date-like (a
+/// timedot line starting with a date is a date line).
+///
+/// # Errors
+/// [`TimeError::Invalid`], saying why.
+pub fn check_account(name: &str) -> Result<(), TimeError> {
+    let refuse = |why: &str| {
+        Err(TimeError::Invalid(format!(
+            "`{name}` can't be an account: {why}"
+        )))
+    };
+    if name.is_empty() {
+        return refuse("it is empty");
+    }
+    if name.contains(';') {
+        return refuse("a `;` would start a comment");
+    }
+    if name.contains('\t') || name.contains("  ") {
+        return refuse("a tab or two spaces end an account name");
+    }
+    if name.starts_with('*') {
+        return refuse("a leading `*` is an org heading");
+    }
+    if name.starts_with(char::is_whitespace) || name.ends_with(char::is_whitespace) {
+        return refuse("it starts or ends with a space");
+    }
+    if name.chars().any(char::is_control) {
+        return refuse("it holds a control character");
+    }
+    if name.starts_with(['#', '(', '[']) || name.ends_with(':') || name.contains("::") {
+        return refuse("hledger would read it differently");
+    }
+    let first = name.split([' ', ':']).next().unwrap_or("");
+    if first.starts_with(|c: char| c.is_ascii_digit()) && first.split(['-', '/', '.']).count() == 3
+    {
+        return refuse("a name that starts like a date reads as a date line");
+    }
+    Ok(())
+}
+
+/// `comment` (a comment's text after `;`) with tag `name` set to `value`, or
+/// removed for `None`. An existing tag is changed in place by
+/// [`crate::edit::upsert_tag`] (its spacing kept); a new one is appended as
+/// `name: value`, the way time files are written (F-files). Trimmed.
+#[must_use]
+pub fn with_tag(comment: &str, name: &str, value: Option<&str>) -> String {
+    let comment = comment.trim();
+    let present = crate::parse::parse_tags(comment)
+        .iter()
+        .any(|(tag, _)| tag == name);
+    match value {
+        Some(value) if !present => {
+            let tag = if value.trim().is_empty() {
+                format!("{name}:")
+            } else {
+                format!("{name}: {}", value.trim())
+            };
+            if comment.is_empty() {
+                tag
+            } else {
+                format!("{comment}, {tag}")
+            }
+        }
+        _ => crate::edit::upsert_tag(&format!(" {comment}"), name, value)
+            .trim()
+            .to_string(),
+    }
+}
+
 /// Whether `name` can be a tag name: non-empty, no whitespace, none of the
 /// characters that end a tag or a comment.
 #[must_use]
@@ -552,8 +676,14 @@ mod tests {
         assert_eq!(TimeQty::from_seconds(80).round_minutes(), 1);
         assert_eq!(TimeQty::from_seconds(90).round_minutes(), 2);
         assert_eq!(TimeQty::from_minutes(-15).round_minutes(), -15);
-        assert_eq!(plain_decimal(TimeQty::from_minutes(20).hours()), "0.333333333");
-        assert_eq!(plain_decimal(TimeQty::from_minutes(20).hledger_152_hours()), "0.33");
+        assert_eq!(
+            plain_decimal(TimeQty::from_minutes(20).hours()),
+            "0.333333333"
+        );
+        assert_eq!(
+            plain_decimal(TimeQty::from_minutes(20).hledger_152_hours()),
+            "0.33"
+        );
         assert_eq!(plain_decimal(TimeQty::from_minutes(90).hours()), "1.5");
         assert_eq!(TimeQty::from_minutes(120).written(), "2h");
         assert_eq!(TimeQty::from_minutes(130).written(), "130m");
