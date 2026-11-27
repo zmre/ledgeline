@@ -33,6 +33,7 @@ use ledgeline_core::holdings::{
     other_holdings, prices_any_held, return_anchor_range, series_count,
 };
 use ledgeline_core::model::{Commodity, Journal, PriceDirective};
+use ledgeline_core::reports::outline::OutlineKind;
 use ledgeline_core::reports::periods;
 use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
@@ -233,6 +234,17 @@ fn group_source(source: GroupSource) -> &'static str {
         GroupSource::Commodity => "commodity",
         GroupSource::Segment => "segment",
         GroupSource::Computed => "computed",
+    }
+}
+
+/// The one `OutlineKind` → wire spelling, shared by every statement that
+/// sends outline rows (plan 50): P&L, Cash Flow and Balance Sheet.
+#[allow(dead_code)] // MERGE SEAM: first used by the plan 50 WP2–WP4 branches.
+fn outline_kind(kind: OutlineKind) -> &'static str {
+    match kind {
+        OutlineKind::Heading => "heading",
+        OutlineKind::Account => "account",
+        OutlineKind::Other => "other",
     }
 }
 

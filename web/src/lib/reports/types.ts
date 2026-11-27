@@ -77,6 +77,26 @@ export type BsSectionKind = "assets" | "liabilities" | "equity";
  */
 export type GroupSource = "tag" | "type" | "commodity" | "segment" | "computed";
 
+/**
+ * Plan 50 outline fields, carried by every statement row the engine lays out
+ * (P&L, Cash Flow, Balance Sheet). The engine decides structure and labels;
+ * the UI only indents by `level`, hides amounts on headings, and shows
+ * `account` (the full path) on hover.
+ *
+ * - `heading`: a grouping row; print the label, no amount.
+ * - `account`: an account, or a depth-clipped ancestor standing for its subtree.
+ * - `other`: a heading account's own postings, labelled "<label> (other)".
+ */
+export type OutlineKind = "heading" | "account" | "other";
+
+export interface OutlineFields {
+    kind: OutlineKind;
+    /** What to print: own `name:` tag, else a humanized last segment. */
+    label: string;
+    /** Indent within the line; 0 = directly under the line's heading. */
+    level: number;
+}
+
 /** Which valuation produced the figures. Mirrors the `value=` query parameter. */
 export type BsValuation = "market" | "cost" | "none";
 
