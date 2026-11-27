@@ -59,12 +59,6 @@ pub const CF_SECTION_TAG: &str = "cfsection";
 /// The `account` tag that names the line an account prints on.
 pub const CF_GROUP_TAG: &str = "cfgroup";
 
-/// The `account` tag holding an account's display name (plan 50 D2). Read
-/// off the account itself only: a line's label never borrows an ancestor's.
-// MERGE SEAM (plan 50 WP3): the P&L/Balance Sheet branches may add a shared
-// constant for this tag; fold this one into it.
-const NAME_TAG: &str = "name";
-
 /// The closed vocabulary of [`CF_SECTION_TAG`].
 ///
 /// Closed and coded for the reason `IsSectionKind` gives: a classification
@@ -157,7 +151,7 @@ impl CfTags {
             groups: declared_groups_from(accounts, CF_GROUP_TAG),
             terms: declared_bs_terms(accounts),
             valuation: declared_valuation_roles(accounts),
-            names: declared_groups_from(accounts, NAME_TAG),
+            names: declared_groups_from(accounts, super::outline::NAME_TAG),
             base: None,
         }
     }

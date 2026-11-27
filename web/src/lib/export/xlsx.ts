@@ -176,8 +176,6 @@ function labelCell(ws: Worksheet, rowIx: number, label: string, indent: number, 
 
 // --- Grouped balance sheet (plans/12) ---------------------------------------
 
-// MERGE SEAM (plan 50 WP4): the P&L and Cash Flow exports add the same note;
-// keep one helper.
 /** Plan 50 D6: the full account path behind an outline label, as an Excel cell note. */
 function accountNote(ws: Worksheet, rowIx: number, account: string | null): void {
     if (account !== null) ws.getCell(rowIx, 1).note = account;
@@ -795,7 +793,7 @@ export async function buildCashFlowWorkbook(report: CashFlowStatement, meta: {ti
     const write = (label: string, indent: number, columns: CfColumns | null, bold: boolean, path: string | null = null): void => {
         labelCell(ws, rowIx, label, indent, bold);
         // The full account path rides on the label as an Excel note, as hover does on screen (plan 50 D6).
-        if (path !== null) ws.getCell(rowIx, 1).note = path;
+        accountNote(ws, rowIx, path);
         if (columns === null) {
             rowIx += 1; // an outline heading: its rows below carry the money (plan 50 D4)
             return;

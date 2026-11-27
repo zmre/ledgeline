@@ -244,8 +244,6 @@ import type {
     IsSectionKind,
     IsSubtotal,
     IsSubtotalKind,
-    OutlineFields,
-    OutlineKind,
     PeriodReport,
     PeriodRow,
     PeriodRowKind,
@@ -1730,18 +1728,6 @@ const GROUP_SOURCES: readonly GroupSource[] = ["tag", "type", "commodity", "segm
 const BS_VALUATIONS: readonly BsValuation[] = ["market", "cost", "none"];
 const BS_TERMS: readonly BsTerm[] = ["current", "noncurrent"];
 
-// MERGE SEAM (plan 50 WP4): the P&L and Cash Flow branches decode the same
-// outline fields; keep one copy of this and `decodeOutlineFields`.
-const OUTLINE_KINDS: readonly OutlineKind[] = ["heading", "account", "other"];
-
-/** The plan 50 outline fields every laid-out statement row carries. */
-function decodeOutlineFields(raw: {kind?: string; label?: string; level?: number}, context: string): OutlineFields {
-    if (typeof raw.label !== "string" || typeof raw.level !== "number" || !Number.isInteger(raw.level) || raw.level < 0) {
-        throw new ApiShapeError(`${context}: missing label/level`);
-    }
-    return {kind: decodeEnum(OUTLINE_KINDS, raw.kind, `${context} kind`), label: raw.label, level: raw.level};
-}
-
 /** One balance sheet outline row, its figure decoded by `amount`. */
 function decodeBsRow<R, A>(raw: RawBsRow<R> | undefined, context: string, amount: (figure: R | undefined) => A): BsRow<A> {
     if (raw === undefined || typeof raw.account !== "string") throw new ApiShapeError(`${context}: missing account`);
@@ -2224,8 +2210,7 @@ interface RawCashFlowStatement {
     maxDepth?: number;
 }
 
-// MERGE SEAM (plan 50 WP3): the P&L/Balance Sheet branches decode the same
-// outline fields; keep one copy of this pair when they merge.
+// Plan 50 outline fields, shared by the P&L, Cash Flow and Balance Sheet rows.
 const OUTLINE_KINDS: readonly OutlineKind[] = ["heading", "account", "other"];
 
 /** `{kind, label, level}` of an outline row, every one demanded. */

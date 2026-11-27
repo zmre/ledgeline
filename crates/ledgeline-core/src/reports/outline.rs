@@ -28,8 +28,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::account_groups::{declared_groups, humanized_segment};
 use crate::model::Journal;
 
-// MERGE SEAM (plan 50 WP4): the P&L and Cash Flow branches may add the same
-// lookup; keep one.
 /// The account tag whose value is a row label (plan 50 D2).
 pub const NAME_TAG: &str = "name";
 
