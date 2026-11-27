@@ -151,8 +151,8 @@ describe("COMPONENT Sidebar", () => {
                 id: "time",
                 title: "Time",
                 links: [
-                    {id: "time-dashboard", href: "/app/time", label: "Dashboard", narrowLabel: "Time", active: false},
-                    {id: "time-track", href: "/app/time/track", label: "Track", active: true},
+                    {id: "time-dashboard", href: "/app/time", label: "Dashboard", narrowLabel: "Time", ariaLabel: "Time dashboard", active: false},
+                    {id: "time-track", href: "/app/time/track", label: "Track", ariaLabel: "Track time", active: true},
                 ],
             },
         ];
@@ -167,5 +167,22 @@ describe("COMPONENT Sidebar", () => {
         const probe = screen.getByTestId("lamp-probe");
         const nav = screen.getByRole("navigation", {name: "Sections"});
         expect(probe.compareDocumentPosition(nav) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("names time's links apart from the books' (Dashboard twice on screen)", () => {
+        const groups = [
+            {
+                id: "time",
+                title: "Time",
+                links: [
+                    {id: "time-dashboard", href: "/app/time", label: "Dashboard", ariaLabel: "Time dashboard", active: false},
+                    {id: "time-track", href: "/app/time/track", label: "Track", ariaLabel: "Track time", active: false},
+                ],
+            },
+        ];
+        render(Sidebar, {links: [{id: "dashboard", href: "/app/", label: "Dashboard", active: false}], books, groups});
+        expect(screen.getAllByRole("link", {name: "Dashboard"})).toHaveLength(1);
+        expect(screen.getByRole("link", {name: "Time dashboard"}).getAttribute("href")).toBe("/app/time");
+        expect(screen.getByRole("link", {name: "Track time"}).getAttribute("href")).toBe("/app/time/track");
     });
 });

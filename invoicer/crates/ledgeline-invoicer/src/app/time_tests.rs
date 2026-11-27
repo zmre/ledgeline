@@ -6,7 +6,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use serde_json::{Value, json};
 
-use super::tests::{App, HOST, TOKEN, app_on, authed, json_of, post_json};
+use super::tests::{App, HOST, TOKEN, app_on, app_on_browser_prefs, authed, json_of, post_json};
 
 const NOW: &str = "2026-11-26T14:05:12";
 
@@ -537,4 +537,51 @@ async fn an_outside_edit_reaches_the_state_and_the_change_events() {
     )
     .await;
     assert_eq!(entries["total"]["text"], "1h 45m", "the cache was dropped");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn browser_storage_keeps_the_trackers_prefs_for_the_process() {
+    // The e2e harness's mode: nothing is written, yet the time routes must
+    // see the person and pins the SPA saved.
+    let app = app_on_browser_prefs("time");
+    let pins = json!(["clients:globex:audit", "clients:acme:advisory"]);
+    let (status, _, body) = super::tests::send(
+        &app.router,
+        with_body(
+            "PATCH",
+            "/api/ui-prefs",
+            &json!({"theme": "github", "time": {"person": "pat", "pinned": pins, "step": 10}}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let state = ok(&app, authed(&format!("/api/time/state?now={NOW}"))).await;
+    assert_eq!(state["person"], "pat");
+    assert_eq!(state["pinned"], pins);
+    assert_eq!(state["step"], 10);
+    assert_eq!(state["slots"][0]["account"], "clients:globex:audit");
+    assert_eq!(state["slots"][0]["kind"], "pinned");
+    assert_eq!(state["slots"][1]["account"], "clients:acme:advisory");
+    // Slot 0 through Other… is remembered the same way.
+    ok(
+        &app,
+        post_json(
+            "/api/time/toggle",
+            &json!({"account": "internal:sales", "now": NOW}),
+        ),
+    )
+    .await;
+    let state = ok(&app, authed(&format!("/api/time/state?now={NOW}"))).await;
+    assert_eq!(state["slots"][9]["account"], "internal:sales");
+    // View state stays the browser's, and no settings file was written.
+    let prefs = ok(&app, authed("/api/ui-prefs")).await;
+    assert_eq!(prefs["storage"], "browser");
+    assert_ne!(prefs["prefs"]["theme"], "github");
+    assert!(
+        !root(&app)
+            .parent()
+            .expect("parent")
+            .join("config/config/ui-prefs.toml")
+            .exists()
+    );
 }

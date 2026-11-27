@@ -78,7 +78,9 @@
 //! - `browser`: the headless server was started with
 //!   `$LEDGELINE_UI_PREFS_IN_BROWSER` set. Built-in defaults only, nothing is
 //!   read or written, and the SPA keeps its view state in `localStorage` as it
-//!   used to. For the e2e and live-contract harnesses, which run against
+//!   used to. The one exception is a key the server acts on itself
+//!   ([`Schema::server_side`]): a save of it is kept in the process's memory,
+//!   so the server's own routes see it. For the e2e and live-contract harnesses, which run against
 //!   committed fixtures and rely on each browser context starting from its own
 //!   clean state.
 //!
@@ -249,6 +251,13 @@ pub struct Schema {
     /// ([`Context::ledger_id`]), never at top level: a top-level spelling is
     /// ignored on read, and the first per-ledger save removes it.
     pub per_ledger: &'static [&'static str],
+    /// Keys the server itself acts on, rather than view state the SPA shows
+    /// (the invoicer's time tracker: its person, pins, step). In
+    /// [`Storage::Browser`] the browser can't hold these for the server, so a
+    /// save of one is kept in this process's memory (per ledger when
+    /// [`per_ledger`](Self::per_ledger)) and read back by [`current`]; every
+    /// other key stays at its built-in default there, as before.
+    pub server_side: &'static [&'static str],
 }
 
 impl Schema {
@@ -262,6 +271,12 @@ impl Schema {
     #[must_use]
     pub fn is_per_ledger(&self, key: &str) -> bool {
         self.per_ledger.contains(&key)
+    }
+
+    /// Whether the server acts on `key` itself ([`Self::server_side`]).
+    #[must_use]
+    pub fn is_server_side(&self, key: &str) -> bool {
+        self.server_side.contains(&key)
     }
 
     /// Whether `key` is one of this schema's.
@@ -1562,7 +1577,11 @@ pub fn edit_ledger_text<E: From<UiPrefsError>>(
 pub fn current(ctx: &Context<'_>) -> WireUiPrefs {
     let (schema, session) = (ctx.schema, ctx.session);
     if session.browser {
-        return browser_answer(schema, &Values::new());
+        let kept = session.kept();
+        return browser_answer(
+            schema,
+            &[&kept.for_ledger(ctx.ledger_id.as_deref()), &kept.values],
+        );
     }
     let global = global_layer(schema, ctx.global_file.as_deref(), ctx.ledger_id.as_deref());
     let (ledger, local_keys) = match &ctx.ledger {
@@ -1617,7 +1636,25 @@ pub fn current(ctx: &Context<'_>) -> WireUiPrefs {
 pub fn apply(ctx: &Context<'_>, patch: &Patch) -> Result<WireUiPrefs, UiPrefsError> {
     let session = ctx.session;
     if session.browser {
-        return Ok(browser_answer(ctx.schema, &patch.values));
+        let mut kept = session.kept();
+        let (server, _) = patch.split(|key| ctx.schema.is_server_side(key));
+        let (mine, shared) = server.split(|key| ctx.schema.is_per_ledger(key));
+        kept.values.extend(shared.values);
+        // With no ledger open there is nothing to keep a per-ledger key against.
+        if let Some(ledger) = ctx.ledger_id.as_deref() {
+            kept.ledgers
+                .entry(ledger.to_string())
+                .or_default()
+                .extend(mine.values);
+        }
+        return Ok(browser_answer(
+            ctx.schema,
+            &[
+                &patch.values,
+                &kept.for_ledger(ctx.ledger_id.as_deref()),
+                &kept.values,
+            ],
+        ));
     }
     if !patch.is_empty() {
         // Released before `current`, which takes it again.
@@ -1874,10 +1911,11 @@ fn unpin_ledger(
     })
 }
 
-/// [`Storage::Browser`]'s answer: the defaults under `overrides`, from no file.
-fn browser_answer(schema: &Schema, overrides: &Values) -> WireUiPrefs {
+/// [`Storage::Browser`]'s answer: the defaults under `layers` (first wins),
+/// from no file.
+fn browser_answer(schema: &Schema, layers: &[&Values]) -> WireUiPrefs {
     WireUiPrefs {
-        prefs: prefs_json(&merge(schema, &[overrides])),
+        prefs: prefs_json(&merge(schema, layers)),
         storage: Storage::Browser,
         local_keys: Vec::new(),
         issues: Vec::new(),
@@ -1892,6 +1930,56 @@ mod tests {
 
     /// Ledgeline's schema: the one these tests pin the engine's behaviour to.
     const S: &Schema = &ledgeline::SCHEMA;
+
+    /// A schema with one server-side key per ledger and one shared, for
+    /// browser storage.
+    const SERVER: Schema = Schema {
+        specs: &[THEME, TIME_PERSON, TIME_PINNED],
+        pinnable: &[],
+        per_ledger: &["time.pinned"],
+        server_side: &["time.person", "time.pinned"],
+    };
+
+    fn browser_ctx<'a>(session: &'a UiPrefsSession, ledger: Option<&str>) -> Context<'a> {
+        Context {
+            schema: &SERVER,
+            session,
+            global_file: None,
+            ledger: LedgerSlot::NoLedger,
+            ledger_id: ledger.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn browser_storage_keeps_server_side_keys_in_memory_only() {
+        let session = UiPrefsSession::browser();
+        let patch = Patch::from_json(
+            &SERVER,
+            &json!({"theme": "nord", "time": {"person": "pat", "pinned": ["a:b"]}}),
+        )
+        .expect("patch");
+        let answer = apply(&browser_ctx(&session, Some("one")), &patch).expect("apply");
+        assert_eq!(
+            answer.prefs()["theme"],
+            "nord",
+            "the answer echoes the save"
+        );
+        let after = current(&browser_ctx(&session, Some("one")));
+        assert_eq!(after.prefs()["time"]["person"], "pat");
+        assert_eq!(after.prefs()["time"]["pinned"], json!(["a:b"]));
+        // View state stays the browser's: the default again on the next read.
+        assert_eq!(
+            after.prefs()["theme"],
+            current(&browser_ctx(&UiPrefsSession::browser(), None)).prefs()["theme"]
+        );
+        // Pins belong to one ledger; the person to every one.
+        let other = current(&browser_ctx(&session, Some("two")));
+        assert_eq!(other.prefs()["time"]["pinned"], json!([]));
+        assert_eq!(other.prefs()["time"]["person"], "pat");
+        // A fresh process starts clean.
+        let fresh = current(&browser_ctx(&UiPrefsSession::browser(), Some("one")));
+        assert_eq!(fresh.prefs()["time"]["person"], Json::Null);
+    }
 
     #[test]
     fn boot_appearance_resolves_families_variants_and_unknowns() {

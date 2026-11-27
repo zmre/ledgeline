@@ -1,5 +1,6 @@
 //! The app's router in-process, over a private copy of the accrual fixture.
 
+use ledgeline_core::ui_prefs::UiPrefsSession;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -75,11 +76,26 @@ pub(super) fn app_on_prepared(
     native: Option<Arc<dyn super::native::Native>>,
     prepare: impl FnOnce(&Path),
 ) -> App {
+    app_with_prefs(name, native, prepare, super::prefs::session_from_env())
+}
+
+/// [`app_on`] with UI preferences left to the browser (the e2e harness's
+/// `LEDGELINE_UI_PREFS_IN_BROWSER`), without touching the environment.
+pub(super) fn app_on_browser_prefs(name: &str) -> App {
+    app_with_prefs(name, None, |_| {}, UiPrefsSession::browser())
+}
+
+fn app_with_prefs(
+    name: &str,
+    native: Option<Arc<dyn super::native::Native>>,
+    prepare: impl FnOnce(&Path),
+    prefs: UiPrefsSession,
+) -> App {
     let (dir, journal) = fixture_named(name);
     prepare(&dir.path().join("books"));
     let books = Arc::new(OpenBooks::open(&journal, false).expect("opens"));
     let app_dirs = AppDirs::under(dir.path().join("config"));
-    let state = AppState::with_native(Some(Arc::clone(&books)), app_dirs, native);
+    let state = AppState::with_prefs(Some(Arc::clone(&books)), app_dirs, native, prefs);
     let token = AccessToken::parse(TOKEN).expect("token");
     let security = Security::local(token.clone(), PORT);
     App {
