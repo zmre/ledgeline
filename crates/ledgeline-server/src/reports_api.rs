@@ -33,15 +33,15 @@ use ledgeline_core::holdings::{
     other_holdings, prices_any_held, return_anchor_range, series_count,
 };
 use ledgeline_core::model::{Commodity, Journal, PriceDirective};
-use ledgeline_core::reports::outline::OutlineKind;
+use ledgeline_core::reports::outline::{OutlineKind, account_names};
 use ledgeline_core::reports::periods;
 use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
     Amounts, BalanceSheetColumns, BalanceSheetReport, BarLabel, BsColumnGroup, BsColumnRow,
-    BsColumnSection, BsColumnSubsection, BsGroup, BsOpts, BsSection, BsSectionKind, BsSubsection,
-    BsTerm, BucketSpan, BudgetBar, BudgetCell, BudgetGaps, BudgetHealth, BudgetOpts, BudgetReport,
-    BudgetRow, BudgetSection, BudgetSectionKind, BudgetSummary, Cadence, CashFlowStatement,
-    CfLineSource, CfOpts, CfTags, ChangeKind, ChangeRow, Columns, CostOfLiving,
+    BsColumnSection, BsColumnSubsection, BsGroup, BsOpts, BsRow, BsSection, BsSectionKind,
+    BsSubsection, BsTerm, BucketSpan, BudgetBar, BudgetCell, BudgetGaps, BudgetHealth, BudgetOpts,
+    BudgetReport, BudgetRow, BudgetSection, BudgetSectionKind, BudgetSummary, Cadence,
+    CashFlowStatement, CfLineSource, CfOpts, CfTags, ChangeKind, ChangeRow, Columns, CostOfLiving,
     DEFAULT_EXCLUDE_DESC, DateRange, FlowGraph, FlowLink, FlowNode, FlowOpts, FlowReport, FlowSide,
     GapRow, GroupSource, IS_GROUP_TAG, IncomeStatementReport, InsightsOpts, InsightsPeriod,
     InsightsReport, Interval, InvestmentPerf, IsGroup, IsOpts, IsRow, IsSection, IsSectionKind,
@@ -208,19 +208,60 @@ struct WireBsGroup {
     /// `"current" | "noncurrent"`, or null when the split is off (and always
     /// null for the synthetic equity lines).
     term: Option<&'static str>,
-    /// Empty for the `computed` lines, which stand for no accounts.
-    rows: Vec<WireReportRow>,
+    /// The group's outline rows (plan 50). Empty for the `computed` lines,
+    /// which stand for no accounts.
+    rows: Vec<WireBsRow<WireMixed>>,
     total: WireMixed,
 }
 
-impl From<&BsGroup> for WireBsGroup {
-    fn from(group: &BsGroup) -> Self {
-        Self {
+impl WireBsGroup {
+    fn new(group: &BsGroup, names: &BTreeMap<String, String>) -> Result<Self, ReportError> {
+        Ok(Self {
             name: group.name.clone(),
             term: group.term.map(BsTerm::code),
             source: group_source(group.source),
-            rows: group.rows.iter().map(WireReportRow::from).collect(),
+            rows: group.rows(names)?.iter().map(WireBsRow::from).collect(),
             total: wire_mixed(&group.total),
+        })
+    }
+}
+
+/// One outline row of a balance sheet group (plan 50 D7):
+/// `{kind, label, account, level, amount}`. `amount` is one figure on the
+/// single-date sheet and one per column on the multi-column one; a `heading`'s
+/// is its subtree's sum and is not for display (D4).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireBsRow<A> {
+    /// `"heading" | "account" | "other"`.
+    kind: &'static str,
+    label: String,
+    /// The full account path: hover text and the journal drill-down.
+    account: String,
+    level: usize,
+    amount: A,
+}
+
+impl From<&BsRow<MixedAmount>> for WireBsRow<WireMixed> {
+    fn from(row: &BsRow<MixedAmount>) -> Self {
+        Self {
+            kind: outline_kind(row.kind),
+            label: row.label.clone(),
+            account: row.account.clone(),
+            level: row.level,
+            amount: wire_mixed(&row.amount),
+        }
+    }
+}
+
+impl From<&BsColumnRow> for WireBsRow<Vec<WireMixed>> {
+    fn from(row: &BsColumnRow) -> Self {
+        Self {
+            kind: outline_kind(row.kind),
+            label: row.label.clone(),
+            account: row.account.clone(),
+            level: row.level,
+            amount: row.amount.iter().map(wire_mixed).collect(),
         }
     }
 }
@@ -288,19 +329,23 @@ struct WireBsSection {
     total: WireMixed,
 }
 
-impl From<&BsSection> for WireBsSection {
-    fn from(section: &BsSection) -> Self {
-        Self {
+impl WireBsSection {
+    fn new(section: &BsSection, names: &BTreeMap<String, String>) -> Result<Self, ReportError> {
+        Ok(Self {
             kind: bs_section_kind(section.kind),
             title: section.title.clone(),
-            groups: section.groups.iter().map(WireBsGroup::from).collect(),
+            groups: section
+                .groups
+                .iter()
+                .map(|group| WireBsGroup::new(group, names))
+                .collect::<Result<_, _>>()?,
             subsections: section
                 .subsections
                 .iter()
                 .map(WireBsSubsection::from)
                 .collect(),
             total: wire_mixed(&section.total),
-        }
+        })
     }
 }
 
@@ -343,18 +388,27 @@ pub(crate) struct WireBalanceSheetReport {
 
 impl WireBalanceSheetReport {
     /// `value` is the request's own spelling, so the response says which basis
-    /// produced the numbers it carries.
-    fn new(report: &BalanceSheetReport, value: &'static str) -> Self {
-        Self {
+    /// produced the numbers it carries. `names` are the accounts' own `name:`
+    /// tags, for the outline labels.
+    fn new(
+        report: &BalanceSheetReport,
+        value: &'static str,
+        names: &BTreeMap<String, String>,
+    ) -> Result<Self, ReportError> {
+        Ok(Self {
             as_of: report.as_of.clone(),
             base: report.base.as_ref().map(|base| base.0.clone()),
             value,
-            sections: report.sections.iter().map(WireBsSection::from).collect(),
+            sections: report
+                .sections
+                .iter()
+                .map(|section| WireBsSection::new(section, names))
+                .collect::<Result<_, _>>()?,
             net_worth: wire_mixed(&report.net_worth),
             check: wire_mixed(&report.check),
             balanced: report.balanced,
             meta: WireReportMeta::from(&report.meta),
-        }
+        })
     }
 }
 
@@ -368,34 +422,13 @@ impl WireBalanceSheetReport {
 // later columns reads `{}` in the earlier ones rather than being missing, and
 // every client shows the same rows in the same order.
 
-/// One account row: `own` and `inclusive` per column.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WireBsColumnRow {
-    account: String,
-    depth: usize,
-    own: Vec<WireMixed>,
-    inclusive: Vec<WireMixed>,
-}
-
-impl From<&BsColumnRow> for WireBsColumnRow {
-    fn from(row: &BsColumnRow) -> Self {
-        Self {
-            account: row.account.clone(),
-            depth: row.depth,
-            own: row.own.iter().map(wire_mixed).collect(),
-            inclusive: row.inclusive.iter().map(wire_mixed).collect(),
-        }
-    }
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WireBsColumnGroup {
     name: String,
     source: &'static str,
     term: Option<&'static str>,
-    rows: Vec<WireBsColumnRow>,
+    rows: Vec<WireBsRow<Vec<WireMixed>>>,
     total: Vec<WireMixed>,
 }
 
@@ -405,7 +438,7 @@ impl From<&BsColumnGroup> for WireBsColumnGroup {
             name: group.name.clone(),
             source: group_source(group.source),
             term: group.term.map(BsTerm::code),
-            rows: group.rows.iter().map(WireBsColumnRow::from).collect(),
+            rows: group.rows.iter().map(WireBsRow::from).collect(),
             total: group.total.iter().map(wire_mixed).collect(),
         }
     }
@@ -3527,16 +3560,22 @@ pub(crate) async fn balancesheet(
 /// `check` line that is `{}` exactly when the journal balances.
 ///
 /// - `asOf=YYYY-MM-DD` (default: today)
-/// - `depth=N` (range `0..=100`; ABSENT means no clamp at all) — clamps the
-///   expandable ROWS only; every total is summed over members, so none of them
-///   move with it. The SPA omits it: the balance sheet reads as groups, the
-///   accounts inside one are a drill-down, and a drill-down that stops part-way
-///   down the tree just hides accounts with no way to ask for them.
+/// - `depth=N` (range `0..=100`; ABSENT means no clamp at all) — clips each
+///   group's accounts into their ancestor at that depth before the rows are
+///   laid out, so it moves the ROWS only; every total is summed over members,
+///   so none of them move with it. The SPA omits it: the balance sheet reads
+///   as groups, the accounts inside one are a drill-down, and a drill-down
+///   that stops part-way down the tree just hides accounts with no way to ask
+///   for them.
 /// - `value=market|cost|none` (default: `market`)
 /// - `valueIn=$` (default: the journal's `D` commodity when it prices
 ///   something on the sheet, else the price table's own base commodity). A
 ///   `valueIn` pricing NOTHING the sheet displays is a `400`; see
 ///   [`resolve_grouped_value_in`].
+///
+/// Each group's `rows` are the plan 50 outline (`{kind, label, account, level,
+/// amount}`): headings only over two or more of the group's accounts, labels
+/// from the account's own `name:` tag else its humanized last segment.
 ///
 /// Prices come from the journal's `P` directives alone, matching `hledger bs
 /// -V`. Commodities no price reaches stay on the row as share counts and are
@@ -3589,7 +3628,11 @@ pub(crate) async fn balancesheet_grouped(
             &shape.bs_groups,
             &shape.bs_terms,
         )?;
-        Ok(WireBalanceSheetReport::new(&report, label))
+        Ok(WireBalanceSheetReport::new(
+            &report,
+            label,
+            &account_names(journal),
+        )?)
     })
     .await
 }
@@ -3664,7 +3707,7 @@ pub(crate) async fn balancesheet_columns(
             &shape.bs_terms,
         )?;
         Ok(WireBalanceSheetColumns::new(
-            &pivot_balance_sheets(&sheets),
+            &pivot_balance_sheets(&sheets, &account_names(journal))?,
             &spans,
             label,
         ))

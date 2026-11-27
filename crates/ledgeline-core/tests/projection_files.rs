@@ -1771,8 +1771,8 @@ impl Parity {
                 } else {
                     &mut sheet
                 };
-                for row in section.groups.iter().flat_map(|group| &group.rows) {
-                    put(table, &row.account, &row.own, column, sheets.len());
+                for (account, own) in section.groups.iter().flat_map(|group| &group.members) {
+                    put(table, account, own, column, sheets.len());
                 }
             }
         }

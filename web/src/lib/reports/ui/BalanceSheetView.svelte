@@ -10,8 +10,9 @@
 
      Groups are COLLAPSED by default: the useful reading of a balance sheet is
      "cash, investments, credit cards", and the account detail is a drill-down.
-     Expanding one shows its depth-clamped accounts, single-child chains
-     compressed exactly as every other report table compresses them.
+     Expanding one shows the engine's outline (plan 50): two banks read as
+     "Bank A › Checking, Savings", each level once, headings without a figure
+     (the group total covers them), and the full account path on hover.
 
      Assets and Liabilities may be banded CURRENT / NON-CURRENT, each band with
      its own subheading and subtotal. It is adaptive, like the P&L's GAAP ladder:
@@ -371,6 +372,16 @@
                                         <th class="{label} pt-3 text-[0.7rem] font-semibold tracking-widest text-muted uppercase">{row.label}</th>
                                         <td colspan={span}></td>
                                     </tr>
+                                {:else if row.kind === "heading"}
+                                    <!-- An outline heading (plan 50 D4): a label over two or
+                                 more of the group's accounts, and no figure. Not a
+                                 cursor stop (see `bsCursorRows`). -->
+                                    <tr data-bs-row={row.key} data-account={row.account ?? undefined} data-testid="bs-heading">
+                                        <th class="{label} font-normal">
+                                            <span class="whitespace-nowrap" style="padding-left: {row.indent}rem" title={row.account}>{row.label}</span>
+                                        </th>
+                                        <td colspan={span}></td>
+                                    </tr>
                                 {:else if row.kind === "subtotal"}
                                     <!-- A band's subtotal. A thin rule and semibold, against the
                                  section total's double rule, fill and bold weight below
@@ -417,8 +428,9 @@
                                                     </span>
                                                 {/if}
                                             {:else}
-                                                <!-- Inline padding, not a class: the depth is data, and `ReportTable`
-                                             indents its own rows the same way (1rem per level). -->
+                                                <!-- Inline padding, not a class: the level is data, and `ReportTable`
+                                             indents its own rows the same way (1rem per level). The
+                                             full account path is the hover text (plan 50 D6). -->
                                                 <span class="whitespace-nowrap text-muted" style="padding-left: {row.indent}rem" title={row.account}
                                                     >{row.label}</span
                                                 >

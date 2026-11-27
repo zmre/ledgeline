@@ -180,20 +180,28 @@ describe("UNIT nativeDecode — BalanceSheetReport (grouped)", () => {
         expect(report.sections[1].total.get("$")).toEqual({m: 53115n, p: 2});
     });
 
-    it("decodes groups with their resolution source and member rows", () => {
+    it("decodes groups with their resolution source and outline rows", () => {
         const [cash, investments] = report.sections[0].groups;
         expect([cash.name, cash.source]).toEqual(["Cash and cash equivalents", "type"]);
         expect(cash.total.get("$")).toEqual({m: 4245024n, p: 2});
-        expect(cash.rows.map((r) => r.account)).toEqual([
-            "assets:bank",
-            "assets:bank:checking",
-            "assets:bank:savings",
-            "assets:bank:wise",
-            "assets:bank:wise:eur",
+        expect(cash.rows.map((r) => [r.kind, r.label, r.account, r.level])).toEqual([
+            ["account", "Checking", "assets:bank:checking", 0],
+            ["account", "Savings", "assets:bank:savings", 0],
+            ["account", "Eur", "assets:bank:wise:eur", 0],
         ]);
-        expect(cash.rows[0].own.size).toBe(0); // a parent's own amount is `{}` → an empty Map
-        expect(cash.rows[1].inclusive.get("$")).toEqual({m: 2829281n, p: 2});
+        expect(cash.rows[0].amount.get("$")).toEqual({m: 2829281n, p: 2});
         expect(investments.source).toBe("commodity");
+    });
+
+    it("refuses an outline row with an unknown kind or no level", () => {
+        const broken = (patch: Record<string, unknown>): unknown => {
+            const raw = JSON.parse(JSON.stringify(GROUPED_BALANCE_SHEET)) as {sections: {groups: {rows: Record<string, unknown>[]}[]}[]};
+            Object.assign(raw.sections[0].groups[0].rows[0], patch);
+            return raw;
+        };
+        expect(() => decodeBalanceSheetReport(broken({kind: "total"}))).toThrow(/kind/);
+        expect(() => decodeBalanceSheetReport(broken({level: undefined}))).toThrow(/label\/level/);
+        expect(() => decodeBalanceSheetReport(broken({amount: undefined}))).toThrow(/amount/);
     });
 
     // The current/non-current axis. `term` and `subsections` are both DEMANDED
@@ -2222,10 +2230,11 @@ const PROJECTION_RUN = {
                         term: "current",
                         rows: [
                             {
+                                kind: "account",
+                                label: "Checking",
                                 account: "assets:bank:checking",
-                                depth: 3,
-                                own: [{$: dec(500000, 2)}, {$: dec(80000, 2)}, {}],
-                                inclusive: [{$: dec(500000, 2)}, {$: dec(80000, 2)}, {}],
+                                level: 0,
+                                amount: [{$: dec(500000, 2)}, {$: dec(80000, 2)}, {}],
                             },
                         ],
                         total: [{$: dec(500000, 2)}, {$: dec(80000, 2)}, {}],
@@ -2359,7 +2368,8 @@ const PROJECTION_RUN = {
 // projected, built from the statements above by picking columns. Every array
 // that runs per column is re-picked, and a picked column in the second block
 // gets its key prefixed `projected:` as the engine prefixes it.
-const COLUMN_ARRAYS = new Set(["buckets", "columns", "periods", "values", "own", "inclusive", "total", "totals", "netWorth", "check", "balanced"]);
+// MERGE SEAM (plan 50 WP4): `amount` is the balance sheet outline row's per-column figure.
+const COLUMN_ARRAYS = new Set(["buckets", "columns", "periods", "values", "own", "inclusive", "amount", "total", "totals", "netWorth", "check", "balanced"]);
 function pickColumns(raw: unknown, width: number, pick: number[]): unknown {
     const prefixed = (column: unknown, at: number): unknown => {
         if (at < pick.length / 2) return column;
@@ -2808,7 +2818,8 @@ describe("UNIT nativeDecode — a projection run", () => {
         // A group with no balance in a column reads EMPTY there, not missing.
         const cash = sheet.sections[0].groups[0];
         expect(cash.total.map((figure) => figure.get("$") ?? null)).toEqual([{m: 500000n, p: 2}, {m: 80000n, p: 2}, null]);
-        expect(cash.rows[0].inclusive).toHaveLength(3);
+        expect(cash.rows[0].amount).toHaveLength(3);
+        expect([cash.rows[0].kind, cash.rows[0].label, cash.rows[0].level]).toEqual(["account", "Checking", 0]);
         expect(sheet.balanced).toEqual([true, true, false]);
         expect(sheet.meta?.unpriced).toEqual(["GLD"]);
     });

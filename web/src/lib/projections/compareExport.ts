@@ -27,6 +27,8 @@ export function balanceSheetCompareRows(sheet: BalanceSheetColumns): CompareShee
         rows.push(heading(section.title));
         for (const row of columnSectionRows(section, () => true)) {
             if (row.kind === "subsection") rows.push(line(row.label, 1, true, null));
+            // Plan 50 D4: an outline heading carries no figure.
+            else if (row.kind === "heading") rows.push(line(row.label, row.indent + 1, false, null));
             else rows.push(line(row.label, row.kind === "account" ? row.indent + 1 : 1, row.kind !== "account", row.amount));
         }
         rows.push(line(`Total ${section.title}`, 0, true, section.total));

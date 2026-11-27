@@ -78,7 +78,7 @@ pub use accounts::{RootCategory, account_matches, categorize};
 pub use aggregate::{PostingFilter, account_totals, at_depth, effective_date, roll_up};
 pub use balance_sheet::{
     BalanceSheetColumns, BalanceSheetReport, BsColumnGroup, BsColumnRow, BsColumnSection,
-    BsColumnSubsection, BsGroup, BsOpts, BsSection, BsSectionKind, BsSubsection, Valuation,
+    BsColumnSubsection, BsGroup, BsOpts, BsRow, BsSection, BsSectionKind, BsSubsection, Valuation,
     balance_sheet, balance_sheet_columns, balance_sheet_grouped, pivot_balance_sheets,
     prices_any_on_sheet, prices_any_on_sheets,
 };

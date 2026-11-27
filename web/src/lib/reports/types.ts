@@ -135,6 +135,17 @@ export interface BsSubsection {
     total: MixedAmount;
 }
 
+/**
+ * One outline row of a balance sheet group (plan 50). `amount` is the sum of
+ * the accounts the row stands for; on a `heading` it is the subtree's sum and
+ * is NOT displayed (D4: the group's total covers it).
+ */
+export interface BsRow<A = MixedAmount> extends OutlineFields {
+    /** The full account path: the hover text and the journal drill-down. */
+    account: string;
+    amount: A;
+}
+
 /** One named bucket of accounts within a section, with its own subtotal. */
 export interface BsGroup {
     name: string;
@@ -151,12 +162,12 @@ export interface BsGroup {
      */
     term: BsTerm | null;
     /**
-     * The depth-clamped member rows, ancestors included and lexically sorted
-     * (as every other report's rows are), so `compressSectionRows` applies.
-     * EMPTY for a computed group — "Retained earnings" summarizes accounts that
-     * are not on the balance sheet at all, so it has a total and no rows.
+     * The group's outline (plan 50), in display order, laid out and labelled by
+     * the engine. EMPTY for a computed group — "Retained earnings" summarizes
+     * accounts that are not on the balance sheet at all, so it has a total and
+     * no rows.
      */
-    rows: ReportRow[];
+    rows: BsRow[];
     /** Summed over MEMBERS, not over displayed rows, so it is depth-independent (RPT-1/RPT-4). */
     total: MixedAmount;
 }
@@ -225,13 +236,8 @@ export interface BalanceSheetReport {
 // reads as an empty amount in the earlier ones rather than being missing, and
 // every consumer shows the same rows in the same order.
 
-/** One account row across every column. */
-export interface BsColumnRow {
-    account: string;
-    depth: number;
-    own: MixedAmount[];
-    inclusive: MixedAmount[];
-}
+/** One outline row across every column: one amount per column. */
+export type BsColumnRow = BsRow<MixedAmount[]>;
 
 /** One group across every column. Keyed, like `BsGroup`, by section, term and name. */
 export interface BsColumnGroup {

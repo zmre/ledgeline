@@ -92,18 +92,13 @@ export const GROUPED_BALANCE_SHEET: unknown = {
                     source: "type", // every member resolves to the declared `type: C`
                     term: null, // no `bsterm:` anywhere in this journal
                     total: {$: CASH_TOTAL},
+                    // The engine's plan 50 outline: `assets:bank` spans the whole
+                    // group, so it is absorbed by the group line, and the lone
+                    // `wise` → `eur` chain collapses into its leaf.
                     rows: [
-                        {account: "assets:bank", depth: 2, own: {}, inclusive: {$: CASH_TOTAL}},
-                        {account: "assets:bank:checking", depth: 3, own: {$: CHECKING}, inclusive: {$: CHECKING}},
-                        {account: "assets:bank:savings", depth: 3, own: {$: SAVINGS}, inclusive: {$: SAVINGS}},
-                        // Another single-child chain, and the reason the tab asks
-                        // the engine for an UNCLAMPED report: `assets:bank:wise`
-                        // holds nothing itself, so stopping at depth 3 showed a
-                        // row that stood for an account the reader could not see.
-                        // `compressSectionRows` renders the pair as one
-                        // `wise:eur` row.
-                        {account: "assets:bank:wise", depth: 3, own: {}, inclusive: {$: WISE}},
-                        {account: "assets:bank:wise:eur", depth: 4, own: {$: WISE}, inclusive: {$: WISE}},
+                        {kind: "account", label: "Checking", account: "assets:bank:checking", level: 0, amount: {$: CHECKING}},
+                        {kind: "account", label: "Savings", account: "assets:bank:savings", level: 0, amount: {$: SAVINGS}},
+                        {kind: "account", label: "Eur", account: "assets:bank:wise:eur", level: 0, amount: {$: WISE}},
                     ],
                 },
                 {
@@ -111,12 +106,8 @@ export const GROUPED_BALANCE_SHEET: unknown = {
                     source: "commodity", // holds non-base commodities (AAPL/VTI/GLD/TSLA)
                     term: null,
                     total: BROKER,
-                    rows: [
-                        // A single-child chain: `compressSectionRows` renders these as one
-                        // `broker:taxable` row on screen and in the workbook.
-                        {account: "assets:broker", depth: 2, own: {}, inclusive: BROKER},
-                        {account: "assets:broker:taxable", depth: 3, own: BROKER, inclusive: BROKER},
-                    ],
+                    // One member, so one row under its own last segment.
+                    rows: [{kind: "account", label: "Taxable", account: "assets:broker:taxable", level: 0, amount: BROKER}],
                 },
             ],
             // Empty, not absent: the engine always sends the key, and an absent
@@ -133,10 +124,7 @@ export const GROUPED_BALANCE_SHEET: unknown = {
                     source: "segment", // second segment `cc`, prettified by the alias table
                     term: null,
                     total: {$: VISA},
-                    rows: [
-                        {account: "liabilities:cc", depth: 2, own: {}, inclusive: {$: VISA}},
-                        {account: "liabilities:cc:visa", depth: 3, own: {$: VISA}, inclusive: {$: VISA}},
-                    ],
+                    rows: [{kind: "account", label: "Visa", account: "liabilities:cc:visa", level: 0, amount: {$: VISA}}],
                 },
             ],
             subsections: [],
@@ -153,14 +141,14 @@ export const GROUPED_BALANCE_SHEET: unknown = {
                     // split by term, tagged or not.
                     term: null,
                     total: {$: d("1455000", 2)},
-                    rows: [{account: "equity:opening", depth: 2, own: {$: d("1455000", 2)}, inclusive: {$: d("1455000", 2)}}],
+                    rows: [{kind: "account", label: "Opening", account: "equity:opening", level: 0, amount: {$: d("1455000", 2)}}],
                 },
                 {
                     name: "Transfers",
                     source: "segment",
                     term: null,
                     total: {GLD: d("5", 0)},
-                    rows: [{account: "equity:transfers", depth: 2, own: {GLD: d("5", 0)}, inclusive: {GLD: d("5", 0)}}],
+                    rows: [{kind: "account", label: "Transfers", account: "equity:transfers", level: 0, amount: {GLD: d("5", 0)}}],
                 },
                 // The two computed lines carry a total and NO rows: they summarize
                 // accounts that are not on the balance sheet at all. Nothing to
@@ -264,9 +252,8 @@ export const CLASSIFIED_BALANCE_SHEET: unknown = {
                     term: "current",
                     total: {$: d("5000000", 2)},
                     rows: [
-                        {account: "assets:bank", depth: 2, own: {}, inclusive: {$: d("5000000", 2)}},
-                        {account: "assets:bank:checking", depth: 3, own: {$: d("3000000", 2)}, inclusive: {$: d("3000000", 2)}},
-                        {account: "assets:bank:savings", depth: 3, own: {$: d("2000000", 2)}, inclusive: {$: d("2000000", 2)}},
+                        {kind: "account", label: "Checking", account: "assets:bank:checking", level: 0, amount: {$: d("3000000", 2)}},
+                        {kind: "account", label: "Savings", account: "assets:bank:savings", level: 0, amount: {$: d("2000000", 2)}},
                     ],
                 },
                 {
@@ -274,26 +261,21 @@ export const CLASSIFIED_BALANCE_SHEET: unknown = {
                     source: "segment", // second segment `ar`, prettified by the alias table
                     term: "current",
                     total: {$: d("1250000", 2)},
-                    rows: [{account: "assets:ar", depth: 2, own: {$: d("1250000", 2)}, inclusive: {$: d("1250000", 2)}}],
+                    rows: [{kind: "account", label: "Accounts receivable", account: "assets:ar", level: 0, amount: {$: d("1250000", 2)}}],
                 },
                 {
                     name: "Property",
                     source: "tag",
                     term: "noncurrent",
                     total: {$: d("45000000", 2)},
-                    // A single-child chain: `compressSectionRows` renders these as
-                    // one `assets:property:house` row, inside the band.
-                    rows: [
-                        {account: "assets:property", depth: 2, own: {}, inclusive: {$: d("45000000", 2)}},
-                        {account: "assets:property:house", depth: 3, own: {$: d("45000000", 2)}, inclusive: {$: d("45000000", 2)}},
-                    ],
+                    rows: [{kind: "account", label: "House", account: "assets:property:house", level: 0, amount: {$: d("45000000", 2)}}],
                 },
                 {
                     name: "Long-term investments",
                     source: "tag",
                     term: "noncurrent",
                     total: {$: d("8750000", 2)},
-                    rows: [{account: "assets:broker:ira", depth: 3, own: {$: d("8750000", 2)}, inclusive: {$: d("8750000", 2)}}],
+                    rows: [{kind: "account", label: "Ira", account: "assets:broker:ira", level: 0, amount: {$: d("8750000", 2)}}],
                 },
             ],
             subsections: [
@@ -311,24 +293,21 @@ export const CLASSIFIED_BALANCE_SHEET: unknown = {
                     source: "segment",
                     term: "current",
                     total: {$: d("420000", 2)},
-                    rows: [
-                        {account: "liabilities:cc", depth: 2, own: {}, inclusive: {$: d("420000", 2)}},
-                        {account: "liabilities:cc:visa", depth: 3, own: {$: d("420000", 2)}, inclusive: {$: d("420000", 2)}},
-                    ],
+                    rows: [{kind: "account", label: "Visa", account: "liabilities:cc:visa", level: 0, amount: {$: d("420000", 2)}}],
                 },
                 {
                     name: "Accounts payable",
                     source: "segment",
                     term: "current",
                     total: {$: d("780000", 2)},
-                    rows: [{account: "liabilities:ap", depth: 2, own: {$: d("780000", 2)}, inclusive: {$: d("780000", 2)}}],
+                    rows: [{kind: "account", label: "Accounts payable", account: "liabilities:ap", level: 0, amount: {$: d("780000", 2)}}],
                 },
                 {
                     name: "Long-term debt",
                     source: "tag",
                     term: "noncurrent",
                     total: {$: d("28800000", 2)},
-                    rows: [{account: "liabilities:mortgage", depth: 2, own: {$: d("28800000", 2)}, inclusive: {$: d("28800000", 2)}}],
+                    rows: [{kind: "account", label: "Mortgage", account: "liabilities:mortgage", level: 0, amount: {$: d("28800000", 2)}}],
                 },
             ],
             subsections: [
@@ -346,7 +325,7 @@ export const CLASSIFIED_BALANCE_SHEET: unknown = {
                     source: "segment",
                     term: null,
                     total: {$: d("25000000", 2)},
-                    rows: [{account: "equity:opening", depth: 2, own: {$: d("25000000", 2)}, inclusive: {$: d("25000000", 2)}}],
+                    rows: [{kind: "account", label: "Opening", account: "equity:opening", level: 0, amount: {$: d("25000000", 2)}}],
                 },
                 {
                     name: "Retained earnings",

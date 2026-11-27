@@ -513,17 +513,43 @@ async fn balancesheet_grouped_reports_groups_and_their_provenance() {
         "a computed line stands for no accounts"
     );
 
-    // Rows carry the same shape as the flat report's.
+    // Rows are the plan 50 outline: `{kind, label, account, level, amount}`.
+    // The bank accounts share `assets:bank`, so it heads them; the brokerage's
+    // cash has no sibling in the group and is one leaf. This request clips at
+    // depth 3, so `wise:eur` and `taxable:cash` fold into their ancestors,
+    // each carrying only this group's money.
     let cash_rows = body["sections"][0]["groups"][0]["rows"]
         .as_array()
         .expect("rows array");
-    assert_eq!(cash_rows[0]["account"], "assets:bank");
-    assert_eq!(cash_rows[0]["depth"], 2);
-    assert_eq!(cash_rows[0]["own"], serde_json::json!({}));
     assert_eq!(
-        wire_ma(&cash_rows[1]["inclusive"]),
+        cash_rows
+            .iter()
+            .map(|row| format!(
+                "{} {} {} {}",
+                row["kind"].as_str().unwrap(),
+                row["level"],
+                row["label"].as_str().unwrap(),
+                row["account"].as_str().unwrap()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            "heading 0 Bank assets:bank",
+            "account 1 Checking assets:bank:checking",
+            "account 1 Savings assets:bank:savings",
+            "account 1 Wise assets:bank:wise",
+            "account 0 Taxable assets:broker:taxable",
+        ]
+    );
+    assert_eq!(
+        wire_ma(&cash_rows[1]["amount"]),
         Canon::from([("$".to_string(), canon(2_829_281, 2))]),
         "assets:bank:checking, `hledger bal` $28,292.81"
+    );
+    // An account's own `name:` tag is its label (sample.journal:
+    // `assets:property:home ; …, name: Family home`).
+    assert_eq!(
+        body["sections"][0]["groups"][2]["rows"][0]["label"],
+        "Family home"
     );
 }
 

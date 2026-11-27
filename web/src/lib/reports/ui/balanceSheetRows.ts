@@ -18,9 +18,8 @@
 // that promise is kept — and it is kept by an explicit early return, not by an
 // accident of the walk.
 
-import {maAdd, maIsZero, type MixedAmount} from "#lib/domain/money.js";
-import type {BalanceSheetColumns, BalanceSheetReport, BsColumnSection, BsSection, BsSectionKind, BsTerm} from "#lib/reports/types.js";
-import {compressRows} from "./displayRows";
+import {maAdd, type MixedAmount} from "#lib/domain/money.js";
+import type {BalanceSheetColumns, BalanceSheetReport, BsColumnSection, BsRow, BsSection, BsSectionKind, BsTerm} from "#lib/reports/types.js";
 
 // `amountCell` lives in its own module now that the income statement renders
 // its figures the same way; re-exported so the balance sheet's view and tests
@@ -29,14 +28,15 @@ import {compressRows} from "./displayRows";
 export {amountCell, type AmountCell} from "./amountCell";
 
 /**
- * A group heading (always shown), one of its accounts (only when expanded), a
+ * A group line (always shown); inside an expanded group, an outline HEADING
+ * (plan 50: a label over two or more of the group's accounts, no figure) or an
+ * account (including a heading account's own `(other)` postings); a
  * current/non-current SUBHEADING, or that band's SUBTOTAL.
  *
  * The last two are ADAPTIVE: they exist only for a section the engine sent
- * `subsections` for. A journal that tags nothing produces exactly the first two
- * kinds, in exactly the order it produced them before this axis existed.
+ * `subsections` for. A journal that tags nothing produces none of them.
  */
-export type BsRowKind = "group" | "account" | "subsection" | "subtotal";
+export type BsRowKind = "group" | "heading" | "account" | "subsection" | "subtotal";
 
 /**
  * A row's figure: one `MixedAmount` on a single-date sheet, one per column on
@@ -53,21 +53,24 @@ export interface BsDisplayRow<A = MixedAmount> {
      */
     key: string;
     /**
-     * The group's name, the compressed account label relative to its displayed
-     * parent, or the engine's own `heading` / `label` for the two band rows —
-     * never a string composed here.
+     * The group's name, the engine's outline label (own `name:` tag, else a
+     * humanized last segment), or the engine's own `heading` / `label` for the
+     * two band rows — never a string composed here.
      */
     label: string;
-    /** 0 for a group heading and for both band rows; 1 + the compression indent for accounts. */
+    /** 0 for a group line and for both band rows; 1 + the outline level for rows inside a group. */
     indent: number;
-    /** The account this row stands for — `data-account` and the journal drill-down. Null for everything else. */
+    /**
+     * The full account path an outline row stands for: the label's hover text,
+     * `data-account` and the journal drill-down. Null for everything else.
+     */
     account: string | null;
     /**
-     * The figure on the right: a group subtotal, an account's subaccount-inclusive
-     * balance, or a band's engine-computed subtotal. EMPTY on a subheading row,
-     * which carries no figure of its own — the band's total belongs to the
-     * subtotal row that closes it, and printing it twice would invite the reader
-     * to look for a difference between them.
+     * The figure on the right: a group subtotal, an outline row's sum, or a
+     * band's engine-computed subtotal. EMPTY on a subheading row and on an
+     * outline heading, neither of which carries a figure of its own: the band's
+     * total belongs to the subtotal row that closes it, and a heading's to the
+     * group total (plan 50 D4).
      */
     amount: A;
     /**
@@ -163,7 +166,7 @@ export function asColumns(report: BalanceSheetReport): BalanceSheetColumns {
                 name: group.name,
                 source: group.source,
                 term: group.term,
-                rows: group.rows.map((row) => ({account: row.account, depth: row.depth, own: one(row.own), inclusive: one(row.inclusive)})),
+                rows: group.rows.map((row) => ({...row, amount: one(row.amount)})),
                 total: one(group.total),
             })),
             subsections: section.subsections.map((band) => ({term: band.term, heading: band.heading, label: band.label, total: one(band.total)})),
@@ -296,9 +299,9 @@ export function bsSectionBlocks<S extends SheetSection>(section: S): BsSectionBl
  * opens, every group heading, each followed by its accounts when it is expanded,
  * and the band's subtotal where one closes.
  *
- * Account rows go through `compressSectionRows`, so a single-child chain
- * (`assets` → `assets:bank`) reads as one row here exactly as it does in every
- * other report table.
+ * Inside an expanded group the rows are the engine's outline (plan 50),
+ * indented by level: headings carry no figure, and a single-child chain is
+ * already one row.
  *
  * The subtotal closes a band AFTER its last group's accounts, not before them:
  * an expanded disclosure is part of the group it belongs to, and a subtotal
@@ -316,25 +319,29 @@ export function columnSectionRows(section: BsColumnSection, isExpanded: (key: st
     return displayRows(section, isExpanded, COLUMNS);
 }
 
-/** How the walk reads the one thing about a figure it needs: is it nothing, and what is nothing. */
+/** The one thing the walk needs to know about a figure: what "no figure" is. */
 interface Figures<A> {
     empty: () => A;
-    isZero: (figure: A) => boolean;
 }
 
-const SINGLE: Figures<MixedAmount> = {empty: () => new Map(), isZero: maIsZero};
-/**
- * A multi-column figure is zero only when it is zero in EVERY column — so a
- * parent with postings of its own in any one column is never folded into its
- * child, which would silently drop them from that column.
- */
-const COLUMNS: Figures<MixedAmount[]> = {empty: () => [], isZero: (figures) => figures.every(maIsZero)};
+const SINGLE: Figures<MixedAmount> = {empty: () => new Map()};
+const COLUMNS: Figures<MixedAmount[]> = {empty: () => []};
 
 /** The section shape `displayRows` walks, over figures of type `A`. */
 interface FigureSection<A> {
     kind: BsSectionKind;
-    groups: readonly {name: string; term: BsTerm | null; rows: readonly {account: string; own: A; inclusive: A}[]; total: A}[];
+    groups: readonly {name: string; term: BsTerm | null; rows: readonly BsRow<A>[]; total: A}[];
     subsections: readonly {term: BsTerm; heading: string; label: string; total: A}[];
+}
+
+/**
+ * An outline row's key under its group. A heading account's `(other)` row
+ * names the same account as the heading above it, so it takes a suffix: keys
+ * are `{#each}` keys, and a duplicate blanks the statement (see
+ * `bsSubsectionKey`).
+ */
+export function bsOutlineKey(groupKey: string, row: Pick<BsRow<unknown>, "kind" | "account">): string {
+    return row.kind === "other" ? `${groupKey}/${row.account}#other` : `${groupKey}/${row.account}`;
 }
 
 function displayRows<A>(section: FigureSection<A>, isExpanded: (key: string) => boolean, figures: Figures<A>): BsDisplayRow<A>[] {
@@ -367,22 +374,16 @@ function displayRows<A>(section: FigureSection<A>, isExpanded: (key: string) => 
         const expanded = expandable && isExpanded(key);
         out.push({kind: "group", key, label: group.name, indent: 0, account: null, amount: group.total, term: group.term, expanded, expandable});
         if (expanded) {
-            // `compressSectionRows`' rule (a parent with nothing of its own is
-            // boring), asked of whichever figure type this sheet carries.
-            for (const display of compressRows(
-                group.rows,
-                (row) => row.account,
-                (parent) => figures.isZero(parent.own)
-            )) {
+            for (const row of group.rows) {
+                const heading = row.kind === "heading";
                 out.push({
-                    kind: "account",
-                    key: `${key}/${display.row.account}`,
-                    label: display.label,
-                    indent: display.indent + 1,
-                    account: display.row.account,
-                    // `inclusive`, not `own`: a displayed row stands for its whole
-                    // subtree, which is what the depth clamp left visible.
-                    amount: display.row.inclusive,
+                    kind: heading ? "heading" : "account",
+                    key: bsOutlineKey(key, row),
+                    label: row.label,
+                    indent: row.level + 1,
+                    account: row.account,
+                    // D4: a heading prints no figure; the group total covers it.
+                    amount: heading ? figures.empty() : row.amount,
                     term: null,
                     expanded: false,
                     expandable: false,
@@ -420,10 +421,10 @@ function displayRows<A>(section: FigureSection<A>, isExpanded: (key: string) => 
  * template iterates, so a row can never be reachable by `j` and absent from the
  * screen.
  *
- * Band rows are deliberately NOT in it, for the reason the income statement
- * keeps its ladder lines out of `isCursorRows`: neither a subheading nor a
- * subtotal can be expanded or drilled into, so landing on one is a stop where
- * Enter does nothing.
+ * Band rows and outline headings are deliberately NOT in it, for the reason
+ * the income statement keeps its ladder lines out of `isCursorRows`: none of
+ * them carries a figure to expand or drill into, so landing on one is a stop
+ * where Enter does nothing useful.
  */
 export function bsCursorRows<A>(rows: readonly BsDisplayRow<A>[]): BsDisplayRow<A>[] {
     return rows.filter((row) => row.kind === "group" || row.kind === "account");

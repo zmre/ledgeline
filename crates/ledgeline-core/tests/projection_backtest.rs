@@ -701,14 +701,18 @@ fn a_real_price_inside_the_window_values_only_the_actual_block() {
     let sides = Sides::new(&journal, 3);
     let compared = sides.statements(&sides.project(&scenario(EXPLICIT, &sides.facts)));
     let broker = |column: usize| {
-        compared.balance_sheet[column]
+        let found = compared.balance_sheet[column]
             .sections
             .iter()
             .flat_map(|section| &section.groups)
-            .flat_map(|group| &group.rows)
-            .find(|row| row.account == "assets:broker")
-            .map(|row| units(&row.inclusive, "$"))
-            .expect("broker row")
+            .flat_map(|group| &group.members)
+            .filter(|(account, _)| {
+                *account == "assets:broker" || account.starts_with("assets:broker:")
+            })
+            .map(|(_, own)| units(own, "$"))
+            .collect::<Vec<_>>();
+        assert_eq!(found.len(), 1, "one broker account: {found:?}");
+        found[0].clone()
     };
     // Actual: Jul at $110, Aug and Sep at $130. As projected: $110 throughout.
     assert_eq!(broker(0), "1100.00");

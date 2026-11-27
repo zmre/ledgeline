@@ -176,6 +176,13 @@ function labelCell(ws: Worksheet, rowIx: number, label: string, indent: number, 
 
 // --- Grouped balance sheet (plans/12) ---------------------------------------
 
+// MERGE SEAM (plan 50 WP4): the P&L and Cash Flow exports add the same note;
+// keep one helper.
+/** Plan 50 D6: the full account path behind an outline label, as an Excel cell note. */
+function accountNote(ws: Worksheet, rowIx: number, account: string | null): void {
+    if (account !== null) ws.getCell(rowIx, 1).note = account;
+}
+
 /**
  * Section fills, matching the on-screen accents (daisyUI success / warning /
  * info) at a darkness that reads against white with the same white bold text
@@ -235,7 +242,8 @@ function ruleAbove(ws: Worksheet, rowIx: number, style: "thin" | "medium", width
 
 /**
  * The grouped balance sheet: a coloured header per box, a bold row per group
- * with its subtotal, the group's indented accounts beneath it, a ruled section
+ * with its subtotal, the group's outline beneath it (plan 50: headings with no
+ * figure, the full account path as a cell note on every label), a ruled section
  * total, then the same tie-out the screen shows — the three section totals,
  * `Liabilities + equity` against `Total assets`, the verdict, and net worth as
  * its own figure below.
@@ -291,9 +299,15 @@ function addBalanceSheet(ws: Worksheet, sheet: BalanceSheetColumns): void {
                     labelCell(ws, rowIx, row.label, groupIndent, true);
                     put(rowIx, row.amount, true);
                     break;
-                case "account":
-                    // `row.indent` is the compression indent plus one, below its group.
+                case "heading":
+                    // Plan 50 D4: an outline heading carries no figure.
                     labelCell(ws, rowIx, row.label, row.indent + groupIndent);
+                    accountNote(ws, rowIx, row.account);
+                    break;
+                case "account":
+                    // `row.indent` is the outline level plus one, below its group.
+                    labelCell(ws, rowIx, row.label, row.indent + groupIndent);
+                    accountNote(ws, rowIx, row.account);
                     put(rowIx, row.amount, false);
                     break;
                 case "subtotal":

@@ -20,6 +20,7 @@
 mod common;
 
 use ledgeline_core::model::Commodity;
+use ledgeline_core::reports::outline::{OutlineKind, account_names};
 use ledgeline_core::reports::{
     AccountType, BalanceSheetReport, BsGroup, BsOpts, BsSectionKind, BsTerm, CASH_GROUP,
     GroupSource, INVESTMENTS_GROUP, MixedAmount, RETAINED_EARNINGS_GROUP,
@@ -81,6 +82,41 @@ fn group<'a>(report: &'a BalanceSheetReport, kind: BsSectionKind, name: &str) ->
         .iter()
         .find(|group| group.name == name)
         .unwrap_or_else(|| panic!("group {name} in {kind:?}"))
+}
+
+/// A group's outline (plan 50) as `"<indent><marker> <label>"`: `#` heading,
+/// `-` account, `~` a heading's own postings.
+fn outline_of(group: &BsGroup) -> Vec<String> {
+    group
+        .rows(&BTreeMap::new())
+        .expect("outline")
+        .iter()
+        .map(|row| {
+            let marker = match row.kind {
+                OutlineKind::Heading => "#",
+                OutlineKind::Account => "-",
+                OutlineKind::Other => "~",
+            };
+            format!("{}{marker} {}", "  ".repeat(row.level), row.label)
+        })
+        .collect()
+}
+
+/// The sum of `group`'s members at or below `account` (`own_only`: exactly
+/// `account`) — what an outline row standing for it must show.
+fn members_under(group: &BsGroup, account: &str, own_only: bool) -> MixedAmount {
+    group
+        .members
+        .iter()
+        .filter(|(name, _)| {
+            *name == account
+                || (!own_only
+                    && name
+                        .strip_prefix(account)
+                        .is_some_and(|rest| rest.starts_with(':')))
+        })
+        .try_fold(MixedAmount::new(), |acc, (_, ma)| acc.ma_add(ma))
+        .expect("no overflow")
 }
 
 /// `(name, source)` for every group of a section, in presentation order.
@@ -358,14 +394,10 @@ fn sample_unpriced_commodities_are_kept_and_named() {
         Some(Dec::new(-2, 0))
     );
     let gld = investments
-        .rows
-        .iter()
-        .find(|row| row.account == "assets:broker:taxable:gld")
-        .expect("the GLD account is a row of its own at depth 4");
-    assert_eq!(
-        gld.own,
-        MixedAmount::single(commodity("GLD"), Dec::new(5, 0))
-    );
+        .members
+        .get("assets:broker:taxable:gld")
+        .expect("the GLD account is a member of its own at depth 4");
+    assert_eq!(*gld, MixedAmount::single(commodity("GLD"), Dec::new(5, 0)));
 
     // Priced commodities really were valued, so this is not "nothing happened".
     assert_eq!(
@@ -704,63 +736,58 @@ fn groups_resolve_by_tag_then_type_then_commodity_then_segment() {
     // `activo:inmueble:casa` is declared with no `bsgroup:` of its own — the tag
     // on `activo:inmueble` inherits down, exactly as `type:` does.
     //
-    // `activo` is NOT a row here: it is shared with every other asset group, so
-    // its rolled total inside this one would be a partial subtotal restating the
-    // group header. `activo:inmueble` owns its whole subtree, so it survives.
+    // One member, so one row under its own last segment: no `Activo` or
+    // `Inmueble` heading restating the group line (plan 50 D1).
+    let inmuebles = group(&report, BsSectionKind::Assets, "Bienes inmuebles");
     assert_eq!(
-        group(&report, BsSectionKind::Assets, "Bienes inmuebles")
-            .rows
-            .iter()
-            .map(|row| row.account.as_str())
-            .collect::<Vec<_>>(),
-        ["activo:inmueble", "activo:inmueble:casa"]
+        inmuebles.members.keys().collect::<Vec<_>>(),
+        ["activo:inmueble:casa"]
     );
+    assert_eq!(outline_of(inmuebles), ["- Casa"]);
 }
 
-/// No group may open with a row that merely restates its own heading: an
-/// ancestor shared with another group is dropped rather than shown as a partial
-/// subtotal of a subtree it does not own.
+/// Every outline row shows only its OWN group's money: a row standing for an
+/// ancestor shared with another group (`assets:broker`) carries just this
+/// group's members beneath it, and the node spanning the whole group is never
+/// printed (the group line already says it).
 #[test]
-fn groups_omit_ancestors_they_do_not_own() {
+fn outline_rows_show_only_their_groups_money() {
     let journal = common::fixture_journal();
     for depth in DEPTHS {
         let report = report(&journal, "2026-07-08", depth, Valuation::Market);
         for section in &report.sections {
             for group in &section.groups {
-                assert!(
-                    !group
-                        .rows
-                        .iter()
-                        .any(|row| row.account == "assets" || row.account == "assets:broker"),
-                    "{} / {} at depth {depth:?} kept a shared ancestor: {:?}",
-                    section.title,
-                    group.name,
-                    group
-                        .rows
-                        .iter()
-                        .map(|row| row.account.as_str())
-                        .collect::<Vec<_>>()
-                );
+                for row in group.rows(&BTreeMap::new()).expect("outline") {
+                    // Depth 1 clips every member to `assets` itself.
+                    if depth.is_none_or(|clip| clip > 1) {
+                        assert_ne!(row.account, "assets", "{} kept the root", group.name);
+                    }
+                    assert_eq!(
+                        row.amount,
+                        members_under(group, &row.account, row.kind == OutlineKind::Other),
+                        "{} / {} row {} at depth {depth:?}",
+                        section.title,
+                        group.name,
+                        row.account
+                    );
+                }
             }
         }
     }
 
-    // What survives at the default depth: the branches each group really owns.
-    // `assets:broker:taxable:cash` is four segments deep, but it is one of the
-    // cash group's ROOTS — the clamp may not hide a whole branch of the total.
-    let report = report(&journal, "2026-07-08", Some(3), Valuation::Market);
+    // Unclipped, the cash group reads like a bookkeeper's list: the three bank
+    // accounts under one Bank heading, the brokerage's cash as a lone leaf
+    // (its chain has no sibling in this group, so it collapses).
+    let report = report(&journal, "2026-07-08", None, Valuation::Market);
     assert_eq!(
-        group(&report, BsSectionKind::Assets, CASH_GROUP)
-            .rows
-            .iter()
-            .map(|row| row.account.as_str())
-            .collect::<Vec<_>>(),
+        outline_of(group(&report, BsSectionKind::Assets, CASH_GROUP)),
         [
-            "assets:bank",
-            "assets:bank:checking",
-            "assets:bank:savings",
-            "assets:bank:wise",
-            "assets:broker:taxable:cash",
+            "# Bank",
+            "  - Checking",
+            "  - Savings",
+            // `assets:bank:wise:eur`: a lone chain collapses into its leaf.
+            "  - Eur",
+            "- Cash"
         ]
     );
     assert_eq!(
@@ -770,62 +797,36 @@ fn groups_omit_ancestors_they_do_not_own() {
         Some(Dec::new(490_599_900, 4)),
         "the group total is unchanged by which rows are shown"
     );
-
-    // Every security sits at depth 4 under a parent shared with the brokerage's
-    // cash, so absolute clamping alone would expand this group to nothing at the
-    // default depth while it reports a five-figure total.
+    // The securities share `assets:broker:taxable`, which spans the whole
+    // group and so is absorbed: four leaves.
     assert_eq!(
-        group(&report, BsSectionKind::Assets, INVESTMENTS_GROUP)
-            .rows
-            .iter()
-            .map(|row| row.account.as_str())
-            .collect::<Vec<_>>(),
-        [
-            "assets:broker:taxable:aapl",
-            "assets:broker:taxable:gld",
-            "assets:broker:taxable:tsla",
-            "assets:broker:taxable:vti",
-        ]
+        outline_of(group(&report, BsSectionKind::Assets, INVESTMENTS_GROUP)),
+        ["- Aapl", "- Gld", "- Tsla", "- Vti"]
     );
-
-    // The converse case: a group that owns its whole branch KEEPS the ancestor,
-    // because the rolled row is then the group's own total rather than a partial
-    // subtotal of somebody else's subtree. Totals are hledger's:
-    // `bal -V -e 2026-07-09 assets:property assets:vehicles` → `$468,000.00`
-    // on `assets:property:home` and `$20,500.00` on `assets:vehicles:car`.
-    for (name, branch, leaf, total) in [
-        (
-            "Property",
-            "assets:property",
-            "assets:property:home",
-            usd(46_800_000, 2),
-        ),
+    // Totals are hledger's: `bal -V -e 2026-07-09 assets:property
+    // assets:vehicles` → `$468,000.00` on `assets:property:home` and
+    // `$20,500.00` on `assets:vehicles:car` (its cost and depreciation, whose
+    // shared `car` spans the group and is absorbed).
+    for (name, rows, total) in [
+        ("Property", vec!["- Home"], usd(46_800_000, 2)),
         (
             "Vehicles",
-            "assets:vehicles",
-            "assets:vehicles:car",
+            vec!["- Cost", "- Depreciation"],
             usd(2_050_000, 2),
         ),
     ] {
         let owned = group(&report, BsSectionKind::Assets, name);
-        assert_eq!(
-            owned
-                .rows
-                .iter()
-                .map(|row| row.account.as_str())
-                .collect::<Vec<_>>(),
-            [branch, leaf]
-        );
+        assert_eq!(outline_of(owned), rows);
         assert_eq!(owned.total, total);
     }
 }
 
-/// The rows a group opens with — those with no ancestor among its own rows —
-/// must sum EXACTLY to its total, on every basis and at every depth. This is
-/// what makes the expanded view trustworthy: money can never hide between the
-/// heading and the rows beneath it.
+/// A group's non-heading rows (accounts and `(other)` rows) must sum EXACTLY
+/// to its total, on every basis and at every depth. This is what makes the
+/// expanded view trustworthy: money can never hide between the heading and
+/// the rows beneath it, and headings carry no figure of their own (D4).
 #[test]
-fn a_groups_top_rows_always_sum_to_its_total() {
+fn a_groups_leaf_rows_always_sum_to_its_total() {
     let journal = common::fixture_journal();
     for value in BASES {
         for depth in DEPTHS.iter().filter(|depth| **depth != Some(0)) {
@@ -835,23 +836,17 @@ fn a_groups_top_rows_always_sum_to_its_total() {
                     if group.source == GroupSource::Computed {
                         continue;
                     }
-                    let accounts: Vec<&str> =
-                        group.rows.iter().map(|row| row.account.as_str()).collect();
-                    let top = group.rows.iter().filter(|row| {
-                        !accounts.iter().any(|other| {
-                            row.account.starts_with(other)
-                                && row.account.len() > other.len()
-                                && row.account.as_bytes()[other.len()] == b':'
-                        })
-                    });
+                    let rows = group.rows(&BTreeMap::new()).expect("outline");
                     assert_eq!(
-                        top.fold(MixedAmount::new(), |acc, row| acc
-                            .ma_add(&row.inclusive)
-                            .unwrap()),
+                        rows.iter()
+                            .filter(|row| row.kind != OutlineKind::Heading)
+                            .try_fold(MixedAmount::new(), |acc, row| acc.ma_add(&row.amount))
+                            .expect("no overflow"),
                         group.total,
-                        "{} / {} at {value:?} depth {depth:?}: {accounts:?}",
+                        "{} / {} at {value:?} depth {depth:?}: {:?}",
                         section.title,
-                        group.name
+                        group.name,
+                        outline_of(group)
                     );
                 }
             }
@@ -930,11 +925,7 @@ fn group_membership_is_stable_across_valuation_bases() {
                 .map(|group| {
                     (
                         group.name.clone(),
-                        group
-                            .rows
-                            .iter()
-                            .map(|row| row.account.clone())
-                            .collect::<Vec<_>>(),
+                        group.members.keys().cloned().collect::<Vec<_>>(),
                     )
                 })
                 .collect::<Vec<_>>()
@@ -983,86 +974,52 @@ fn every_total_is_depth_independent() {
     }
 }
 
-/// The rows really are clamped, so the test above is not vacuous: `depth == 0`
-/// shows none at all, the count grows monotonically with depth, and every row
-/// beyond the clamp is one of its group's roots (which outrank it).
+/// The rows really are clipped, so the test above is not vacuous: `depth == 0`
+/// shows none at all, no member is deeper than the clip, and the member count
+/// grows monotonically with depth.
 #[test]
-fn rows_are_clamped_to_depth_except_for_group_roots() {
+fn members_are_clipped_to_depth() {
     let journal = common::fixture_journal();
     let mut previous = 0;
     for depth in DEPTHS {
         let report = report(&journal, "2026-07-08", depth, Valuation::Market);
-        let mut rows = 0;
+        let mut members = 0;
         for section in &report.sections {
             for group in &section.groups {
                 if group.source == GroupSource::Computed {
-                    assert!(group.rows.is_empty(), "synthetic lines have no accounts");
+                    assert!(group.members.is_empty(), "synthetic lines have no accounts");
                     continue;
                 }
-                rows += group.rows.len();
-                let accounts: Vec<&str> =
-                    group.rows.iter().map(|row| row.account.as_str()).collect();
-                for row in &group.rows {
-                    assert_eq!(row.depth, row.account.split(':').count());
-                    let is_root = !accounts.iter().any(|other| {
-                        row.account.starts_with(other)
-                            && row.account.len() > other.len()
-                            && row.account.as_bytes()[other.len()] == b':'
-                    });
+                members += group.members.len();
+                for account in group.members.keys() {
                     assert!(
-                        depth.is_none_or(|clamp| row.depth <= clamp) || is_root,
-                        "{} is past depth {depth:?} and is not a group root",
-                        row.account
+                        depth.is_none_or(|clip| account.split(':').count() <= clip),
+                        "{account} is past depth {depth:?}"
                     );
                 }
             }
         }
         assert_eq!(
-            rows == 0,
+            members == 0,
             depth == Some(0),
-            "depth {depth:?} row count {rows}"
+            "depth {depth:?} member count {members}"
         );
         assert!(
-            rows >= previous,
-            "depth {depth:?} lost rows: {rows} < {previous}"
+            members >= previous,
+            "depth {depth:?} lost members: {members} < {previous}"
         );
-        previous = rows;
+        previous = members;
     }
 
-    // Depth 1 is the group's own top level, not the journal's: each asset group
-    // still opens with the branch it owns, even though those sit deeper than one
-    // segment. The alternative — clamping absolutely — expands the securities
-    // group to nothing while it reports a five-figure total.
-    //
-    // Property and Vehicles show the same rule from the other end. Each owns its
-    // whole subtree, so its root is the two-segment branch (`assets:property`,
-    // `assets:vehicles`) and not the three-segment account beneath it: past the
-    // clamp, a group emits its roots and stops. `assets` itself is shared with
-    // every other asset group and so is dropped from all four.
+    // Depth 1 folds each asset group into one `Assets` row carrying exactly
+    // that group's total: the clip never pulls another group's money in.
     let shallow = report(&journal, "2026-07-08", Some(1), Valuation::Market);
     let assets = &shallow.sections[0];
-    assert_eq!(
-        assets
-            .groups
-            .iter()
-            .map(|group| group
-                .rows
-                .iter()
-                .map(|row| row.account.as_str())
-                .collect::<Vec<_>>())
-            .collect::<Vec<_>>(),
-        [
-            vec!["assets:bank", "assets:broker:taxable:cash"],
-            vec![
-                "assets:broker:taxable:aapl",
-                "assets:broker:taxable:gld",
-                "assets:broker:taxable:tsla",
-                "assets:broker:taxable:vti",
-            ],
-            vec!["assets:property"],
-            vec!["assets:vehicles"],
-        ]
-    );
+    for group in &assets.groups {
+        assert_eq!(outline_of(group), ["- Assets"], "{}", group.name);
+        let rows = group.rows(&BTreeMap::new()).expect("outline");
+        assert_eq!(rows[0].amount, group.total, "{}", group.name);
+    }
     assert_eq!(
         assets
             .groups
@@ -1072,6 +1029,23 @@ fn rows_are_clamped_to_depth_except_for_group_roots() {
         assets.total
     );
     assert_eq!(shallow.check, MixedAmount::new());
+}
+
+/// An account's own `name:` tag is its row label (plan 50 D2): sample.journal
+/// declares `assets:property:home ; …, name: Family home`.
+#[test]
+fn an_own_name_tag_labels_the_row() {
+    let journal = common::fixture_journal();
+    let report = report(&journal, "2026-07-08", None, Valuation::Market);
+    let rows = group(&report, BsSectionKind::Assets, "Property")
+        .rows(&account_names(&journal))
+        .expect("outline");
+    assert_eq!(
+        rows.iter()
+            .map(|row| (row.label.as_str(), row.account.as_str()))
+            .collect::<Vec<_>>(),
+        [("Family home", "assets:property:home")]
+    );
 }
 
 // ---------------------------------------------------------------------------

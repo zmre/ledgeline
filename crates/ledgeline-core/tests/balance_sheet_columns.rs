@@ -17,6 +17,7 @@
 mod common;
 
 use ledgeline_core::model::Commodity;
+use ledgeline_core::reports::outline::OutlineKind;
 use ledgeline_core::reports::{
     AccountType, BalanceSheetReport, BsOpts, BsSectionKind, Interval, MixedAmount,
     RETAINED_EARNINGS_GROUP, Valuation, account_decls, account_groups, balance_sheet_columns,
@@ -186,7 +187,7 @@ fn the_pivot_is_each_column_read_side_by_side() {
         let journal = journal_fixture(fixture);
         let ends = month_ends(from, to);
         let reports = columns(&journal, None, Valuation::Market, &ends);
-        let pivot = pivot_balance_sheets(&reports);
+        let pivot = pivot_balance_sheets(&reports, &BTreeMap::new()).expect("pivot");
         assert_eq!(pivot.as_of, ends, "{fixture}: one column per end");
         assert_eq!(pivot.sections.len(), 3);
         for (column, report) in reports.iter().enumerate() {
@@ -222,30 +223,38 @@ fn the_pivot_is_each_column_read_side_by_side() {
                         .find(|g| g.name == group.name && g.term == group.term)
                     else {
                         assert_eq!(group.total[column], MixedAmount::new());
-                        assert!(
-                            group
-                                .rows
-                                .iter()
-                                .all(|row| row.inclusive[column].is_empty())
-                        );
+                        assert!(group.rows.iter().all(|row| row.amount[column].is_empty()));
                         continue;
                     };
                     assert_eq!(group.total[column], original.total);
+                    // A row shows exactly its members' figures from THIS
+                    // column: an `other` row its own account, any other row
+                    // its subtree within the group.
                     for row in &group.rows {
-                        match original.rows.iter().find(|r| r.account == row.account) {
-                            Some(r) => {
-                                assert_eq!(row.own[column], r.own);
-                                assert_eq!(row.inclusive[column], r.inclusive);
+                        let under = |account: &str| match row.kind {
+                            OutlineKind::Other => account == row.account,
+                            OutlineKind::Heading | OutlineKind::Account => {
+                                account == row.account
+                                    || account
+                                        .strip_prefix(row.account.as_str())
+                                        .is_some_and(|rest| rest.starts_with(':'))
                             }
-                            None => assert!(row.inclusive[column].is_empty()),
-                        }
+                        };
+                        let want = original
+                            .members
+                            .iter()
+                            .filter(|(account, _)| under(account))
+                            .try_fold(MixedAmount::new(), |acc, (_, ma)| acc.ma_add(ma))
+                            .expect("no overflow");
+                        assert_eq!(row.amount[column], want, "{fixture} {}", row.account);
                     }
                     assert!(
-                        original
-                            .rows
-                            .iter()
-                            .all(|r| group.rows.iter().any(|row| row.account == r.account)),
-                        "every row of the column is in the union"
+                        original.members.keys().all(|account| {
+                            group.rows.iter().any(|row| {
+                                row.kind != OutlineKind::Heading && row.account == *account
+                            })
+                        }),
+                        "every member of the column is a row of the union"
                     );
                 }
                 for band in &section.subsections {
@@ -272,7 +281,13 @@ fn the_pivot_is_each_column_read_side_by_side() {
             "{fixture}: some group should appear partway through the window"
         );
     }
-    assert_eq!(pivot_balance_sheets(&[]).sections.len(), 0);
+    assert_eq!(
+        pivot_balance_sheets(&[], &BTreeMap::new())
+            .expect("empty pivot")
+            .sections
+            .len(),
+        0
+    );
 }
 
 /// The fixtures above really do reach the branches this suite claims to cover;

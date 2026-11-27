@@ -481,20 +481,26 @@ test("reports: balance-sheet groups start collapsed and open to their accounts",
     await expect(page.locator('[data-account="assets:bank"]')).toHaveCount(0);
     await expect(page.locator('[data-account="assets:bank:checking"]')).toHaveCount(0);
 
-    // Expanded: the drill-down appears, and its parts still add to the subtotal
-    // the collapsed row showed ($28,292.81 + $13,500.00 + $657.43 = $42,450.24,
-    // plus assets:broker:taxable:cash $6,609.75 = the group's $49,059.99).
+    // Expanded: the outline appears (plan 50), and its parts still add to the
+    // subtotal the collapsed row showed ($28,292.81 + $13,500.00 + $657.43,
+    // plus assets:broker:taxable:cash $6,609.75 = the group's $49,059.99). The
+    // three bank accounts sit under a `Bank` heading that carries no figure of
+    // its own (D4), so their $42,450.24 is printed nowhere.
     await cash.click();
     await expect(cash).toHaveAttribute("aria-expanded", "true");
-    await expect(assets).toContainText("$42,450.24");
+    const bank = page.locator('[data-account="assets:bank"]');
+    await expect(bank).toHaveText("Bank");
+    await expect(bank.locator("th span")).toHaveAttribute("title", "assets:bank");
+    await expect(assets).not.toContainText("$42,450.24");
+    await expect(page.locator('[data-account="assets:bank:checking"]')).toContainText("Checking");
     await expect(page.locator('[data-account="assets:bank:checking"]')).toContainText("$28,292.81");
+    await expect(page.locator('[data-account="assets:broker:taxable:cash"]')).toContainText("$6,609.75");
 
     // Full depth, so the Wise EUR account is reachable. It is FOUR segments
-    // down — under the old depth-3 clamp the row said `assets:bank:wise` and
-    // stood for an account there was no longer any control to ask for.
-    // `assets:bank:wise` holds nothing itself, so `compressSectionRows` folds
-    // the chain into a single `wise:eur` row carrying the child's account name.
+    // down, and `assets:bank:wise` has no sibling in the group, so the lone
+    // chain is one row under its leaf's label, the full path on hover.
     await expect(page.locator('[data-account="assets:bank:wise:eur"]')).toContainText("$657.43");
+    await expect(page.locator('[data-account="assets:bank:wise:eur"] th span')).toHaveAttribute("title", "assets:bank:wise:eur");
     await expect(page.locator('[data-account="assets:bank:wise"]')).toHaveCount(0);
 });
 

@@ -205,6 +205,7 @@ import type {
     BsColumnSection,
     BsColumnSubsection,
     BsGroup,
+    BsRow,
     BsSection,
     BsSectionKind,
     BsSubsection,
@@ -243,6 +244,8 @@ import type {
     IsSectionKind,
     IsSubtotal,
     IsSubtotalKind,
+    OutlineFields,
+    OutlineKind,
     PeriodReport,
     PeriodRow,
     PeriodRowKind,
@@ -295,12 +298,21 @@ interface RawSectionedReport {
     grandTotal?: RawMixed;
 }
 
+/** A plan 50 outline row of a balance sheet group; `A` is one figure or one per column. */
+interface RawBsRow<A> {
+    kind?: string;
+    label?: string;
+    account?: string;
+    level?: number;
+    amount?: A;
+}
+
 interface RawBsGroup {
     name?: string;
     source?: string;
     // `null` = unclassified (the untagged journal); ABSENT is a broken contract.
     term?: string | null;
-    rows?: RawReportRow[];
+    rows?: RawBsRow<RawMixed>[];
     total?: RawMixed;
 }
 
@@ -320,18 +332,11 @@ interface RawBsSection {
 }
 
 /** The multi-column balance sheet: `RawBalanceSheetReport`'s tree with every figure an array. */
-interface RawBsColumnRow {
-    account?: string;
-    depth?: number;
-    own?: RawMixed[];
-    inclusive?: RawMixed[];
-}
-
 interface RawBsColumnGroup {
     name?: string;
     source?: string;
     term?: string | null;
-    rows?: RawBsColumnRow[];
+    rows?: RawBsRow<RawMixed[]>[];
     total?: RawMixed[];
 }
 
@@ -1725,6 +1730,24 @@ const GROUP_SOURCES: readonly GroupSource[] = ["tag", "type", "commodity", "segm
 const BS_VALUATIONS: readonly BsValuation[] = ["market", "cost", "none"];
 const BS_TERMS: readonly BsTerm[] = ["current", "noncurrent"];
 
+// MERGE SEAM (plan 50 WP4): the P&L and Cash Flow branches decode the same
+// outline fields; keep one copy of this and `decodeOutlineFields`.
+const OUTLINE_KINDS: readonly OutlineKind[] = ["heading", "account", "other"];
+
+/** The plan 50 outline fields every laid-out statement row carries. */
+function decodeOutlineFields(raw: {kind?: string; label?: string; level?: number}, context: string): OutlineFields {
+    if (typeof raw.label !== "string" || typeof raw.level !== "number" || !Number.isInteger(raw.level) || raw.level < 0) {
+        throw new ApiShapeError(`${context}: missing label/level`);
+    }
+    return {kind: decodeEnum(OUTLINE_KINDS, raw.kind, `${context} kind`), label: raw.label, level: raw.level};
+}
+
+/** One balance sheet outline row, its figure decoded by `amount`. */
+function decodeBsRow<R, A>(raw: RawBsRow<R> | undefined, context: string, amount: (figure: R | undefined) => A): BsRow<A> {
+    if (raw === undefined || typeof raw.account !== "string") throw new ApiShapeError(`${context}: missing account`);
+    return Object.freeze({...decodeOutlineFields(raw, context), account: raw.account, amount: amount(raw.amount)});
+}
+
 /**
  * A closed enum off the wire.
  *
@@ -1792,7 +1815,7 @@ function decodeBsGroup(raw: RawBsGroup | undefined, context: string): BsGroup {
         name: raw.name,
         source: decodeEnum(GROUP_SOURCES, raw.source, `${context} source`),
         term: decodeNullableEnum(BS_TERMS, raw.term, `${context} term`),
-        rows: frozen(raw.rows.map((row, i) => decodeReportRow(row, `${context} row #${i}`))),
+        rows: frozen(raw.rows.map((row, i) => decodeBsRow(row, `${context} row #${i}`, (figure) => decodeMixed(figure, `${context} row #${i} amount`)))),
         total: decodeMixed(raw.total, `${context} total`),
     });
 }
@@ -1890,16 +1913,8 @@ function decodeColumnFigures(raw: RawMixed[] | undefined, context: string, colum
     return frozen(raw.map((value, i) => decodeMixed(value, `${context}[${i}]`)));
 }
 
-function decodeBsColumnRow(raw: RawBsColumnRow | undefined, context: string, columns: number): BsColumnRow {
-    if (raw === undefined || typeof raw.account !== "string" || typeof raw.depth !== "number") {
-        throw new ApiShapeError(`${context}: missing account/depth`);
-    }
-    return Object.freeze({
-        account: raw.account,
-        depth: raw.depth,
-        own: decodeColumnFigures(raw.own, `${context} own`, columns),
-        inclusive: decodeColumnFigures(raw.inclusive, `${context} inclusive`, columns),
-    });
+function decodeBsColumnRow(raw: RawBsRow<RawMixed[]> | undefined, context: string, columns: number): BsColumnRow {
+    return decodeBsRow(raw, context, (figures) => decodeColumnFigures(figures, `${context} amount`, columns));
 }
 
 function decodeBsColumnGroup(raw: RawBsColumnGroup | undefined, context: string, columns: number): BsColumnGroup {
