@@ -103,6 +103,7 @@ pub mod rules;
 pub mod single_entry;
 pub mod sort;
 pub mod text;
+pub mod time;
 pub mod title;
 pub mod ui_prefs;
 pub mod vault;

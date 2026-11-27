@@ -8,6 +8,7 @@ import {tick} from "svelte";
 import {afterEach, describe, expect, it} from "vitest";
 import KeysProbe from "#ui/testing/fixtures/KeysProbe.svelte";
 import KeyHelp from "./KeyHelp.svelte";
+import {IS_MAC} from "./chord";
 import {keymap} from "./keymap.svelte";
 import {PRIORITY, type Layer} from "./types";
 
@@ -37,6 +38,22 @@ describe("COMPONENT KeyHelp", () => {
         // One <kbd> per chord STEP, so `g j` reads as two keys pressed in turn.
         expect(screen.getAllByText("g")).toHaveLength(1);
         expect(screen.getAllByText("j")).toHaveLength(1);
+    });
+
+    it("shows a per-platform binding in the current platform's keys (plan 46 K)", async () => {
+        render(KeysProbe, {
+            props: {
+                layerOf: () => layer("time", [{keys: "ctrl+shift+1", macKeys: "meta+alt+1", label: "Toggle slot 1", group: "Time", run: () => {}}]),
+            },
+        });
+        render(KeyHelp);
+
+        keymap.openHelp();
+        await tick();
+
+        expect(screen.getByText("Toggle slot 1")).toBeDefined();
+        expect(screen.getByText(IS_MAC ? "⌥-⌘-1" : "Ctrl+Shift+1")).toBeDefined();
+        expect(screen.queryByText(IS_MAC ? "Ctrl+Shift+1" : "⌥-⌘-1")).toBeNull();
     });
 
     it("shows a shadowed key once, as the binding that would actually run", async () => {

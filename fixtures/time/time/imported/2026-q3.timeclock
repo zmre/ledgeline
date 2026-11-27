@@ -1,0 +1,12 @@
+; Imported from another tracker, in hledger's timeclock format.
+i 2026-09-14 09:00:00 clients:acme:advisory  Kickoff  ; person: pat
+o 2026-09-14 10:30:00  ; invoice: 99
+    ; agenda sent ahead
+i 2026-09-15 13:15 clients:globex:audit  Fieldwork
+  ; person: sam
+o 2026-09-15 16:45:30
+i 2026-09-29 22:30:00 clients:initech:discovery  Late call  ; person: pat
+    # person: sam (ignored: a # line)
+o 2026-09-30 00:45:00
+i 2026-09-30 08:00 internal:admin
+o 2026-09-30 08:20  ; person: pat

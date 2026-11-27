@@ -17,14 +17,19 @@ use invoicer_core::session::Session;
 use ledgeline_core::accrual::settle::SettleSettings;
 use ledgeline_core::ui_prefs::{
     self as core, LedgerSlot, SETTLEMENT_LEAD_DAYS, SETTLEMENT_LOOKBACK_DAYS,
-    SETTLEMENT_TOLERANCE_BPS, Schema, THEME, UI_SCALE, UiPrefsSession,
+    SETTLEMENT_TOLERANCE_BPS, Schema, THEME, TIME_LONG_RUNNING, TIME_OTHER, TIME_PERSON,
+    TIME_PINNED, TIME_STEP, TIME_WEEKLY_TARGET, UI_SCALE, UiPrefsSession, flag,
 };
 use ledgeline_core::vault::{Vault, VaultPath};
 use ledgeline_shell::AppDirs;
 use std::sync::Arc;
 
 /// The invoicer's preferences: the theme and scale, and the matcher's
-/// three keys, all shared with Ledgeline and all pinnable.
+/// three keys, all shared with Ledgeline and all pinnable; and the time
+/// tracker's `[time]` (plan 46 Settings), the invoicer's own, whose pins and
+/// slot 0 are kept per ledger (account names belong to one ledger). And the
+/// SPA's own view state: whether the sidebar's Library section is open
+/// (`sidebarLibraryOpen`, closed by default).
 pub(crate) static SCHEMA: Schema = Schema {
     specs: &[
         THEME,
@@ -32,6 +37,13 @@ pub(crate) static SCHEMA: Schema = Schema {
         SETTLEMENT_LOOKBACK_DAYS,
         SETTLEMENT_TOLERANCE_BPS,
         SETTLEMENT_LEAD_DAYS,
+        TIME_PERSON,
+        TIME_PINNED,
+        TIME_OTHER,
+        TIME_STEP,
+        TIME_LONG_RUNNING,
+        TIME_WEEKLY_TARGET,
+        flag("sidebarLibraryOpen", false),
     ],
     pinnable: &[
         "theme",
@@ -40,7 +52,17 @@ pub(crate) static SCHEMA: Schema = Schema {
         "settlementToleranceBps",
         "settlementLeadDays",
     ],
-    per_ledger: &[],
+    per_ledger: &["time.pinned", "time.other"],
+    // The time routes read these themselves, so they must hold in browser
+    // storage too (e2e, a browser on `--server`).
+    server_side: &[
+        "time.person",
+        "time.pinned",
+        "time.other",
+        "time.step",
+        "time.long-running",
+        "time.weekly-target",
+    ],
 };
 
 /// Where the books' `ledgeline.toml` is, and how `ui-prefs.toml` keys the

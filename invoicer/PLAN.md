@@ -1599,7 +1599,9 @@ The order is a suggestion:
 1. Estimates and convert-to-invoice.
 2. Recurring invoices (`recur`).
 3. Credit notes.
-4. Timedot and unbilled time.
+4. Timedot and unbilled time: built by [plan 46](../plans/46-time-tracking.md)
+   (time tracking in the sidebar, Unbilled, bill to draft, contractor
+   bills). User docs: [docs/time/](../docs/time/index.md).
 5. Stripe read-only sync.
 6. QuickBooks customer CSV import.
 7. Late fees.

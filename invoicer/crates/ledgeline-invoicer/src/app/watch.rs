@@ -9,6 +9,12 @@
 //! The reconciler's own `paid:` writes come back as events too; the index
 //! sees their content unchanged, so they end there.
 //!
+//! Time files (plan 46) are inside the books folder too (every time path is
+//! placed inside the journal's folder), so the recursive watch already sees
+//! the roll-up and every file it includes, and a new month's file the
+//! glob will reach; [`OpenBooks::apply_changes`] drops the cached time book
+//! and reports them to the SPA.
+//!
 //! MBR's server has its own watcher for its pages and index; this one is the
 //! invoicer's books only.
 

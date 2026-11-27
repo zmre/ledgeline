@@ -80,7 +80,8 @@ use crate::model::{
     DigitGroups, Journal, PeriodExpr, PeriodKind, PeriodSpec, PeriodicTransaction, Posting,
     PostingType, PriceDirective, SourcePos, Status, Tindex, Transaction,
 };
-use crate::vault::{LocalVault, MemVault, Revision, Vault, VaultError, VaultPath};
+use crate::time::{TimeFormat, timeclock, timedot};
+use crate::vault::{EntryKind, LocalVault, MemVault, Revision, Vault, VaultError, VaultPath};
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -214,6 +215,9 @@ struct Ctx<'v> {
     alias_scope: Vec<usize>,
     prices: Vec<PriceDirective>,
     transactions: Vec<Transaction>,
+    /// Transactions from timedot/timeclock sources: see
+    /// [`Journal::time_transactions`].
+    time_transactions: Vec<Transaction>,
     periodic_transactions: Vec<PeriodicTransaction>,
     auto_rules: Vec<AutoPostingRule>,
     /// Every source file read so far (main + `include`s), in first-read order and
@@ -236,6 +240,12 @@ struct Ctx<'v> {
     /// [`Journal::leading_comment`] — see [`leading_comment`].
     leading_comment: Option<String>,
     tindex: u32,
+    /// The index the next time transaction gets, in its own sequence.
+    time_tindex: u32,
+    /// Whether time sources become [`Self::time_transactions`]. Off for a
+    /// time book's own read ([`parse_time_rollup`]), which parses every time
+    /// file losslessly itself and wants each one recorded, not refused.
+    build_time: bool,
 }
 
 impl<'v> Ctx<'v> {
@@ -264,6 +274,7 @@ impl<'v> Ctx<'v> {
             alias_scope: Vec::new(),
             prices: Vec::new(),
             transactions: Vec::new(),
+            time_transactions: Vec::new(),
             periodic_transactions: Vec::new(),
             auto_rules: Vec::new(),
             source_files: Vec::new(),
@@ -271,6 +282,8 @@ impl<'v> Ctx<'v> {
             includes_admitted: 0,
             leading_comment: None,
             tindex: 0,
+            time_tindex: 0,
+            build_time: true,
         }
     }
 
@@ -279,6 +292,7 @@ impl<'v> Ctx<'v> {
             source_name: source_name.to_string(),
             source_files: self.source_files,
             transactions: self.transactions,
+            time_transactions: self.time_transactions,
             periodic_transactions: self.periodic_transactions,
             auto_rules: self.auto_rules,
             accounts: self.accounts,
@@ -313,6 +327,9 @@ pub struct ParsedSource {
     /// The exact text parsed, and the revision of those bytes. `None` when the
     /// text did not come from storage — it was an override, or the caller's.
     pub read: Option<(String, Revision)>,
+    /// The time format it was read as (an `include` prefix or its
+    /// extension), or `None` for a journal.
+    pub time_format: Option<TimeFormat>,
 }
 
 /// A journal parsed through a vault ([`parse_journal_in`]), with every source
@@ -380,11 +397,42 @@ pub(crate) fn parse_in(
     let sources = std::iter::once(ParsedSource {
         path: main.clone(),
         read: main_read,
+        time_format: TimeFormat::of_path(main.as_str()),
     })
     .chain(std::mem::take(&mut ctx.sources))
     .collect();
     Ok(ParsedJournal {
         journal: ctx.into_journal(source_name),
+        sources,
+    })
+}
+
+/// Parse a time roll-up (plan 46): [`parse_journal_in`], except that time
+/// files are only read and recorded in [`ParsedJournal::sources`] (with their
+/// format), never turned into transactions or refused for a bad line: the
+/// time book parses each one losslessly itself and reports its lines as
+/// findings. Directives (`account` declarations above all) and journal
+/// syntax are read and checked as usual.
+pub(crate) fn parse_time_rollup(
+    vault: &dyn Vault,
+    main: &VaultPath,
+) -> Result<ParsedJournal, ParseError> {
+    let main_key = vault.key(main);
+    let source_name = main_key.to_string_lossy().into_owned();
+    let (text, revision) = read_source(vault, main)
+        .map_err(|e| ParseError::Include(format!("could not read {source_name}: {e}")))?;
+    let mut ctx = Ctx::new(vault, main, main_key, None);
+    ctx.build_time = false;
+    parse_source(&text, &source_name, main, &mut ctx)?;
+    let sources = std::iter::once(ParsedSource {
+        path: main.clone(),
+        read: Some((text, revision)),
+        time_format: TimeFormat::of_path(main.as_str()),
+    })
+    .chain(std::mem::take(&mut ctx.sources))
+    .collect();
+    Ok(ParsedJournal {
+        journal: ctx.into_journal(&source_name),
         sources,
     })
 }
@@ -620,29 +668,49 @@ pub fn parse_journal_with_overrides(
         .map(|parsed| parsed.journal)
 }
 
-/// Parse one journal source (the top file or an included one, at `source` in
-/// the vault) into `ctx`.
+/// Parse one source (the top file or an included one, at `source` in the
+/// vault) into `ctx`: as a time file when its extension names a time format
+/// (`hledger -f day.timedot` reads it as one), else as a journal.
 fn parse_source(
     text: &str,
     source_name: &str,
     source: &VaultPath,
     ctx: &mut Ctx,
 ) -> Result<(), ParseError> {
+    match TimeFormat::of_path(source.as_str()) {
+        Some(format) => parse_time_source(text, source_name, source, format, ctx),
+        None => parse_journal_source(text, source_name, source, ctx),
+    }
+}
+
+/// The key `source` is recorded under, recorded in `ctx.source_files` (main or
+/// `include`d) so the whole dependency set is known for live-reload watching,
+/// even for directive-only includes. Deduplicated to stay stable if the same
+/// file is included more than once.
+fn record_source(source: &VaultPath, ctx: &mut Ctx) -> PathBuf {
     let source_file = if *source == ctx.main {
         ctx.main_key.clone()
     } else {
         ctx.vault.key(source)
     };
-    // Are we the MAIN file? Every parse starts with an empty `source_files`, and
-    // the push below is the first thing that ever writes to it, so "nothing
-    // recorded yet" is exactly "this is the top-level file". Read BEFORE the push.
-    let is_main_file = ctx.source_files.is_empty();
-    // Record this file (main or `include`d) so the whole dependency set is known
-    // for live-reload watching, even for directive-only includes. Deduplicated to
-    // stay stable if the same file is included more than once.
     if !ctx.source_files.contains(&source_file) {
         ctx.source_files.push(source_file.clone());
     }
+    source_file
+}
+
+/// Parse one journal source into `ctx`.
+fn parse_journal_source(
+    text: &str,
+    source_name: &str,
+    source: &VaultPath,
+    ctx: &mut Ctx,
+) -> Result<(), ParseError> {
+    // Are we the MAIN file? Every parse starts with an empty `source_files`, and
+    // `record_source` is the first thing that ever writes to it, so "nothing
+    // recorded yet" is exactly "this is the top-level file". Read BEFORE it.
+    let is_main_file = ctx.source_files.is_empty();
+    let source_file = record_source(source, ctx);
     // PARSE-9: a UTF-8 BOM is not `char::is_whitespace`, so `trim_start` left it
     // attached to the first token and the first-char dispatch below fell through
     // to `other =>` — failing the WHOLE file with
@@ -770,57 +838,24 @@ fn parse_source(
                 ctx.default_commodity = Some((commodity, style));
             }
             "include" => {
-                let as_written =
+                let target =
                     include_target(trimmed).map_err(|e| locate(source_name, line_no, line, e))?;
-                // Confinement, cycle and budget checks all run BEFORE the file is
+                // Confinement, cycle and budget checks all run BEFORE a file is
                 // read, so a rejected include never has its contents echoed back
                 // through a parse error (SEC-6's read oracle).
-                let path = admit_include(&as_written, source, ctx)
-                    .map_err(|e| locate(source_name, line_no, line, e))?;
-                let key = ctx.vault.key(&path);
-                let (included, revision) = match ctx.overrides.and_then(|map| map.get(&path)) {
-                    Some(text) => (std::borrow::Cow::Borrowed(text.as_str()), None),
-                    None => {
-                        let (text, revision) = read_source(ctx.vault, &path).map_err(|e| {
-                            locate(
-                                source_name,
-                                line_no,
-                                line,
-                                ParseError::Include(format!("{}: {e}", key.display())),
-                            )
-                        })?;
-                        (std::borrow::Cow::Owned(text), Some(revision))
-                    }
+                let paths = if is_glob(&target.path) {
+                    expand_glob(&target.path, source, ctx)
+                        .map_err(|e| locate(source_name, line_no, line, e))?
+                } else {
+                    vec![
+                        admit_include(&target.path, source, ctx)
+                            .map_err(|e| locate(source_name, line_no, line, e))?,
+                    ]
                 };
-                // The slot is taken now, so sources stay in first-read order;
-                // the text moves into it once the nested parse is done with it.
-                // A file read twice (a diamond) keeps its first read.
-                let slot = (!ctx.sources.iter().any(|source| source.path == path)).then(|| {
-                    ctx.sources.push(ParsedSource {
-                        path: path.clone(),
-                        read: None,
-                    });
-                    ctx.sources.len() - 1
-                });
-                // Push the INCLUDING file so the nested parse sees its own full
-                // ancestor chain; pop unconditionally to keep the stack accurate
-                // if the caller ever recovers from the error.
-                ctx.include_stack.push(source.clone());
-                // Aliases flow INTO an include and never back out (verified
-                // against hledger 1.52), so the nested parse inherits this
-                // scope and the parent's is restored whatever it did with it —
-                // including an `end aliases`, which kills the parent's aliases
-                // only within the child.
-                let outer_scope = ctx.alias_scope.clone();
-                let nested = parse_source(&included, &key.to_string_lossy(), &path, ctx);
-                ctx.alias_scope = outer_scope;
-                ctx.include_stack.pop();
-                if let (Some(slot), std::borrow::Cow::Owned(text), Some(revision)) =
-                    (slot, included, revision)
-                {
-                    ctx.sources[slot].read = Some((text, revision));
+                for path in paths {
+                    let format = target.format.or_else(|| TimeFormat::of_path(path.as_str()));
+                    include_file(&path, format, source, source_name, line_no, line, ctx)?;
                 }
-                nested?;
             }
             "alias" => {
                 let alias = parse_alias_directive(trimmed, line_no, &source_file)
@@ -1226,19 +1261,309 @@ fn parse_decimal_mark_directive(line: &str) -> Result<char, ParseError> {
     }
 }
 
-/// The target of an `include PATH` directive, exactly as written — which is
-/// what diagnostics quote, so a rejected include never discloses a path the
-/// journal did not already name (e.g. a symlink's target).
-fn include_target(line: &str) -> Result<String, ParseError> {
+/// An `include` directive's target.
+struct IncludeTarget {
+    /// The path (or glob) exactly as written, after any format prefix — which
+    /// is what diagnostics quote, so a rejected include never discloses a path
+    /// the journal did not already name (e.g. a symlink's target).
+    path: String,
+    /// The format a `timedot:`/`timeclock:` prefix names; `None` for none (or
+    /// `journal:`), when the file's extension decides.
+    format: Option<TimeFormat>,
+}
+
+/// The target of an `include [FORMAT:]PATH` directive. hledger's
+/// `timedot:`/`timeclock:` prefixes name the format; `journal:` is accepted
+/// and means the default.
+fn include_target(line: &str) -> Result<IncludeTarget, ParseError> {
     let after = line
         .strip_prefix("include")
         .ok_or_else(|| ParseError::MalformedDirective(line.to_string()))?;
     let (path_part, _comment) = split_comment(after);
     let path_str = path_part.trim();
+    let (format, path_str) = [TimeFormat::Timedot, TimeFormat::Timeclock]
+        .into_iter()
+        .find_map(|format| {
+            path_str
+                .strip_prefix(format.name())
+                .and_then(|rest| rest.strip_prefix(':'))
+                .map(|rest| (Some(format), rest))
+        })
+        .or_else(|| path_str.strip_prefix("journal:").map(|rest| (None, rest)))
+        .unwrap_or((None, path_str));
     if path_str.is_empty() {
         return Err(ParseError::MalformedDirective(line.to_string()));
     }
-    Ok(path_str.to_string())
+    Ok(IncludeTarget {
+        path: path_str.to_string(),
+        format,
+    })
+}
+
+/// Read and parse one admitted `include` target at `path` (as `format`, or a
+/// journal), recording it in `ctx.sources`.
+fn include_file(
+    path: &VaultPath,
+    format: Option<TimeFormat>,
+    source: &VaultPath,
+    source_name: &str,
+    line_no: u32,
+    line: &str,
+    ctx: &mut Ctx,
+) -> Result<(), ParseError> {
+    let key = ctx.vault.key(path);
+    let (included, revision) = match ctx.overrides.and_then(|map| map.get(path)) {
+        Some(text) => (std::borrow::Cow::Borrowed(text.as_str()), None),
+        None => {
+            let (text, revision) = read_source(ctx.vault, path).map_err(|e| {
+                locate(
+                    source_name,
+                    line_no,
+                    line,
+                    ParseError::Include(format!("{}: {e}", key.display())),
+                )
+            })?;
+            (std::borrow::Cow::Owned(text), Some(revision))
+        }
+    };
+    // The slot is taken now, so sources stay in first-read order; the text
+    // moves into it once the nested parse is done with it. A file read twice
+    // (a diamond) keeps its first read.
+    let slot = (!ctx.sources.iter().any(|source| source.path == *path)).then(|| {
+        ctx.sources.push(ParsedSource {
+            path: path.clone(),
+            read: None,
+            time_format: format,
+        });
+        ctx.sources.len() - 1
+    });
+    // Push the INCLUDING file so the nested parse sees its own full ancestor
+    // chain; pop unconditionally to keep the stack accurate if the caller ever
+    // recovers from the error.
+    ctx.include_stack.push(source.clone());
+    // Aliases flow INTO an include and never back out (verified against hledger
+    // 1.52), so the nested parse inherits this scope and the parent's is
+    // restored whatever it did with it — including an `end aliases`, which kills
+    // the parent's aliases only within the child.
+    let outer_scope = ctx.alias_scope.clone();
+    let key_name = key.to_string_lossy();
+    let nested = match format {
+        Some(format) => parse_time_source(&included, &key_name, path, format, ctx),
+        None => parse_journal_source(&included, &key_name, path, ctx),
+    };
+    ctx.alias_scope = outer_scope;
+    ctx.include_stack.pop();
+    if let (Some(slot), std::borrow::Cow::Owned(text), Some(revision)) = (slot, included, revision)
+    {
+        ctx.sources[slot].read = Some((text, revision));
+    }
+    nested
+}
+
+/// Whether an `include` target is a glob: `*`, `?` or `[`, as hledger's.
+fn is_glob(path: &str) -> bool {
+    path.contains(['*', '?', '['])
+}
+
+/// The most directories a glob `include` may walk, and the most entries it
+/// reads from any one of them: bounds a `**` over a huge tree.
+const MAX_GLOB_DIRS: usize = 10_000;
+
+/// Expand a glob `include` (relative to the including file's directory) into
+/// the files it matches, each admitted like a plain include
+/// ([`admit_include`]), sorted by path for a stable order.
+///
+/// `*` and `?` match within one path segment, `[...]` is a character class,
+/// and a `**` segment matches any number of directories, zero included:
+/// `include time/**/*.timedot` (verified against hledger 1.52). Two
+/// deliberate differences from hledger: hidden entries are never matched
+/// (hledger descends into `.hidden/`; an `include` may never read one here),
+/// and symbolic links are not followed while walking. The including file
+/// itself never matches (hledger skips it too); no match at all is an error,
+/// as in hledger ("No files were matched by: …").
+fn expand_glob(
+    pattern: &str,
+    includer: &VaultPath,
+    ctx: &mut Ctx,
+) -> Result<Vec<VaultPath>, ParseError> {
+    if Path::new(pattern).is_absolute() {
+        return Err(ParseError::Include(format!(
+            "'{pattern}': a glob include must be relative to the including file"
+        )));
+    }
+    let segments: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
+    let literal = segments
+        .iter()
+        .position(|segment| is_glob(segment))
+        .unwrap_or(segments.len());
+    let base = includer
+        .parent()
+        .unwrap_or_default()
+        .join(&segments[..literal].join("/"))
+        .ok()
+        .filter(|base| base.starts_with(&ctx.include_root))
+        .ok_or_else(|| escapes(pattern, ctx))?;
+    let mut dirs = vec![base];
+    let mut files = Vec::new();
+    let mut walked = 0usize;
+    let last = segments.len().saturating_sub(1);
+    for (at, segment) in segments.iter().enumerate().skip(literal) {
+        let is_last = at == last;
+        if *segment == "**" {
+            dirs = descendants(ctx.vault, dirs, &mut walked)?;
+            if is_last {
+                files.extend(matching(
+                    ctx.vault,
+                    &dirs,
+                    "*",
+                    EntryKind::File,
+                    &mut walked,
+                )?);
+            }
+            continue;
+        }
+        let kind = if is_last {
+            EntryKind::File
+        } else {
+            EntryKind::Dir
+        };
+        let found = matching(ctx.vault, &dirs, segment, kind, &mut walked)?;
+        if is_last {
+            files = found;
+        } else {
+            dirs = found;
+        }
+    }
+    files.sort();
+    files.dedup();
+    files.retain(|file| file != includer);
+    if files.is_empty() {
+        return Err(ParseError::Include(format!(
+            "No files were matched by: {pattern}"
+        )));
+    }
+    let written = |file: &VaultPath| file.as_str().to_string();
+    files
+        .into_iter()
+        .map(|file| admit_placed(file.clone(), &written(&file), includer, ctx))
+        .collect()
+}
+
+/// `dirs` and every directory below them (hidden ones and symbolic links
+/// excepted), breadth first.
+fn descendants(
+    vault: &dyn Vault,
+    dirs: Vec<VaultPath>,
+    walked: &mut usize,
+) -> Result<Vec<VaultPath>, ParseError> {
+    let mut all = dirs.clone();
+    let mut frontier = dirs;
+    while !frontier.is_empty() {
+        let next = matching(vault, &frontier, "*", EntryKind::Dir, walked)?;
+        all.extend(next.iter().cloned());
+        frontier = next;
+    }
+    Ok(all)
+}
+
+/// The entries of kind `kind` in `dirs` whose names match the glob segment
+/// `segment`, hidden names excepted.
+fn matching(
+    vault: &dyn Vault,
+    dirs: &[VaultPath],
+    segment: &str,
+    kind: EntryKind,
+    walked: &mut usize,
+) -> Result<Vec<VaultPath>, ParseError> {
+    let mut found = Vec::new();
+    for dir in dirs {
+        *walked += 1;
+        if *walked > MAX_GLOB_DIRS {
+            return Err(ParseError::Include(format!(
+                "a glob include walked more than {MAX_GLOB_DIRS} directories"
+            )));
+        }
+        let Ok(entries) = vault.list_dir(dir, Some(MAX_GLOB_DIRS)) else {
+            continue;
+        };
+        found.extend(
+            entries
+                .iter()
+                .filter(|entry| entry.kind == kind)
+                .map(crate::vault::Entry::name)
+                .filter(|name| !name.starts_with('.') && glob_match(segment, name))
+                .filter_map(|name| dir.child(name).ok()),
+        );
+    }
+    found.sort();
+    Ok(found)
+}
+
+/// Whether the relative `path` matches the relative glob `pattern`, segment
+/// by segment, a `**` segment matching any number of segments (zero
+/// included): what [`expand_glob`] would match if the file existed. Used to
+/// tell whether a roll-up's `include` covers a file not yet written.
+pub(crate) fn glob_path_match(pattern: &str, path: &str) -> bool {
+    let pattern: Vec<&str> = pattern.split('/').filter(|s| !s.is_empty()).collect();
+    let path: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    glob_segments(&pattern, &path)
+}
+
+fn glob_segments(pattern: &[&str], path: &[&str]) -> bool {
+    match pattern.split_first() {
+        None => path.is_empty(),
+        Some((&"**", rest)) => (0..=path.len()).any(|skip| glob_segments(rest, &path[skip..])),
+        Some((first, rest)) => path.split_first().is_some_and(|(name, tail)| {
+            !name.starts_with('.') && glob_match(first, name) && glob_segments(rest, tail)
+        }),
+    }
+}
+
+/// Whether `name` matches one glob segment: `*` any run, `?` any one
+/// character, `[abc]`/`[a-z]`/`[!x]` a class.
+fn glob_match(pattern: &str, name: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let name: Vec<char> = name.chars().collect();
+    glob_from(&pattern, &name)
+}
+
+fn glob_from(pattern: &[char], name: &[char]) -> bool {
+    match pattern.first() {
+        None => name.is_empty(),
+        Some('*') => (0..=name.len()).any(|skip| glob_from(&pattern[1..], &name[skip..])),
+        Some('?') => !name.is_empty() && glob_from(&pattern[1..], &name[1..]),
+        Some('[') => {
+            let Some(close) = pattern
+                .iter()
+                .skip(2)
+                .position(|&c| c == ']')
+                .map(|at| at + 2)
+            else {
+                return name.first() == Some(&'[') && glob_from(&pattern[1..], &name[1..]);
+            };
+            let Some(&first) = name.first() else {
+                return false;
+            };
+            let class = &pattern[1..close];
+            let (negated, class) = match class.first() {
+                Some('!' | '^') => (true, &class[1..]),
+                _ => (false, class),
+            };
+            let mut hit = false;
+            let mut at = 0;
+            while at < class.len() {
+                if at + 2 < class.len() && class[at + 1] == '-' {
+                    hit |= (class[at]..=class[at + 2]).contains(&first);
+                    at += 3;
+                } else {
+                    hit |= class[at] == first;
+                    at += 1;
+                }
+            }
+            hit != negated && glob_from(&pattern[close + 1..], &name[1..])
+        }
+        Some(&c) => name.first() == Some(&c) && glob_from(&pattern[1..], &name[1..]),
+    }
 }
 
 /// Place a path a file *wrote* (an `include` target, a rules file's `source`)
@@ -1475,23 +1800,36 @@ fn admit_include(
     includer: &VaultPath,
     ctx: &mut Ctx,
 ) -> Result<VaultPath, ParseError> {
-    let escapes = || {
-        ParseError::Include(format!(
-            "'{as_written}' resolves outside the journal directory {}; \
-             includes may not escape the main journal's directory",
-            ctx.vault.key(&ctx.include_root).display()
-        ))
-    };
     let lexical = place_written(
         ctx.vault,
         &includer.parent().unwrap_or_default(),
         as_written,
     )
     .filter(|path| path.starts_with(&ctx.include_root))
-    .ok_or_else(escapes)?;
+    .ok_or_else(|| escapes(as_written, ctx))?;
+    admit_placed(lexical, as_written, includer, ctx)
+}
+
+/// The refusal for an `include` that leaves the journal's directory.
+fn escapes(as_written: &str, ctx: &Ctx) -> ParseError {
+    ParseError::Include(format!(
+        "'{as_written}' resolves outside the journal directory {}; \
+         includes may not escape the main journal's directory",
+        ctx.vault.key(&ctx.include_root).display()
+    ))
+}
+
+/// [`admit_include`]'s checks after the lexical placement: the target's
+/// links resolved and confined, then hidden entries, cycles and budgets.
+fn admit_placed(
+    lexical: VaultPath,
+    as_written: &str,
+    includer: &VaultPath,
+    ctx: &mut Ctx,
+) -> Result<VaultPath, ParseError> {
     let path = match crate::vault::canonicalize_existing_prefix(ctx.vault, &lexical) {
         Ok(resolved) if resolved.starts_with(&ctx.include_root) => resolved,
-        Ok(_) | Err(VaultError::OutsideRoot { .. }) => return Err(escapes()),
+        Ok(_) | Err(VaultError::OutsideRoot { .. }) => return Err(escapes(as_written, ctx)),
         // The vault could not say (a permission error part-way down, say): the
         // name as written is already confined, and the read reports the rest.
         Err(_) => lexical,
@@ -1520,6 +1858,210 @@ fn admit_include(
         )));
     }
     Ok(path)
+}
+
+/// Parse a timedot or timeclock source into `ctx.time_transactions`, as
+/// hledger reads one (plan 46 facts 3 and 9): a cleared transaction per
+/// timedot date line, its description and tags, and an unbalanced virtual
+/// posting per entry (per letter, for a letters entry) in hours, in no
+/// commodity — or the `D` default commodity in force, as hledger applies it;
+/// a transaction per day of each closed timeclock session, in `h`.
+///
+/// The quantities are exact: hledger 1.52's 0.01 h rounding is not applied.
+/// A timeclock session still open at the end of the file is left out (hledger
+/// clocks it to now; a journal parse has no clock). A line hledger refuses
+/// fails the parse, as it fails hledger's.
+fn parse_time_source(
+    text: &str,
+    source_name: &str,
+    source: &VaultPath,
+    format: TimeFormat,
+    ctx: &mut Ctx,
+) -> Result<(), ParseError> {
+    let source_file = record_source(source, ctx);
+    if !ctx.build_time {
+        return Ok(());
+    }
+    let refuse = |finding: &crate::time::Finding, line_text: &str| ParseError::Located {
+        source_name: source_name.to_string(),
+        line: finding.line,
+        line_text: line_text.to_string(),
+        message: finding.message.clone(),
+    };
+    let (commodity, style) = match (&ctx.default_commodity, format) {
+        (Some((commodity, style)), TimeFormat::Timedot) => (commodity.clone(), style.clone()),
+        (_, TimeFormat::Timedot) => (Commodity(String::new()), time_style(CommoditySide::Left)),
+        (_, TimeFormat::Timeclock) => {
+            (Commodity("h".to_string()), time_style(CommoditySide::Right))
+        }
+    };
+    let posting = |account: &str, hours: Dec, comment: &str, tags: Vec<(String, String)>| Posting {
+        status: Status::Unmarked,
+        ptype: PostingType::Virtual,
+        account: AccountName(account.to_string()),
+        amounts: vec![Amount {
+            commodity: commodity.clone(),
+            quantity: hours,
+            style: style.clone(),
+            cost: None,
+        }],
+        balance_assertion: None,
+        date: None,
+        date2: None,
+        comment: stored_comment(comment),
+        tags,
+        generated: None,
+        elided: false,
+    };
+    match format {
+        TimeFormat::Timedot => {
+            let file = timedot::parse(text);
+            if let Some(error) = file
+                .findings
+                .iter()
+                .find(|f| f.severity == crate::time::Severity::Error)
+            {
+                let line = &file.lines[(error.line as usize).saturating_sub(1)];
+                return Err(refuse(error, line.content(text)));
+            }
+            for (start, end) in file.days() {
+                let Some(day) = file.date_line(start) else {
+                    continue;
+                };
+                let postings: Vec<Posting> = file
+                    .postings()
+                    .filter(|p| p.entry.day == start)
+                    .map(|p| {
+                        // The line's comment, then its continuation lines'
+                        // (fact 4), one per line as hledger prints them.
+                        let mut comment = p
+                            .entry
+                            .comment
+                            .iter()
+                            .chain(&p.entry.continued)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        let mut tags: Vec<(String, String)> = p
+                            .entry
+                            .tags
+                            .iter()
+                            .filter(|(name, _)| name != "t")
+                            .cloned()
+                            .collect();
+                        if let Some(letter) = p.letter {
+                            if !comment.is_empty() {
+                                comment.push_str(", ");
+                            }
+                            comment.push_str(&format!("t:{letter}"));
+                            tags.push(("t".to_string(), letter.to_string()));
+                        }
+                        posting(&p.entry.account, p.quantity.hours(), &comment, tags)
+                    })
+                    .collect();
+                if postings.is_empty() {
+                    continue;
+                }
+                ctx.time_tindex += 1;
+                let last = end.saturating_sub(1).min(file.lines.len() - 1);
+                ctx.time_transactions.push(Transaction {
+                    index: Tindex(ctx.time_tindex),
+                    date: day.date.clone(),
+                    date2: None,
+                    status: Status::Cleared,
+                    code: String::new(),
+                    description: day.description.clone(),
+                    comment: stored_comment(
+                        &day.comment
+                            .iter()
+                            .chain(&day.continued)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    ),
+                    preceding_comment: String::new(),
+                    tags: day.tags.clone(),
+                    postings,
+                    source_span: (
+                        SourcePos {
+                            line: file.lines[start].number,
+                            column: 1,
+                        },
+                        SourcePos {
+                            line: file.lines[last].number + 1,
+                            column: 1,
+                        },
+                    ),
+                    source_file: source_file.clone(),
+                });
+            }
+        }
+        TimeFormat::Timeclock => {
+            let file = timeclock::parse(text);
+            if let Some(error) = file
+                .findings
+                .iter()
+                .find(|f| f.severity == crate::time::Severity::Error)
+            {
+                let line = &file.lines[(error.line as usize).saturating_sub(1)];
+                return Err(refuse(error, &text[line.start..line.end]));
+            }
+            for session in file.sessions.iter().filter(|s| s.end.is_some()) {
+                let description = session.description_or_times(None);
+                let first = file.lines[session.in_line].number;
+                let last = session.out_line.map_or(first, |at| file.lines[at].number);
+                for (date, quantity) in session.segments(None) {
+                    ctx.time_tindex += 1;
+                    ctx.time_transactions.push(Transaction {
+                        index: Tindex(ctx.time_tindex),
+                        date,
+                        date2: None,
+                        status: Status::Cleared,
+                        code: String::new(),
+                        description: description.clone(),
+                        comment: stored_comment(&session.comments.join("\n")),
+                        preceding_comment: String::new(),
+                        tags: session.tags.clone(),
+                        postings: vec![posting(&session.account, quantity.hours(), "", Vec::new())],
+                        source_span: (
+                            SourcePos {
+                                line: first,
+                                column: 1,
+                            },
+                            SourcePos {
+                                line: last + 1,
+                                column: 1,
+                            },
+                        ),
+                        source_file: source_file.clone(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The style hledger shows time in: two places, the commodity (if any) on
+/// `side` with no space.
+fn time_style(side: CommoditySide) -> AmountStyle {
+    AmountStyle {
+        side,
+        spaced: false,
+        decimal_mark: Some('.'),
+        digit_groups: None,
+        precision: 2,
+    }
+}
+
+/// A comment as [`Transaction::comment`] stores one: its text and a trailing
+/// newline, or empty.
+fn stored_comment(text: &str) -> String {
+    if text.trim().is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", text.trim())
+    }
 }
 
 fn parse_price_directive(
@@ -1616,7 +2158,7 @@ pub(crate) fn is_iso_date(value: &str) -> bool {
     shaped && normalize_date(value, None).is_ok_and(|date| date == value)
 }
 
-fn normalize_date(token: &str, default_year: Option<i32>) -> Result<String, ParseError> {
+pub(crate) fn normalize_date(token: &str, default_year: Option<i32>) -> Result<String, ParseError> {
     let comps: Vec<&str> = token.split(['-', '/', '.']).collect();
     let (year, month, day) = match comps.len() {
         3 => (

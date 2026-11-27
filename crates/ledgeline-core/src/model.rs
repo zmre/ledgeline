@@ -727,6 +727,15 @@ pub struct Journal {
     pub source_files: Vec<PathBuf>,
     /// Transactions in file order.
     pub transactions: Vec<Transaction>,
+    /// Transactions read from `include`d timedot and timeclock files (plan 46
+    /// T12), as hledger makes them: one per timedot date line, one per day of
+    /// a timeclock session, each cleared, with unbalanced virtual postings in
+    /// no commodity (`h` for timeclock). Indexed from 1 in their own sequence.
+    ///
+    /// **Never** merged into [`Self::transactions`]: hours are not money, so
+    /// no money report, no wire view and no editor ever sees them, and a user
+    /// who includes their time roll-up in the books still has working books.
+    pub time_transactions: Vec<Transaction>,
     /// Periodic (`~`) transaction rules in file order. Kept out of
     /// `transactions` (and thus the wire `/transactions` view); consumed only by
     /// the budget report.

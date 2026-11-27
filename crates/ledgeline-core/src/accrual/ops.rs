@@ -782,7 +782,14 @@ impl Loaded {
     pub fn save(&mut self, request: &SaveRequest) -> Result<SavePlan, OpsError> {
         let plan = self.plan_save(request)?;
         self.editor.save()?;
-        let unchanged = !plan.creates_file && plan.recognition_text == self.book.text;
+        // A missing file stays missing unless a schedule needs it: a write
+        // with nothing to schedule (a bill, a plain invoice) never creates
+        // a file the person didn't ask for.
+        let unchanged = if self.recognition_exists() {
+            plan.recognition_text == self.book.text
+        } else {
+            !plan.creates_file
+        };
         if !unchanged {
             self.write_recognition(&plan.recognition_text)
                 .map_err(|error| OpsError::RulesNotWritten(Box::new(error)))?;
@@ -1085,6 +1092,111 @@ impl Loaded {
             return Err(OpsError::BadDate(date.to_string()));
         }
         let found = self.the_document(role, number)?;
+        self.void_found(&found, (INVOICE_TAG, number), date)
+    }
+
+    /// The booked `role` document whose header carries `reference:
+    /// <reference>` (a bill booked without a number, as Invoicer's *Pay*
+    /// books one), found as [`find_document_as`](Self::find_document_as)
+    /// finds a numbered one: an invoice-side settlement posting, never a
+    /// payment or a void reversal.
+    ///
+    /// # Errors
+    /// [`OpsError::DocumentNotFound`]; [`OpsError::DuplicateDocument`] when
+    /// two documents carry it.
+    pub fn find_by_reference(
+        &self,
+        role: AccrualRole,
+        reference: &str,
+    ) -> Result<FoundDocument, OpsError> {
+        let journal = self.journal();
+        let roles = AccrualRoles::of(journal);
+        let mut found = journal
+            .transactions
+            .iter()
+            .enumerate()
+            .filter(|(_, txn)| {
+                super::tag_value(&txn.tags, super::REFERENCE_TAG).map(str::trim) == Some(reference)
+            })
+            .filter_map(|(position, txn)| {
+                let (posting, at_role) = super::documents::document_posting(txn, &roles)?;
+                (at_role == role).then_some((position, txn, posting))
+            });
+        let (position, txn, posting) = found
+            .next()
+            .ok_or_else(|| OpsError::DocumentNotFound(reference.to_string()))?;
+        if found.next().is_some() {
+            return Err(OpsError::DuplicateDocument(reference.to_string()));
+        }
+        let fingerprint = self
+            .editor
+            .transaction_fingerprint(txn.index)
+            .ok_or_else(|| OpsError::DocumentNotFound(reference.to_string()))?;
+        Ok(FoundDocument {
+            tindex: txn.index,
+            position,
+            fingerprint,
+            transaction: txn.clone(),
+            settlement: PostingRef {
+                position,
+                txn: txn.index,
+                posting,
+            },
+            role,
+        })
+    }
+
+    /// Whether `found` was voided: its settlement's `match:` link joins a
+    /// [`VOID_TAG`] reversal (a payment's link joins no reversal).
+    #[must_use]
+    pub fn is_voided(&self, found: &FoundDocument) -> bool {
+        let Some(link) = found
+            .transaction
+            .postings
+            .get(found.settlement.posting)
+            .and_then(|p| super::tag_value(&p.tags, MATCH_TAG))
+        else {
+            return false;
+        };
+        self.journal().transactions.iter().any(|txn| {
+            super::tag_value(&txn.tags, VOID_TAG).is_some()
+                && txn
+                    .postings
+                    .iter()
+                    .any(|p| super::tag_value(&p.tags, MATCH_TAG) == Some(link))
+        })
+    }
+
+    /// [`void_document`](Self::void_document) for a document found by
+    /// [`find_by_reference`](Self::find_by_reference): the reversal carries
+    /// `reference:` and [`VOID_TAG`].
+    ///
+    /// # Errors
+    /// As [`void_document`](Self::void_document).
+    pub fn void_by_reference(
+        &mut self,
+        role: AccrualRole,
+        reference: &str,
+        date: &str,
+        expected: Option<&Generation>,
+    ) -> Result<Voided, OpsError> {
+        self.check_expected(expected)?;
+        if !is_iso_date(date) {
+            return Err(OpsError::BadDate(date.to_string()));
+        }
+        let found = self.find_by_reference(role, reference)?;
+        self.void_found(&found, (super::REFERENCE_TAG, reference), date)
+    }
+
+    /// Void `found`; `key` is the header tag that names it, which the
+    /// reversal carries too.
+    fn void_found(
+        &mut self,
+        found: &FoundDocument,
+        key: (&str, &str),
+        date: &str,
+    ) -> Result<Voided, OpsError> {
+        let number = key.1;
         let original = &found.transaction;
         if date < original.date.as_str() {
             return Err(OpsError::Refused(format!(
@@ -1151,7 +1263,7 @@ impl Loaded {
         let reversal = new_transaction(
             date,
             &format!("{} (void)", original.description),
-            comment_with("", &[(INVOICE_TAG, number), (VOID_TAG, date)]),
+            comment_with("", &[key, (VOID_TAG, date)]),
             postings,
         );
         self.forget_documents();

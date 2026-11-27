@@ -1,0 +1,272 @@
+{#-
+  Ledgeline Invoicer's base for invoice templates, version 1.
+
+  An invoice template can be a whole page of its own, or a small file that
+  extends this one and changes only what it needs. For example, a file
+  `mine.html` beside this one holding
+
+      {% extends "_invoice_base.v1.html" %}
+      {% block theme %}
+        :root { --ink: #222; --muted: #666; --rule: #ccc; --paper: #fff; --desk: #eee; }
+        .sheet { max-width: 8.5in; margin: 0 auto; padding: 0.75in; background: var(--paper); }
+        .sheet { font-family: Georgia, serif; }
+      {% endblock theme %}
+
+  is a template with the base's layout in your colours and font. A Tera
+  comment on its first line names it in the invoicer's picker, as the
+  starters' first lines do (`invoicer: name="Mine" kinds="invoice"`); the
+  `extends` line goes right after it (Tera allows nothing but one comment
+  before `extends`), and any other comment after that.
+  Overriding `theme` replaces all of the base's look, so copy the base's
+  `theme` block as a start, or write `{{ super() }}` first in yours and add
+  rules after it. Any other block can be overridden alone.
+
+  Put the file beside this one (MBR finds a base by name in the same
+  folder). Its name starts with `_`, so the invoicer never lists it as a
+  template. Copied in with the starter templates, it is yours: the invoicer
+  never overwrites it. A fix ships as a new file (`_invoice_base.v2.html`),
+  so templates that extend this one keep looking as they do.
+
+  The blocks, in page order (each one replaces the base's own when a
+  template defines it; `{{ super() }}` inside it keeps the base's):
+
+  - `settings`: before anything is written. `{% set chrome = false %}`
+    shows the sheet alone even in MBR; `{% set kind = "Quote" %}` renames
+    the document.
+  - `ready`: MBR's export-ready signal for PDF export (fonts, images).
+    Leave it, unless the page has to print on `load`.
+  - `head`: anything more for <head>: a <link>, a <meta>.
+  - `theme`: the CSS for the sheet (inside a <style>). Colours are
+    variables: `--ink` (text), `--muted`, `--rule` (lines), `--paper` (the
+    sheet), `--desk` (around the sheet on screen). `@page` sets paper size
+    and margins (`size: A4;`).
+  - `header`: your logo, if you have one, then the document's title and
+    number, and its status (Draft, Void, Paid).
+  - `parties`: who it's from and who pays: name, address, email and phone.
+  - `details`: the dates (issued, due or valid until), terms, reference,
+    and what a deposit is for.
+  - `body`: the invoice's markdown, the bill table included.
+  - `footer`: a closing line, empty here.
+
+  What a template sees (MBR's context): `frontmatter` (here also `fm`), the
+  rendered `markdown`, and these, set below: `kind` ("Invoice", "Estimate"
+  or "Credit note"), `paid` (the `paid:` value as text) and `chrome`.
+
+  Your logo: put `logo: logo.png` (or `logo: "[[logo.png]]"`) on your
+  company's note, naming a PNG, JPEG, GIF, SVG or WebP image beside the
+  note or a path from the books folder (`logo: /assets/logo.png`). A new
+  invoice then carries it as `invoicer_logo` (a path from the books
+  folder, like its copy of your address), and the `header` block shows it
+  above the title, at most 2.5in wide and 0.8in tall, with your company's
+  name as its text for screen readers. Without one, nothing is shown. In
+  your own `header`, write it as the base does:
+  `<img class="logo" src="{{ fm.invoicer_logo | urlencode }}" alt="…">`.
+
+  What stays here whatever a template overrides: MBR's chrome when MBR
+  serves the page (`server_mode`: sidebar, search, breadcrumbs, previous
+  and next), shown only where it works; where scripts are off (the
+  invoicer's frame, a mail client's viewer) the <noscript> rule shows the
+  sheet alone, and on paper MBR's print rules keep only <main>. Rendered on
+  its own (the invoicer's preview, QuickLook) there is no chrome. Also
+  Pico's variables pinned on the sheet (so MBR's stylesheet doesn't
+  restyle it), the print reset, and the rule hiding the books column (the
+  last column, with an italic header).
+-#}
+{%- set fm = frontmatter -%}
+{%- set kind = "Invoice" -%}
+{%- if fm.type == "estimate" %}{% set kind = "Estimate" %}{% elif fm.type == "credit-note" %}{% set kind = "Credit note" %}{% endif -%}
+{%- set paid = fm.paid | default(value="") | as_str -%}
+{%- set chrome = server_mode | default(value=false) -%}
+{%- block settings %}{% endblock settings -%}
+<!doctype html>
+<html lang="en">
+<head>
+{%- if chrome %}
+{#- MBR's own head: its stylesheets, scripts and the page title. #}
+{% include "/.mbr/_head_markdown.html" %}
+{% include "/.mbr/_head_custom.html" %}
+<noscript><style>
+  body.invoice-page > :not(main) { display: none !important; }
+  :root { --pico-font-size: 100%; background: var(--desk); }
+  body.invoice-page { background: var(--desk); }
+</style></noscript>
+{%- else %}
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ fm.title | default(value=kind ~ " " ~ fm.invoice_num) }}</title>
+{%- endif %}
+{% block ready %}{% include "/.mbr/_export_ready.html" %}{% endblock ready %}
+{% block head %}{% endblock head %}
+<style>
+  @page { size: letter; margin: 0.75in; }
+
+  * { box-sizing: border-box; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body.invoice-page:not(.with-chrome) { margin: 0; }
+  .sheet {
+    /* MBR's stylesheet (Pico) is on the page when MBR serves it: pin its
+       variables on the sheet so the invoice looks the same everywhere. */
+    --pico-color: var(--ink);
+    --pico-background-color: transparent;
+    --pico-font-family: inherit;
+    --pico-table-border-color: var(--rule);
+    color: var(--ink);
+    text-align: left;
+  }
+  .sheet :is(h1, h2, h3, h4, p, th, td) { color: inherit; font-family: inherit; }
+  /* The logo (`invoicer_logo`): sized for print whatever the theme. */
+  .sheet .logo { display: block; width: auto; height: auto; max-width: 2.5in; max-height: 0.8in; margin: 0 0 1rem; }
+
+  /* The books column: last column, italic header. Works in any engine with :has(). */
+  table:has(thead th:last-child > em:only-child) :is(th, td):last-child { display: none; }
+
+  @media screen {
+    body.invoice-page:not(.with-chrome) { background: var(--desk); }
+    .invoice-main { padding: 24px 12px; }
+  }
+  @media print {
+    /* MBR's print rules shrink its root font size; the sheet keeps its own. */
+    :root { --pico-font-size: 100%; background: none; }
+    body.invoice-page { background: none; }
+    .invoice-main { padding: 0; }
+  }
+</style>
+<style>
+{% block theme %}
+  :root {
+    --ink: #1f2328;
+    --muted: #555c66;
+    --rule: #c9ced6;
+    --paper: #fff;
+    --desk: #eef0f2;
+  }
+
+  .sheet {
+    max-width: 8.5in;
+    margin: 0 auto;
+    padding: 0.75in;
+    background: var(--paper);
+    font-family: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 10.5pt;
+    line-height: 1.45;
+    font-variant-numeric: tabular-nums;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+  }
+
+  .doc-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; margin: 0 0 1.25rem; }
+  .sheet h1 { margin: 0; font-size: 20pt; font-weight: 700; line-height: 1.2; }
+  .status { padding: 0.1rem 0.5rem; border: 1.5px solid currentColor; border-radius: 3px; font-size: 9pt; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
+  .status.draft { color: #6b7280; }
+  .status.void { color: #a3271a; }
+  .status.paid { color: #2d6a3e; }
+
+  .parties { display: flex; gap: 2rem; margin-bottom: 1rem; }
+  .parties > div { flex: 1; }
+  .party-head { margin: 0 0 0.15rem; font-weight: 700; }
+  .party-line { margin: 0; color: var(--muted); }
+
+  .details { display: flex; flex-wrap: wrap; gap: 0.25rem 1.5rem; margin: 0 0 1.5rem; padding: 0.5rem 0; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+  .details span { white-space: nowrap; }
+  .details b { font-weight: 600; }
+
+  .body p { margin: 0 0 0.75rem; }
+  .body h2 { margin: 1.5rem 0 0.5rem; font-size: 12pt; font-weight: 700; }
+  .body table { width: 100%; margin: 0.5rem 0 1.25rem; border-collapse: collapse; }
+  .body :is(th, td) {
+    padding: 0.35rem 0.6rem;
+    border: 1px solid var(--rule);
+    background: none;
+    vertical-align: top;
+  }
+  .body thead th { background: #f1f3f5; font-weight: 700; }
+  .body tr { break-inside: avoid; }
+  /* Subtotal and total rows: their cells are bold. */
+  .body tbody tr:has(td strong) td { background: #f7f8f9; }
+
+  .footer { margin-top: 2rem; color: var(--muted); font-size: 8.5pt; }
+
+  @media print {
+    .sheet { max-width: none; padding: 0; box-shadow: none; }
+  }
+{% endblock theme %}
+</style>
+</head>
+<body class="invoice-page{% if chrome %} with-chrome{% endif %}">
+{%- if chrome %}
+{% if sidebar_style == "single" %}<mbr-browse-single{% if sidebar_max_items %} max-items="{{ sidebar_max_items }}"{% endif %}>{% include "/.mbr/_browse_footer.html" %}</mbr-browse-single>{% endif %}
+{% include "/.mbr/_nav.html" %}
+{% include "/.mbr/_breadcrumbs.html" %}
+{%- endif %}
+<main class="invoice-main">
+<div class="sheet">
+{% block header %}
+  {%- if fm.invoicer_logo %}
+  <img class="logo" src="{{ fm.invoicer_logo | urlencode }}" alt="{{ fm.invoicer_name | default(value="") }}">
+  {%- endif %}
+  <div class="doc-head">
+    <h1>{{ kind }} {{ fm.invoice_num }}</h1>
+    {%- if fm.status == "void" %}
+    <span class="status void">Void</span>
+    {%- elif fm.status == "draft" %}
+    <span class="status draft">Draft</span>
+    {%- elif paid is matching("^\d{4}-\d{2}-\d{2}") %}
+    <span class="status paid">Paid</span>
+    {%- endif %}
+  </div>
+{% endblock header %}
+{% block parties %}
+  <div class="parties">
+    <div class="from">
+      <p class="party-head">From {{ fm.invoicer_name | default(value="") }}</p>
+      {%- if fm.invoicer_address %}
+      <p class="party-line">{{ fm.invoicer_address | trim | escape | linebreaksbr | safe }}</p>
+      {%- endif %}
+      {%- if fm.invoicer_email %}
+      <p class="party-line">{{ fm.invoicer_email }}</p>
+      {%- endif %}
+      {%- if fm.invoicer_phone %}
+      <p class="party-line">{{ fm.invoicer_phone }}</p>
+      {%- endif %}
+    </div>
+    <div class="bill-to">
+      <p class="party-head">Bill to {{ fm.invoicee_name | default(value="") }}</p>
+      {%- if fm.invoicee_address %}
+      <p class="party-line">{{ fm.invoicee_address | trim | escape | linebreaksbr | safe }}</p>
+      {%- endif %}
+      {%- if fm.invoicee_email %}
+      <p class="party-line">{{ fm.invoicee_email }}</p>
+      {%- endif %}
+      {%- if fm.invoicee_phone %}
+      <p class="party-line">{{ fm.invoicee_phone }}</p>
+      {%- endif %}
+    </div>
+  </div>
+{% endblock parties %}
+{% block details %}
+  <p class="details">
+    {%- if fm.date %}<span><b>Date</b> {{ fm.date }}</span>{% endif %}
+    {%- if fm.due_date and kind != "Credit note" %}<span><b>{% if kind == "Estimate" %}Valid until{% else %}Due{% endif %}</b> {{ fm.due_date }}</span>{% endif %}
+    {%- if fm.terms and kind == "Invoice" %}<span><b>Terms</b> Net {{ fm.terms }}</span>{% endif %}
+    {%- if fm.reference %}<span><b>Reference</b> {{ fm.reference }}</span>{% endif %}
+    {%- if fm.deposit_for %}<span><b>Deposit for</b> {{ fm.deposit_for }}</span>{% endif %}
+  </p>
+{% endblock details %}
+{% block body %}
+  <div class="body">{{ markdown | safe }}</div>
+{% endblock body %}
+{% block footer %}{% endblock footer %}
+</div>
+</main>
+{%- if chrome %}
+<footer class="container" data-pagefind-ignore>
+  <mbr-nav></mbr-nav>
+  <nav class="mbr-footer-links" aria-label="Footer links"><ul>{% include "/.mbr/_page_footer_links.html" %}</ul></nav>
+</footer>
+{% include "/.mbr/_footer.html" %}
+{% include "/.mbr/_footer_custom.html" %}
+{%- endif %}
+</body>
+{%- if chrome %}
+{% include "/.mbr/_scripts.html" %}
+{%- endif %}
+</html>

@@ -1,0 +1,23 @@
+# Time — pat — September 2026
+# Kept by hand. An indented `;` line continues the comment of the line above
+# it (plan 46 fact 4): under a date line its tags are the day's, under an
+# entry they are the entry's. A blank line, an unindented `;` line or any `#`
+# line ends that; an indented `;` line after one is ignored.
+
+2026-09-21 Mon
+    ; person: pat
+    clients:acme:tax-return           2h  ; extension prep
+    ; invoice: 101
+    ; called the IRS
+    clients:initech:discovery        45m
+    # invoice: 102 is ignored: a # line
+    ; nobill: ignored too, after the hash line
+    clients:globex:audit              1h
+    ; follow-up questions
+    ; on the trial balance
+
+2026-09-22 Tue  ; person: pat
+; an unindented note is ignored
+    ; invoice: 999 is ignored, after the unindented line
+    clients:acme:advisory            30m
+    ; nobill: kickoff

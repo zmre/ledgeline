@@ -56,8 +56,28 @@ export interface Binding {
      * `?` is `"?"` and never `shift+/`, and `G` is `"G"` and never `shift+g`.
      * `shift+` is only ever written on a NAMED key (`shift+Tab`). Getting this
      * wrong is the classic keymap bug; the matcher has no other shift rule.
+     * The one exception: a digit under Ctrl/Cmd is read from the physical key,
+     * so `"ctrl+shift+1"` and `"meta+alt+1"` keep their Shift/Alt and match on
+     * every layout (see `chordToken`).
+     *
+     * When `macKeys` is set, this is the spelling for every platform but macOS.
      */
     keys: string;
+    /**
+     * The spelling on macOS, when it is not just `keys` with `mod+` meaning
+     * Cmd — a chord that needs different modifiers per platform because the
+     * natural one is taken. The keymap resolves it once (`keysFor`), so the
+     * dispatcher, the shadowing rule and the `?` sheet all see only the
+     * current platform's keys. Plan 46's slot toggle, for instance:
+     *
+     *     {keys: "ctrl+shift+1", macKeys: "meta+alt+1", label: "Toggle slot 1", group: "Time", run}
+     *
+     * is ⌥⌘1 on a Mac (⌘⇧1 would collide with the screenshot keys) and
+     * Ctrl+Shift+1 on Linux and Windows (Ctrl+Alt is AltGr there). Neither sets
+     * `fields`, so both stay off while typing, where Ctrl+Shift+arrows extend
+     * the selection.
+     */
+    macKeys?: string;
     /** Imperative, sentence case. This IS the help sheet's row text — there is nowhere else to write one. */
     label: string;
     group: KeyGroup;
@@ -117,7 +137,11 @@ export interface RegisteredLayer extends Layer {
     seq: number;
 }
 
-/** A binding that survived resolution, tagged with the layer it came from (for debugging and help grouping). */
+/**
+ * A binding that survived resolution, tagged with the layer it came from (for
+ * debugging and help grouping). Its `keys` are already the current platform's
+ * (`macKeys` applied), so nothing downstream needs to know about platforms.
+ */
 export interface ResolvedBinding extends Binding {
     layerId: string;
 }

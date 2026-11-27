@@ -14,7 +14,10 @@
      bill grid adds and moves rows (BillGrid). Leaving with unsaved changes (a link, Back)
      asks Save / Discard / Cancel (H13). Steps that touch the books ask first
      (ARCHITECTURE §4): Send books it; Void reverses it; Re-book replaces its
-     transaction; saving a sent invoice re-books it. -->
+     transaction; saving a sent invoice re-books it. Delete draft… removes a
+     draft's file; both it and Void say what happens to time billed on the
+     invoice (plan 46 T10): a delete releases it, a void asks Release (the
+     default) or Mark not billed. -->
 <script lang="ts">
     import {onDestroy, onMount, untrack} from "svelte";
     import {goto} from "$app/navigation";
@@ -36,6 +39,11 @@
     import BillGrid from "#lib/components/BillGrid.svelte";
     import ConfirmDialog from "#lib/components/ConfirmDialog.svelte";
     import ConflictNotice from "#lib/components/ConflictNotice.svelte";
+    import DeleteDraftDialog from "#lib/components/DeleteDraftDialog.svelte";
+    import VoidTimeChoice from "#lib/components/VoidTimeChoice.svelte";
+    import {fetchInvoiceTime} from "#lib/time/billing/invoiceTime.js";
+    import {hoursWords} from "#lib/time/billing/words.js";
+    import type {Qty} from "#lib/time/types.js";
     import HeaderForm from "#lib/components/HeaderForm.svelte";
     import InvoiceFrame from "#lib/components/InvoiceFrame.svelte";
     import ProseField from "#lib/components/ProseField.svelte";
@@ -117,12 +125,24 @@
     let delivery = $state<Delivery | null>(null);
     let via = $state("email");
     let voidDate = $state(localToday());
+    /** The time on the invoice (Void… asks what becomes of it), and the answer. */
+    let voidTime = $state<Qty | null>(null);
+    let voidHow = $state<"release" | "nobill">("release");
+    let deleting = $state(false);
 
     async function ask(step: "send" | "void" | "rebook"): Promise<void> {
         stepError = null;
         notice = null;
         dialog = step;
-        if (step === "void") voidDate = localToday();
+        if (step === "void") {
+            voidDate = localToday();
+            voidTime = null;
+            voidHow = "release";
+            const asked = editor.number;
+            void fetchInvoiceTime(asked).then((t) => {
+                if (dialog === "void" && editor.number === asked) voidTime = t;
+            });
+        }
         if (step === "send") {
             try {
                 delivery = await fetchDelivery(editor.number);
@@ -138,14 +158,21 @@
         stepError = null;
         try {
             if (step === "send") await sendInvoice(editor.number, via);
-            if (step === "void") await voidInvoice(editor.number, voidDate);
+            let released = 0;
+            if (step === "void") released = (await voidInvoice(editor.number, voidDate, voidHow)).time?.released ?? 0;
             if (step === "rebook") await rebookInvoice(editor.number);
             dialog = null;
+            const time =
+                voidTime === null || released === 0
+                    ? ""
+                    : voidHow === "nobill"
+                      ? ` Its ${hoursWords(voidTime)} of time are marked not billed.`
+                      : ` Its ${hoursWords(voidTime)} of time are back in To bill.`;
             notice =
                 step === "send"
                     ? `Invoice ${editor.number} is sent.`
                     : step === "void"
-                      ? `Invoice ${editor.number} is void.`
+                      ? `Invoice ${editor.number} is void.${time}`
                       : `Invoice ${editor.number} is re-booked.`;
             await editor.load(editor.number);
             sendReload += 1;
@@ -270,6 +297,11 @@
                         <button type="button" class="btn btn-sm" onclick={() => void ask("rebook")} data-testid="editor-rebook">Re-book…</button>
                     {/if}
                     <button type="button" class="btn btn-outline btn-error btn-sm" onclick={() => void ask("void")} data-testid="editor-void">Void…</button>
+                    {#if editor.status === "draft"}
+                        <button type="button" class="btn btn-ghost btn-error btn-sm" onclick={() => (deleting = true)} data-testid="editor-delete-draft"
+                            >Delete draft…</button
+                        >
+                    {/if}
                 </div>
             {/if}
             <SendSection number={editor.number} reload={sendReload} onChanged={() => void editor.load(editor.number)} />
@@ -461,7 +493,19 @@
             <p>Cash books: it marks the file void. An invoice with a payment applied can't be voided until that payment is undone.</p>
         {/if}
         <label class="flex items-center gap-2">Void date <DateInput bind:value={voidDate} aria-label="Void date" /></label>
+        <VoidTimeChoice time={voidTime} bind:how={voidHow} />
     </ConfirmDialog>
+{/if}
+
+{#if deleting}
+    <DeleteDraftDialog
+        number={editor.number}
+        onDeleted={() => {
+            deleting = false;
+            void goto(resolve("/invoices"));
+        }}
+        onCancel={() => (deleting = false)}
+    />
 {/if}
 
 {#if dialog === "rebook"}

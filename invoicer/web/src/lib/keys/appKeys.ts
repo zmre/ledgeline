@@ -5,8 +5,11 @@
 // but declares none.
 //
 // `g g` and `G` stay free for lists (first and last row), as in Ledgeline.
-// Settings is `g ,` (`g s` is Snippets) and Cmd/Ctrl+, as in a desktop app;
-// the zoom keys are Ledgeline's (`#ui/keys/zoomBindings.ts`).
+// Home (the dashboard) is `g d`. Settings is `g ,` (`g s` is Snippets) and
+// Cmd/Ctrl+, as in a desktop app; time tracking's are `g w` (Time),
+// `g r` (Track: `g t` is Templates'), `g e` (time entries), `g a` (Time
+// accounts) and `g u` (To bill); the zoom keys are Ledgeline's
+// (`#ui/keys/zoomBindings.ts`).
 //
 // Escape leaves a field (Y5): single-letter keys are off while typing, so
 // without a way out of a field a keyboard user would have to Tab to a
@@ -24,7 +27,20 @@ import {PRIORITY, type Layer} from "#ui/keys/types.js";
 import {zoomBindings} from "#ui/keys/zoomBindings.js";
 import {pageSearch} from "./pageSearch.svelte.js";
 
-type Section = "/" | "/invoices" | "/customers" | "/catalog" | "/snippets" | "/templates" | "/new" | "/settings";
+type Section =
+    | "/"
+    | "/invoices"
+    | "/customers"
+    | "/catalog"
+    | "/snippets"
+    | "/templates"
+    | "/new"
+    | "/settings"
+    | "/time"
+    | "/time/track"
+    | "/time/entries"
+    | "/time/accounts"
+    | "/to-bill";
 
 /** Go to a page (with `search`, a query such as `?deposit=1`); already there, nothing. */
 function to(path: Section, search = ""): () => void {
@@ -58,13 +74,19 @@ export function appLayer(): Layer {
             {keys: "Escape", label: "Leave the field", group: "Global", fields: true, run: leaveField},
             {keys: "mod+,", label: "Open Settings", group: "Global", fields: true, run: to("/settings")},
             ...zoomBindings("Global"),
-            {keys: "g d", label: "Go to Dashboard", group: "Go to", run: to("/")},
+            {keys: "g d", label: "Go to Home", group: "Go to", run: to("/")},
             {keys: "g i", label: "Go to Invoices", group: "Go to", run: to("/invoices")},
             {keys: "g c", label: "Go to Customers", group: "Go to", run: to("/customers")},
             {keys: "g k", label: "Go to Catalog", group: "Go to", run: to("/catalog")},
             {keys: "g s", label: "Go to Snippets", group: "Go to", run: to("/snippets")},
             {keys: "g t", label: "Go to Templates", group: "Go to", run: to("/templates")},
             {keys: "g ,", label: "Go to Settings", group: "Go to", run: to("/settings")},
+            // Time (plan 46 K). `g t` is Templates', so Track is `g r` (r for recording).
+            {keys: "g u", label: "Go to To bill", group: "Go to", run: to("/to-bill")},
+            {keys: "g w", label: "Go to Time", group: "Go to", run: to("/time")},
+            {keys: "g e", label: "Go to time entries", group: "Go to", run: to("/time/entries")},
+            {keys: "g r", label: "Go to Track", group: "Go to", run: to("/time/track")},
+            {keys: "g a", label: "Go to Time accounts", group: "Go to", run: to("/time/accounts")},
         ],
     };
 }

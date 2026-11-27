@@ -1,0 +1,84 @@
+2026-09-14 * Kickoff  ; person: pat
+    ; invoice: 99
+    ; agenda sent ahead
+    (clients:acme:advisory)           1.50h
+
+2026-09-15 * Fieldwork
+    ; person: sam
+    (clients:globex:audit)           3.51h
+
+2026-09-21 * Mon
+    ; person: pat
+    (clients:acme:tax-return)              2.00  ; extension prep
+    ; invoice: 101
+    ; called the IRS
+    (clients:initech:discovery)            0.75
+    (clients:globex:audit)                 1.00
+    ; follow-up questions
+    ; on the trial balance
+
+2026-09-22 * Tue  ; person: pat
+    (clients:acme:advisory)            0.50
+    ; nobill: kickoff
+
+2026-09-29 * Late call  ; person: pat
+    (clients:initech:discovery)           1.50h
+
+2026-09-30 * Late call  ; person: pat
+    (clients:initech:discovery)           0.75h
+
+2026-09-30 * 08:00-08:20  ; person: pat
+    (internal:admin)           0.33h
+
+2026-10-05 * Mon  ; person: pat
+    (clients:acme:tax-return)            1.00  ; first look, invoice: 101
+    (clients:acme:advisory)              0.50  ; invoice: 101
+    (internal:admin)                     0.25
+
+2026-10-06 * Tue  ; person: pat
+    (clients:globex:audit)               2.00
+    (clients:acme:tax-return)            0.50  ; t:a
+    (clients:acme:tax-return)            0.25  ; t:b
+
+2026-10-07 * Wed  ; person: pat
+    (clients:acme:travel)                  2.00  ; drive to site
+    (clients:initech:discovery)            1.50  ; invoice: 102
+    (internal:sales)                       0.75
+
+2026-10-20 * Tue  ; person: pat
+    (clients:acme:tax-return)            3.00  ; invoice: 101
+    (clients:acme:advisory)              0.33  ; nobill: courtesy call
+    (clients:globex:audit)               2.50
+
+2026-10-30 * Fri  ; person: pat
+    (clients:acme:advisory)                1.00  ; year-end planning
+    (clients:initech:discovery)            0.50
+
+2026-11-02 * Mon  ; person: pat
+    (clients:acme:tax-return)            1.50  ; gathered documents
+    (internal:admin)                     0.25
+
+2026-11-02 * Mon
+    (clients:globex:audit)            3.00  ; bill: sam-2026-11a
+    (clients:globex:audit)            1.00  ; bill: sam-2026-11a, invoice: 107
+
+2026-11-03 * Tue  ; person: pat
+    (clients:globex:audit)                 2.00
+    (clients:initech:discovery)            0.67
+
+2026-11-04 * Wed
+    (clients:globex:audit)            4.50  ; fieldwork
+    (internal:admin)                  0.50
+
+2026-11-24 * Tue
+    (clients:acme:advisory)            1.00  ; second opinion on the K-1
+
+2026-11-25 * Wed  ; person: pat
+    (clients:acme:tax-return)            2.17  ; reviewed schedules C and E
+    (internal:admin)                     0.25
+
+2026-11-26 * Thu  ; person: pat
+    (clients:acme:tax-return)            0.75  ; invoice: 108
+    (clients:acme:tax-return)            0.33  ; call with Fred about the K-1
+    (clients:acme:advisory)              1.00
+

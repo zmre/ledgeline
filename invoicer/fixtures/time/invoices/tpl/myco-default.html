@@ -1,0 +1,14 @@
+{# invoicer: name="MyCo default" kinds="invoice,estimate" #}
+{% extends "_invoice_base.v1.html" %}
+{#-
+  The fixtures' own invoice template: plain on purpose (it is test data), but
+  readable. It is the invoicer's base (`_invoice_base.v1.html`, beside it) as
+  it comes: who it's from and who pays, the dates, then the bill table with
+  ruled, padded cells; the books column (last, italic header) hidden; MBR's
+  chrome when MBR serves the page.
+
+  It leaves out MBR's export-ready partial on purpose (the empty `ready`
+  block): the invoicer prints this one on `load` (PLAN P7), and the tests
+  cover that path.
+-#}
+{% block ready %}{% endblock ready %}

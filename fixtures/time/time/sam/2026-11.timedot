@@ -1,0 +1,13 @@
+# Sam Lee's timesheet, November 2026. Sam is a contractor: the bill: tag
+# says which accounts-payable bill paid for the line.
+
+2026-11-02 Mon
+    clients:globex:audit              3h  ; bill: sam-2026-11a
+    clients:globex:audit              1h  ; bill: sam-2026-11a, invoice: 107
+
+2026-11-04 Wed
+    clients:globex:audit            270m  ; fieldwork
+    internal:admin                   30m
+
+2026-11-24 Tue
+    clients:acme:advisory             1h  ; second opinion on the K-1

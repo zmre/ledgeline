@@ -8,6 +8,8 @@
 //   lands after a newer one. A save still waiting goes out as the page hides.
 // - The matching settings are part of the Settings page's form: they change
 //   only on Save (`saveMatching`).
+// - The sidebar's Library section, open or closed (`sidebarLibraryOpen`, the
+//   invoicer's own view state), saves at once, as the theme does.
 // - `pin` keeps a key for these books alone (`POST /api/ui-prefs/pin`), or
 //   stops; the answer is the effective prefs, adopted as they come back.
 //
@@ -66,6 +68,7 @@ export const SCALE_SAVE_MS = 400;
 export class UiPrefs implements AppearancePrefs {
     #theme = $state<string>(DEFAULT_THEME_PREF);
     #uiScale = $state(DEFAULT_SCALE);
+    #libraryOpen = $state(false);
     #ready = $state(false);
     #storage = $state<"files" | "browser" | null>(null);
     #localKeys = $state<string[]>([]);
@@ -102,6 +105,16 @@ export class UiPrefs implements AppearancePrefs {
         if (next === this.#uiScale) return;
         this.#uiScale = next;
         this.#queue({uiScale: next}, this.#debounceMs);
+    }
+
+    /** Whether the sidebar's Library section is open (closed by default). */
+    get libraryOpen(): boolean {
+        return this.#libraryOpen;
+    }
+    set libraryOpen(open: boolean) {
+        if (open === this.#libraryOpen) return;
+        this.#libraryOpen = open;
+        this.#queue({sidebarLibraryOpen: open}, 0);
     }
 
     /** False until the saved prefs have loaded (the first-paint cache waits for it). */
@@ -182,6 +195,7 @@ export class UiPrefs implements AppearancePrefs {
         // A value still waiting to be saved is newer than the answer.
         if (typeof prefs.theme === "string" && !("theme" in this.#pending)) this.#theme = prefs.theme;
         if (typeof prefs.uiScale === "number" && !("uiScale" in this.#pending)) this.#uiScale = wholeScale(prefs.uiScale);
+        if (typeof prefs.sidebarLibraryOpen === "boolean" && !("sidebarLibraryOpen" in this.#pending)) this.#libraryOpen = prefs.sidebarLibraryOpen;
         this.matching = Object.fromEntries(MATCHING_KEYS.map((k) => [k, k in prefs ? clampMatching(k, prefs[k]) : this.matching[k]])) as Matching;
         if (answer.storage !== undefined) this.#storage = answer.storage;
         if (Array.isArray(answer.localKeys)) this.#localKeys = answer.localKeys.filter((k): k is string => typeof k === "string");

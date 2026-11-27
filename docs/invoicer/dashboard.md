@@ -1,13 +1,13 @@
 ---
-title: Dashboard
-description: "The Ledgeline Invoicer dashboard: drafts, what is outstanding and what was paid recently, the aging of what you are owed, recently updated invoices, days sales outstanding, average days to pay, and the settings that change them."
+title: Home
+description: "The Ledgeline Invoicer home page: drafts, what is outstanding and what was paid recently, the aging of what you are owed, recently updated invoices, days sales outstanding, average days to pay, and the settings that change them."
 order: 40
 tags: [invoicer]
 ---
 
-# Dashboard
+# Home
 
-The dashboard is the app's home page. It answers three questions: what is waiting to be sent, what you are owed, and what came in recently. Every figure on it is a link to the invoices behind it.
+Home is the app's first page. It answers three questions: what is waiting to be sent, what you are owed, and what came in recently. Every figure on it is a link to the invoices behind it.
 
 What you are owed comes from your books, the same figures Ledgeline shows. In accrual books that means every receivable still open, including ones booked without an invoice file, such as an opening balance. In cash books it means sent invoices less the payments applied to them.
 
@@ -46,7 +46,7 @@ The large figure beside the bar is the total outstanding. Next to it, the aging 
 
 Each row opens the invoices in it. The Aging ranges [setting](settings.md#dashboard) changes the ranges.
 
-If some of what is owed was booked without an invoice file in these books, a line under the bar says how much and how many items. The invoice list can only show invoices that have files, so those items appear on the dashboard but not in the list.
+If some of what is owed was booked without an invoice file in these books, a line under the bar says how much and how many items. The invoice list can only show invoices that have files, so those items appear on Home but not in the list.
 
 With more than one currency, each gets its own panel.
 
@@ -67,6 +67,20 @@ Six cards for the invoices that changed most recently, newest first. Each card s
 
 **Open in Ledgeline** on the recognition tile opens these books in Ledgeline, where **Journal → Recognition** posts the entries. The button needs Ledgeline installed and is only on macOS. Elsewhere the tile tells you where to go. See [Revenue and expense recognition](../journal/accrual-recognition.md).
 
+## Time
+
+If you [track time](../time/index.md), a row of three tiles sits under the receivables. It isn't there until time tracking is set up and some time is recorded, so books that don't track time never show it.
+
+| Tile               | Shows                                                                                                                                                                                                                  | Opens                                             |
+|--------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------|
+| Hours this week    | Everyone's hours from Monday through Sunday, and the change from last week up to the same weekday. On a Thursday it compares with last Monday to Thursday.                                                             | the time Overview on This week                    |
+| Billable this week | The share of this week's hours on billable accounts, the hours behind it, and the change from last week in percentage points.                                                                                          | the time Overview on This week, split by billable |
+| Unbilled           | Billable time for a customer that isn't on an invoice yet, as money at each account's item rate, with the hours and how many customers. It says when some time has no rate, or when billable time has no customer yet. | Entries, unbilled time only                       |
+
+**Bill…** on the Unbilled tile opens the page that bills it, customer by customer. See [Billing time](../time/billing.md). With nothing unbilled the tile says *Nothing to bill*.
+
+The row loads on its own, so the rest of the page never waits for it, and it updates when a time file changes.
+
 ## Settings
 
 Change these in **Settings → These books → Dashboard**, then Save. See [Settings](settings.md#dashboard). They are kept under `[invoicer]` in the books' `ledgeline.toml`:
@@ -84,7 +98,7 @@ dso-days = 30
 paid-window-days = 90
 ```
 
-The aging ranges apply to the dashboard only. `ledgeline-invoicer receivables` and Ledgeline keep the fixed ranges in the table above.
+The aging ranges apply to Home only. `ledgeline-invoicer receivables` and Ledgeline keep the fixed ranges in the table above.
 
 ## Keys
 

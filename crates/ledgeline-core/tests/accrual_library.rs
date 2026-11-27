@@ -727,6 +727,107 @@ fn documents_are_found_by_number_rebooked_and_voided() {
     ));
 }
 
+/// A contractor's bill as Invoicer's *Pay* books it: no number, a
+/// `reference:` (plan 46 B-ap).
+fn reference_bill(journal: &Journal, reference: &str, cents: i128) -> DocumentSpec {
+    DocumentSpec {
+        direction: Direction::Expense,
+        date: "2026-02-01".into(),
+        description: format!("Lee Consulting | {reference}"),
+        number: None,
+        party: Some(Party {
+            kind: PartyKind::Vendor,
+            name: "Lee Consulting".into(),
+        }),
+        settlement_account: "liabilities:accounts payable".into(),
+        lines: vec![DocumentLine::new(
+            "expenses:contractors",
+            money(journal, "$", Dec::new(cents, 2)),
+        )],
+        tags: vec![tag("reference", reference)],
+    }
+}
+
+const PAYABLE_BOOKS: &str = "\
+account liabilities:accounts payable  ; type: L, kpi: payable
+account expenses:contractors  ; type: X
+
+2026-01-20 Lee Consulting | paid-bill  ; reference: paid-bill
+    liabilities:accounts payable  $-50.00  ; match: m-1
+    expenses:contractors
+
+2026-01-25 Pay Lee
+    liabilities:accounts payable  $50.00  ; match: m-1
+    assets:bank
+";
+
+#[test]
+fn a_bill_without_schedules_creates_no_recognition_file_and_voids_by_reference() {
+    let (vault, books) = mem_books(&format!("{SERVICE_BOOKS}\n{PAYABLE_BOOKS}"));
+    let mut loaded = books.load().expect("loads");
+    assert!(!loaded.recognition_exists());
+    let spec = reference_bill(loaded.journal(), "sam timesheet 2026-01", 97_750);
+    loaded
+        .write_document(&spec, "2026-02-01", false, None)
+        .expect("books the bill");
+    // Only the journal write: no recognition file the person didn't ask for.
+    assert!(vault.text("recognition.journal").is_none());
+    assert!(
+        vault
+            .text("books.journal")
+            .expect("journal")
+            .contains("reference: sam timesheet 2026-01")
+    );
+
+    let loaded = books.load().expect("loads");
+    let found = loaded
+        .find_by_reference(AccrualRole::Payable, "sam timesheet 2026-01")
+        .expect("found");
+    assert!(!loaded.is_voided(&found));
+    assert!(matches!(
+        loaded.find_by_reference(AccrualRole::Receivable, "sam timesheet 2026-01"),
+        Err(OpsError::DocumentNotFound(_))
+    ));
+
+    // Voided: a reversal tagged with the reference, linked to the bill.
+    let voided = books
+        .load()
+        .expect("loads")
+        .void_by_reference(
+            AccrualRole::Payable,
+            "sam timesheet 2026-01",
+            "2026-02-05",
+            None,
+        )
+        .expect("voids");
+    assert_eq!(
+        tag_value(&voided.transaction.tags, "reference"),
+        Some("sam timesheet 2026-01")
+    );
+    assert_eq!(
+        tag_value(&voided.transaction.tags, "void"),
+        Some("2026-02-05")
+    );
+    assert!(tag_value(&voided.transaction.tags, "invoice").is_none());
+    let loaded = books.load().expect("loads");
+    let found = loaded
+        .find_by_reference(AccrualRole::Payable, "sam timesheet 2026-01")
+        .expect("the bill, not its reversal");
+    assert!(loaded.is_voided(&found));
+    assert!(vault.text("recognition.journal").is_none());
+
+    // A paid bill (a payment linked) is refused, and isn't "voided".
+    let mut loaded = books.load().expect("loads");
+    let paid = loaded
+        .find_by_reference(AccrualRole::Payable, "paid-bill")
+        .expect("found");
+    assert!(!loaded.is_voided(&paid));
+    assert!(matches!(
+        loaded.void_by_reference(AccrualRole::Payable, "paid-bill", "2026-02-05", None),
+        Err(OpsError::Refused(_))
+    ));
+}
+
 /// Cash books: deposits as a bank import writes them, hand-aligned, one
 /// with a processor fee and a note under the bank leg.
 const CASH_BOOKS: &str = "\

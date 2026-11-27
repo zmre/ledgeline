@@ -6,18 +6,24 @@
 export const INVOICER_KEY_GROUPS = [
     "Global",
     "Go to",
-    "Dashboard",
+    "Time",
+    "Home",
     "Invoices",
     "Invoice",
     "Invoice editor",
     "Bill table",
+    "To bill",
     "Customers",
     "Customer",
     "Catalog",
     "Snippets",
     "Templates",
     "Template",
+    "Track",
     "Settings",
+    // Time tracking (plan 46).
+    "Time entries",
+    "Time accounts",
 ] as const;
 
 export type InvoicerKeyGroup = (typeof INVOICER_KEY_GROUPS)[number];

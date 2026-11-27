@@ -38,6 +38,7 @@ mod serve;
 pub(crate) mod settings;
 pub(crate) mod settings_wire;
 pub(crate) mod templates;
+pub(crate) mod time;
 pub(crate) mod watch;
 
 use std::path::PathBuf;
@@ -166,12 +167,23 @@ impl AppState {
         app_dirs: AppDirs,
         native: Option<Arc<dyn Native>>,
     ) -> Self {
+        Self::with_prefs(books, app_dirs, native, prefs::session_from_env())
+    }
+
+    /// [`AppState::with_native`], with the UI-prefs session given (tests of
+    /// browser storage).
+    pub(crate) fn with_prefs(
+        books: Option<Arc<OpenBooks>>,
+        app_dirs: AppDirs,
+        native: Option<Arc<dyn Native>>,
+        prefs: UiPrefsSession,
+    ) -> Self {
         Self {
             inner: Arc::new(Shared {
                 books: ArcSwapOption::from(books),
                 unopened: ArcSwapOption::empty(),
                 app_dirs,
-                prefs: prefs::session_from_env(),
+                prefs,
                 native,
             }),
         }
@@ -317,6 +329,8 @@ mod settings_tests;
 mod spa_shell_csp_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod time_tests;
 
 #[cfg(test)]
 mod identity_tests {

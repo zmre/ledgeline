@@ -1309,6 +1309,7 @@ mod tests {
             source_name: "/j/main.journal".to_string(),
             source_files: vec![],
             transactions: vec![],
+            time_transactions: Vec::new(),
             periodic_transactions: vec![],
             auto_rules: vec![],
             accounts: vec![],

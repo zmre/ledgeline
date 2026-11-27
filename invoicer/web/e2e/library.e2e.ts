@@ -34,6 +34,13 @@ async function open(page: Page): Promise<void> {
     await expect(page).toHaveURL(/\/app\/invoices$/);
 }
 
+/** Open the sidebar's Library (Catalog, Snippets, Templates, Time accounts) when it is closed. */
+async function openLibrary(page: Page): Promise<void> {
+    const library = page.getByTestId("sidebar-group-library");
+    if ((await library.getAttribute("aria-expanded")) === "false") await library.click();
+    await expect(library).toHaveAttribute("aria-expanded", "true");
+}
+
 /**
  * Replace a prose field's text: MBR's `<mbr-markdown-field>` (Milkdown/ProseMirror)
  * when it loaded, else the plain textarea. The field reports a change when it
@@ -74,6 +81,8 @@ test.describe("the catalog and snippets over the accrual fixture (:5199)", () =>
     test("edits the catalog, and the invoice editor offers the new item", async ({page}) => {
         test.setTimeout(90_000);
         await open(page);
+        // Catalog is in the sidebar's Library, closed until opened.
+        await openLibrary(page);
         await page.getByTestId("sidebar").getByRole("link", {name: "Catalog"}).click();
         await expect(page).toHaveURL(/\/app\/catalog$/);
         await expect(page.getByTestId("sidebar").getByRole("link", {name: "Catalog"})).toHaveAttribute("aria-current", "page");
@@ -132,6 +141,7 @@ test.describe("the catalog and snippets over the accrual fixture (:5199)", () =>
     test("creates a snippet, writes its text, and shows where snippets are used", async ({page}) => {
         test.setTimeout(90_000);
         await open(page);
+        await openLibrary(page);
         await page.getByTestId("sidebar").getByRole("link", {name: "Snippets"}).click();
         await expect(page).toHaveURL(/\/app\/snippets$/);
         const items = page.getByTestId("snippet-item");

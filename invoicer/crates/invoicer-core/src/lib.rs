@@ -35,7 +35,10 @@
 //!   void, deposits, cash-books Apply payment and recognition (§4);
 //! - [`reconcile`]: the books' payment state, the `paid:` mirror, and the
 //!   books checks (§5.4, §4.3, §4.5);
-//! - [`receivables`]: open invoices, aging, DSO (§4.6).
+//! - [`receivables`]: open invoices, aging, DSO (§4.6);
+//! - [`time`]: time tracking joined to customers, the catalog and the
+//!   books — the tracker, entries, accounts, unbilled time, and billing it
+//!   as an invoice draft or an accounts-payable bill (plan 46).
 //!
 //! Plan 26 rules apply: no globals, no platform `cfg`, and all IO through a
 //! Ledgeline `Vault`.
@@ -71,4 +74,5 @@ pub mod table;
 pub mod template_edit;
 pub mod templates;
 pub mod tera_scan;
+pub mod time;
 pub mod views;
