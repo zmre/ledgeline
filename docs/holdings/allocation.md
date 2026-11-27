@@ -80,6 +80,7 @@ Security type view reads what is already there.
 A `type:` tag also sets the asset class when nothing else does: `type: stock` is
 Equity, `type: bond` is Bonds, `type: moneymarket` is Cash and `type: crypto` is
 Crypto. A `type: fund` implies nothing, because a fund can hold anything.
+Setting up coins is covered in [Crypto](crypto.md).
 
 An `assetclass:` tag also reshapes the Sector view. `assetclass: bonds` on a
 security puts its whole value in a "Bonds" slice there, whatever sector Yahoo

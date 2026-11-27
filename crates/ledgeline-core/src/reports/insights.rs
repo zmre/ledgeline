@@ -604,6 +604,7 @@ fn whole_portfolio(as_of: &str, base: &Commodity) -> HoldingsScope {
         as_of: as_of.to_string(),
         gain_since: None,
         value_in: Some(base.clone()),
+        selection: Default::default(),
     }
 }
 

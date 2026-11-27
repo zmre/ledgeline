@@ -40,7 +40,7 @@ function stat(page: Page, title: string) {
 }
 
 test("holdings: table shows fixture holdings with honest (null) totals", async ({page}) => {
-    await page.goto("/holdings");
+    await page.goto("/holdings?gain=all");
 
     // AAPL row: name tag, shares, directive price + date, market value.
     const aapl = page.getByTestId("holding-AAPL");
@@ -91,7 +91,7 @@ test("holdings: table shows fixture holdings with honest (null) totals", async (
 });
 
 test("holdings: excluding the VTI account removes VTI and shrinks the pie and stats", async ({page}) => {
-    await page.goto("/holdings");
+    await page.goto("/holdings?gain=all");
     await expect(page.getByTestId("holding-VTI")).toBeVisible();
 
     // Select the VTI account, then flip the mode to exclude — selection is kept.
@@ -110,7 +110,7 @@ test("holdings: excluding the VTI account removes VTI and shrinks the pie and st
 });
 
 test("holdings: as-of time travel recomputes shares, prices, and warnings", async ({page}) => {
-    await page.goto("/holdings");
+    await page.goto("/holdings?gain=all");
     await expect(page.getByTestId("shares-AAPL")).toHaveText("19.5");
 
     await page.getByLabel("As of date").fill("2025-01-01");
@@ -128,7 +128,7 @@ test("holdings: as-of time travel recomputes shares, prices, and warnings", asyn
 });
 
 test("holdings: value-over-time trend renders and time-travel shrinks the window", async ({page}) => {
-    await page.goto("/holdings");
+    await page.goto("/holdings?gain=all");
     // Priced holdings exist at the pinned clock → the chart draws.
     await expect(page.getByTestId("holdings-trend")).toBeVisible();
 
@@ -140,11 +140,13 @@ test("holdings: value-over-time trend renders and time-travel shrinks the window
 test("holdings: the period drives the chart's window and survives the URL", async ({page}) => {
     await page.goto("/holdings");
     const heading = page.locator("h3", {hasText: "Value over time"});
-    // The default period is All time, and the chart follows it.
-    await expect(heading).toContainText("all time");
-
-    await page.getByLabel("Gain period").selectOption("12mo");
+    // The default period is the last 12 months, and the chart follows it.
     await expect(heading).toContainText("last 12 months");
+    await expect(page.getByLabel("Gain period")).toHaveValue("12mo");
+
+    await page.getByLabel("Gain period").selectOption("all");
+    await expect(heading).toContainText("all time");
+    await expect(page).toHaveURL(/gain=all/);
 
     await page.getByLabel("Gain period").selectOption("1wk");
     await expect(heading).toContainText("last 7 days");
@@ -166,6 +168,38 @@ test("holdings: the period drives the chart's window and survives the URL", asyn
 });
 
 /**
+ * Plan 47 A1: Value / Performance, and Compare being Performance-only.
+ * Nothing is ticked, so no benchmark (and no Yahoo request) is involved.
+ */
+test("holdings: the chart switches between Value and Performance, and Compare opens on Performance", async ({page}) => {
+    await page.goto("/holdings?gain=all");
+    const value = page.getByTestId("chart-view-value");
+    const perf = page.getByTestId("chart-view-perf");
+    await expect(page.locator("h3", {hasText: "Value over time"})).toBeVisible();
+    await expect(value).toHaveAttribute("aria-pressed", "true");
+    await expect(page).not.toHaveURL(/view=/);
+
+    await perf.click();
+    await expect(page.locator("h3", {hasText: "Performance"})).toBeVisible();
+    await expect(perf).toHaveAttribute("aria-pressed", "true");
+    await expect(page).toHaveURL(/view=perf/);
+
+    // A reload restores the view; `v` flips it back, and the default leaves the URL.
+    await page.reload();
+    await expect(perf).toHaveAttribute("aria-pressed", "true");
+    await page.locator("body").press("v");
+    await expect(value).toHaveAttribute("aria-pressed", "true");
+    await expect(page).not.toHaveURL(/view=/);
+
+    // Compare from Value switches to Performance and opens the picker.
+    await page.getByTestId("benchmark-compare").click();
+    await expect(perf).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("benchmark-picker")).toHaveAttribute("open", "");
+    await expect(page.getByText("total return since the chart's first point")).toBeVisible();
+    await expect(page).toHaveURL(/view=perf/);
+});
+
+/**
  * The "Update prices" button, rendered — and deliberately NOT pressed.
  *
  * What this covers is the one thing the component tests cannot: that
@@ -180,7 +214,7 @@ test("holdings: the period drives the chart's window and survives the URL", asyn
  * path is covered hermetically by `prices_endpoints.rs` with a fake feed.
  */
 test("holdings: the Update prices button renders on the Stocks tab", async ({page}) => {
-    await page.goto("/holdings");
+    await page.goto("/holdings?gain=all");
     await expect(page.getByTestId("holdings-table")).toBeVisible();
     await expect(page.getByTestId("update-prices")).toBeVisible();
 

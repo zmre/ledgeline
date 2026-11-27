@@ -13,6 +13,10 @@
 //!   `reports::{PriceDb, account_matches}` and the non-normalizing `mul_raw`.
 //! - [`series`] — `holdings_series`, reusing `reports::periods` bucket math.
 //! - [`classify`] — the `holdings:` account tag that splits the page's two tabs.
+//! - [`anchor`] — the value chart's y-axis range over a fixed horizon (plan 47).
+//! - [`performance`] — per-bucket flows and the time-weighted return chain
+//!   (plan 47 A1).
+//! - [`live`] — intraday quotes as same-day `P` directives (plan 47).
 //! - [`other`] — the ACCOUNT-keyed report behind the Other tab: houses, cars,
 //!   partnership interests. A separate engine, not a filter over [`engine`];
 //!   see its header for why a currency-denominated asset is invisible here.
@@ -20,11 +24,14 @@
 //! Money stays exact-decimal (`Dec`); every fallible op surfaces through
 //! [`crate::reports::ReportError`] rather than unwrapping.
 
+pub mod anchor;
 pub mod benchmark;
 pub mod classify;
 pub mod commodities;
 pub mod engine;
+pub mod live;
 pub mod other;
+pub mod performance;
 pub mod series;
 pub mod types;
 pub mod window;
@@ -32,6 +39,7 @@ pub mod window;
 #[cfg(test)]
 mod test_helpers;
 
+pub use anchor::{AnchorHorizon, ValueRange, anchor_range, anchor_window};
 pub use classify::{
     HOLDINGS_TAG, HoldingsClass, VALUATION_TAG, ValuationRole, declared_holdings_classes,
     declared_valuation_roles, parse_holdings_tag, parse_valuation_tag, resolve_holdings_class,
@@ -42,10 +50,12 @@ pub use engine::{
     DatedFlow, HoldingsFlows, compute_holdings, first_holding_date, holdings_flows,
     last_held_dates, prices_any_held, valuation_base,
 };
+pub use live::{LiveQuote, live_price_directives};
 pub use other::{
     OtherHolding, OtherHoldingsReport, OtherHoldingsTotals, OtherHoldingsWarning, OtherInputs,
     OtherWarningKind, first_other_holding_date, other_holdings, other_holdings_series,
 };
+pub use performance::{ReturnRange, return_anchor_range};
 pub use series::{HoldingsPoint, HoldingsSeries, holdings_series, holdings_series_and_flows};
 pub use types::{
     Holding, HoldingPrice, HoldingsReport, HoldingsScope, HoldingsTotals, HoldingsWarning,

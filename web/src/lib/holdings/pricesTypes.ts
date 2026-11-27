@@ -101,3 +101,26 @@ export interface PricesUpdateResponse {
     file: PricesFile;
     results: PriceResult[];
 }
+
+/**
+ * One intraday quote the engine holds in memory (plan 47 D11). Never written to
+ * a file; a `live=1` read is what values with it.
+ */
+export interface IntradayQuote {
+    symbol: string;
+    /** Display-boundary number: the page never computes with it, the engine does. */
+    price: number;
+    /** Unix seconds of the quote (the exchange's, delayed). */
+    time: number;
+    /** null when Yahoo named none. */
+    currency: string | null;
+}
+
+/** `POST /api/prices/intraday`. */
+export interface IntradayResponse {
+    quotes: IntradayQuote[];
+    /** Symbols not asked this round (quoted in the last 15 minutes, or cut off by a rate limit). */
+    skipped: string[];
+    /** Yahoo asked the engine to slow down: saved prices stand until the backoff passes. */
+    rateLimited: boolean;
+}

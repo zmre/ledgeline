@@ -48,7 +48,7 @@ use axum::extract::{Query, State};
 use axum::response::Response;
 use futures::stream::{self, StreamExt};
 use ledgeline_core::edit::render_dec;
-use ledgeline_core::holdings::benchmark::{Close, simulate_benchmark};
+use ledgeline_core::holdings::benchmark::{Close, benchmark_returns, simulate_benchmark};
 use ledgeline_core::holdings::{DatedFlow, HoldingsPoint, holdings_series_and_flows, is_us_dollar};
 use ledgeline_core::parse_journal;
 use ledgeline_core::reports::periods::{add_days, weekday_on_or_before};
@@ -154,6 +154,10 @@ const CACHE_HEADER: &str = "\
 #[derive(Deserialize)]
 pub(crate) struct BenchmarksQuery {
     symbols: Option<String>,
+    /// Plan 47 D8: the holdings filter, seeding the benchmark from only the
+    /// selected holdings' flows. `/api/holdings/series` calls it `symbols`,
+    /// which here already names the benchmarks, so it is `holdings` here.
+    holdings: Option<String>,
 }
 
 /// `GET /api/holdings/benchmarks/catalog`: every benchmark, in catalog order.
@@ -187,11 +191,16 @@ pub(crate) struct WireBenchmark {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct WireBenchmarkPoint {
     date: String,
     /// Display-boundary number, rounded to cents: a hypothetical line, never a
     /// figure anyone reconciles.
     value: Option<f64>,
+    /// Plan 47 A1d: the benchmark's cumulative total return (dividend-adjusted
+    /// closes, so dividends reinvested) since the line's first point, as a
+    /// fraction; `null` where `value` is.
+    return_pct: Option<f64>,
 }
 
 // ===========================================================================
@@ -385,6 +394,9 @@ fn prepare(
     let wanted = parse_benchmarks(symbols.symbols.as_deref())?;
     let snapshot = state.snapshot();
     let journal = &snapshot.journal;
+    // `series_query.symbols` read THIS route's `symbols` — the benchmark list
+    // — so the holdings filter is swapped in from `holdings`.
+    let series_query = series_query.with_symbols(symbols.holdings);
     let (scope, window) = stocks_series_request(journal, series_query)?;
     let (series, flows) = holdings_series_and_flows(
         &journal.transactions,
@@ -538,6 +550,7 @@ fn failed(symbol: &str, points: &[HoldingsPoint], error: String) -> WireBenchmar
             .map(|point| WireBenchmarkPoint {
                 date: point.date.clone(),
                 value: None,
+                return_pct: None,
             })
             .collect(),
         stale: false,
@@ -562,7 +575,9 @@ fn line(
         };
         return failed(symbol, &prepared.points, error);
     };
-    let simulated = simulate_benchmark(&prepared.points, &prepared.flows, &history.closes());
+    let closes = history.closes();
+    let simulated = simulate_benchmark(&prepared.points, &prepared.flows, &closes);
+    let returns = benchmark_returns(&prepared.points, &closes);
     let (label, slot) = label_and_slot(symbol);
     WireBenchmark {
         symbol: symbol.to_string(),
@@ -572,9 +587,11 @@ fn line(
             .points
             .iter()
             .zip(simulated)
-            .map(|(point, value)| WireBenchmarkPoint {
+            .zip(returns)
+            .map(|((point, value), return_pct)| WireBenchmarkPoint {
                 date: point.date.clone(),
                 value: value.map(|v| (v * 100.0).round() / 100.0),
+                return_pct,
             })
             .collect(),
         stale: missed.is_some(),

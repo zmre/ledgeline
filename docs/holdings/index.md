@@ -18,17 +18,19 @@ The Holdings tab has two sub-tabs:
 
 ![Holdings → Stocks: the filter bar, the Update prices button, the Insights summary and the value chart](images/stocks.png)
 
-This section has five pages:
+This section has six pages:
 
-- this one: which tab an account lands on, what the columns mean, and the period control;
+- this one: which tab an account lands on, what the columns mean, the period control and the value-over-time chart;
 - [The holdings and valuation tags](tags.md): moving an account between tabs, rolling several accounts into one holding, and separating cost from value;
 - [Prices](prices.md): where valuations come from and the Update prices button;
 - [Allocation by category](allocation.md): the Divide by menu on the Stocks pie;
-- [Comparing against a benchmark](benchmarks.md): the index-fund lines on the Value over time chart.
+- [Comparing against a benchmark](benchmarks.md): the index-fund lines on the Performance chart;
+- [Crypto](crypto.md): bitcoin, ether, stablecoins and other coins.
 
 Design notes and the reasoning behind each decision live in
 [`plans/10-stock-holdings.md`](https://github.com/zmre/ledgeline/blob/main/plans/10-stock-holdings.md) and
-[`plans/14-other-holdings.md`](https://github.com/zmre/ledgeline/blob/main/plans/14-other-holdings.md).
+[`plans/14-other-holdings.md`](https://github.com/zmre/ledgeline/blob/main/plans/14-other-holdings.md), and for the chart
+[`plans/47-holdings-charts.md`](https://github.com/zmre/ledgeline/blob/main/plans/47-holdings-charts.md).
 
 ## Why two tabs and not one list
 
@@ -100,6 +102,7 @@ The **Period** control sets two things at once, on both tabs: the window the
 gain (Stocks) or change (Other) figures are measured over, and the span of the
 *Value over time* chart. A chart of the last twelve months beside a one-week
 gain would be two answers to the same question, so there is one control.
+Holdings opens on **12 months**; a link without `?gain=` means that too.
 
 Every window ends at the as-of date. Gain and change columns carry a suffix
 naming it — `Gain (1wk)`, `Change (5yr)` — so a windowed number is never read as
@@ -138,6 +141,94 @@ at the first share you bought.
 Daily and weekly points are labelled by date on the chart ("Sep 28"); a weekly
 point is the value at the end of its week. The period is part of the page URL
 (`?gain=1wk`, `?gain=5yr`, …), so a shared link opens on the same window.
+
+### The value-over-time chart
+
+**Value or Performance.** On the Stocks tab a switch in the chart's heading
+picks what is drawn. Press <kbd>v</kbd> to flip it.
+
+- **Value** (the default) is the market value of what you hold at each point.
+  Buying and selling move it: selling $60k of a fund drops the line by $60k
+  whether the fund went up or down.
+- **Performance** is your return since the chart's first point, in percent. It
+  starts at 0 % and buying and selling do not move it. Each step is measured
+  as gain over the money that was invested during that step, with money moved
+  in or out counted as arriving halfway through (the Modified Dietz method),
+  and the steps are multiplied together (a time-weighted return). Use it to
+  ask "how did my investments do", and Value to ask "how much do I have".
+
+The choice is part of the URL (`?view=perf`). The Other tab has only Value.
+
+**The y-axis does not start at zero.** A seven-figure portfolio drawn from $0
+is a flat line along the top. Fitting the axis to the shown window alone has
+the opposite problem: a 0.4 % week fills the chart and looks like a crash. So the axis is fitted
+to a longer horizon than the one you are looking at:
+
+| Period                                     | Axis fitted to   |
+|--------------------------------------------|------------------|
+| 1 week, 1 month, 3 months, YTD, 12 months  | the last year    |
+| 5 years                                    | the last 5 years |
+| All time                                   | all of history   |
+
+The lowest and highest values over that horizon get 20 % of their range added
+below and 10 % above, never below zero. Leading zeroes are ignored. A history that begins with an opening
+balance jumps from $0 to the full amount on day one, and that $0 would otherwise
+drag the axis down to the floor.
+
+Performance uses the same horizons and the same padding, measured from the
+chart's first point, but it can go below zero, so it has no floor. A thin line
+marks 0 %.
+
+**Colour says whether the period made money.** On Value the line and the
+shading under it follow the **Gain** figure above the chart: green when the
+gain over the period is positive, red when it is negative, the plain text
+colour when it is zero. A sale that leaves less value at the end does not turn
+a gaining period red. When the gain is unknown (a holding with no cost basis,
+for example), the colour falls back to comparing the last point with the
+first. The Other tab always compares last with first, because its Change
+column is value-based. On Performance the colour is the sign of the last
+point. Benchmark lines stay dashed and unshaded.
+
+**Markers for buying and selling.** On Value, a point where you put in or took
+out a noticeable amount gets a small ▲ (net bought) or ▼ (net sold), and its
+tooltip says how much: "Net bought $12,000.00". Noticeable means at least 5 %
+of the y-axis span, so reinvested dividends and a regular contribution to a
+large portfolio are not marked. The Other tab shows the same markers when money
+moves into or out of those accounts. Performance has no markers, because
+buying and selling do not move it.
+
+**Dividends are not in Performance yet.** A dividend paid out as cash leaves
+your holdings without being counted as money taken out. A reinvested dividend
+is counted as new money you put in. Either way Performance leaves the dividend
+out, so it reads slightly low for a holding that pays one, while the benchmark
+lines include theirs. Over a year the gap is roughly the holding's dividend
+yield. Counting reinvested dividends as return is planned.
+
+**Narrowing the chart to some holdings.** The **Holdings** menu beside the
+account chooser picks which holdings the chart and the summary figures above it
+cover. Press <kbd>F</kbd> to open it and type to search. You can also click:
+
+- a row in the table (or press <kbd>f</kbd> on the highlighted row);
+- a slice of the pie, or a name under Gainers and Losers;
+- a category slice when the pie is divided by sector, industry or category,
+  which picks every holding with any share in that category. A broad fund comes
+  in at its full value, so the menu lists exactly what was picked.
+
+Clicking the same thing again clears it. The table, pie and gainers and losers keep
+every row, with the picked ones highlighted, so you can keep clicking. Compare
+still works: Performance is then the picked holdings' own return. On the Other
+tab the menu lists that tab's rows. The pick is part of the URL
+(`?hold=VTI,AAPL`).
+
+**Today's prices on short periods.** On **1 week** and **1 month**, with the
+as-of date set to today, the page fetches one delayed quote per holding and uses it everywhere: table,
+totals, gains and the chart's last point. The chart heading says when the quote
+was taken ("live 2:35 PM (delayed)"). These quotes are held in memory and never written to your
+prices file. A holding priced in the last 15 minutes, by this or by
+[Update prices](prices.md), is not asked for again, and if Yahoo Finance says
+"too many requests" Ledgeline stops asking for 15 minutes and shows saved
+prices. Ledgeline is not a market monitor. The quote is there to show what a big day in the market
+did to your money.
 
 The account chooser's options are **not** filtered by the current scope or date,
 deliberately. An option that vanished the moment you deselected it could not be

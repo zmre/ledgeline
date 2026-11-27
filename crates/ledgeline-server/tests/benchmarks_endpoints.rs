@@ -221,6 +221,39 @@ async fn the_line_is_the_same_money_into_the_benchmark() {
     assert_eq!(spy["error"], Value::Null);
 }
 
+/// Plan 47 A1d: beside the simulated value, each point carries the
+/// benchmark's own total return since the line's first point — the adjusted
+/// close's growth from January's $100: +10 % in February, +32 % in March,
+/// untouched by the portfolio's March buy.
+#[tokio::test]
+async fn each_point_carries_the_benchmarks_total_return() {
+    let tree = Tree::with(JOURNAL, FakeHistory::new([("SPY", spy())]));
+    let (status, body) = tree
+        .get(&format!("/api/holdings/benchmarks?symbols=SPY&{WINDOW}"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let returns: Vec<f64> = body["benchmarks"][0]["points"]
+        .as_array()
+        .expect("points")
+        .iter()
+        .map(|point| point["returnPct"].as_f64().expect("a number"))
+        .collect();
+    assert_eq!(returns.len(), 3);
+    assert!(returns[0].abs() < 1e-12, "{returns:?}");
+    assert!((returns[1] - 0.1).abs() < 1e-12, "{returns:?}");
+    assert!((returns[2] - 0.32).abs() < 1e-12, "{returns:?}");
+
+    // A line with no history has no return either: null, like its value.
+    let (_, body) = tree
+        .get(&format!("/api/holdings/benchmarks?symbols=QQQ&{WINDOW}"))
+        .await;
+    let points = body["benchmarks"][0]["points"].as_array().expect("points");
+    assert!(
+        points.iter().all(|point| point["returnPct"].is_null()),
+        "{body}"
+    );
+}
+
 /// A dated window (the gain period's) seeds the line at `since` itself — the
 /// value the gain is measured against — not at the end of `since`'s month.
 /// On 2025-01-02 the ten VTI just bought are valued at their $100 cost (no `P`
@@ -498,4 +531,24 @@ async fn the_catalog_lists_every_benchmark_in_slot_order() {
     );
     // Nothing is fetched to answer it.
     assert_eq!(tree.calls(), 0);
+}
+
+/// Plan 47 D8: `holdings=` narrows the SEED to the selected holdings' own
+/// flows. An AAPL position bought alongside changes nothing about a VTI-only
+/// comparison: it matches the journal that never held AAPL, byte for byte.
+#[tokio::test]
+async fn a_holdings_filter_seeds_from_only_the_selected_flows() {
+    let with_aapl = format!(
+        "{JOURNAL}\nP 2025-01-31 AAPL $50.00\n\n2025-02-03 buy apple\n    assets:broker    4 AAPL @ $45.00\n    assets:cash\n"
+    );
+    let uri = format!("/api/holdings/benchmarks?symbols=SPY&{WINDOW}");
+    let (_, alone) = Tree::with(JOURNAL, FakeHistory::new([("SPY", spy())]))
+        .get(&uri)
+        .await;
+    let both = Tree::with(&with_aapl, FakeHistory::new([("SPY", spy())]));
+    let (status, filtered) = both.get(&format!("{uri}&holdings=VTI")).await;
+    assert_eq!(status, StatusCode::OK, "{filtered}");
+    assert_eq!(filtered, alone);
+    let (_, unfiltered) = both.get(&uri).await;
+    assert_ne!(unfiltered, alone, "AAPL's flow counts without the filter");
 }

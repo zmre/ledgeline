@@ -1,10 +1,11 @@
 // Pure helpers behind the value-over-time chart: readable x labels for fine
-// buckets, and the benchmark overlay lines aligned to the portfolio's points.
-// No Svelte runtime — node-testable.
+// buckets, the benchmark overlay lines aligned to the portfolio's points, and
+// the Performance chart's percent formatting. No Svelte runtime — node-testable.
 
 import type {PeriodSeries} from "#lib/components/periodSeries.js";
 import type {BenchmarkLine} from "#lib/holdings/benchmarks.js";
 import type {HoldingsPoint, HoldingsSeries} from "#lib/holdings/types.js";
+import {fmtSignedPct} from "#lib/format/amounts.js";
 import {MONTH_NAMES} from "#lib/reports/periods.js";
 
 const DAY_KEY = /^\d{4}-\d{2}-\d{2}$/;
@@ -34,8 +35,12 @@ export function trendLabels(points: readonly Pick<HoldingsPoint, "bucket" | "dat
 /**
  * The overlay series for the ticked benchmarks that have a line for THIS
  * chart: dashed, labelled and slotted as the engine says (each benchmark's fixed
- * catalog position), with `null` gaps where
- * the benchmark has no price.
+ * catalog position), with `null` gaps where the benchmark has no price.
+ *
+ * Each is the benchmark's cumulative total return since the first point
+ * (`returnPct`, plan 47 A1d), so it sits on the Performance chart's percent
+ * axis beside the portfolio's own return. Benchmarks are never drawn on the
+ * Value chart.
  *
  * A line whose dates do not match the chart's point for point is left out
  * rather than stretched onto it — it was computed for another window (a scope
@@ -47,6 +52,26 @@ export function benchmarkOverlays(trend: HoldingsSeries, picked: readonly string
     return picked.flatMap((symbol) => {
         const line = lineOf(symbol);
         if (line === null || line.points.length !== dates.length || line.points.some((p, i) => p.date !== dates[i])) return [];
-        return [{name: line.label, values: line.points.map((p) => p.value), dashed: true, slot: line.slot}];
+        return [{name: line.label, values: line.points.map((p) => p.returnPct), dashed: true, slot: line.slot}];
     });
+}
+
+/**
+ * The heading-note suffix while the chart's last point is an intraday quote
+ * (plan 47 D10): " · live 2:35 PM (delayed)", in the reader's local time. "" when
+ * `liveAt` is null (every price a saved one). `formatTime` is injectable so the
+ * wording is testable without pinning a timezone.
+ */
+export function liveNote(liveAt: number | null, formatTime: (date: Date) => string = localTime): string {
+    return liveAt === null ? "" : ` · live ${formatTime(new Date(liveAt * 1000))} (delayed)`;
+}
+
+/** "2:35 PM" (or the reader's locale's equivalent). */
+function localTime(date: Date): string {
+    return date.toLocaleTimeString(undefined, {hour: "numeric", minute: "2-digit"});
+}
+
+/** A return fraction as a signed percent, for the Performance chart's axis and tooltip: 0.123 → "+12.3%", −0.04 → "−4.0%". */
+export function formatReturn(fraction: number): string {
+    return fmtSignedPct(fraction * 100);
 }

@@ -1,6 +1,6 @@
 import {describe, expect, it} from "vitest";
 import {localToday} from "#lib/stores/filters.svelte.js";
-import {GAIN_PERIODS, gainSinceFor, gainWindowSuffix, isGainPeriod, trendWindowFor, trendWindowNote} from "./gainPeriod";
+import {anchorFor, GAIN_PERIODS, gainSinceFor, gainWindowSuffix, isGainPeriod, isIntradayWindow, trendWindowFor, trendWindowNote} from "./gainPeriod";
 
 describe("UNIT holdings gainPeriod", () => {
     describe("gainSinceFor", () => {
@@ -116,6 +116,21 @@ describe("UNIT holdings gainPeriod", () => {
                 "last 5 years",
                 "all time",
             ]);
+        });
+    });
+
+    describe("anchorFor (plan 47 D1)", () => {
+        it("anchors every window under a year on the last year, 5yr on five, all on all", () => {
+            expect((["1wk", "1mo", "3mo", "ytd", "12mo", "5yr", "all"] as const).map(anchorFor)).toEqual(["1yr", "1yr", "1yr", "1yr", "1yr", "5yr", "all"]);
+        });
+    });
+
+    describe("isIntradayWindow (plan 47 D10)", () => {
+        it("is the 1wk and 1mo windows ending today, and nothing else", () => {
+            expect(isIntradayWindow("1wk", "2026-11-26", "2026-11-26")).toBe(true);
+            expect(isIntradayWindow("1mo", "2026-11-26", "2026-11-26")).toBe(true);
+            expect(isIntradayWindow("1wk", "2026-11-25", "2026-11-26")).toBe(false);
+            for (const period of ["3mo", "ytd", "12mo", "5yr", "all"] as const) expect(isIntradayWindow(period, "2026-11-26", "2026-11-26")).toBe(false);
         });
     });
 });

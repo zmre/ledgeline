@@ -188,4 +188,38 @@ describe("COMPONENT HoldingsPie", () => {
         await vi.waitFor(() => expect(screen.getByTestId("holdings-pie-stale")).toBeTruthy());
         expect(legend()).toContain("Technology");
     });
+
+    describe("a wedge is a filter (plan 47 D7)", () => {
+        const arcs = (): SVGPathElement[] => [...screen.getByTestId("holdings-pie").querySelectorAll<SVGPathElement>("path.lc-arc-line")];
+
+        it("a holding's wedge selects that holding", async () => {
+            await engine(PROFILES);
+            const onSelect = vi.fn();
+            render(HoldingsPie, {holdings: portfolio(), format, onSelect});
+            await vi.waitFor(() => expect(arcs()).toHaveLength(2));
+            await fireEvent.click(arcs()[1]);
+
+            expect(onSelect).toHaveBeenCalledWith(["VTI"]);
+        });
+
+        it("a category wedge selects every holding with any share in it", async () => {
+            await engine(PROFILES);
+            settings.holdingsPieDimension = "sector";
+            const onSelect = vi.fn();
+            render(HoldingsPie, {holdings: portfolio(), format, onSelect});
+            await vi.waitFor(() => expect(legend()).toContain("Technology"));
+            // Technology is the largest slice, so the first wedge.
+            await fireEvent.click(arcs()[0]);
+
+            expect(onSelect).toHaveBeenCalledWith(["AAPL", "VTI"]);
+        });
+
+        it("dims the wedges holding none of the filter, and keeps them all", async () => {
+            await engine(PROFILES);
+            render(HoldingsPie, {holdings: portfolio(), format, selected: new Set(["AAPL"])});
+            await vi.waitFor(() => expect(arcs()).toHaveLength(2));
+
+            expect(arcs().map((arc) => arc.getAttribute("opacity") ?? "1")).toEqual(["1", "0.35"]);
+        });
+    });
 });

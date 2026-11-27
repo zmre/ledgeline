@@ -4,13 +4,19 @@ import {benchmarkLines, catalogOrder} from "./benchmarks.svelte";
 import {settings} from "./settings.svelte";
 
 const URL_BASE = "http://engine.test";
-const scope = (gainPeriod: HoldingsScope["gainPeriod"]): HoldingsScope => ({accounts: new Set(), mode: "include", asOf: "2026-09-28", gainPeriod});
+const scope = (gainPeriod: HoldingsScope["gainPeriod"]): HoldingsScope => ({
+    accounts: new Set(),
+    mode: "include",
+    asOf: "2026-09-28",
+    gainPeriod,
+    holdings: new Set(),
+});
 
 const line = (symbol: string, error: string | null = null) => ({
     symbol,
     label: symbol,
     slot: 0,
-    points: [{date: "2026-09-28", value: error === null ? 1 : null}],
+    points: [{date: "2026-09-28", value: error === null ? 1 : null, returnPct: error === null ? 0 : null}],
     stale: false,
     error,
 });

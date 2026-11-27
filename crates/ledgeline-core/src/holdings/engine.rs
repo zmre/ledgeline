@@ -839,12 +839,14 @@ impl FlowWindow<'_> {
 /// accumulated — one [`LoggedFlow`] per leg, dated — which is how
 /// [`holdings_flows`] exposes the SAME contributions `window_flow` sums without
 /// a second copy of the rules that decide what a contribution is.
+#[allow(clippy::too_many_arguments)] // private; each is a distinct replay input
 fn replay_pools(
     inputs: &HoldingsInputs<'_>,
     base: &Commodity,
     as_ofs: &[&str],
     window: FlowWindow<'_>,
     in_scope: &dyn Fn(&str) -> bool,
+    selection: &BTreeSet<String>,
     sole_symbols: &BTreeMap<String, Option<String>>,
     mut flow_log: Option<&mut Vec<LoggedFlow>>,
 ) -> Result<Vec<PoolSnapshot>, ReportError> {
@@ -930,6 +932,13 @@ fn replay_pools(
                             *slot = slot.add(reduction)?;
                         }
                     }
+                    continue;
+                }
+                // The holdings filter (`HoldingsScope::selection`): an
+                // unselected symbol gets no pool, so it adds nothing to the
+                // totals and logs no flow. Its return of capital below finds
+                // no pool either and is dropped with it.
+                if !selects(selection, &amount.commodity.0) {
                     continue;
                 }
                 let symbol = amount.commodity.0.clone();
@@ -1136,6 +1145,7 @@ fn pool_snapshots(
     base: &Commodity,
     as_ofs: &[String],
     in_scope: &dyn Fn(&str) -> bool,
+    selection: &BTreeSet<String>,
     flows: Option<(&str, &mut Vec<LoggedFlow>)>,
 ) -> Result<Vec<PoolSnapshot>, ReportError> {
     let mut snapshots: Vec<PoolSnapshot> = Vec::with_capacity(as_ofs.len());
@@ -1150,6 +1160,7 @@ fn pool_snapshots(
                 &run,
                 FlowWindow::None,
                 in_scope,
+                selection,
                 &run_symbols,
                 None,
             )?);
@@ -1167,6 +1178,7 @@ fn pool_snapshots(
             &run,
             window_start.map_or(FlowWindow::None, FlowWindow::Since),
             in_scope,
+            selection,
             &run_symbols,
             log,
         )?);
@@ -1733,6 +1745,12 @@ pub(super) fn scope_accounts(scope: &HoldingsScope) -> impl Fn(&str) -> bool + '
     }
 }
 
+/// [`HoldingsScope::selects`] over a bare selection, for the replay, which is
+/// handed the set rather than the scope (it time-travels `as_of`).
+fn selects(selection: &BTreeSet<String>, symbol: &str) -> bool {
+    selection.is_empty() || selection.contains(symbol)
+}
+
 /// `gain / reference × 100` as a display-boundary `f64`, or `None` when there is
 /// no capital to measure against. A zero reference has always been undefined; a
 /// NEGATIVE one (possible once windowed withdrawals exceed the starting value)
@@ -1832,6 +1850,7 @@ pub(crate) fn holdings_report_with(
         &scope.as_of,
         scope.gain_since.as_deref(),
         &predicate,
+        &scope.selection,
     )
 }
 
@@ -1892,8 +1911,17 @@ pub(crate) fn holdings_window_pair(
                 mid,
                 Some(start),
                 &predicate,
+                &scope.selection,
             )?,
-            report_at(inputs, facts, &current_base, end, Some(mid), &predicate)?,
+            report_at(
+                inputs,
+                facts,
+                &current_base,
+                end,
+                Some(mid),
+                &predicate,
+                &scope.selection,
+            )?,
         ));
     }
 
@@ -1905,6 +1933,7 @@ pub(crate) fn holdings_window_pair(
         &bounds,
         FlowWindow::Chained,
         &predicate,
+        &scope.selection,
         &sole,
         None,
     )?
@@ -2006,6 +2035,7 @@ pub(super) fn holdings_at_each_with_flows(
         &base_commodity,
         as_ofs,
         &predicate,
+        &scope.selection,
         flows_after.map(|after| (after, &mut log)),
     )?;
     let flows = flows_after.map(|_| aggregate_flows(log)).transpose()?;
@@ -2122,7 +2152,8 @@ fn aggregate_flows(log: Vec<LoggedFlow>) -> Result<HoldingsFlows, ReportError> {
 ///
 /// Uses the same membership test as the report ([`scope_predicate`] plus
 /// [`is_holding_account`]), so the chart cannot start at activity the table
-/// would never show.
+/// would never show — including the holdings filter, so a chart narrowed to
+/// one symbol starts "all time" at that symbol's first trade.
 #[must_use]
 pub fn first_holding_date(
     txns: &[Transaction],
@@ -2140,7 +2171,9 @@ pub fn first_holding_date(
                 predicate(&posting.account.0)
                     && is_holding_account(&posting.account.0, &declared)
                     && posting.amounts.iter().any(|amount| {
-                        !currencies.is_currency(&amount.commodity.0) && !amount.quantity.is_zero()
+                        !currencies.is_currency(&amount.commodity.0)
+                            && !amount.quantity.is_zero()
+                            && scope.selects(&amount.commodity.0)
                     })
             })
         })
@@ -2189,7 +2222,7 @@ pub fn last_held_dates(
             }
             for amount in &posting.amounts {
                 let symbol = amount.commodity.0.as_str();
-                if currencies.is_currency(symbol) {
+                if currencies.is_currency(symbol) || !scope.selects(symbol) {
                     continue;
                 }
                 let slot = net.entry(symbol).or_insert_with(Dec::zero);
@@ -2222,6 +2255,7 @@ fn report_at(
     as_of: &str,
     gain_since: Option<&str>,
     in_scope: &dyn Fn(&str) -> bool,
+    selection: &BTreeSet<String>,
 ) -> Result<HoldingsReport, ReportError> {
     let sole = sole_symbols_at(facts, as_of);
     let snapshot = replay_pools(
@@ -2230,6 +2264,7 @@ fn report_at(
         &[as_of],
         gain_since.map_or(FlowWindow::None, FlowWindow::Since),
         in_scope,
+        selection,
         &sole,
         None,
     )?
@@ -2254,6 +2289,7 @@ fn report_at(
             start,
             None,
             in_scope,
+            selection,
         )?),
     };
     assemble_report(

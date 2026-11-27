@@ -18,7 +18,12 @@
        the pad-angle gaps between slices, and the tooltips.
      - a slice past the palette's last slot never gets a generated hue: it
        folds into "(other)" (dataviz non-negotiable), which is why the
-       named-slice cap is the palette's slot count. -->
+       named-slice cap is the palette's slot count.
+     - a wedge is a filter (plan 47 D7): clicking one charts only its holdings
+       — the symbol, every symbol folded into "(other)", or, in a category
+       view, every holding with ANY share in that category. While a filter is
+       set, the wedges holding none of it are dimmed; every wedge stays, so the
+       next one is still there to click. -->
 <script lang="ts">
     import {PieChart, Tooltip} from "layerchart";
     import ChartLegend from "#ui/components/ChartLegend.svelte";
@@ -32,7 +37,22 @@
     import {settings} from "#lib/stores/settings.svelte.js";
     import {pieSlices, PIE_OTHER, type PieSlice} from "./view";
 
-    let {holdings, format}: {holdings: Holding[]; format: (v: Dec) => string} = $props();
+    let {
+        holdings,
+        format,
+        selected = new Set<string>(),
+        onSelect,
+    }: {
+        holdings: Holding[];
+        format: (v: Dec) => string;
+        /** The holdings filter: wedges holding none of it are dimmed. */
+        selected?: ReadonlySet<string>;
+        /** A wedge was clicked: chart exactly these symbols. */
+        onSelect?: (symbols: string[]) => void;
+    } = $props();
+
+    /** A dimmed wedge's opacity — still legible, plainly not chosen. */
+    const DIMMED = 0.35;
 
     const DIMENSION_LABELS: Record<PieDimension, string> = {
         holding: "By holding",
@@ -125,7 +145,13 @@
         extra: string;
         title: string;
         italic: boolean;
+        /** The symbols a click on it selects. */
+        symbols: string[];
     }
+
+    /** layerchart reads a datum's own `props` onto its arc: the dimming, while a filter leaves this wedge out. */
+    const withDimming = (wedge: Wedge): Wedge & {props?: {opacity: number}} =>
+        selected.size === 0 || wedge.symbols.some((symbol) => selected.has(symbol)) ? wedge : {...wedge, props: {opacity: DIMMED}};
 
     const share = (percent: number): string => `${percent.toFixed(1)}%`;
 
@@ -140,6 +166,7 @@
         extra: share(slice.share),
         title: `${slice.name} — ${slice.formatted}`,
         italic: false,
+        symbols: slice.symbols,
     });
 
     const categoryWedge = (slice: CategorySlice): Wedge => {
@@ -155,10 +182,18 @@
             extra: `${share(slice.share)} · ${formatted}`,
             title: `${slice.label} — ${formatted} (${describe(slice)})`,
             italic: slice.kind === "unclassified",
+            symbols: slice.symbols,
         };
     };
 
-    const wedges = $derived(category === null ? pieSlices(holdings, format, chartColors.categorical.length).map(holdingWedge) : slices.map(categoryWedge));
+    const wedges = $derived(
+        (category === null ? pieSlices(holdings, format, chartColors.categorical.length).map(holdingWedge) : slices.map(categoryWedge)).map(withDimming)
+    );
+
+    function clickWedge(_event: MouseEvent, detail: {data: unknown}): void {
+        const symbols = (detail.data as Partial<Wedge> | null)?.symbols;
+        if (symbols !== undefined && symbols.length > 0) onSelect?.(symbols);
+    }
 </script>
 
 <div class="flex flex-col gap-1" data-testid="holdings-pie-panel">
@@ -217,8 +252,16 @@
         </div>
     {:else}
         <!-- A refetch keeps the previous pie at reduced opacity rather than flashing a spinner (dataviz: no skeleton on refetch). -->
-        <div class={["h-56 w-full transition-opacity sm:h-64", loading && "opacity-50"]} data-testid="holdings-pie">
-            <PieChart data={wedges} key="key" label="label" value={(d) => d.value} cRange={wedges.map((d) => d.color)} padAngle={0.02}>
+        <div class={["h-56 w-full transition-opacity sm:h-64", loading && "opacity-50", onSelect !== undefined && "cursor-pointer"]} data-testid="holdings-pie">
+            <PieChart
+                data={wedges}
+                key="key"
+                label="label"
+                value={(d) => d.value}
+                cRange={wedges.map((d) => d.color)}
+                padAngle={0.02}
+                onArcClick={onSelect === undefined ? undefined : clickWedge}
+            >
                 {#snippet tooltip()}
                     <Tooltip.Root>
                         {#snippet children({data})}

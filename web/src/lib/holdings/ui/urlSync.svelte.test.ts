@@ -14,7 +14,7 @@
 
 import {flushSync} from "svelte";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
-import {defaultScope, holdingsScope, holdingsTab} from "#lib/stores/holdings.svelte.js";
+import {defaultScope, holdingsChartView, holdingsScope, holdingsTab} from "#lib/stores/holdings.svelte.js";
 import {startHoldingsUrlSync} from "./urlSync";
 
 const mocks = vi.hoisted(() => ({
@@ -59,6 +59,7 @@ beforeEach(() => {
     window.history.replaceState(null, "", "/holdings");
     holdingsScope.replace(defaultScope());
     holdingsTab.value = "stocks";
+    holdingsChartView.value = "value";
     flushSync();
     mocks.navigations.length = 0;
     mocks.replaceStateCalls.length = 0;
@@ -131,5 +132,21 @@ describe("COMPONENT holdings urlSync — restore on navigation", () => {
         holdingsScope.setAsOf("2020-01-02");
         settle();
         expect(window.location.search).toBe("?asof=2020-01-02");
+    });
+
+    it("restores the chart view, and mirrors a switch through the same one writer (plan 47 A1b)", () => {
+        stop = startHoldingsUrlSync();
+        settle();
+
+        navigate("/holdings?gain=ytd&view=perf");
+        expect(holdingsChartView.value).toBe("perf");
+
+        holdingsChartView.value = "value";
+        settle();
+        // The scope's own key survives: one writer, so a view switch cannot drop it.
+        expect(window.location.search).toBe("?gain=ytd");
+        holdingsChartView.value = "perf";
+        settle();
+        expect(window.location.search).toBe("?gain=ytd&view=perf");
     });
 });

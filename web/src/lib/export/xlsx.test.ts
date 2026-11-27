@@ -917,6 +917,7 @@ describe("UNIT export/xlsx", () => {
             topGainers: [],
             topLosers: [],
             warnings: [],
+            liveAt: null,
         };
         const ws = await readBack(await buildHoldingsWorkbook(report, {title: "Holdings", params: "As of 2026-07-08"}), "Holdings");
 
@@ -978,6 +979,7 @@ describe("UNIT export/xlsx", () => {
             topGainers: [],
             topLosers: [],
             warnings: [],
+            liveAt: null,
         };
         const ws = await readBack(await buildHoldingsWorkbook(report, {title: "Holdings", params: "As of 2026-07-08"}), "Holdings");
 

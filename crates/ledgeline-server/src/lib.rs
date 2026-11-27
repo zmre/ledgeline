@@ -62,6 +62,7 @@ mod export_cli;
 mod hledger;
 mod import_api;
 mod import_review;
+mod intraday;
 mod journal_api;
 mod location;
 mod match_api;
@@ -213,7 +214,7 @@ pub use workbook_sandbox::{WorkerAllocator, run_worker_if_requested, set_worker_
 // signature) is re-exported so the integration tests can build a fake and hand
 // it to `AppState::with_price_source` — the only way `/api/prices/update` is
 // tested without a live network call.
-pub use yahoo::{FetchedPrice, PriceFeed, YahooError};
+pub use yahoo::{FetchedPrice, MarketQuote, PriceFeed, YahooError};
 // Same arrangement for the Holdings pie's classification source: a fake
 // `ProfileFeed` handed to `AppState::with_profile_source` is how
 // `/api/holdings/profiles` is tested with no network.
@@ -513,6 +514,10 @@ pub struct AppState {
     /// see [`auto_prices`]). Per state, so two states in one process — the
     /// integration tests — never share a memo or a backoff.
     auto_prices: Arc<auto_prices::AutoPrices>,
+    /// Plan 47's intraday quote cache: one delayed quote per ticker, in
+    /// memory only, never written anywhere (see [`intraday`]). Per state, like
+    /// `auto_prices`.
+    quotes: Arc<intraday::QuoteCache>,
     /// Where `profiles_api` classifies holdings from (Yahoo's `quoteSummary`
     /// behind a crumb handshake), plus the cache of what it said. Swappable
     /// for a fake through [`AppState::with_profile_source`], like
@@ -611,6 +616,7 @@ impl AppState {
             import_writes: Arc::new(tokio::sync::Mutex::new(())),
             price_source: yahoo.prices,
             auto_prices: Arc::default(),
+            quotes: Arc::default(),
             profiles: yahoo.profiles,
             history_source: yahoo.history,
             benchmark_cache: Arc::default(),
@@ -671,6 +677,7 @@ impl AppState {
             import_writes: Arc::new(tokio::sync::Mutex::new(())),
             price_source: yahoo.prices,
             auto_prices: Arc::default(),
+            quotes: Arc::default(),
             profiles: yahoo.profiles,
             history_source: yahoo.history,
             benchmark_cache: Arc::default(),
@@ -1107,6 +1114,16 @@ impl AppState {
     pub fn with_price_source(mut self, source: Arc<dyn yahoo::PriceFeed>) -> Self {
         self.price_source = source;
         self
+    }
+
+    /// The intraday quote cache, shared by all clones.
+    pub(crate) fn quotes(&self) -> &intraday::QuoteCache {
+        &self.quotes
+    }
+
+    /// [`Self::quotes`], owned, for request futures that must not borrow.
+    pub(crate) fn quotes_arc(&self) -> Arc<intraday::QuoteCache> {
+        Arc::clone(&self.quotes)
     }
 
     /// The automatic price updater's state, shared by all clones.
@@ -1826,6 +1843,10 @@ pub fn router_with_security(state: AppState, security: Security) -> Router {
         .route("/api/prices/status", get(prices_api::status))
         .route("/api/prices/file", post(prices_api::create_file))
         .route("/api/prices/update", post(prices_api::update))
+        // Plan 47: refresh the in-memory intraday quotes. It writes no file,
+        // but it makes outbound requests on the caller's behalf, so it sits
+        // behind the token with the other price routes.
+        .route("/api/prices/intraday", post(intraday::refresh))
         // File → New (plan 39 wizard): whether this server can create a
         // ledger, the starting charts, the native folder picker, and the
         // create / try-the-sample writes. THE SAME PLACEMENT TRAP as the routes

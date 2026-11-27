@@ -78,7 +78,7 @@ use std::path::Path as FsPath;
 use std::sync::Arc;
 
 use crate::AppState;
-use crate::auto_prices::WireAutoStatus;
+use crate::auto_prices::{WireAutoStatus, now_seconds};
 use crate::edit_api::{infer_style, json_body};
 use crate::error::{AppError, editing_disabled};
 use crate::location::JournalLocation;
@@ -287,15 +287,23 @@ pub(crate) async fn update(
     let Json(plan) = compute(move || plan_update(&plan_state, &id)).await?;
 
     let source = Arc::clone(state.price_source());
+    let quotes = state.quotes_arc();
     let fetched: Vec<FetchOutcome> = stream::iter(plan.symbols.clone())
         .map(|symbol| {
-            let source = Arc::clone(&source);
+            let (source, quotes) = (Arc::clone(&source), Arc::clone(&quotes));
             let as_of = plan.as_of.clone();
             async move {
                 let result = source
-                    .latest_close(&symbol.yahoo_ticker, &as_of)
+                    .latest_close_and_quote(&symbol.yahoo_ticker, &as_of)
                     .await
-                    .map(|latest| latest.into_iter().collect());
+                    .map(|(latest, quote)| {
+                        // The reply's market quote refreshes the intraday
+                        // cache for free (plan 47 D11). Memory only.
+                        if let Some(quote) = quote {
+                            quotes.record(&symbol.yahoo_ticker, Some(quote), now_seconds());
+                        }
+                        latest.into_iter().collect()
+                    });
                 FetchOutcome { symbol, result }
             }
         })
@@ -361,7 +369,7 @@ fn prices_status(state: &AppState, editable: bool) -> Result<WirePricesStatus, A
 /// Deliberately unscoped and always "as of today" — a price update is a
 /// journal-wide fact, not something an account filter or a historical as-of
 /// date should narrow.
-fn symbols_to_price(
+pub(crate) fn symbols_to_price(
     journal: &Journal,
     as_of: &str,
 ) -> Result<(Vec<WirePriceSymbol>, Commodity), AppError> {
@@ -371,6 +379,7 @@ fn symbols_to_price(
         as_of: as_of.to_string(),
         gain_since: None,
         value_in: None,
+        selection: Default::default(),
     };
     let report = compute_holdings(
         &journal.transactions,

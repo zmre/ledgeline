@@ -63,6 +63,8 @@ describe("UNIT holdings view helpers", () => {
             const holdings = [10, 9, 8, 7].map((v, i) => holding(`S${i}`, v));
             const slices = pieSlices(holdings, fmt, 2);
             expect(slices.map((s) => s.symbol)).toEqual(["S0", "S1", PIE_OTHER]);
+            // What a click on each selects (plan 47 D7): the tail is every symbol folded into it.
+            expect(slices.map((s) => s.symbols)).toEqual([["S0"], ["S1"], ["S2", "S3"]]);
             expect(slices[2].value).toBe(15);
             expect(slices[2].formatted).toBe("$15.00");
             expect(slices.reduce((acc, s) => acc + s.share, 0)).toBeCloseTo(100);
@@ -355,6 +357,7 @@ describe("UNIT holdings/ui/view — the folded scope bar's line", () => {
         mode,
         asOf: "2026-11-13",
         gainPeriod: "all" as const,
+        holdings: new Set<string>(),
     });
 
     it.each<[string[], "include" | "exclude", string]>([
@@ -364,6 +367,13 @@ describe("UNIT holdings/ui/view — the folded scope bar's line", () => {
         [["b", "a"], "exclude", "All except 2 accounts · All time · as of 2026-11-13"],
     ])("%j %s reads %j", (accounts, mode, line) => {
         expect(scopeSummary(scope(accounts, mode), "All time")).toBe(line);
+    });
+
+    it("names the holdings filter when one is set", () => {
+        expect(scopeSummary({...scope([], "include"), holdings: new Set(["VTI"])}, "1 month")).toBe("All accounts · charting VTI · 1 month · as of 2026-11-13");
+        expect(scopeSummary({...scope([], "include"), holdings: new Set(["VTI", "AAPL"])}, "1 month")).toBe(
+            "All accounts · charting 2 holdings · 1 month · as of 2026-11-13"
+        );
     });
 });
 

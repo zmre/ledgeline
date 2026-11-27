@@ -43,6 +43,7 @@ fn scope(as_of: &str, gain_since: Option<&str>) -> HoldingsScope {
         as_of: as_of.to_string(),
         gain_since: gain_since.map(str::to_string),
         value_in: None,
+        selection: Default::default(),
     }
 }
 
