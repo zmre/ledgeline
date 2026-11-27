@@ -67,6 +67,20 @@ Six cards for the invoices that changed most recently, newest first. Each card s
 
 **Open in Ledgeline** on the recognition tile opens these books in Ledgeline, where **Journal → Recognition** posts the entries. The button needs Ledgeline installed and is only on macOS. Elsewhere the tile tells you where to go. See [Revenue and expense recognition](../journal/accrual-recognition.md).
 
+## Time
+
+If you [track time](../time/index.md), a row of three tiles sits under the receivables. It isn't there until time tracking is set up and some time is recorded, so books that don't track time never show it.
+
+| Tile               | Shows                                                                                                                                                                                                                  | Opens                                             |
+|--------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------|
+| Hours this week    | Everyone's hours from Monday through Sunday, and the change from last week up to the same weekday. On a Thursday it compares with last Monday to Thursday.                                                             | the time Overview on This week                    |
+| Billable this week | The share of this week's hours on billable accounts, the hours behind it, and the change from last week in percentage points.                                                                                          | the time Overview on This week, split by billable |
+| Unbilled           | Billable time for a customer that isn't on an invoice yet, as money at each account's item rate, with the hours and how many customers. It says when some time has no rate, or when billable time has no customer yet. | Entries, unbilled time only                       |
+
+**Bill…** on the Unbilled tile opens the page that bills it, customer by customer. See [Billing time](../time/billing.md). With nothing unbilled the tile says *Nothing to bill*.
+
+The row loads on its own, so the rest of the page never waits for it, and it updates when a time file changes.
+
 ## Settings
 
 Change these in **Settings → These books → Dashboard**, then Save. See [Settings](settings.md#dashboard). They are kept under `[invoicer]` in the books' `ledgeline.toml`:

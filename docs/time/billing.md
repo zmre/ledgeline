@@ -19,7 +19,7 @@ A line of time is unbilled when all of these hold:
 - its account has a customer (`customer:` on it or a parent);
 - it has no `invoice:` tag and no `nobill:` tag.
 
-**Time → Unbilled** (<kbd>g</kbd> <kbd>u</kbd>) lists the time waiting to be billed or paid. Its sidebar link shows how many customers have unbilled time. The page has these parts:
+**Time → Unbilled** (<kbd>g</kbd> <kbd>u</kbd>) lists the time waiting to be billed or paid. Its sidebar link shows how many customers have unbilled time, and the Invoicer's home page shows the total, as money at each account's rate, with **Bill…** to this page ([Dashboard](../invoicer/dashboard.md#time)). The page has these parts:
 
 | Part | Shows |
 |------|-------|

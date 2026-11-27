@@ -8,7 +8,11 @@
      The paid window is the URL's (`/app/?paid_days=90`, R14): absent, the
      server's `[invoicer] paid-window-days`. Picking another is a history
      step (Back returns to the last one); the setting's own writes no
-     query. -->
+     query.
+
+     Under it, the time row (lib/time/home): this week's hours and billable
+     share against last week's, and what is unbilled with Bill…. It loads
+     on its own, and is absent for books that don't track time. -->
 <script lang="ts">
     import {untrack} from "svelte";
     import {goto} from "$app/navigation";
@@ -22,6 +26,8 @@
     import {errorText} from "#lib/labels.js";
     import DashboardView from "#lib/components/DashboardView.svelte";
     import EmptyState from "#lib/components/EmptyState.svelte";
+    import HomeTime from "#lib/time/home/HomeTime.svelte";
+    import type {HomeTimeLinks} from "#lib/time/home/homeTime.js";
 
     let dashboard = $state<Dashboard | null>(null);
     let error = $state<Error | null>(null);
@@ -90,6 +96,19 @@
 
     const listBase = resolve("/invoices");
     const invoiceHref = (number: string): string => resolve("/invoices/[number]", {number});
+
+    // Where Bill… goes: the To bill page. It replaces /time/unbilled in a
+    // parallel branch; until that merges the typed resolve() only knows
+    // this one. After the merge: resolve("/to-bill").
+    const TO_BILL = resolve("/time/unbilled");
+    const overview = resolve("/time");
+    const timeLinks: HomeTimeLinks = {
+        hours: `${overview}?period=this-week`,
+        billable: `${overview}?period=this-week&split=billable`,
+        unbilled: `${resolve("/time/entries")}?period=all&billed=unbilled`,
+        bill: TO_BILL,
+        overview,
+    };
 </script>
 
 <svelte:head>
@@ -120,4 +139,5 @@
             {/if}
         {/snippet}
     </AsyncSection>
+    <HomeTime links={timeLinks} />
 </div>
