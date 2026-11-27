@@ -97,7 +97,7 @@ use crate::error::AppError;
 use crate::prices_api::{self, FetchOutcome, Outcome, WirePriceSymbol};
 use crate::reports_api::{compute, unix_now};
 use crate::ui_prefs::{self, AutoPricePrefs};
-use crate::yahoo::{FetchedPrice, YahooError};
+use crate::yahoo::{FetchedPrice, MarketQuote, YahooError};
 
 /// How long after start-up the first check runs. Launch is busy — the journal
 /// parse, the first page's reports — and a price check is never urgent enough
@@ -117,7 +117,8 @@ const RUN_EVERY_SECONDS: i64 = 60 * 60;
 const WAKE_EVERY: Duration = Duration::from_secs(5 * 60);
 
 /// Requests in flight at once. Lower than the button's 5: nobody is waiting on
-/// this, so there is no reason to be anything but polite.
+/// this, so there is no reason to be anything but polite. Shared with the
+/// intraday refresh ([`paced`]).
 const FETCH_CONCURRENCY: usize = 2;
 
 /// The least time between two request STARTS.
@@ -558,10 +559,13 @@ pub(crate) async fn run_once(state: &AppState, now: i64) {
         AutoPlan::Fetch(fetch) => fetch,
     };
 
-    let fetched = fetch_all(state, &fetch).await;
+    let fetched = fetch_all(state, &fetch, now).await;
     let rate_limited = fetched.rate_limited;
     if rate_limited {
         auto.back_off(now);
+        // Yahoo is limiting US, not this updater: the intraday refresh must
+        // not ask either.
+        state.quotes().back_off(now);
     } else {
         auto.clear_backoff();
     }
@@ -610,6 +614,7 @@ fn journal_facts(state: &AppState, now: i64) -> Result<(String, JournalFacts), A
         as_of: today,
         gain_since: None,
         value_in: None,
+        selection: Default::default(),
     };
     let last_held = last_held_dates(&journal.transactions, &journal.accounts, &scope)?;
     Ok((
@@ -688,62 +693,90 @@ impl Pacer {
     }
 }
 
-/// What Yahoo said about one symbol's history.
-type Answer = Result<Vec<FetchedPrice>, YahooError>;
+/// What Yahoo said about one symbol's history, and the market quote that came
+/// with it.
+type Answer = Result<(Vec<FetchedPrice>, Option<MarketQuote>), YahooError>;
 
-/// One request per wanted symbol, [`FETCH_CONCURRENCY`] at a time and
-/// [`REQUEST_GAP`] apart, stopping at the first rate limit: requests not yet
-/// started are never sent.
-async fn fetch_all(state: &AppState, plan: &FetchPlan) -> Fetched {
-    // Everything the request futures touch is owned (or `Arc`-shared), not
-    // borrowed from this frame: the loop runs inside a spawned task, and a
-    // `buffer_unordered` of futures borrowing locals does not prove `Send`
-    // for every lifetime the spawn needs.
-    let source = Arc::clone(state.price_source());
+/// Run `fetch` for each of `items`, [`FETCH_CONCURRENCY`] at a time with
+/// request starts [`REQUEST_GAP`] apart, stopping at the first rate limit:
+/// requests not yet started are never sent (their answer is `None`). The
+/// flag says whether a rate limit stopped the round.
+///
+/// The one pacing loop every unattended-ish Yahoo round shares — the
+/// automatic updater and the intraday refresh — so "never hammer Yahoo" has
+/// one implementation.
+///
+/// Everything the request futures touch is owned (or `Arc`-shared), not
+/// borrowed from this frame: the updater runs inside a spawned task, and a
+/// `buffer_unordered` of futures borrowing locals does not prove `Send` for
+/// every lifetime the spawn needs.
+pub(crate) async fn paced<I, T, F, Fut>(
+    items: Vec<I>,
+    fetch: F,
+) -> (Vec<(I, Option<Result<T, YahooError>>)>, bool)
+where
+    F: Fn(&I) -> Fut,
+    Fut: std::future::Future<Output = Result<T, YahooError>>,
+{
     let pacer = Arc::new(Pacer::new(REQUEST_GAP));
     let stop = Arc::new(AtomicBool::new(false));
-    let from: Arc<str> = Arc::from(plan.from.as_str());
-    let answers: Vec<(Want, Option<Answer>)> = stream::iter(plan.wants.clone())
-        .map(|want| {
-            let (source, pacer, stop, from) = (
-                Arc::clone(&source),
-                Arc::clone(&pacer),
-                Arc::clone(&stop),
-                Arc::clone(&from),
-            );
+    let answers = stream::iter(items)
+        .map(|item| {
+            // Lazy: building the future sends nothing until it is polled.
+            let request = fetch(&item);
+            let (pacer, stop) = (Arc::clone(&pacer), Arc::clone(&stop));
             async move {
                 if stop.load(Ordering::Relaxed) {
-                    return (want, None);
+                    return (item, None);
                 }
                 pacer.wait().await;
                 if stop.load(Ordering::Relaxed) {
-                    return (want, None);
+                    return (item, None);
                 }
-                let result = source
-                    .daily_closes(&want.held.symbol.yahoo_ticker, &from)
-                    .await;
+                let result = request.await;
                 if matches!(result, Err(YahooError::RateLimited(_))) {
                     stop.store(true, Ordering::Relaxed);
                 }
-                (want, Some(result))
+                (item, Some(result))
             }
         })
         .buffer_unordered(FETCH_CONCURRENCY)
         .collect()
+        .await;
+    (answers, stop.load(Ordering::Relaxed))
+}
+
+/// One request per wanted symbol through [`paced`]. Each reply's market quote
+/// goes into the intraday cache as it is read (stamped `now`), so a symbol
+/// this run just asked about is fresh for the intraday refresh too.
+async fn fetch_all(state: &AppState, plan: &FetchPlan, now: i64) -> Fetched {
+    let source = Arc::clone(state.price_source());
+    let from: Arc<str> = Arc::from(plan.from.as_str());
+    let (answers, rate_limited): (Vec<(Want, Option<Answer>)>, bool) =
+        paced(plan.wants.clone(), |want: &Want| {
+            let (source, from) = (Arc::clone(&source), Arc::clone(&from));
+            let ticker = want.held.symbol.yahoo_ticker.clone();
+            async move { source.daily_closes_and_quote(&ticker, &from).await }
+        })
         .await;
 
     let mut fetched = Fetched {
         outcomes: Vec::new(),
         asked: Vec::new(),
         failed: 0,
-        rate_limited: stop.load(Ordering::Relaxed),
+        rate_limited,
     };
     for (want, answer) in answers {
         match answer {
             // Never sent, or the rate limit itself: neither is about the symbol.
             None | Some(Err(YahooError::RateLimited(_))) => {}
             Some(Err(_)) => fetched.failed += 1,
-            Some(Ok(closes)) => {
+            Some(Ok((closes, quote))) => {
+                if let Some(quote) = quote {
+                    state
+                        .quotes()
+                        .record(&want.held.symbol.yahoo_ticker, Some(quote), now);
+                }
                 fetched.asked.push(MemoKey::new(
                     &want.held.symbol.symbol,
                     &plan.close,
@@ -816,7 +849,7 @@ pub(crate) async fn run_forever(state: AppState) {
 }
 
 /// The wall clock, Unix seconds.
-fn now_seconds() -> i64 {
+pub(crate) fn now_seconds() -> i64 {
     i64::try_from(unix_now()).unwrap_or(i64::MAX)
 }
 

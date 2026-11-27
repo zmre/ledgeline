@@ -499,3 +499,23 @@ async fn the_catalog_lists_every_benchmark_in_slot_order() {
     // Nothing is fetched to answer it.
     assert_eq!(tree.calls(), 0);
 }
+
+/// Plan 47 D8: `holdings=` narrows the SEED to the selected holdings' own
+/// flows. An AAPL position bought alongside changes nothing about a VTI-only
+/// comparison: it matches the journal that never held AAPL, byte for byte.
+#[tokio::test]
+async fn a_holdings_filter_seeds_from_only_the_selected_flows() {
+    let with_aapl = format!(
+        "{JOURNAL}\nP 2025-01-31 AAPL $50.00\n\n2025-02-03 buy apple\n    assets:broker    4 AAPL @ $45.00\n    assets:cash\n"
+    );
+    let uri = format!("/api/holdings/benchmarks?symbols=SPY&{WINDOW}");
+    let (_, alone) = Tree::with(JOURNAL, FakeHistory::new([("SPY", spy())]))
+        .get(&uri)
+        .await;
+    let both = Tree::with(&with_aapl, FakeHistory::new([("SPY", spy())]));
+    let (status, filtered) = both.get(&format!("{uri}&holdings=VTI")).await;
+    assert_eq!(status, StatusCode::OK, "{filtered}");
+    assert_eq!(filtered, alone);
+    let (_, unfiltered) = both.get(&uri).await;
+    assert_ne!(unfiltered, alone, "AAPL's flow counts without the filter");
+}

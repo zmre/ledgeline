@@ -25,13 +25,14 @@ use axum::extract::{Query, State};
 use ledgeline_core::Dec;
 use ledgeline_core::holdings::engine::prices_any_held_other;
 use ledgeline_core::holdings::{
-    Holding, HoldingPrice, HoldingsPoint, HoldingsReport, HoldingsScope, HoldingsSeries,
-    HoldingsTotals, HoldingsWarning, OtherHolding, OtherHoldingsReport, OtherHoldingsTotals,
-    OtherHoldingsWarning, OtherInputs, OtherWarningKind, PriceSource, ScopeMode, SeriesWindow,
-    WarningKind, auto_interval, compute_holdings, first_holding_date, holdings_series,
-    other_holdings, prices_any_held, series_count,
+    AnchorHorizon, Holding, HoldingPrice, HoldingsPoint, HoldingsReport, HoldingsScope,
+    HoldingsSeries, HoldingsTotals, HoldingsWarning, OtherHolding, OtherHoldingsReport,
+    OtherHoldingsTotals, OtherHoldingsWarning, OtherInputs, OtherWarningKind, PriceSource,
+    ScopeMode, SeriesWindow, ValueRange, WarningKind, anchor_range, anchor_window, auto_interval,
+    compute_holdings, first_holding_date, holdings_series, last_held_dates, other_holdings,
+    prices_any_held, series_count,
 };
-use ledgeline_core::model::{Commodity, Journal};
+use ledgeline_core::model::{Commodity, Journal, PriceDirective};
 use ledgeline_core::reports::periods;
 use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
@@ -2266,6 +2267,9 @@ pub(crate) struct WireHoldingsReport {
     top_gainers: Vec<WireHolding>,
     top_losers: Vec<WireHolding>,
     warnings: Vec<WireWarning>,
+    /// Plan 47 `live=1`: the newest intraday quote time (Unix seconds) that
+    /// valued a row of this report, or `null` when none did.
+    live_at: Option<i64>,
 }
 
 impl From<&HoldingsReport> for WireHoldingsReport {
@@ -2279,6 +2283,7 @@ impl From<&HoldingsReport> for WireHoldingsReport {
             top_gainers: report.top_gainers.iter().map(WireHolding::from).collect(),
             top_losers: report.top_losers.iter().map(WireHolding::from).collect(),
             warnings: report.warnings.iter().map(WireWarning::from).collect(),
+            live_at: None,
         }
     }
 }
@@ -2313,6 +2318,13 @@ pub(crate) struct WireHoldingsSeries {
     base: String,
     points: Vec<WireHoldingsPoint>,
     has_basis: bool,
+    /// Plan 47 D1/D2: the value range over the `anchor=` horizon unioned with
+    /// these points (leading `<= 0` skipped), unpadded. `null` when no
+    /// `anchor` was asked for, or nothing in either is above zero.
+    anchor: Option<WireValueRange>,
+    /// Plan 47 `live=1`: the newest intraday quote time (Unix seconds) that
+    /// valued the last point, or `null` when none did.
+    live_at: Option<i64>,
 }
 
 impl From<&HoldingsSeries> for WireHoldingsSeries {
@@ -2321,6 +2333,25 @@ impl From<&HoldingsSeries> for WireHoldingsSeries {
             base: series.base.clone(),
             points: series.points.iter().map(WireHoldingsPoint::from).collect(),
             has_basis: series.has_basis,
+            anchor: None,
+            live_at: None,
+        }
+    }
+}
+
+/// `{min, max}`, each a [`WireDec`] like every other money value here.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireValueRange {
+    min: WireDec,
+    max: WireDec,
+}
+
+impl From<ValueRange> for WireValueRange {
+    fn from(range: ValueRange) -> Self {
+        Self {
+            min: range.min.into(),
+            max: range.max.into(),
         }
     }
 }
@@ -2412,6 +2443,8 @@ pub(crate) struct WireOtherHoldingsReport {
     accounts: Vec<String>,
     totals: WireOtherHoldingsTotals,
     warnings: Vec<WireOtherWarning>,
+    /// As [`WireHoldingsReport`]'s.
+    live_at: Option<i64>,
 }
 
 impl From<&OtherHoldingsReport> for WireOtherHoldingsReport {
@@ -2423,6 +2456,7 @@ impl From<&OtherHoldingsReport> for WireOtherHoldingsReport {
             accounts: report.accounts.clone(),
             totals: (&report.totals).into(),
             warnings: report.warnings.iter().map(WireOtherWarning::from).collect(),
+            live_at: None,
         }
     }
 }
@@ -2987,6 +3021,7 @@ pub(crate) fn holdings_scope(
         as_of: parse_date("asOf", as_of, today_utc)?,
         gain_since: parse_opt_date("gainSince", gain_since)?,
         value_in: None,
+        selection: BTreeSet::new(),
     };
     Ok(HoldingsScope {
         value_in: resolve_value_in(journal, &scope, tab, value_in)?,
@@ -2994,8 +3029,19 @@ pub(crate) fn holdings_scope(
     })
 }
 
+/// Plan 47's holdings filter on a resolved scope: `raw` is the tab's comma
+/// list — `symbols` on Stocks, `rows` (row accounts) on Other — in the same
+/// shape as `accounts`, and empty/absent keeps every row.
+fn with_selection(scope: HoldingsScope, raw: Option<&str>) -> HoldingsScope {
+    HoldingsScope {
+        selection: parse_accounts(raw),
+        ..scope
+    }
+}
+
 /// Split a comma-separated `accounts` param into a set of subtree roots, trimming
 /// whitespace and dropping empties. `None`/empty ⇒ the empty set = all accounts.
+/// Plan 47's `symbols`/`rows` filters are the same shape and parse here too.
 fn parse_accounts(raw: Option<&str>) -> BTreeSet<String> {
     raw.map(|value| {
         value
@@ -3310,6 +3356,15 @@ pub(crate) struct HoldingsQuery {
     /// gainers/losers) become `marketValue(asOf) − valueAtStart`; `basis` stays
     /// all-time. See [`holdings`] for the full contract.
     gain_since: Option<String>,
+    /// Plan 47 D6: comma list of symbols the Stocks report counts (empty =
+    /// all). Ignored by `/api/holdings/other`.
+    symbols: Option<String>,
+    /// Plan 47 D9: comma list of row accounts the Other report counts (empty
+    /// = all). Ignored by `/api/holdings`.
+    rows: Option<String>,
+    /// Plan 47 D10: `1` values today with the cached intraday quotes. Ignored
+    /// unless `asOf` is today.
+    live: Option<String>,
 }
 
 /// `?asOf=&accounts=&mode=&interval=&count=&since=&valueIn=` — holdings trend.
@@ -3330,6 +3385,24 @@ pub(crate) struct HoldingsSeriesQuery {
     /// and validated against the same scope, so the chart and the table beside
     /// it can never end up in different commodities.
     value_in: Option<String>,
+    /// As [`HoldingsQuery`]'s. On `/api/holdings/benchmarks` this param name
+    /// already lists the BENCHMARKS, so there the filter is read from
+    /// `holdings=` instead ([`Self::with_symbols`]).
+    symbols: Option<String>,
+    /// As [`HoldingsQuery`]'s.
+    rows: Option<String>,
+    /// Plan 47 D1: `1yr|5yr|all` — answer an `anchor` range over that horizon.
+    anchor: Option<String>,
+    /// As [`HoldingsQuery`]'s.
+    live: Option<String>,
+}
+
+impl HoldingsSeriesQuery {
+    /// This query with its Stocks filter replaced — for the benchmark route,
+    /// whose own `symbols` param names benchmarks, not holdings.
+    pub(crate) fn with_symbols(self, symbols: Option<String>) -> Self {
+        Self { symbols, ..self }
+    }
 }
 
 // ===========================================================================
@@ -4400,26 +4473,46 @@ pub(crate) async fn holdings(
     Query(query): Query<HoldingsQuery>,
 ) -> Result<Json<WireHoldingsReport>, AppError> {
     let snapshot = state.snapshot();
+    let quotes = state.quotes_arc();
     compute(move || {
+        let journal = &snapshot.journal;
+        let want_live = parse_live(query.live.as_deref())?;
         // `holdings_scope` validates `valueIn` by scanning the whole journal for
         // a price route, so it belongs on the blocking side with the report.
-        let scope = holdings_scope(
-            &snapshot.journal,
-            HoldingsTab::Stocks,
-            query.accounts.as_deref(),
-            query.mode.as_deref(),
-            query.as_of,
-            query.gain_since,
-            query.value_in.as_deref(),
-        )?;
+        let scope = with_selection(
+            holdings_scope(
+                journal,
+                HoldingsTab::Stocks,
+                query.accounts.as_deref(),
+                query.mode.as_deref(),
+                query.as_of,
+                query.gain_since,
+                query.value_in.as_deref(),
+            )?,
+            query.symbols.as_deref(),
+        );
+        let live = want_live
+            .then(|| Live::new(&quotes, journal, &scope.as_of))
+            .flatten();
         let report = compute_holdings(
-            &snapshot.journal.transactions,
-            &snapshot.journal.prices,
-            &snapshot.journal.accounts,
-            &snapshot.journal.commodity_tags,
+            &journal.transactions,
+            Live::prices(live.as_ref(), journal),
+            &journal.accounts,
+            &journal.commodity_tags,
             &scope,
         )?;
-        Ok(WireHoldingsReport::from(&report))
+        let live_at = live.as_ref().and_then(|live| {
+            live.newest(
+                report
+                    .holdings
+                    .iter()
+                    .map(|holding| holding.symbol.as_str()),
+            )
+        });
+        Ok(WireHoldingsReport {
+            live_at,
+            ..WireHoldingsReport::from(&report)
+        })
     })
     .await
 }
@@ -4433,17 +4526,51 @@ pub(crate) async fn holdings_series_report(
     Query(query): Query<HoldingsSeriesQuery>,
 ) -> Result<Json<WireHoldingsSeries>, AppError> {
     let snapshot = state.snapshot();
+    let quotes = state.quotes_arc();
     compute(move || {
-        let (scope, window) = stocks_series_request(&snapshot.journal, query)?;
-        let series = holdings_series(
-            &snapshot.journal.transactions,
-            &snapshot.journal.prices,
-            &snapshot.journal.accounts,
-            &snapshot.journal.commodity_tags,
-            &scope,
-            &window,
+        let journal = &snapshot.journal;
+        let want_live = parse_live(query.live.as_deref())?;
+        let anchor = parse_anchor(query.anchor.as_deref())?;
+        let (scope, window) = stocks_series_request(journal, query)?;
+        let live = want_live
+            .then(|| Live::new(&quotes, journal, &scope.as_of))
+            .flatten();
+        let prices = Live::prices(live.as_ref(), journal);
+        let series_over = |window: &SeriesWindow| {
+            holdings_series(
+                &journal.transactions,
+                prices,
+                &journal.accounts,
+                &journal.commodity_tags,
+                &scope,
+                window,
+            )
+        };
+        let series = series_over(&window)?;
+        let anchor = anchor_for(
+            anchor,
+            &scope.as_of,
+            &series,
+            || first_holding_date(&journal.transactions, &journal.accounts, &scope),
+            |window| Ok(series_over(window)?),
         )?;
-        Ok(WireHoldingsSeries::from(&series))
+        let live_at = match &live {
+            None => None,
+            Some(live) => {
+                // Held at `asOf` = still open then: its last-held date IS `asOf`.
+                let held = last_held_dates(&journal.transactions, &journal.accounts, &scope)?;
+                live.newest(
+                    held.iter()
+                        .filter(|(_, last)| **last == scope.as_of)
+                        .map(|(symbol, _)| symbol.as_str()),
+                )
+            }
+        };
+        Ok(WireHoldingsSeries {
+            anchor,
+            live_at,
+            ..WireHoldingsSeries::from(&series)
+        })
     })
     .await
 }
@@ -4455,16 +4582,19 @@ pub(crate) fn stocks_series_request(
     journal: &Journal,
     query: HoldingsSeriesQuery,
 ) -> Result<(HoldingsScope, SeriesWindow), AppError> {
-    let scope = holdings_scope(
-        journal,
-        HoldingsTab::Stocks,
-        query.accounts.as_deref(),
-        query.mode.as_deref(),
-        query.as_of,
-        // The trend tracks market value/basis only — no per-point gain window.
-        None,
-        query.value_in.as_deref(),
-    )?;
+    let scope = with_selection(
+        holdings_scope(
+            journal,
+            HoldingsTab::Stocks,
+            query.accounts.as_deref(),
+            query.mode.as_deref(),
+            query.as_of,
+            // The trend tracks market value/basis only — no per-point gain window.
+            None,
+            query.value_in.as_deref(),
+        )?,
+        query.symbols.as_deref(),
+    );
     let window = series_window(
         &scope,
         query.interval.as_deref(),
@@ -4494,23 +4624,42 @@ pub(crate) async fn other_holdings_report(
     Query(query): Query<HoldingsQuery>,
 ) -> Result<Json<WireOtherHoldingsReport>, AppError> {
     let snapshot = state.snapshot();
+    let quotes = state.quotes_arc();
     compute(move || {
-        let scope = holdings_scope(
-            &snapshot.journal,
-            HoldingsTab::Other,
-            query.accounts.as_deref(),
-            query.mode.as_deref(),
-            query.as_of,
-            query.gain_since,
-            query.value_in.as_deref(),
-        )?;
+        let journal = &snapshot.journal;
+        let want_live = parse_live(query.live.as_deref())?;
+        let scope = with_selection(
+            holdings_scope(
+                journal,
+                HoldingsTab::Other,
+                query.accounts.as_deref(),
+                query.mode.as_deref(),
+                query.as_of,
+                query.gain_since,
+                query.value_in.as_deref(),
+            )?,
+            query.rows.as_deref(),
+        );
+        let live = want_live
+            .then(|| Live::new(&quotes, journal, &scope.as_of))
+            .flatten();
         let report = other_holdings(
-            &snapshot.journal.transactions,
-            &snapshot.journal.prices,
-            &snapshot.journal.accounts,
+            &journal.transactions,
+            Live::prices(live.as_ref(), journal),
+            &journal.accounts,
             &scope,
         )?;
-        Ok(WireOtherHoldingsReport::from(&report))
+        let live_at = live.as_ref().and_then(|live| {
+            live.newest(report.holdings.iter().flat_map(|row| {
+                row.commodities
+                    .iter()
+                    .map(|(commodity, _)| commodity.0.as_str())
+            }))
+        });
+        Ok(WireOtherHoldingsReport {
+            live_at,
+            ..WireOtherHoldingsReport::from(&report)
+        })
     })
     .await
 }
@@ -4525,22 +4674,32 @@ pub(crate) async fn other_holdings_series_report(
     Query(query): Query<HoldingsSeriesQuery>,
 ) -> Result<Json<WireHoldingsSeries>, AppError> {
     let snapshot = state.snapshot();
+    let quotes = state.quotes_arc();
     compute(move || {
-        let scope = holdings_scope(
-            &snapshot.journal,
-            HoldingsTab::Other,
-            query.accounts.as_deref(),
-            query.mode.as_deref(),
-            query.as_of,
-            // The trend tracks value/cost only — no per-point change window.
-            None,
-            query.value_in.as_deref(),
-        )?;
-        // Built once: `since=inception` and the series both read them.
+        let journal = &snapshot.journal;
+        let want_live = parse_live(query.live.as_deref())?;
+        let anchor = parse_anchor(query.anchor.as_deref())?;
+        let scope = with_selection(
+            holdings_scope(
+                journal,
+                HoldingsTab::Other,
+                query.accounts.as_deref(),
+                query.mode.as_deref(),
+                query.as_of,
+                // The trend tracks value/cost only — no per-point change window.
+                None,
+                query.value_in.as_deref(),
+            )?,
+            query.rows.as_deref(),
+        );
+        let live = want_live
+            .then(|| Live::new(&quotes, journal, &scope.as_of))
+            .flatten();
+        // Built once: `since=inception`, the series and the anchor all read them.
         let inputs = OtherInputs::build(
-            &snapshot.journal.transactions,
-            &snapshot.journal.prices,
-            &snapshot.journal.accounts,
+            &journal.transactions,
+            Live::prices(live.as_ref(), journal),
+            &journal.accounts,
         )?;
         let window = series_window(
             &scope,
@@ -4550,9 +4709,124 @@ pub(crate) async fn other_holdings_series_report(
             || Ok(inputs.first_holding_date(&scope)?),
         )?;
         let series = inputs.series(&scope, &window)?;
-        Ok(WireHoldingsSeries::from(&series))
+        let anchor = anchor_for(
+            anchor,
+            &scope.as_of,
+            &series,
+            || inputs.first_holding_date(&scope).ok().flatten(),
+            |window| Ok(inputs.series(&scope, window)?),
+        )?;
+        let live_at = match &live {
+            None => None,
+            Some(live) => {
+                let held = inputs.held_commodities(&scope)?;
+                live.newest(held.iter().map(|commodity| commodity.0.as_str()))
+            }
+        };
+        Ok(WireHoldingsSeries {
+            anchor,
+            live_at,
+            ..WireHoldingsSeries::from(&series)
+        })
     })
     .await
+}
+
+// ===========================================================================
+// Plan 47: live quotes and the y-axis anchor
+// ===========================================================================
+
+/// Parse `live`: `1`/`true` on, `0`/`false`/absent/empty off, anything else a
+/// `400` like every other malformed param here.
+fn parse_live(raw: Option<&str>) -> Result<bool, AppError> {
+    match raw.map(str::trim) {
+        None | Some("" | "0" | "false") => Ok(false),
+        Some("1" | "true") => Ok(true),
+        Some(other) => Err(AppError::BadRequest(format!(
+            "unknown live '{other}' (expected 1|0)"
+        ))),
+    }
+}
+
+/// Parse `anchor`: `1yr|5yr|all`, absent/empty = no anchor.
+fn parse_anchor(raw: Option<&str>) -> Result<Option<AnchorHorizon>, AppError> {
+    match raw.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok(None),
+        Some(value) => AnchorHorizon::parse(value).map(Some).ok_or_else(|| {
+            AppError::BadRequest(format!("unknown anchor '{value}' (expected 1yr|5yr|all)"))
+        }),
+    }
+}
+
+/// The `anchor` range for a series already computed as `shown`: a second
+/// series over the horizon ([`anchor_window`]), same scope, filter and
+/// prices, unioned with `shown` ([`anchor_range`]). `inception` is only
+/// asked for `anchor=all`; with nothing ever held there is no horizon and the
+/// range is `shown`'s alone.
+fn anchor_for(
+    horizon: Option<AnchorHorizon>,
+    as_of: &str,
+    shown: &HoldingsSeries,
+    inception: impl FnOnce() -> Option<String>,
+    series_over: impl FnOnce(&SeriesWindow) -> Result<HoldingsSeries, AppError>,
+) -> Result<Option<WireValueRange>, AppError> {
+    let Some(horizon) = horizon else {
+        return Ok(None);
+    };
+    let extra = horizon
+        .start(as_of, inception)
+        .map(|start| series_over(&anchor_window(&start, as_of)))
+        .transpose()?;
+    let range = anchor_range(
+        extra
+            .iter()
+            .map(|series| series.points.as_slice())
+            .chain(std::iter::once(shown.points.as_slice())),
+    );
+    Ok(range.map(WireValueRange::from))
+}
+
+/// What `live=1` adds to one request (plan 47 D10): the journal's prices plus
+/// today's cached quotes as same-day directives, and each quoted symbol's
+/// trade time for `liveAt`. Built only when `asOf` is today and the cache
+/// holds a usable quote dated today — otherwise the request is exactly the
+/// non-live one. Reads memory only; never the network, never a file.
+struct Live {
+    prices: Vec<PriceDirective>,
+    times: BTreeMap<String, i64>,
+}
+
+impl Live {
+    fn new(cache: &crate::intraday::QuoteCache, journal: &Journal, as_of: &str) -> Option<Self> {
+        if as_of != today_utc() {
+            return None;
+        }
+        let cached = crate::intraday::cached_quotes(cache, journal);
+        let quotes: Vec<_> = cached.iter().map(|(quote, _)| quote.clone()).collect();
+        let live = ledgeline_core::holdings::live_price_directives(&journal.prices, &quotes, as_of);
+        if live.is_empty() {
+            return None;
+        }
+        let times = cached
+            .into_iter()
+            .filter(|(quote, _)| live.iter().any(|price| price.commodity.0 == quote.symbol))
+            .map(|(quote, time)| (quote.symbol, time))
+            .collect();
+        let mut prices = journal.prices.clone();
+        prices.extend(live);
+        Some(Self { prices, times })
+    }
+
+    /// The prices a request values with: the live set when there is one.
+    fn prices<'a>(live: Option<&'a Self>, journal: &'a Journal) -> &'a [PriceDirective] {
+        live.map_or(journal.prices.as_slice(), |live| live.prices.as_slice())
+    }
+
+    /// The newest quote time among `held` — `liveAt`.
+    fn newest<'a>(&self, held: impl Iterator<Item = &'a str>) -> Option<i64> {
+        held.filter_map(|symbol| self.times.get(symbol).copied())
+            .max()
+    }
 }
 
 // ===========================================================================

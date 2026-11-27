@@ -154,6 +154,10 @@ const CACHE_HEADER: &str = "\
 #[derive(Deserialize)]
 pub(crate) struct BenchmarksQuery {
     symbols: Option<String>,
+    /// Plan 47 D8: the holdings filter, seeding the benchmark from only the
+    /// selected holdings' flows. `/api/holdings/series` calls it `symbols`,
+    /// which here already names the benchmarks, so it is `holdings` here.
+    holdings: Option<String>,
 }
 
 /// `GET /api/holdings/benchmarks/catalog`: every benchmark, in catalog order.
@@ -385,6 +389,9 @@ fn prepare(
     let wanted = parse_benchmarks(symbols.symbols.as_deref())?;
     let snapshot = state.snapshot();
     let journal = &snapshot.journal;
+    // `series_query.symbols` read THIS route's `symbols` — the benchmark list
+    // — so the holdings filter is swapped in from `holdings`.
+    let series_query = series_query.with_symbols(symbols.holdings);
     let (scope, window) = stocks_series_request(journal, series_query)?;
     let (series, flows) = holdings_series_and_flows(
         &journal.transactions,
