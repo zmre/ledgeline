@@ -49,7 +49,7 @@ function domainSpan(values: readonly (number | null)[], domain: readonly [number
     return Math.max(0, ...present) - Math.min(0, ...present);
 }
 
-/** The tooltip line for a marked bucket: "Net bought $12,000.00" / "Net sold $48,200.00". */
+/** The tooltip line for a marked bucket: "Net bought $12,000" / "Net sold $48,200" (the caller picks the precision). */
 export function flowLine(marker: Pick<FlowMarker, "flow">, formatMoney: (n: number) => string): string {
     return `${marker.flow > 0 ? "Net bought" : "Net sold"} ${formatMoney(Math.abs(marker.flow))}`;
 }

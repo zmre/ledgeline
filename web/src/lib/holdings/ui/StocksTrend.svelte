@@ -44,6 +44,7 @@
         serverUrl,
         formatValue,
         formatAxis,
+        formatFlow,
         liveHint = null,
         gain = null,
     }: {
@@ -53,6 +54,7 @@
         serverUrl: string | null;
         formatValue: (n: number) => string;
         formatAxis?: (n: number) => string;
+        formatFlow?: (n: number) => string;
         /** HoldingsTrend's `liveHint`. */
         liveHint?: string | null;
         /** HoldingsTrend's `gain`: the stat tiles' period gain, which colours the Value line. */
@@ -115,7 +117,7 @@
     );
 </script>
 
-<HoldingsTrend {trend} period={scope.gainPeriod} {formatValue} {formatAxis} {overlays} {liveHint} {view} {gain}>
+<HoldingsTrend {trend} period={scope.gainPeriod} {formatValue} {formatAxis} {formatFlow} {overlays} {liveHint} {view} {gain}>
     {#snippet controls()}
         <div class="flex items-center gap-2">
             <div class="join" role="group" aria-label="Chart shows" data-testid="chart-view">

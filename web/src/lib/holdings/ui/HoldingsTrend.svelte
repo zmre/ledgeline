@@ -61,6 +61,7 @@
         period = "12mo",
         formatValue,
         formatAxis,
+        formatFlow,
         overlays = [],
         controls,
         liveHint = null,
@@ -72,6 +73,8 @@
         period?: GainPeriod;
         formatValue: (n: number) => string;
         formatAxis?: (n: number) => string;
+        /** Money for the buy/sell marker lines ("Net sold $48,200"); `formatValue` when omitted. */
+        formatFlow?: (n: number) => string;
         overlays?: readonly PeriodSeries[];
         controls?: Snippet;
         /** A muted aside after the window note (e.g. why there is no live quote), or null. */
@@ -120,7 +123,7 @@
         if (markers.length === 0) return undefined;
         return (i: number): readonly string[] => {
             const marker = markerAt.get(i);
-            return marker === undefined ? [] : [flowLine(marker, formatValue)];
+            return marker === undefined ? [] : [flowLine(marker, formatFlow ?? formatValue)];
         };
     });
 
@@ -151,7 +154,7 @@
                 paint-order="stroke"
                 data-flow-marker={m.direction}
                 role="img"
-                aria-label={flowLine(m, formatValue)}
+                aria-label={flowLine(m, formatFlow ?? formatValue)}
             />
         {/each}
     </g>

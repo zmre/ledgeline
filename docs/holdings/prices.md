@@ -72,6 +72,10 @@ under it — and lives happily beside any other tag you keep there. Anything Yah
 Finance quotes works: stocks, ETFs, mutual funds by their NAV, and index symbols
 like `^GSPC`.
 
+Coins need the tag. On Yahoo Finance `BTC`, `ETH` and `USDC` are other
+securities (`BTC` is a Grayscale ETF), so tag `commodity BTC ; yahoo: BTC-USD`.
+See [Crypto](crypto.md).
+
 ### What a press actually does
 
 - **Runs twice, writes once.** A symbol that already has a `P` line for the

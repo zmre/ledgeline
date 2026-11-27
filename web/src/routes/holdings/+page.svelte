@@ -156,6 +156,8 @@
     const format = (qty: Dec): string => formatAmount({commodity: base, qty, style});
     const formatTrendValue = (v: number): string => formatChartValue(v, base, style);
     const formatTrendAxis = (v: number): string => formatCompactChartValue(v, base, style);
+    // Buy/sell marker lines: whole units ("Net sold $48,200"); cents say nothing about a move this size.
+    const formatTrendWhole = (v: number): string => formatChartValue(v, base, {...style, precision: 0});
     // The scope chooser's options are per-TAB, and each tab's list comes off its
     // OWN report. Neither is derived here: membership turns on the `holdings:`
     // account tag, which the SPA's account declarations (name + type) cannot see,
@@ -267,6 +269,7 @@
                                         serverUrl={settings.serverUrl}
                                         formatValue={formatTrendValue}
                                         formatAxis={formatTrendAxis}
+                                        formatFlow={formatTrendWhole}
                                         {liveHint}
                                         gain={chartGain}
                                     />
@@ -335,6 +338,7 @@
                                 period={otherHoldingsData.scope?.gainPeriod ?? gainPeriod}
                                 formatValue={formatTrendValue}
                                 formatAxis={formatTrendAxis}
+                                formatFlow={formatTrendWhole}
                                 {liveHint}
                             />
                         {/if}

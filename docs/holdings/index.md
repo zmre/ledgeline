@@ -18,13 +18,14 @@ The Holdings tab has two sub-tabs:
 
 ![Holdings → Stocks: the filter bar, the Update prices button, the Insights summary and the value chart](images/stocks.png)
 
-This section has five pages:
+This section has six pages:
 
 - this one: which tab an account lands on, what the columns mean, the period control and the value-over-time chart;
 - [The holdings and valuation tags](tags.md): moving an account between tabs, rolling several accounts into one holding, and separating cost from value;
 - [Prices](prices.md): where valuations come from and the Update prices button;
 - [Allocation by category](allocation.md): the Divide by menu on the Stocks pie;
-- [Comparing against a benchmark](benchmarks.md): the index-fund lines on the Performance chart.
+- [Comparing against a benchmark](benchmarks.md): the index-fund lines on the Performance chart;
+- [Crypto](crypto.md): bitcoin, ether, stablecoins and other coins.
 
 Design notes and the reasoning behind each decision live in
 [`plans/10-stock-holdings.md`](https://github.com/zmre/ledgeline/blob/main/plans/10-stock-holdings.md) and
