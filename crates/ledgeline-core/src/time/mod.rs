@@ -467,6 +467,82 @@ pub fn with_tag(comment: &str, name: &str, value: Option<&str>) -> String {
     }
 }
 
+/// Why a note can't be written as typed, and a rewrite that can.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteProblem {
+    /// The offending text, as typed: `re:`, `;`, a line break.
+    pub offending: String,
+    /// For people: what hledger would do with it.
+    pub message: String,
+    /// The note reworded so it reads back as itself (no tag, no comment
+    /// break); `None` when nothing would be left.
+    pub suggestion: Option<String>,
+}
+
+/// What is wrong with `note` as an entry's note, if anything: a `;` or a
+/// line break (they end the comment) or a `word:` (hledger reads it as a
+/// tag, so the note would change meaning). Nothing is ever rewritten
+/// silently; the caller shows [`NoteProblem::suggestion`] and the person
+/// chooses.
+#[must_use]
+pub fn note_problem(note: &str) -> Option<NoteProblem> {
+    let breaks = note.contains([';', '\n', '\r']) || note.chars().any(char::is_control);
+    let tags = crate::parse::parse_tags(note);
+    if !breaks && tags.is_empty() {
+        return None;
+    }
+    let suggestion = suggest_note(note);
+    let (offending, message) = if breaks {
+        let offending = if note.contains(';') {
+            ";"
+        } else {
+            "a line break"
+        };
+        (
+            offending.to_string(),
+            format!("a note can't hold {offending}: it would end the note early"),
+        )
+    } else {
+        let name = &tags[0].0;
+        let offending = format!("{name}:");
+        let message = format!(
+            "hledger reads `{offending}` in a note as a tag named `{name}`, so the note \
+             would change meaning; reword it (add a tag separately)"
+        );
+        (offending, message)
+    };
+    Some(NoteProblem {
+        offending,
+        message,
+        suggestion,
+    })
+}
+
+/// `note` with what [`note_problem`] refuses taken out: `;` as `,`, line
+/// breaks as spaces, a colon between digits as `.` (`10:30` → `10.30`) and
+/// any other colon dropped (`re: K-1` → `re K-1`).
+fn suggest_note(note: &str) -> Option<String> {
+    let chars: Vec<char> = note.chars().collect();
+    let mut out = String::with_capacity(note.len());
+    for (at, &c) in chars.iter().enumerate() {
+        match c {
+            ';' => out.push(','),
+            ':' => {
+                let digits = at > 0
+                    && chars[at - 1].is_ascii_digit()
+                    && chars.get(at + 1).is_some_and(char::is_ascii_digit);
+                if digits {
+                    out.push('.');
+                }
+            }
+            c if c.is_control() => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    let out = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!out.is_empty() && crate::parse::parse_tags(&out).is_empty()).then_some(out)
+}
+
 /// Whether `name` can be a tag name: non-empty, no whitespace, none of the
 /// characters that end a tag or a comment.
 #[must_use]
@@ -698,6 +774,25 @@ mod tests {
             TimeQty::from_dec(Dec::new(10_000_001, 0), NANOS_PER_HOUR),
             None
         );
+    }
+
+    #[test]
+    fn notes_with_tags_are_refused_with_a_rewrite() {
+        assert_eq!(note_problem("reviewed schedules C and E"), None);
+        let problem = note_problem("call with Fred re: K-1").expect("a tag");
+        assert_eq!(problem.offending, "re:");
+        assert_eq!(problem.suggestion.as_deref(), Some("call with Fred re K-1"));
+        let problem = note_problem("met at 10:30; then lunch").expect("a break");
+        assert_eq!(problem.offending, ";");
+        assert_eq!(
+            problem.suggestion.as_deref(),
+            Some("met at 10.30, then lunch")
+        );
+        assert_eq!(
+            note_problem("x:").and_then(|p| p.suggestion).as_deref(),
+            Some("x")
+        );
+        assert_eq!(note_problem(":").and_then(|p| p.suggestion), None);
     }
 
     #[test]

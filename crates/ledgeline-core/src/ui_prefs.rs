@@ -206,8 +206,13 @@ pub enum Kind {
     Whole { min: i64, max: i64, default: i64 },
     /// A scenario file's relative id, or none (`""` in a file, `null` on the
     /// wire). The routes that open it re-validate it as a path; this only
-    /// bounds it.
+    /// bounds it. Also any other optional short text whose user checks it
+    /// again (the time tracker's person and slot-0 account, plan 46).
     FileId,
+    /// A list of up to `max` short names, in order, `""` for an empty place
+    /// (the time tracker's pinned accounts, plan 46 T8). Each is bounded and
+    /// free of control characters; the user checks them again.
+    Names { max: usize },
     /// Benchmark ticker symbols, deduplicated, in order.
     Tickers,
     /// A folder relative to the journal's own (`syncSourceDir`): no `..`, no
@@ -309,6 +314,39 @@ pub const SETTLEMENT_LEAD_DAYS: Spec = whole(
     settle::DEFAULT_LEAD_DAYS as i64,
 );
 
+/// The time tracker's person (plan 46 P-person): the short name written as
+/// `person:` and into the tracker file's path; none is a valid answer.
+/// Ledgeline Invoicer's, per user.
+pub const TIME_PERSON: Spec = Spec {
+    key: "time.person",
+    kind: Kind::FileId,
+};
+
+/// The tracker's pinned slots 1–5 (T8), in order, `""` for an empty pin.
+/// Account names mean something in one ledger only, so the invoicer's
+/// schema keeps them per ledger ([`Schema::per_ledger`]).
+pub const TIME_PINNED: Spec = Spec {
+    key: "time.pinned",
+    kind: Kind::Names { max: 5 },
+};
+
+/// Slot 0 (T8): the account last chosen through *Other…*. Per ledger, as
+/// [`TIME_PINNED`].
+pub const TIME_OTHER: Spec = Spec {
+    key: "time.other",
+    kind: Kind::FileId,
+};
+
+/// The tracker's `+`/`−` step, in minutes (T-slots; default 5).
+pub const TIME_STEP: Spec = whole("time.step", 1, 120, 5);
+
+/// How long a timer may run before the long-running guard asks, in minutes
+/// (T-running; default 4 h). 0 turns the guard off.
+pub const TIME_LONG_RUNNING: Spec = whole("time.long-running", 0, 24 * 60, 240);
+
+/// The week strip's target, in hours (T-dash); 0 is none.
+pub const TIME_WEEKLY_TARGET: Spec = whole("time.weekly-target", 0, 168, 0);
+
 /// The matcher's settings from effective preferences ([`WireUiPrefs::prefs`]):
 /// the ledger's pinned value, else the global one, else the default, as
 /// [`current`] merged them. A schema without the keys gets the defaults.
@@ -354,6 +392,7 @@ pub enum PrefValue {
     Whole(i64),
     FileId(Option<String>),
     Tickers(Vec<String>),
+    Names(Vec<String>),
 }
 
 /// A complete or partial set of values, by [`Spec::key`].
@@ -368,6 +407,7 @@ impl Kind {
             Self::FileId => PrefValue::FileId(None),
             Self::RelDir { default } => PrefValue::Text(default.to_string()),
             Self::Tickers => PrefValue::Tickers(Vec::new()),
+            Self::Names { .. } => PrefValue::Names(Vec::new()),
         }
     }
 
@@ -422,6 +462,25 @@ impl Kind {
                 let kept = kept.into_iter().take(MAX_BENCHMARKS).collect();
                 Ok((PrefValue::Tickers(kept), note))
             }
+            Self::Names { max } => {
+                let entries = value.as_array().ok_or("must be a list of names")?;
+                let names: Vec<String> = entries
+                    .iter()
+                    .filter_map(toml_edit::Value::as_str)
+                    .map(|name| check_name(name).unwrap_or_default())
+                    .collect();
+                let note = if names.len() > max {
+                    Some("has too many entries; only the first ones are used")
+                } else if names.len() < entries.len() {
+                    Some("has entries that are not names; they are ignored")
+                } else {
+                    None
+                };
+                Ok((
+                    PrefValue::Names(names.into_iter().take(max).collect()),
+                    note,
+                ))
+            }
         }
     }
 
@@ -466,6 +525,18 @@ impl Kind {
                 }
                 Ok(PrefValue::Tickers(kept))
             }
+            Self::Names { max } => {
+                let entries = value.as_array().ok_or("must be a list of names")?;
+                if entries.len() > max {
+                    return Err("has too many entries");
+                }
+                entries
+                    .iter()
+                    .map(|entry| entry.as_str().ok_or("must be a list of names"))
+                    .map(|name| name.and_then(check_name))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(PrefValue::Names)
+            }
         }
     }
 }
@@ -488,6 +559,21 @@ fn check_file_id(text: &str) -> Result<Option<String>, &'static str> {
         return Err("contains control characters");
     }
     Ok((!text.is_empty()).then(|| text.to_string()))
+}
+
+/// The longest [`Kind::Names`] entry kept.
+const MAX_NAME_BYTES: usize = 256;
+
+/// One [`Kind::Names`] entry, trimmed (`""` is an empty place).
+fn check_name(text: &str) -> Result<String, &'static str> {
+    let trimmed = text.trim();
+    if trimmed.len() > MAX_NAME_BYTES {
+        return Err("has an entry that is too long");
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err("has an entry with control characters");
+    }
+    Ok(trimmed.to_string())
 }
 
 /// A folder relative to the journal's folder, as [`Kind::RelDir`] accepts
@@ -541,7 +627,7 @@ impl PrefValue {
             Self::Text(text) => Json::String(text.clone()),
             Self::Whole(number) => Json::from(*number),
             Self::FileId(id) => id.clone().map_or(Json::Null, Json::String),
-            Self::Tickers(symbols) => Json::from(symbols.clone()),
+            Self::Tickers(symbols) | Self::Names(symbols) => Json::from(symbols.clone()),
         }
     }
 
@@ -553,7 +639,7 @@ impl PrefValue {
             // TOML has no null: none is the empty string, which reads back as
             // none ([`check_file_id`]) and still overrides a global value.
             Self::FileId(id) => toml_edit::Value::from(id.as_deref().unwrap_or_default()),
-            Self::Tickers(symbols) => {
+            Self::Tickers(symbols) | Self::Names(symbols) => {
                 toml_edit::Value::Array(symbols.iter().map(String::as_str).collect())
             }
         }

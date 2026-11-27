@@ -17,10 +17,12 @@
 //!   on an entry's own line, account names checked ([`check_account`]).
 //!
 //! Timedot edits: [`add_minutes`] (T6: onto the day's open line), [`insert_entry`],
-//! [`set_entry_tag`], [`set_note`], [`start_marker`] / [`remove_marker`] (T7),
+//! [`set_entry_tag`], [`set_note`], [`set_entry`], [`remove_entry`],
+//! [`start_marker`] / [`remove_marker`] (T7),
 //! [`tidy`]; [`stop_plan`] rounds a stopped session to minutes per day,
 //! conserving the total across midnight. Timeclock edits: [`clock_in`],
-//! [`clock_out`] (with seconds, T13), [`set_session`] and [`set_session_tag`].
+//! [`clock_out`] (with seconds, T13), [`set_session`], [`set_session_tag`] and
+//! [`remove_session`].
 
 use super::accounts::check_tag_value;
 use super::book::{WeekdayStyle, Words};
@@ -441,17 +443,13 @@ fn line_start(text: &str, file: &TimedotFile, at: usize) -> usize {
 // ---------------------------------------------------------------------------
 
 fn check_note(note: &str) -> Result<(), TimeError> {
-    if note.contains([';', '\n', '\r']) || note.chars().any(char::is_control) {
-        return Err(TimeError::Invalid(
-            "a note can't hold `;` or a line break".to_string(),
-        ));
+    match super::note_problem(note) {
+        None => Ok(()),
+        Some(problem) => Err(TimeError::Invalid(match problem.suggestion {
+            Some(suggestion) => format!("{}, for example \"{suggestion}\"", problem.message),
+            None => problem.message,
+        })),
     }
-    if !parse_tags(note).is_empty() {
-        return Err(TimeError::Invalid(
-            "a `word:` in a note reads as a tag; reword it or add the tag separately".to_string(),
-        ));
-    }
-    Ok(())
 }
 
 /// A comment: `note`, then the tags.
@@ -696,6 +694,73 @@ pub fn set_note(text: &str, line: usize, note: &str) -> Result<String, TimeError
         parts: entry.quantity.parts(),
         tags: sorted(entry.tags.clone()),
         note: note.trim().to_string(),
+    };
+    let new_text = replace_line(text, &file, line, Some(&rendered));
+    verify(text, &file, &new_text, &[Change::Replace(line, item)])?;
+    Ok(new_text)
+}
+
+/// Remove the entry at line index `line` (Entries → Delete); every other
+/// line is kept byte for byte.
+///
+/// # Errors
+/// [`TimeError::NotFound`] when the line isn't an entry; [`TimeError::Verify`].
+pub fn remove_entry(text: &str, line: usize) -> Result<String, TimeError> {
+    let file = timedot::parse(text);
+    file.entry(line)
+        .ok_or_else(|| TimeError::NotFound(format!("line {} is not an entry", line + 1)))?;
+    let new_text = replace_line(text, &file, line, None);
+    verify(text, &file, &new_text, &[Change::Remove(line)])?;
+    Ok(new_text)
+}
+
+/// Change the entry at line index `line`: its account and/or its amount
+/// (written `Nm`/`Nh`), its note and tags kept, the line re-aligned
+/// (Entries → Edit, bulk *Move to account*). A letters line can't take a new
+/// amount without losing what its letters say.
+///
+/// # Errors
+/// [`TimeError::NotFound`]; [`TimeError::Invalid`] for a bad account, a
+/// negative amount or a letters line; [`TimeError::Verify`].
+pub fn set_entry(
+    text: &str,
+    line: usize,
+    account: Option<&str>,
+    quantity: Option<TimeQty>,
+) -> Result<String, TimeError> {
+    if let Some(account) = account {
+        check_account(account)?;
+    }
+    if quantity.is_some_and(|q| q < TimeQty::ZERO) {
+        return Err(TimeError::Invalid(
+            "an entry's time can't be negative".to_string(),
+        ));
+    }
+    let file = timedot::parse(text);
+    let entry = file
+        .entry(line)
+        .ok_or_else(|| TimeError::NotFound(format!("line {} is not an entry", line + 1)))?;
+    if quantity.is_some() && matches!(entry.quantity, Quantity::Letters(_)) {
+        return Err(TimeError::Invalid(
+            "a letters line can't take a new amount; edit it by hand".to_string(),
+        ));
+    }
+    let content = file.lines[line].content(text);
+    let prefix = &content[..entry.layout.account_start];
+    let account = account.unwrap_or(&entry.account);
+    let written = quantity.map(TimeQty::written);
+    let amount = written
+        .as_deref()
+        .unwrap_or_else(|| amount_text(text, &file, line));
+    let edge = day_edge(text, &file, entry.day, Some(line))
+        .unwrap_or(AMOUNT_EDGE)
+        .max(AMOUNT_EDGE.min(width(prefix) + width(account) + 2 + width(amount)));
+    let rendered = render_entry(prefix, account, amount, comment_of(entry), edge);
+    let item = Item::Entry {
+        account: account.to_string(),
+        parts: quantity.map_or_else(|| entry.quantity.parts(), |q| vec![(None, q)]),
+        tags: sorted(entry.tags.clone()),
+        note: entry.note.clone(),
     };
     let new_text = replace_line(text, &file, line, Some(&rendered));
     verify(text, &file, &new_text, &[Change::Replace(line, item)])?;
@@ -1054,6 +1119,38 @@ pub fn set_session(
     if let Some(end) = end {
         want[index].end = Some(end.clone());
     }
+    verify_clock(&new_text, want)?;
+    Ok(new_text)
+}
+
+/// Remove session `index`: its `i` line, the indented comments under it,
+/// and its `o` line; every other line kept byte for byte.
+///
+/// # Errors
+/// [`TimeError::NotFound`]; [`TimeError::Verify`].
+pub fn remove_session(text: &str, index: usize) -> Result<String, TimeError> {
+    let file = timeclock::parse(text);
+    let session = file
+        .sessions
+        .get(index)
+        .ok_or_else(|| TimeError::NotFound(format!("no session {index}")))?;
+    let mut doomed = vec![session.in_line];
+    doomed.extend(
+        (session.in_line + 1..file.lines.len())
+            .take_while(|&at| matches!(file.lines[at].kind, ClockLineKind::SessionComment(_))),
+    );
+    doomed.extend(session.out_line);
+    doomed.sort_unstable();
+    let mut new_text = String::with_capacity(text.len());
+    let mut at = 0;
+    for line in doomed {
+        let l = &file.lines[line];
+        new_text.push_str(&text[at..l.start]);
+        at = l.next;
+    }
+    new_text.push_str(&text[at..]);
+    let mut want = sessions_of(&file);
+    want.remove(index);
     verify_clock(&new_text, want)?;
     Ok(new_text)
 }
@@ -1535,6 +1632,34 @@ mod tests {
             "2026-11-01 Sun\n    a                                90m\n    b:c                               1h  ; note\n    d                                 ab\n    e                               0.33\n    ; ● running a  since 09:00:00\n"
         );
         assert_eq!(tidy(&text).expect("again"), text);
+    }
+
+    #[test]
+    fn entries_change_and_go_and_sessions_go() {
+        let text = set_entry(FILE, 8, None, Some(TimeQty::from_minutes(90))).expect("qty");
+        assert_eq!(
+            lines_of(&text)[8],
+            "    clients:acme:tax-return          90m  ; invoice: 108"
+        );
+        let text = set_entry(&text, 9, Some("clients:acme:advisory"), None).expect("move");
+        assert_eq!(
+            lines_of(&text)[9],
+            "    clients:acme:advisory            20m  ; call with Fred"
+        );
+        assert!(set_entry(&text, 7, None, None).is_err(), "a date line");
+        assert!(set_entry(&text, 8, None, Some(TimeQty::from_minutes(-5))).is_err());
+        let text = remove_entry(&text, 10).expect("remove");
+        assert_eq!(lines_of(&text).len(), 10);
+        assert!(!text.contains("1h"));
+        assert!(remove_entry(&text, 6).is_err(), "a blank line");
+        let letters = "2026-11-26\n    a  aab\n";
+        assert!(set_entry(letters, 1, None, Some(TimeQty::from_minutes(5))).is_err());
+
+        let clock = "i 2026-11-26 09:00:00 a  x\n  ; person: pat\no 2026-11-26 10:00:00\n\
+i 2026-11-26 11:00:00 b\no 2026-11-26 11:30:00\n";
+        let text = remove_session(clock, 0).expect("remove");
+        assert_eq!(text, "i 2026-11-26 11:00:00 b\no 2026-11-26 11:30:00\n");
+        assert!(remove_session(clock, 2).is_err());
     }
 
     #[test]
