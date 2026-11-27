@@ -13,6 +13,8 @@
 //!   [`settings_edit`]: writing it from the Settings page;
 //! - [`notes`]: discovery, behind an API shaped like MBR's `Site` (§3.1);
 //! - [`customers`] (§3.4) and [`snippets`] (§3.7);
+//! - [`company`]: your company's details on a document, which drafts follow
+//!   and Send freezes (§3.2);
 //! - [`customer_edit`]: creating and editing customer notes (PLAN 4b);
 //! - [`customer_import`]: customers from columns (`customers new` flags,
 //!   `customers import-csv` rows), through [`customer_edit`];
@@ -43,6 +45,7 @@ pub mod booking;
 pub mod books;
 pub mod catalog;
 pub mod catalog_edit;
+pub mod company;
 pub mod customer_edit;
 pub mod customer_import;
 pub mod customers;

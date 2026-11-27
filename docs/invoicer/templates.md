@@ -263,7 +263,7 @@ logo: logo.png
 
 The image can be a PNG, JPEG, GIF, SVG or WebP file. `logo.png` and `"[[logo.png]]"` look beside the company note first, then from the books folder. `/assets/logo.png` is from the books folder only. A web address, a file outside the books folder or a missing file means no logo.
 
-Each new invoice copies the logo's path into its `invoicer_logo` field, as it copies your address, so an old invoice keeps the logo it was sent with. Invoices written before you set the logo have no logo until you add that field to them.
+A draft always shows your company's details as they are now, the logo included: set the logo, and every draft has it in its preview, its PDF and when you send it. Sending writes the logo's path into the invoice's `invoicer_logo` field with your address, so a sent invoice keeps the logo it was sent with. To give a sent invoice your new logo, use **Update from company** on its page (see [Your company's details](files.md#your-companys-details)).
 
 The base's `header` block shows the logo above the title, no larger than 2.5 inches wide and 0.8 inches tall, with your company's name as its description for screen readers. Classic and Modern put it above your company's name. Classic with logo and Modern with logo show it larger, up to about 2.5 inches wide and 1 inch tall, with your company's name beside it. To place it yourself in your own `header` block, write:
 

@@ -12,6 +12,7 @@
 //! `today`.
 
 use crate::attachment::{AttachmentView, home_dir};
+use crate::company;
 use crate::customers::{self, BillingContact, ContactKind, Customer, CustomerLookup};
 use crate::doc::{Header, Invoice, Paid, Status};
 use crate::frontmatter::Fields;
@@ -27,6 +28,7 @@ use crate::table::{BillTable, RowKind};
 use ledgeline_core::accrual::schedule::{Proration, Term};
 use ledgeline_core::vault::{Vault, VaultError, VaultPath};
 use serde::Serialize;
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 pub mod account;
@@ -562,13 +564,17 @@ pub struct DocDetail<'a> {
     pub path: &'a VaultPath,
     /// Its title.
     pub title: &'a str,
-    /// The fields the invoicer reads.
+    /// The fields the invoicer reads (a draft's company details as they are
+    /// now: [`crate::company`]).
     #[serde(flatten)]
-    pub header: &'a Header,
+    pub header: Cow<'a, Header>,
     /// Sent and not paid in full.
     pub open: bool,
     /// Open and past due.
     pub overdue: bool,
+    /// Sent, and your company's details have changed since: Update from
+    /// company would rewrite its copy ([`crate::company::differs`]).
+    pub company_changed: bool,
     /// Every frontmatter field, lossless (custom fields included).
     pub frontmatter: Fields,
     /// The bill table, computed; `None` when there is none or it doesn't
@@ -582,7 +588,8 @@ pub struct DocDetail<'a> {
     pub problems: Vec<Problem>,
 }
 
-/// `show` for `doc`, reading its file once.
+/// `show` for `doc`, reading its file once. A draft is shown as it follows
+/// your company ([`company::as_shown`]).
 ///
 /// # Errors
 /// When the file can't be read.
@@ -595,7 +602,14 @@ pub fn show<'a>(
     let settings = session.settings();
     let money = session.index().money();
     let source = session.vault().read_to_string(&doc.path)?;
-    let invoice = Invoice::parse(source, &settings.words);
+    let shown = company::as_shown(session.index(), session.vault(), &source);
+    let followed = matches!(shown, Cow::Owned(_));
+    let invoice = Invoice::parse(shown.into_owned(), &settings.words);
+    let header = if followed {
+        Cow::Owned(invoice.header().clone())
+    } else {
+        Cow::Borrowed(&doc.header)
+    };
     let table = invoice
         .bill_table()
         .ok()
@@ -604,9 +618,10 @@ pub fn show<'a>(
     Ok(DocDetail {
         path: &doc.path,
         title: &doc.title,
-        header: &doc.header,
+        header,
         open: open_in(Some(session.book_states()), doc),
         overdue: overdue_in(Some(session.book_states()), doc, today),
+        company_changed: company::differs(session.index(), session.vault(), &invoice),
         frontmatter: invoice.frontmatter().fields.clone(),
         table,
         prose_before: invoice.prose_before().trim().to_string(),

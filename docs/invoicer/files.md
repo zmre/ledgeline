@@ -100,8 +100,8 @@ Keys are lowercase with underscores, dates are `YYYY-MM-DD`, and amounts never a
 | `invoicee_address`                              | warning  | The billing address, copied the same way. Write it with `\|` so the lines stay apart.                                    |
 | `invoicee_phone`                                | no       | Copied when the customer has a phone.                                                                                    |
 | `invoicer`                                      | yes      | A link to your company's note.                                                                                           |
-| `invoicer_name`, `_email`, `_address`, `_phone` | as above | Your company's details, copied the same way from its note.                                                               |
-| `invoicer_logo`                                 | no       | Your logo's path, copied from the company note's `logo:`. See [Templates](templates.md#your-logo).                       |
+| `invoicer_name`, `_email`, `_address`, `_phone` | as above | Your company's details from its note. A draft always uses the note's current ones; sending copies them in.               |
+| `invoicer_logo`                                 | no       | Your logo's path, from the company note's `logo:`, as above. See [Templates](templates.md#your-logo).                   |
 | `terms`                                         | no       | Net days, a whole number. Copied from the customer, else the Default payment terms setting.                              |
 | `due_date`                                      | no       | The date plus the terms, unless you set it yourself. "Overdue" is worked out from it, never stored.                      |
 | `reference`                                     | no       | What the customer quotes back, such as a purchase order: `PO #PY75334`.                                                  |
@@ -114,6 +114,12 @@ Keys are lowercase with underscores, dates are `YYYY-MM-DD`, and amounts never a
 | anything else                                   | no       | Your own fields. Templates see them, and the app keeps them exactly as written.                                          |
 
 The app keeps the "written" fields up to date. If you change `paid:` by hand, the app writes back what the books say.
+
+### Your company's details
+
+A draft always uses your company note's details as they are now: its preview, its PDF and its page show them, whatever the draft's file says. Sending copies them into the file, and from then on the invoice keeps what was sent. Anything you type into a draft's `invoicer_` fields is replaced when you send it.
+
+When your company's details change after an invoice was sent, its page says so and offers **Update from company** (or press `u`). It replaces the invoice's copy of your details and re-books it; the PDF your customer has stays as it was, so export it again to send the new one. From the command line: `ledgeline-invoicer update-company 105`.
 
 The default file name is `{date} {customer} Invoice {invoice_num}.md`, and the title matches it. The `filename` [setting](settings.md) changes the pattern.
 

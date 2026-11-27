@@ -15,6 +15,9 @@
 //! export link for the invoice's MBR page ([`MbrGate::export_link`]); ask
 //! the main thread to print it ([`Native`]); file it
 //! ([`crate::pdf::complete`]). The session is never locked while printing.
+//! A draft prints with your company's current details: its page is
+//! rendered with them when its file holds an older copy
+//! ([`super::preview::draft_page`]).
 //!
 //! Errors: `404` unknown invoice, `409` no books, `422` refused (a portal
 //! that needs a `reference`, a closed period), `502` the print failed,

@@ -145,6 +145,9 @@ enum Command {
     Void(VoidArgs),
     /// Re-book a sent invoice after an edit (nothing when it already agrees).
     Rebook(RebookArgs),
+    /// Copy your company's current details into an invoice (its `invoicer`
+    /// keys; a draft uses them anyway). A sent invoice is re-booked too.
+    UpdateCompany(UpdateCompanyArgs),
     /// Cash books: list the deposits that might pay an invoice, apply one,
     /// or undo one.
     ApplyPayment(ApplyPaymentArgs),
@@ -200,6 +203,12 @@ struct RebookArgs {
     /// Show what is booked and what would be; write nothing.
     #[arg(long)]
     dry_run: bool,
+}
+
+#[derive(clap::Args, Debug)]
+struct UpdateCompanyArgs {
+    /// A number (`105`) or a file in the books folder.
+    document: String,
 }
 
 #[derive(clap::Args, Debug)]
@@ -879,6 +888,7 @@ fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
         Command::Void(args) => run_void(cli, args),
         Command::Pdf(args) => run_pdf(cli, args),
         Command::Rebook(args) => run_rebook(cli, args),
+        Command::UpdateCompany(args) => run_update_company(cli, args),
         Command::ApplyPayment(args) => run_apply_payment(cli, args),
         Command::Reconcile(args) => run_reconcile(cli, args),
         Command::Receivables(args) => {
@@ -1068,6 +1078,46 @@ fn run_rebook(cli: &Cli, args: &RebookArgs) -> Result<ExitCode, Failure> {
     emit(cli.json, &Out { rebooked, mirror }, |o| {
         human::rebooked(&o.rebooked, o.mirror.as_ref())
     });
+    Ok(ExitCode::SUCCESS)
+}
+
+fn run_update_company(cli: &Cli, args: &UpdateCompanyArgs) -> Result<ExitCode, Failure> {
+    let mut session = open(cli)?;
+    let path = document_path(&session, &args.document)?;
+    let today = today(cli)?;
+    let (outcome, rebook) =
+        flows::update_company(&mut session, &path, &today).map_err(|refused| match refused {
+            flows::UpdateRefused::Refused(why) => Failure(why, None),
+            flows::UpdateRefused::Write(error) => Failure::from(error),
+            flows::UpdateRefused::Books(error) => books_failure(error),
+        })?;
+    let rebooked = match rebook {
+        Some(number) => Some(retried(flows::rebook(&mut session, &number, &today))?),
+        None => None,
+    };
+    let mirror = rebooked.as_ref().and_then(flows::Written::mirror_change);
+    #[derive(Serialize)]
+    struct Out {
+        #[serde(flatten)]
+        outcome: edit::SetOutcome,
+        rebooked: Option<books::Rebooked>,
+        mirror: Option<MirrorChange>,
+    }
+    emit(
+        cli.json,
+        &Out {
+            outcome,
+            rebooked: rebooked.map(|r| r.done),
+            mirror,
+        },
+        |o| {
+            let mut text = human::set(&o.outcome);
+            if let Some(rebooked) = &o.rebooked {
+                text.push_str(&human::rebooked(rebooked, o.mirror.as_ref()));
+            }
+            text
+        },
+    );
     Ok(ExitCode::SUCCESS)
 }
 

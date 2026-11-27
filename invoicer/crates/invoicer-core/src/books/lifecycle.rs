@@ -3,6 +3,7 @@
 use super::spec::{DOCUMENT_TAG, InvoiceBooking, receivable_account};
 use super::{BooksError, Document, InvoiceBooks, check_generation};
 use crate::catalog::Catalog;
+use crate::company;
 use crate::doc::{Invoice, Status};
 use crate::frontmatter::FieldEdit;
 use crate::index::DocumentIndex;
@@ -810,7 +811,10 @@ impl InvoiceBooks {
 
     /// **Send** (§4.1): book the invoice, then set `status: sent`,
     /// `sent_date` (when it has none), `sent_via` (when given) and `paid`
-    /// (when it has none): `no`, or for a zero total the invoice date.
+    /// (when it has none): `no`, or for a zero total the invoice date. A
+    /// draft's copy of your company is frozen in the same write: the
+    /// `invoicer_*` keys become the company note's details as they are now
+    /// ([`crate::company`]).
     ///
     /// - Accrual books book every invoice; a zero total (its deposit covers
     ///   it) with no receivable posting, the rows against the deposit
@@ -923,6 +927,15 @@ impl InvoiceBooks {
         let fields = document.invoice.frontmatter();
         let mut edits = Vec::new();
         if !already_sent {
+            // A draft followed the company note; sending freezes the copy
+            // (crate::company): its details as they are now go into the file
+            // in this one write, before any PDF is kept or hashed. No company:
+            // the file keeps the copy it has.
+            edits.extend(
+                company::fields(index.site(), index.settings(), self.vault())
+                    .map(|company| company::edits(&company, &fields.fields))
+                    .unwrap_or_default(),
+            );
             edits.push(set("status", Status::Sent.as_str()));
         }
         if fields.get("sent_date").is_none_or(Value::is_null) {
