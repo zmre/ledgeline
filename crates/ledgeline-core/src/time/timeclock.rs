@@ -268,7 +268,9 @@ pub fn parse(text: &str) -> TimeclockFile {
                             FindingKind::Pairing,
                             clock_out.account.as_ref().map_or_else(
                                 || "clock-out with no session open".to_string(),
-                                |account| format!("clock-out of {account}, which is not clocked in"),
+                                |account| {
+                                    format!("clock-out of {account}, which is not clocked in")
+                                },
                             ),
                         ));
                         ClockLineKind::Invalid
@@ -394,10 +396,7 @@ fn classify(content: &str, problem: &mut Option<(FindingKind, String)>) -> Clock
                     })
                 }
                 _ if tail.is_empty() => {
-                    *problem = Some((
-                        FindingKind::Ignored,
-                        format!("`{code}` lines are ignored"),
-                    ));
+                    *problem = Some((FindingKind::Ignored, format!("`{code}` lines are ignored")));
                     ClockLineKind::Ignored
                 }
                 _ => {
@@ -466,8 +465,14 @@ i 2026-09-04 08:00 a\ni 2026-09-04 08:30 b\no 2026-09-04 09:00 a\no 2026-09-04 0
             ]
         );
         assert_eq!(file.sessions[2].account, "a");
-        assert_eq!(file.sessions[2].end, Some(Moment::new("2026-09-04", 9 * 3600)));
-        assert_eq!(file.sessions[3].end, Some(Moment::new("2026-09-04", 34_200)));
+        assert_eq!(
+            file.sessions[2].end,
+            Some(Moment::new("2026-09-04", 9 * 3600))
+        );
+        assert_eq!(
+            file.sessions[3].end,
+            Some(Moment::new("2026-09-04", 34_200))
+        );
         assert_eq!(file.sessions[2].description_or_times(None), "08:00-09:00");
     }
 
@@ -491,7 +496,8 @@ i 2026-09-04 08:00 a\ni 2026-09-04 08:30 b\no 2026-09-04 09:00 a\no 2026-09-04 0
 
     #[test]
     fn ignores_b_h_o_lines() {
-        let file = parse("b 2026-09-05 10:00\nh 2026-09-05 10:00:00\nO 2026-09-05 10:00 ; x\nb bla\n");
+        let file =
+            parse("b 2026-09-05 10:00\nh 2026-09-05 10:00:00\nO 2026-09-05 10:00 ; x\nb bla\n");
         assert!(!file.has_errors());
         assert!(file.lines.iter().all(|l| l.kind == ClockLineKind::Ignored));
         assert_eq!(file.findings.len(), 4);

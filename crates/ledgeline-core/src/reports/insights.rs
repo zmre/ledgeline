@@ -1221,6 +1221,7 @@ mod tests {
             source_name: String::new(),
             source_files: Vec::new(),
             transactions,
+            time_transactions: Vec::new(),
             periodic_transactions: Vec::new(),
             auto_rules: Vec::new(),
             accounts: Vec::new(),

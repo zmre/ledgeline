@@ -605,9 +605,10 @@ fn parse_number(text: &str, problems: &mut Vec<Problem>) -> Result<Quantity, Str
     let unit = if unit_text.is_empty() {
         None
     } else {
-        Some(Unit::parse(unit_text).ok_or_else(|| {
-            format!("`{unit_text}` is not a timedot unit (s, m, h, d, w)")
-        })?)
+        Some(
+            Unit::parse(unit_text)
+                .ok_or_else(|| format!("`{unit_text}` is not a timedot unit (s, m, h, d, w)"))?,
+        )
     };
     if number.is_empty()
         || number.ends_with(' ')
@@ -796,6 +797,9 @@ clients:acme:a  1.5\n\
         assert_eq!(&line[l.account_start..l.account_end], "clients:acme");
         assert_eq!(&line[l.quantity.0..l.quantity.1], "45m");
         assert_eq!(&line[l.comment_at.expect("comment")..], "; invoice: 108");
-        assert_eq!(file.lines[1].content(&format!("2026-11-26\n{line}\r\n")), line);
+        assert_eq!(
+            file.lines[1].content(&format!("2026-11-26\n{line}\r\n")),
+            line
+        );
     }
 }
