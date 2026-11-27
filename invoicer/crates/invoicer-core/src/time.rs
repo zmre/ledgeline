@@ -442,7 +442,8 @@ pub struct Written<T> {
     pub saved: Vec<VaultPath>,
     /// Whether a change on disk made it read and apply again.
     pub retried: bool,
-    /// `include` lines added to the roll-up for files it didn't reach.
+    /// Lines added to the roll-up: an `include` for each file it didn't
+    /// reach, and the `commodity h` a first timeclock file needs (fact 10).
     pub included: Vec<String>,
 }
 
@@ -561,7 +562,9 @@ impl TimeBooks {
         })
     }
 
-    /// Add an `include` to the roll-up for each of `files` it doesn't reach.
+    /// Add an `include` to the roll-up for each of `files` it doesn't reach,
+    /// and, with a timeclock file among them, the `commodity h` strict mode
+    /// needs when the roll-up lacks it (plan 46 fact 10).
     fn cover(&self, files: &[VaultPath]) -> Result<Vec<String>, TimeOpError> {
         let rollup = &self.paths.rollup;
         if files.is_empty() || TimeFormat::of_path(rollup.as_str()).is_some() {
@@ -583,6 +586,14 @@ impl TimeBooks {
             {
                 text = book::with_include(&text, &line);
                 added.push(line);
+                if TimeFormat::of_path(file.as_str()) == Some(TimeFormat::Timeclock) {
+                    for declaration in
+                        book::missing_commodities(&text, &[], &[TimeFormat::Timeclock])
+                    {
+                        text = book::with_declaration(&text, &declaration);
+                        added.push(declaration);
+                    }
+                }
             }
         }
         if !added.is_empty() {

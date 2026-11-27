@@ -336,6 +336,60 @@ fn notes_on_existing_lines_and_new_month_files_are_included() {
     );
 }
 
+/// Fact 10: the first timeclock file Ledgeline writes brings the roll-up
+/// its include and the `commodity h` that `hledger -s` needs.
+#[test]
+fn a_first_timeclock_file_declares_commodity_h() {
+    let books = books();
+    let rollup = books.read("time.journal").replace(
+        &format!("{}\n", ledgeline_core::time::book::TIMECLOCK_COMMODITY),
+        "",
+    );
+    std::fs::write(books.root.join("time.journal"), &rollup).expect("write");
+    assert!(!rollup.contains("commodity h"));
+    let settings = books.read("ledgeline.toml");
+    std::fs::write(
+        books.root.join("ledgeline.toml"),
+        format!("{settings}\n[time]\ntrack-file = \"clock/{{person}}.timeclock\"\nrecord = \"timeclock\"\n"),
+    )
+    .expect("settings");
+    let time = books.time();
+    let done = track::start(
+        &time,
+        None,
+        Some("pat"),
+        "internal:admin",
+        &at("2026-11-26T09:00:00"),
+    )
+    .expect("start");
+    assert_eq!(
+        done.included,
+        vec![
+            "include clock/*.timeclock".to_string(),
+            ledgeline_core::time::book::TIMECLOCK_COMMODITY.to_string()
+        ]
+    );
+    let rollup = books.read("time.journal");
+    assert!(
+        rollup.contains(&format!(
+            "{}\n{}\n",
+            ledgeline_core::time::book::TIMEDOT_COMMODITY,
+            ledgeline_core::time::book::TIMECLOCK_COMMODITY
+        )),
+        "{rollup}"
+    );
+    // The next file needs neither.
+    let done = track::start(
+        &time,
+        None,
+        Some("kim"),
+        "internal:admin",
+        &at("2026-11-26T09:00:00"),
+    )
+    .expect("start");
+    assert!(done.included.is_empty(), "{:?}", done.included);
+}
+
 #[test]
 fn entries_filter_lock_and_edit() {
     let books = books();

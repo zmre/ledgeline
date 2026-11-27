@@ -14,6 +14,10 @@ cd "$(dirname "$0")"
 R=time.journal
 mkdir -p expected
 
+# Strict mode passes: `commodity ""` for timedot, `commodity h` for timeclock,
+# every account declared (plan 46 fact 10).
+hledger -s -f "$R" check
+
 # Where the time went: the account tree with roll-ups.
 hledger -f "$R" bal --tree -O csv > expected/bal-tree.csv
 # Billable or not, resolved nearest-ancestor (fact 7: --pivot, not tag:).

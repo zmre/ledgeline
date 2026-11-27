@@ -582,6 +582,8 @@ struct AdoptBody {
 /// `POST /api/time/adopt`: use an existing roll-up or time file; writes
 /// `[time] file` into an existing `ledgeline.toml` when it isn't the
 /// default name (never creating the file: `settings` says what to add).
+/// `missing` lists the `commodity` lines `hledger -s` needs that the
+/// roll-up lacks (plan 46 fact 10), for the person to add.
 async fn adopt(
     State(state): State<AppState>,
     payload: Result<Json<AdoptBody>, JsonRejection>,
@@ -603,6 +605,7 @@ async fn adopt(
             "format": plan.format.map(|f| f.name()),
             "needs_setting": plan.needs_setting,
             "written": written,
+            "missing": plan.missing,
         }))
     })
     .await

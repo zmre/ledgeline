@@ -171,8 +171,12 @@ design:
    - Output is `(acct)  1.50h` in commodity `h`, rounded to 0.01 h in 1.52.
    - `b`/`h`/`O` lines with free text fail to parse in 1.52 (the manual says
      they should).
-10. **Strict mode** (`-s`) needs `commodity ""` (or a `D`) declared and every
-    account declared, both in the including journal.
+10. **Strict mode** (`-s`) needs `commodity ""` declared (with a `D`, that
+    commodity declared instead) and every account declared, both in the
+    including journal. **Timeclock hours are commodity `h`**, which needs
+    `commodity h` too: without it `hledger -s` refuses the file. Setup
+    writes it for a timeclock tracker, the first timeclock include adds it,
+    and adopt reports it missing.
 
 ## What is true today (in the code)
 

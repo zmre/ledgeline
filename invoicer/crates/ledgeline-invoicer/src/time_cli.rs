@@ -547,9 +547,21 @@ pub(crate) fn run(cli: &Cli, args: &TimeArgs) -> Result<ExitCode, Failure> {
                     book::set_time_file(session.vault(), session.main(), &plan.file)
                         .map_err(fail)?
                 };
-                let value = json!({ "file": plan.file, "needs_setting": plan.needs_setting, "written": written });
+                let value = json!({
+                    "file": plan.file,
+                    "needs_setting": plan.needs_setting,
+                    "written": written,
+                    "missing": plan.missing,
+                });
                 emit(cli.json, &value, |_| {
-                    format!("Using {} as the time roll-up\n", plan.file)
+                    let mut out = format!("Using {} as the time roll-up\n", plan.file);
+                    if !plan.missing.is_empty() {
+                        out.push_str(&format!("For hledger -s (strict), add to {}:\n", plan.file));
+                        for line in &plan.missing {
+                            out.push_str(&format!("  {line}\n"));
+                        }
+                    }
+                    out
                 });
                 return Ok(ExitCode::SUCCESS);
             }
