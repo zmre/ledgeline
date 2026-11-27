@@ -44,6 +44,8 @@
         title?: string;
         /** Its name in the narrow top bar, where the group's heading isn't shown ("Time" for time's Dashboard). */
         narrowLabel?: string;
+        /** Its accessible name when the visible label leans on the group's heading ("Time dashboard" for Dashboard under Time). */
+        ariaLabel?: string;
     }
 
     /** A titled run of links after the main ones (plan 46: Time). */
@@ -87,6 +89,7 @@
             class={link.active ? "menu-active" : ""}
             aria-current={link.active ? "page" : undefined}
             title={link.title}
+            aria-label={link.ariaLabel}
             data-testid="sidebar-{link.id}"
         >
             {#if link.narrowLabel !== undefined}

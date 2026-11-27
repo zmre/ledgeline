@@ -120,15 +120,22 @@
         const path = page.url.pathname;
         const time = resolve("/time");
         const under = (href: string): boolean => path === href || path.startsWith(`${href}/`);
-        const link = (id: string, href: string, label: string, narrowLabel: string, active: boolean): SidebarLink => ({id, href, label, narrowLabel, active});
+        const link = (id: string, href: string, label: string, narrowLabel: string, ariaLabel: string, active: boolean): SidebarLink => ({
+            id,
+            href,
+            label,
+            narrowLabel,
+            ariaLabel,
+            active,
+        });
         return {
             id: "time",
             title: "Time",
             links: [
-                link("time-dashboard", time, "Dashboard", "Time", path.replace(/\/$/, "") === time.replace(/\/$/, "")),
-                link("time-entries", `${time}/entries`, "Entries", "Time entries", under(`${time}/entries`)),
-                link("time-track", resolve("/time/track"), "Track", "Track", under(resolve("/time/track"))),
-                link("time-accounts", `${time}/accounts`, "Accounts", "Time accounts", under(`${time}/accounts`)),
+                link("time-dashboard", time, "Dashboard", "Time", "Time dashboard", path.replace(/\/$/, "") === time.replace(/\/$/, "")),
+                link("time-entries", `${time}/entries`, "Entries", "Time entries", "Time entries", under(`${time}/entries`)),
+                link("time-track", resolve("/time/track"), "Track", "Track", "Track time", under(resolve("/time/track"))),
+                link("time-accounts", `${time}/accounts`, "Accounts", "Time accounts", "Time accounts", under(`${time}/accounts`)),
             ],
         };
     });

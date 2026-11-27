@@ -50,6 +50,16 @@ pub(crate) static SCHEMA: Schema = Schema {
         "settlementLeadDays",
     ],
     per_ledger: &["time.pinned", "time.other"],
+    // The time routes read these themselves, so they must hold in browser
+    // storage too (e2e, a browser on `--server`).
+    server_side: &[
+        "time.person",
+        "time.pinned",
+        "time.other",
+        "time.step",
+        "time.long-running",
+        "time.weekly-target",
+    ],
 };
 
 /// Where the books' `ledgeline.toml` is, and how `ui-prefs.toml` keys the
