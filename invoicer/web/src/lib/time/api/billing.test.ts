@@ -1,6 +1,7 @@
 // Billing's calls: each sends what `app/time.rs` reads, previews say so, and
 // an answer that isn't the expected shape is refused.
 import {afterEach, describe, expect, it, vi} from "vitest";
+vi.mock("#lib/invoices.js", async (original) => ({...(await original<object>()), localToday: () => "2026-11-26"}));
 import {billCreated, billPreview, payCreated, payPreview, riley, unbilled} from "../billing/fixtures.js";
 import {createBill, createPay, fetchUnbilled, fetchUnpaid, isBooked, previewBill, previewPay, releaseBill, releaseTime} from "./billing.js";
 
@@ -23,10 +24,10 @@ describe("UNIT time billing API", () => {
     it("reads Unbilled and To pay", async () => {
         let fetch = answer(unbilled());
         expect((await fetchUnbilled()).customers[0].customer).toBe("Acme Corp");
-        expect(sent(fetch)).toMatchObject({url: "/api/time/unbilled", method: "GET"});
+        expect(sent(fetch)).toMatchObject({url: "/api/time/unbilled?today=2026-11-26", method: "GET"});
         fetch = answer([riley()]);
         expect((await fetchUnpaid())[0].person).toBe("riley");
-        expect(sent(fetch).url).toBe("/api/time/unpaid");
+        expect(sent(fetch).url).toBe("/api/time/unpaid?today=2026-11-26");
         answer({customers: "no"});
         await expect(fetchUnbilled()).rejects.toThrow(/shape/);
     });
@@ -34,10 +35,14 @@ describe("UNIT time billing API", () => {
     it("previews a bill, then creates it with the same request", async () => {
         let fetch = answer(billPreview());
         await previewBill({customer: "Acme Corp", from: "2026-10-01", to: "2026-10-31"});
-        expect(sent(fetch)).toMatchObject({url: "/api/time/bill", method: "POST", body: {customer: "Acme Corp", from: "2026-10-01", preview: true}});
+        expect(sent(fetch)).toMatchObject({
+            url: "/api/time/bill",
+            method: "POST",
+            body: {customer: "Acme Corp", from: "2026-10-01", preview: true, today: "2026-11-26"},
+        });
         fetch = answer(billCreated());
         expect((await createBill({customer: "Acme Corp"})).number).toBe("102");
-        expect(sent(fetch).body).toEqual({customer: "Acme Corp"});
+        expect(sent(fetch).body).toEqual({customer: "Acme Corp", today: "2026-11-26"});
     });
 
     it("releases an invoice's time, or voids a bill and releases its", async () => {
@@ -52,10 +57,10 @@ describe("UNIT time billing API", () => {
     it("tells a booked bill from a preview that still needs something", async () => {
         const fetch = answer(payPreview());
         await previewPay({person: "riley"});
-        expect(sent(fetch).body).toEqual({person: "riley", preview: true});
+        expect(sent(fetch).body).toEqual({person: "riley", preview: true, today: "2026-11-26"});
         const booking = answer(payCreated());
         const booked = await createPay({person: "riley", rate: "$60"});
-        expect(sent(booking).body).toEqual({person: "riley", rate: "$60"});
+        expect(sent(booking).body).toEqual({person: "riley", rate: "$60", today: "2026-11-26"});
         expect(isBooked(booked)).toBe(true);
         answer(payPreview());
         expect(isBooked(await createPay({person: "riley"}))).toBe(false);

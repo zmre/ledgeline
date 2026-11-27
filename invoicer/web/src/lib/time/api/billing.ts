@@ -4,9 +4,12 @@
 // the Pay dialog's preview and create. Refusals come back as an
 // EditorApiError with the server's `code` (`not-set-up`, `conflict`, …).
 //
+// Each call sends the browser's `today` (as the invoice calls do): the
+// periods, the default dates and the reference follow the user's calendar.
 // Every write tags time lines, so the caller fetches what it shows again
 // afterwards (the files' change events do that for other pages).
 import {send} from "#lib/editorApi.js";
+import {localToday} from "#lib/invoices.js";
 import type {Qty} from "../types.js";
 
 /** One period to bill (or pay): its dates, inclusive, and its unbilled time. */
@@ -315,17 +318,17 @@ const isPayCreated = (body: unknown): boolean => isObject(body) && typeof body.r
 
 /** `GET /api/time/unbilled`. */
 export function fetchUnbilled(): Promise<Unbilled> {
-    return send<Unbilled>("GET", "/api/time/unbilled", isUnbilled);
+    return send<Unbilled>("GET", `/api/time/unbilled?today=${localToday()}`, isUnbilled);
 }
 
 /** `POST /api/time/bill` with `preview`: nothing is written. */
 export function previewBill(request: BillRequest): Promise<BillPreview> {
-    return send<BillPreview>("POST", "/api/time/bill", isBillPreview, {...request, preview: true});
+    return send<BillPreview>("POST", "/api/time/bill", isBillPreview, {...request, preview: true, today: localToday()});
 }
 
 /** `POST /api/time/bill`: the draft written and its time tagged `invoice: N`. */
 export function createBill(request: BillRequest): Promise<BillCreated> {
-    return send<BillCreated>("POST", "/api/time/bill", isBillCreated, request);
+    return send<BillCreated>("POST", "/api/time/bill", isBillCreated, {...request, today: localToday()});
 }
 
 /** `POST /api/time/release`: an invoice's time back to Unbilled, or (`nobill`) written off. */
@@ -344,12 +347,12 @@ export function releaseBill(bill: string, how: "release" | "nobill" = "release")
 
 /** `GET /api/time/unpaid`: each timekeeper's time with no `bill` tag. */
 export function fetchUnpaid(): Promise<PersonUnpaid[]> {
-    return send<PersonUnpaid[]>("GET", "/api/time/unpaid", isUnpaid);
+    return send<PersonUnpaid[]>("GET", `/api/time/unpaid?today=${localToday()}`, isUnpaid);
 }
 
 /** `POST /api/time/pay` with `preview`: nothing is written. */
 export function previewPay(request: PayRequest): Promise<PayPreview> {
-    return send<PayPreview>("POST", "/api/time/pay", isPayPreview, {...request, preview: true});
+    return send<PayPreview>("POST", "/api/time/pay", isPayPreview, {...request, preview: true, today: localToday()});
 }
 
 /**
@@ -358,7 +361,7 @@ export function previewPay(request: PayRequest): Promise<PayPreview> {
  * answer is either.
  */
 export function createPay(request: PayRequest): Promise<PayCreated | PayPreview> {
-    return send<PayCreated | PayPreview>("POST", "/api/time/pay", (b) => isPayCreated(b) || isPayPreview(b), request);
+    return send<PayCreated | PayPreview>("POST", "/api/time/pay", (b) => isPayCreated(b) || isPayPreview(b), {...request, today: localToday()});
 }
 
 /** Whether a Create bill answer is the booked bill (else the preview: something is needed). */
