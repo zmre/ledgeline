@@ -392,6 +392,17 @@ async fn accounts_summary_and_unbilled() {
     .await;
     assert!(summary["rows"].as_array().is_some_and(|r| !r.is_empty()));
     assert_eq!(summary["buckets"][0], "2026-W45");
+    assert_eq!(summary["file"], "time.journal");
+    let notes = ok(
+        &app,
+        authed("/api/time/summary?group=note&from=2026-11-01&to=2026-11-30"),
+    )
+    .await;
+    assert!(
+        notes["rows"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|r| r["key"][0] == "email"))
+    );
     let tree = ok(&app, authed("/api/time/summary?view=tree")).await;
     assert_eq!(tree["tree"][0]["account"], "clients");
     let (status, _) = json_of(&app, authed("/api/time/summary?group=colour")).await;

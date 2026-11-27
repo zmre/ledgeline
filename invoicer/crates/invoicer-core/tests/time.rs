@@ -637,6 +637,56 @@ fn summaries_group_cut_rank_and_series() {
 }
 
 #[test]
+fn summaries_group_by_note_and_by_many_parts() {
+    let books = books();
+    let book = books.time().require().expect("book");
+    let november = || Filter {
+        period: entries::period(Some("2026-11-01"), Some("2026-11-30")),
+        ..Filter::default()
+    };
+    let notes = report::summary(
+        &book,
+        &SummaryQuery {
+            filter: november(),
+            group: vec![Group::Note],
+            ..SummaryQuery::default()
+        },
+    );
+    let email = notes
+        .rows
+        .iter()
+        .find(|r| r.key == ["email"])
+        .expect("email");
+    assert_eq!(email.entries, 2);
+    assert_eq!(email.quantity.seconds, 240);
+    // Tags are not the note: "fieldwork" twice, never "bill: …".
+    assert!(notes.rows.iter().all(|r| !r.key[0].contains(':')));
+    assert!(notes.rows.iter().any(|r| r.key == [""]));
+    assert_eq!(Group::parse("note"), Some(Group::Note));
+    // The dashboard's fact table: one call, every part a function of the
+    // entry, adding up to the same total.
+    let facts = report::summary(
+        &book,
+        &SummaryQuery {
+            filter: november(),
+            group: vec![
+                Group::Account,
+                Group::Customer,
+                Group::Person,
+                Group::Billable,
+                Group::Billed,
+                Group::Period(report::interval("day").expect("day")),
+            ],
+            ..SummaryQuery::default()
+        },
+    );
+    assert!(facts.rows.iter().all(|r| r.key.len() == 6));
+    let seconds: i64 = facts.rows.iter().map(|r| r.quantity.seconds).sum();
+    assert_eq!(seconds, facts.total.seconds);
+    assert_eq!(facts.total, notes.total);
+}
+
+#[test]
 fn unbilled_suggests_periods_and_finds_orphans() {
     let books = books();
     let book = books.time().require().expect("book");
