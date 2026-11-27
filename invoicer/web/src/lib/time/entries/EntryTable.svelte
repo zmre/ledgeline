@@ -5,7 +5,8 @@
 
      A line on a sent invoice or a booked bill is read-only: its Billing cell
      says so with a lock, and editing it explains why in plain words, with a
-     link to the invoice. The edited line is replaced in place by the form
+     link to the invoice (or, for a booked bill, Void bill and release time,
+     when the page offers it). The edited line is replaced in place by the form
      the page hands in (`editor`).
 
      Keyboard: `j`/`k` move the row cursor, Enter edits the cursored line, `x`
@@ -33,6 +34,7 @@
         onDelete,
         onToggle,
         onToggleRange,
+        onReleaseBill,
     }: {
         groups: EntryGroup[];
         grouping: "day" | "account";
@@ -47,6 +49,8 @@
         onDelete: (entry: EntryView) => void;
         onToggle: (entry: EntryView) => void;
         onToggleRange: (ids: string[]) => void;
+        /** A line on a booked bill: void that bill and release its time (plan 46 B-ap). */
+        onReleaseBill?: (entry: EntryView) => void;
     } = $props();
 
     const rows = $derived(flatten(groups));
@@ -179,6 +183,14 @@
                                         {#if entry.invoice !== null}
                                             <a class="btn btn-outline btn-xs" href={resolve("/invoices/[number]", {number: entry.invoice})}
                                                 >Open invoice {entry.invoice}</a
+                                            >
+                                        {/if}
+                                        {#if entry.bill !== null && onReleaseBill !== undefined}
+                                            <button
+                                                type="button"
+                                                class="btn btn-outline btn-xs"
+                                                onclick={() => onReleaseBill(entry)}
+                                                data-testid="entry-release-bill">Void bill and release time…</button
                                             >
                                         {/if}
                                     </div>

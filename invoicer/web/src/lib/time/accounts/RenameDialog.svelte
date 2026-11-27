@@ -6,7 +6,7 @@
 <script lang="ts">
     import {untrack} from "svelte";
     import type {RenamePreview} from "../api/accounts.js";
-    import AccountDialogShell from "./AccountDialogShell.svelte";
+    import DialogShell from "../DialogShell.svelte";
 
     let {
         from,
@@ -46,7 +46,7 @@
     const lineCount = (n: number): string => `${n} ${n === 1 ? "line" : "lines"}`;
 </script>
 
-<AccountDialogShell
+<DialogShell
     title="Rename {from}"
     submitLabel={current === null ? "Preview" : `Rename ${lineCount(current.lines.length)}`}
     {busy}
@@ -82,4 +82,4 @@
     {:else if preview !== null}
         <p class="text-sm text-base-content/70">The name changed since the preview; preview again.</p>
     {/if}
-</AccountDialogShell>
+</DialogShell>

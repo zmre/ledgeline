@@ -5,6 +5,7 @@ import {fireEvent, render, screen, waitFor} from "@testing-library/svelte";
 import {beforeEach, describe, expect, it, vi} from "vitest";
 import {EditorApiError} from "#lib/editorApi.js";
 import {listenForKeys, press} from "#lib/testing/keys.js";
+import {billPreview} from "#lib/time/billing/fixtures.js";
 import {accountsView, entry, list, lockedEntry} from "#lib/time/testing.js";
 
 const nav = vi.hoisted(() => ({url: new URL("http://localhost/app/time/entries"), goto: vi.fn()}));
@@ -26,9 +27,12 @@ const api = vi.hoisted(() => ({
     rename: vi.fn(),
     customers: vi.fn(),
     options: vi.fn(),
+    billPreview: vi.fn(),
+    releaseBill: vi.fn(),
 }));
 vi.mock("#lib/time/api/entries.js", async (original) => ({...(await original<object>()), fetchEntries: api.entries, addEntry: api.add}));
 vi.mock("#lib/time/api/accounts.js", async (original) => ({...(await original<object>()), fetchAccounts: api.accounts, renameAccount: api.rename}));
+vi.mock("#lib/time/api/billing.js", async (original) => ({...(await original<object>()), previewBill: api.billPreview, releaseBill: api.releaseBill}));
 vi.mock("#lib/customers.js", async (original) => ({...(await original<object>()), fetchCustomers: api.customers}));
 vi.mock("#lib/editorApi.js", async (original) => ({...(await original<object>()), fetchEditorOptions: api.options}));
 vi.mock("#lib/invoices.js", async (original) => ({...(await original<object>()), localToday: () => "2026-11-26"}));
@@ -83,6 +87,41 @@ describe("COMPONENT time pages", () => {
         await waitFor(() => expect(api.add).toHaveBeenCalledWith({date: "2026-11-26", account: "internal:admin", duration: "45m", note: ""}));
         await waitFor(() => expect(api.entries).toHaveBeenCalledTimes(2));
         await waitFor(() => expect(screen.queryByTestId("entry-add")).toBeNull());
+    });
+
+    it("`b` bills the picked lines when they are one customer's unbilled time", async () => {
+        api.billPreview.mockResolvedValue(billPreview());
+        nav.url = new URL("http://localhost/app/time/entries");
+        render(EntriesPage);
+        const rows = await screen.findAllByTestId("entry-row");
+        await fireEvent.click(rows[0].querySelector("input[type=checkbox]") as HTMLElement);
+        await press("b");
+        expect(await screen.findByTestId("bill-dialog")).toBeDefined();
+        expect(api.billPreview).toHaveBeenCalledWith({customer: "Acme Corp", entries: ["time/pat/2026-11.timedot@20"], group: "account"});
+    });
+
+    it("Bill… refuses picked time for two customers, in words", async () => {
+        api.entries.mockResolvedValue(list([entry(), entry({id: "time/pat/2026-11.timedot@21", customer: "Globex", account: "clients:globex:audit"})]));
+        nav.url = new URL("http://localhost/app/time/entries");
+        render(EntriesPage);
+        const rows = await screen.findAllByTestId("entry-row");
+        for (const row of rows) await fireEvent.click(row.querySelector("input[type=checkbox]") as HTMLElement);
+        await fireEvent.click(screen.getByTestId("bulk-bill"));
+        expect(screen.getByTestId("bulk-error").textContent).toContain("for 2 customers (Acme Corp, Globex)");
+        expect(screen.queryByTestId("bill-dialog")).toBeNull();
+    });
+
+    it("a line on a booked bill offers Void bill and release time, after a confirmation", async () => {
+        api.entries.mockResolvedValue(list([lockedEntry({invoice: null, bill: "sam timesheet 2026-11", locked: "it is on the bill sam timesheet 2026-11"})]));
+        api.releaseBill.mockResolvedValue({done: 1, files: []});
+        nav.url = new URL("http://localhost/app/time/entries");
+        render(EntriesPage);
+        const [row] = await screen.findAllByTestId("entry-row");
+        await fireEvent.click(row.querySelector("[data-testid=entry-edit]") as HTMLElement);
+        await fireEvent.click(await screen.findByTestId("entry-release-bill"));
+        await fireEvent.click(screen.getByTestId("entry-release-bill-dialog-confirm"));
+        await waitFor(() => expect(api.releaseBill).toHaveBeenCalledWith("sam timesheet 2026-11"));
+        await waitFor(() => expect(api.entries).toHaveBeenCalledTimes(2));
     });
 
     it("books with no time files say so", async () => {

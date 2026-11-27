@@ -3,7 +3,7 @@
      customer, billable and item until it says otherwise. -->
 <script lang="ts">
     import {untrack} from "svelte";
-    import AccountDialogShell from "./AccountDialogShell.svelte";
+    import DialogShell from "../DialogShell.svelte";
 
     let {
         parent = null,
@@ -41,7 +41,7 @@
     }
 </script>
 
-<AccountDialogShell
+<DialogShell
     title={parent === null ? "Add an account" : `Add an account under ${parent}`}
     submitLabel="Add"
     {busy}
@@ -55,4 +55,4 @@
         >Account
         <input class="input w-full input-sm" bind:value={name} autocomplete="off" spellcheck="false" data-initial data-testid="account-add-name" />
     </label>
-</AccountDialogShell>
+</DialogShell>

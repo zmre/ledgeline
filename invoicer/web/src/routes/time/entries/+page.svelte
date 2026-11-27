@@ -6,7 +6,11 @@
      step through it. Again whenever a file changes on disk.
 
      Every write is followed by a fresh list: a line's id is its place in its
-     file, and writes move lines. -->
+     file, and writes move lines.
+
+     Bill… (or `b`) with lines picked opens the Bill dialog for exactly those
+     lines (plan 46 B-invoice); they must be one customer's unbilled time, or
+     the bar says why not. The draft it makes opens in the invoice editor. -->
 <script lang="ts">
     import {onMount, untrack} from "svelte";
     import {goto} from "$app/navigation";
@@ -24,6 +28,9 @@
     import {addEntry, bulkEntries, deleteEntry, editEntry, type BulkOp, type EntryEdit, type EntryView, type NewEntry} from "#lib/time/api/entries.js";
     import {fetchAccounts, type AccountsView} from "#lib/time/api/accounts.js";
     import {pickerAccounts, customersOf} from "#lib/time/accounts/tree.js";
+    import {releaseBill, type BillCreated} from "#lib/time/api/billing.js";
+    import BillDialog from "#lib/time/billing/BillDialog.svelte";
+    import {entriesBillTarget} from "#lib/time/billing/words.js";
     import BulkBar from "#lib/time/entries/BulkBar.svelte";
     import EntryFilters from "#lib/time/entries/EntryFilters.svelte";
     import EntryForm from "#lib/time/entries/EntryForm.svelte";
@@ -160,6 +167,43 @@
         if (!outcome.ok) bulkError = outcome.message;
     }
 
+    // ---- Bill the picked lines
+    let billing = $state<{customer: string; entries: string[]} | null>(null);
+
+    function billPicked(): void {
+        const target = entriesBillTarget(picked);
+        if ("error" in target) {
+            bulkError = target.error;
+            return;
+        }
+        bulkError = null;
+        billing = target;
+    }
+
+    function billed(created: BillCreated): void {
+        billing = null;
+        store.selected.clear();
+        void goto(resolve("/invoices/[number]/edit", {number: created.number}), {state: {createWarnings: created.warnings}});
+    }
+
+    // ---- Void a booked bill and release its time
+    let releasing = $state<EntryView | null>(null);
+    let releaseBusy = $state(false);
+    let releaseError = $state<string | null>(null);
+
+    async function confirmReleaseBill(): Promise<void> {
+        const bill = releasing?.bill ?? null;
+        if (bill === null) return;
+        releaseBusy = true;
+        releaseError = null;
+        const outcome = await store.write(() => releaseBill(bill));
+        releaseBusy = false;
+        if (outcome.ok) {
+            releasing = null;
+            lockedNotice = null;
+        } else releaseError = outcome.message;
+    }
+
     // ---- The week grid's cells
     async function setCell(account: string, cell: WeekCell, seconds: number): Promise<string | null> {
         const plan = planCellEdit(cell, account, seconds);
@@ -199,6 +243,7 @@
         priority: PRIORITY.page,
         bindings: [
             {keys: "a", label: "Add time", group: "Time entries", enabled: () => store.list !== null && !adding, run: startAdd},
+            {keys: "b", label: "Bill the picked time…", group: "Time entries", enabled: () => picked.length > 0 && billing === null, run: billPicked},
             {
                 keys: "Escape",
                 label: "Clear the picked entries",
@@ -289,6 +334,7 @@
             error={bulkError}
             onApply={(op) => void applyBulk(op)}
             onClear={() => store.selected.clear()}
+            onBill={billPicked}
         />
     {/if}
 
@@ -344,6 +390,10 @@
                         }}
                         onToggle={(entry) => store.toggle(entry.id)}
                         onToggleRange={(ids) => store.toggleRange(ids)}
+                        onReleaseBill={(entry) => {
+                            releaseError = null;
+                            releasing = entry;
+                        }}
                     >
                         {#snippet editor(entry)}
                             <EntryForm {entry} {today} {accounts} onEdit={edit} onCancel={() => (editing = null)} testid="entry-edit-form" />
@@ -354,6 +404,28 @@
         </AsyncSection>
     {/if}
 </div>
+
+{#if billing !== null}
+    <BillDialog customer={billing.customer} name={billing.customer} entries={billing.entries} onCreated={billed} onCancel={() => (billing = null)} />
+{/if}
+
+{#if releasing !== null}
+    <ConfirmDialog
+        title="Void the bill “{releasing.bill}”?"
+        confirmLabel="Void bill and release time"
+        tone="error"
+        busy={releaseBusy}
+        error={releaseError}
+        onConfirm={() => void confirmReleaseBill()}
+        onCancel={() => (releasing = null)}
+        testid="entry-release-bill-dialog"
+    >
+        <p>
+            It writes a reversing entry for the bill in the books, so nothing is owed on it, and its time is unpaid again: every line on it can be changed and
+            billed anew.
+        </p>
+    </ConfirmDialog>
+{/if}
 
 {#if deleting !== null}
     <ConfirmDialog

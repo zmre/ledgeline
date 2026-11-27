@@ -20,6 +20,7 @@
     import {uiPrefs} from "#lib/uiPrefs.svelte.js";
     import type {NewChoice} from "#lib/components/NewMenu.svelte";
     import Sidebar, {type SidebarCount, type SidebarGroup, type SidebarLink} from "#lib/components/Sidebar.svelte";
+    import {fetchUnbilled} from "#lib/time/api/billing.js";
     import {timeAppLayer} from "#lib/time/keys.js";
     import {elapsedText} from "#lib/time/track/format.js";
     import GuardDialog from "#lib/time/track/GuardDialog.svelte";
@@ -49,6 +50,8 @@
     keymap.setGroupOrder(INVOICER_KEY_GROUPS);
 
     let books = $state<BooksInfo | null>(null);
+    /** Customers with unbilled time (plan 46 B-unbilled): the Unbilled link's count; null before time is set up. */
+    let unbilledCustomers = $state<number | null>(null);
 
     const plural = (n: number, one: string, many: string): string => (n === 1 ? one : many);
 
@@ -136,6 +139,19 @@
                 link("time-entries", `${time}/entries`, "Entries", "Time entries", "Time entries", under(`${time}/entries`)),
                 link("time-track", resolve("/time/track"), "Track", "Track", "Track time", under(resolve("/time/track"))),
                 link("time-accounts", `${time}/accounts`, "Accounts", "Time accounts", "Time accounts", under(`${time}/accounts`)),
+                {
+                    ...link("time-unbilled", `${time}/unbilled`, "Unbilled", "Unbilled", "Unbilled time", under(`${time}/unbilled`)),
+                    counts:
+                        unbilledCustomers === null || unbilledCustomers === 0
+                            ? []
+                            : [
+                                  {
+                                      id: "count",
+                                      value: unbilledCustomers,
+                                      label: plural(unbilledCustomers, "customer with unbilled time", "customers with unbilled time"),
+                                  },
+                              ],
+                },
             ],
         };
     });
@@ -202,6 +218,18 @@
         guardBusy = true;
         void tracker.stop(options).finally(() => (guardBusy = false));
     }
+
+    // The Unbilled count, once time tracking is set up, again after every change.
+    $effect(() => {
+        void changes.seq;
+        if (tracker.state?.configured !== true) {
+            unbilledCustomers = null;
+            return;
+        }
+        fetchUnbilled()
+            .then((u) => (unbilledCustomers = u.customers.length))
+            .catch((error: unknown) => console.warn("unbilled:", error));
+    });
 
     // The books at the foot of the sidebar, again after every change.
     $effect(() => {

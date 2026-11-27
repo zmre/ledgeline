@@ -10,7 +10,7 @@
     import type {ComboOption} from "#ui/ui/comboMatch.js";
     import AddCustomerDialog from "#lib/components/AddCustomerDialog.svelte";
     import type {AccountRow} from "../api/accounts.js";
-    import AccountDialogShell from "./AccountDialogShell.svelte";
+    import DialogShell from "../DialogShell.svelte";
     import {formOf, inheritedText, tagChanges, type AccountForm, type TagChange} from "./edit.js";
 
     let {
@@ -53,7 +53,7 @@
     const placeholder = (inherited: string, value: string | undefined): string => (inherited === "" ? "None" : `${value} (${inherited})`);
 </script>
 
-<AccountDialogShell
+<DialogShell
     title={row.account}
     submitLabel="Save"
     cancelLabel="Discard"
@@ -109,7 +109,7 @@
             <p class="text-xs text-base-content/60 sm:col-span-2">Archived through {archivedAbove}.</p>
         {/if}
     </div>
-</AccountDialogShell>
+</DialogShell>
 
 {#if creating !== null}
     <AddCustomerDialog
