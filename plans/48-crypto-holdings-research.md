@@ -94,14 +94,22 @@ docs change. Read the research sections below for the evidence behind each.
 - Accept: clock-pinned tests with a stock and a coin in one plan on a Saturday,
   Sunday and Monday.
 
-### WP4 — Flows: income-funded buys and coin fees (S–M, 1 day)
+### WP4 — Flows: income-funded buys and in-kind fees, for ALL holdings (S–M, 1 day)
+
+Not crypto-specific: this applies to every holding on both tabs. Its most common
+case is a REINVESTED STOCK DIVIDEND, which plan 47 counts as new money in, so
+Performance leaves dividends out while the Compare lines (total return) include
+them. Patrick deferred that fix from plan 47 to here (2026-11-26).
+
 
 - Where: `ledgeline-core/src/holdings/performance.rs` and the flow recording in
   `engine.rs` (`HoldingsFlows`). A posting pair whose counter-leg is an income
   account is not a flow (C6); a quantity leaving to an expense account is not a
   flow. Benchmarks seed from the same flows, so check `benchmark.rs` too.
-- Accept: a staking reward and a reinvested dividend raise `returnPct`; a coin
-  fee lowers it; neither produces a flow marker. Update plan 47's A1f note and
+- Accept: a reinvested stock/fund dividend and a staking reward raise
+  `returnPct`; an in-kind fee (coin or share) lowers it; none produces a flow
+  marker; benchmark seeding ignores them too; the Other tab is unchanged (its
+  flows already exclude income and equity counter-legs — add a test proving it). Update plan 47's A1f note and
   `docs/holdings/index.md` (cash dividends are still the remaining limit).
 
 ### WP5 — Classification fallback (S, 0.5 day)

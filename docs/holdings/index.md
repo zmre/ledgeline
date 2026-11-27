@@ -197,10 +197,12 @@ large portfolio are not marked. The Other tab shows the same markers when money
 moves into or out of those accounts. Performance has no markers, because
 buying and selling do not move it.
 
-**Cash dividends.** A dividend paid out as cash leaves your holdings without
-being counted as money taken out, so Performance reads slightly low for a
-holding that pays cash dividends. The benchmark lines assume dividends are
-reinvested. Over a year the gap is roughly the holding's dividend yield.
+**Dividends are not in Performance yet.** A dividend paid out as cash leaves
+your holdings without being counted as money taken out. A reinvested dividend
+is counted as new money you put in. Either way Performance leaves the dividend
+out, so it reads slightly low for a holding that pays one, while the benchmark
+lines include theirs. Over a year the gap is roughly the holding's dividend
+yield. Counting reinvested dividends as return is planned.
 
 **Narrowing the chart to some holdings.** The **Holdings** menu beside the
 account chooser picks which holdings the chart and the summary figures above it

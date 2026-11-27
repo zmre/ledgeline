@@ -44,8 +44,9 @@ question is "had I held this fund instead, over the same stretch, would I be
 ahead?". A fund younger than the window (VXUS began trading in 2011) starts at
 the first point it has a price for.
 
-Your line counts a cash dividend as value that left your holdings, while the
-fund's line reinvests its dividends. A holding that pays cash dividends
+Your line leaves dividends out, whether paid as cash or reinvested (see
+[Dividends are not in Performance yet](index.md#the-value-over-time-chart)),
+while the fund's line reinvests its dividends. A holding that pays dividends
 therefore reads slightly behind a fund that returned the same.
 
 The comparison needs holdings valued in US dollars (`$` or `USD`), because the
