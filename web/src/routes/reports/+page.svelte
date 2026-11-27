@@ -115,18 +115,21 @@
     const conf = $derived(hledgerConf.value);
 
     // Cash Flow and Net Worth take the config's depth as their control's
-    // default — once per tab activation and config revision, so it never
-    // fights a depth the user then picks. A URL `depth=` wins for the tab it
-    // was opened on. Plain `let`s, not `$state`: the effect must not depend on
-    // its own latch.
+    // default — once per tab and config revision, so it never fights a depth
+    // the user then picks, and switching tabs back and forth leaves it alone.
+    // A URL `depth=` wins for the tab it was opened on. Plain `let`s, not
+    // `$state`: the effect must not depend on its own latch.
     let urlDepth = false;
-    let confApplied: string | null = null;
+    // MERGE SEAM (plan 50 WP3): every tab|revision already seeded, not just the
+    // last one — a single latch re-seeded on each return to the tab (D9).
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- a latch: the effect must not depend on it
+    const confApplied = new Set<string>();
     $effect(() => {
         const tab = params.tab;
         if (!restored || conf === null) return;
         const key = `${tab}|${conf.handle ?? ""}|${conf.revision}`;
-        if (key === confApplied) return;
-        confApplied = key;
+        if (confApplied.has(key)) return;
+        confApplied.add(key);
         if (urlDepth) {
             urlDepth = false;
             return;
@@ -179,7 +182,14 @@
     // journal round lands is fine, because `formatTotals` falls back per
     // commodity. The engine computes them (`/api/journal` reportStyles).
     const styles = $derived(journal.reportStyles);
-    const maxDepth = $derived(journal.accountNames.reduce((max, name) => Math.max(max, name.split(":").length), 1));
+    const journalMaxDepth = $derived(journal.accountNames.reduce((max, name) => Math.max(max, name.split(":").length), 1));
+    // MERGE SEAM (plan 50 WP3): Cash Flow's slider tops out at the deepest
+    // account in the report itself (D9); the journal's deepest is usually an
+    // expense the statement never lists, so most settings read the same.
+    const maxDepth = $derived.by(() => {
+        const loaded = reports.report;
+        return params.tab === "cf" && loaded !== null && "kind" in loaded && loaded.kind === "cashFlow" ? loaded.maxDepth : journalMaxDepth;
+    });
 
     const report = $derived(reports.report);
 

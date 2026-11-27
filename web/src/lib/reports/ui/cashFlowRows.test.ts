@@ -2,8 +2,9 @@
 // starts open, and that the chart draws exactly the statement's section totals.
 
 import {describe, expect, it} from "vitest";
-import {CASH_FLOW, CASH_FLOW_TOTAL, flow} from "#lib/testing/cashFlowFixture.js";
-import {cashFlowChartReport, cfCursorRows, cfDisplayModel, cfFoldKey, type IsOpen} from "./cashFlowRows";
+import type {CashFlowStatement, CfLine} from "#lib/reports/types.js";
+import {CASH_FLOW, CASH_FLOW_TOTAL, cfRow, flow} from "#lib/testing/cashFlowFixture.js";
+import {cashFlowChartReport, cfCursorRows, cfDisplayModel, cfFoldKey, isOutlineRow, type IsOpen} from "./cashFlowRows";
 
 const defaults: IsOpen = (_, startsOpen) => startsOpen;
 const labels = (rows: {label: string}[]): string[] => rows.map((row) => row.label);
@@ -12,14 +13,7 @@ describe("UNIT cfDisplayModel — sections", () => {
     it("heads Operating with net income, then its lines", () => {
         const model = cfDisplayModel(CASH_FLOW, defaults);
         expect(model.boxes.map((box) => box.kind)).toEqual(["operating", "investing", "financing"]);
-        expect(labels(model.boxes[0].rows)).toEqual([
-            "Net income",
-            "assets:equipment:accum-depreciation",
-            "assets:prepaid",
-            "assets:receivable",
-            "Payables",
-            "liabilities:deferred-revenue",
-        ]);
+        expect(labels(model.boxes[0].rows)).toEqual(["Net income", "Accum Depreciation", "Prepaid", "Receivable", "Payables", "Deferred Revenue"]);
         expect(model.boxes[0].totalLabel).toBe("Net cash from operating activities");
     });
 
@@ -30,15 +24,15 @@ describe("UNIT cfDisplayModel — sections", () => {
         const model = cfDisplayModel(CASH_FLOW, (key, startsOpen) => key === "operating/group/Payables" || startsOpen);
         const rows = model.boxes[0].rows;
         const at = rows.findIndex((row) => row.label === "Payables");
-        expect(rows.slice(at + 1, at + 3).map((row) => [row.label, row.account, row.indent])).toEqual([
-            ["liabilities:card", "liabilities:card", 1],
-            ["liabilities:payable", "liabilities:payable", 1],
+        expect(rows.slice(at + 1, at + 3).map((row) => [row.label, row.account, row.path, row.indent])).toEqual([
+            ["Card", "liabilities:card", "liabilities:card", 1],
+            ["Payable", "liabilities:payable", "liabilities:payable", 1],
         ]);
     });
 
     it("does not offer to open a line that is exactly one account, and drills straight to it", () => {
-        const row = cfDisplayModel(CASH_FLOW, defaults).boxes[0].rows.find((r) => r.label === "assets:prepaid");
-        expect(row).toMatchObject({expandable: false, account: "assets:prepaid"});
+        const row = cfDisplayModel(CASH_FLOW, defaults).boxes[0].rows.find((r) => r.label === "Prepaid");
+        expect(row).toMatchObject({expandable: false, account: "assets:prepaid", path: "assets:prepaid"});
     });
 
     it("shows the effect of exchange rates only when it is not zero", () => {
@@ -56,7 +50,7 @@ describe("UNIT cfDisplayModel — sections", () => {
 describe("UNIT cfDisplayModel — the cash balances", () => {
     it("starts with the cash detail open, under both Beginning and Ending cash", () => {
         const model = cfDisplayModel(CASH_FLOW, defaults);
-        expect(labels(model.beginning.rows)).toEqual(["Operating cash", "assets:bank:checking", "assets:bank:savings", "assets:petty-cash"]);
+        expect(labels(model.beginning.rows)).toEqual(["Operating cash", "Checking", "Savings", "Petty Cash"]);
         expect(labels(model.ending.rows)).toEqual(labels(model.beginning.rows));
         expect(model.ending.rows[0].expanded).toBe(true);
     });
@@ -65,15 +59,15 @@ describe("UNIT cfDisplayModel — the cash balances", () => {
         const model = cfDisplayModel(CASH_FLOW, defaults);
         expect(cfFoldKey(model.beginning.rows[0])).toBe(cfFoldKey(model.ending.rows[0]));
         const shut = cfDisplayModel(CASH_FLOW, (key, startsOpen) => (key === cfFoldKey(model.beginning.rows[0]) ? false : startsOpen));
-        expect(labels(shut.beginning.rows)).toEqual(["Operating cash", "assets:petty-cash"]);
-        expect(labels(shut.ending.rows)).toEqual(["Operating cash", "assets:petty-cash"]);
+        expect(labels(shut.beginning.rows)).toEqual(["Operating cash", "Petty Cash"]);
+        expect(labels(shut.ending.rows)).toEqual(["Operating cash", "Petty Cash"]);
     });
 
-    it("reads a cash account's own name relative to its line, and its figures as balances", () => {
+    it("reads a cash account by its engine label, with its path on hover and its figures as balances", () => {
         const model = cfDisplayModel(CASH_FLOW, defaults);
         const checking = model.ending.rows[1];
-        expect(checking.account).toBe("assets:bank:checking");
-        expect(checking.amounts.total.get("$")).toEqual({m: 1145000n, p: 2});
+        expect([checking.label, checking.account, checking.path]).toEqual(["Checking", "assets:bank:checking", "assets:bank:checking"]);
+        expect(checking.amounts?.total.get("$")).toEqual({m: 1145000n, p: 2});
     });
 });
 
@@ -117,9 +111,20 @@ describe("UNIT cfDisplayModel — a rolled-up line that is one account", () => {
             {
                 name: "assets:fidelity:ira",
                 source: "account" as const,
+                label: "IRA",
+                account: "assets:fidelity:ira",
                 beginning: CASH_FLOW.cash[1].beginning,
                 ending: CASH_FLOW.cash[1].ending,
-                rows: [{account: "assets:fidelity:ira:cash", beginning: CASH_FLOW.cash[1].beginning, ending: CASH_FLOW.cash[1].ending}],
+                rows: [
+                    {
+                        account: "assets:fidelity:ira:cash",
+                        kind: "account" as const,
+                        label: "Cash",
+                        level: 0,
+                        beginning: CASH_FLOW.cash[1].beginning,
+                        ending: CASH_FLOW.cash[1].ending,
+                    },
+                ],
             },
         ],
         sections: [
@@ -129,30 +134,80 @@ describe("UNIT cfDisplayModel — a rolled-up line that is one account", () => {
                     {
                         name: "assets:fixed",
                         source: "account" as const,
+                        label: "Fixed",
+                        account: "assets:fixed",
                         total: flow([0, 100, 0]),
-                        rows: [{account: "assets:fixed:accum-depreciation", amounts: flow([0, 100, 0])}],
+                        rows: [cfRow("assets:fixed:accum-depreciation", "Accum Depreciation", flow([0, 100, 0]))],
                     },
                 ],
             },
         ],
     };
 
-    it("prints the whole account, with nothing to open, under the cash balances", () => {
+    it("prints its own label, not the path, with nothing to open, under the cash balances", () => {
         const model = cfDisplayModel(lone, defaults);
-        expect(model.beginning.rows.map((row) => [row.label, row.expandable, row.account])).toEqual([
-            ["assets:fidelity:ira:cash", false, "assets:fidelity:ira:cash"],
+        expect(model.beginning.rows.map((row) => [row.label, row.expandable, row.account, row.path])).toEqual([
+            ["IRA", false, "assets:fidelity:ira:cash", "assets:fidelity:ira:cash"],
         ]);
         expect(model.ending.rows).toHaveLength(1);
     });
 
     it("does the same in a section", () => {
         const row = cfDisplayModel(lone, defaults).boxes[0].rows[1];
-        expect([row.label, row.expandable, row.account]).toEqual(["assets:fixed:accum-depreciation", false, "assets:fixed:accum-depreciation"]);
+        expect([row.label, row.expandable, row.account, row.path]).toEqual([
+            "Fixed",
+            false,
+            "assets:fixed:accum-depreciation",
+            "assets:fixed:accum-depreciation",
+        ]);
     });
 
     it("keeps a cfgroup line's own name and arrow even with one account behind it", () => {
-        const grouped = {...lone, cash: [{...lone.cash[0], name: "Retirement", source: "group" as const}]};
+        const grouped = {...lone, cash: [{...lone.cash[0], name: "Retirement", source: "group" as const, label: "Retirement", account: null}]};
         const [head] = cfDisplayModel(grouped, defaults).beginning.rows;
         expect([head.label, head.expandable]).toEqual(["Retirement", true]);
+    });
+});
+
+describe("UNIT cfDisplayModel — outline rows (plan 50)", () => {
+    // Depth 2 over `assets:receivable`: the engine's outline under the line is
+    // a "Clients" heading over two clients, plus the receivable's own postings.
+    const receivable: CfLine = {
+        name: "assets:receivable",
+        source: "account",
+        label: "Receivable",
+        account: "assets:receivable",
+        total: flow([-800, 0, 0]),
+        rows: [
+            {...cfRow("assets:receivable", "Receivable (other)", flow([-100, 0, 0])), kind: "other"},
+            {...cfRow("assets:receivable:clients", "Clients", flow([-700, 0, 0])), kind: "heading"},
+            cfRow("assets:receivable:clients:acme", "Acme", flow([-500, 0, 0]), 1),
+            cfRow("assets:receivable:clients:globex", "Globex", flow([-200, 0, 0]), 1),
+        ],
+    };
+    const report: CashFlowStatement = {...CASH_FLOW, sections: [{...CASH_FLOW.sections[0], lines: [receivable]}]};
+    const open = cfDisplayModel(report, () => true).boxes[0].rows.slice(1);
+
+    it("indents each row by its outline level under the line", () => {
+        expect(open.map((row) => [row.label, row.kind, row.indent])).toEqual([
+            ["Receivable", "line", 0],
+            ["Receivable (other)", "other", 1],
+            ["Clients", "heading", 1],
+            ["Acme", "account", 2],
+            ["Globex", "account", 2],
+        ]);
+        expect(open.map(isOutlineRow)).toEqual([false, true, true, true, true]);
+    });
+
+    it("gives a heading no amounts and nothing to open in the journal, but its path on hover", () => {
+        const heading = open[2];
+        expect([heading.amounts, heading.account, heading.path]).toEqual([null, null, "assets:receivable:clients"]);
+        expect(open[1].account).toBe("assets:receivable");
+        expect(open[0].path).toBe("assets:receivable");
+        expect(open[3].amounts?.total.get("$")).toEqual({m: -50000n, p: 2});
+    });
+
+    it("keys every row uniquely, a heading apart from an (other) row on the same account", () => {
+        expect(new Set(open.map((row) => row.key)).size).toBe(open.length);
     });
 });

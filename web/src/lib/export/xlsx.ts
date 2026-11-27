@@ -754,9 +754,11 @@ export async function buildIncomeStatementWorkbook(report: IncomeStatementReport
 
 /**
  * Statement of cash flows workbook (plans/27): the screen's own rows, from the
- * same display model, so the workbook shows exactly what the page shows. Every
- * line is opened, because a workbook has no disclosure to click; the cash
- * detail is there as on screen.
+ * same display model, so the workbook shows exactly what the page shows, at
+ * the screen's depth. Every line is opened, because a workbook has no
+ * disclosure to click; the cash detail is there as on screen. Outline rows
+ * indent by level, headings carry no figures, and each label's full account
+ * path is a cell note (plan 50).
  *
  * One money column per period plus Total (or a single Amount), in `base`.
  * Anything in another commodity goes to an "Other commodities" column for the
@@ -776,8 +778,14 @@ export async function buildCashFlowWorkbook(report: CashFlowStatement, meta: {ti
     ws.views = [{state: "frozen", ySplit: 4}];
 
     let rowIx = 5;
-    const write = (label: string, indent: number, columns: CfColumns, bold: boolean): void => {
+    const write = (label: string, indent: number, columns: CfColumns | null, bold: boolean, path: string | null = null): void => {
         labelCell(ws, rowIx, label, indent, bold);
+        // The full account path rides on the label as an Excel note, as hover does on screen (plan 50 D6).
+        if (path !== null) ws.getCell(rowIx, 1).note = path;
+        if (columns === null) {
+            rowIx += 1; // an outline heading: its rows below carry the money (plan 50 D4)
+            return;
+        }
         const figures = periods.length > 0 ? [...columns.values, columns.total] : [columns.total];
         figures.forEach((ma, i) => {
             const cell = ws.getCell(rowIx, i + 2);
@@ -792,7 +800,7 @@ export async function buildCashFlowWorkbook(report: CashFlowStatement, meta: {ti
         rowIx += 1;
     };
     const writeRows = (rows: readonly CfDisplayRow[], indent: number): void => {
-        for (const row of rows) write(row.label, indent + row.indent, row.amounts, false);
+        for (const row of rows) write(row.label, indent + row.indent, row.amounts, false, row.path);
     };
 
     for (const box of model.boxes) {

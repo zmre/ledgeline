@@ -239,7 +239,6 @@ fn group_source(source: GroupSource) -> &'static str {
 
 /// The one `OutlineKind` → wire spelling, shared by every statement that
 /// sends outline rows (plan 50): P&L, Cash Flow and Balance Sheet.
-#[allow(dead_code)] // MERGE SEAM: first used by the plan 50 WP2–WP4 branches.
 fn outline_kind(kind: OutlineKind) -> &'static str {
     match kind {
         OutlineKind::Heading => "heading",
@@ -4144,10 +4143,16 @@ fn wire_cf_source(source: CfLineSource) -> &'static str {
     }
 }
 
+/// One outline row of a line (plan 50): `kind` is `"heading"` (label only,
+/// its amounts not printed), `"account"` or `"other"`; `account` is the full
+/// path, for hover; `level` indents within the line.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WireCfRow {
     account: String,
+    kind: &'static str,
+    label: String,
+    level: usize,
     amounts: WireCfColumns,
 }
 
@@ -4157,6 +4162,10 @@ struct WireCfLine {
     name: String,
     /// `"group"` (a `cfgroup:` tag) or `"account"` (the account at depth).
     source: &'static str,
+    /// What to print: the group name, or the account's D2 label.
+    label: String,
+    /// The line's account (full path, for hover); null for a group line.
+    account: Option<String>,
     total: WireCfColumns,
     rows: Vec<WireCfRow>,
 }
@@ -4175,6 +4184,9 @@ struct WireCfSection {
 #[serde(rename_all = "camelCase")]
 struct WireCfCashRow {
     account: String,
+    kind: &'static str,
+    label: String,
+    level: usize,
     beginning: WireCfColumns,
     ending: WireCfColumns,
 }
@@ -4184,6 +4196,8 @@ struct WireCfCashRow {
 struct WireCfCashLine {
     name: String,
     source: &'static str,
+    label: String,
+    account: Option<String>,
     beginning: WireCfColumns,
     ending: WireCfColumns,
     rows: Vec<WireCfCashRow>,
@@ -4205,6 +4219,8 @@ pub(crate) struct WireCashFlow {
     beginning_cash: WireCfColumns,
     ending_cash: WireCfColumns,
     reconciles: bool,
+    /// Segments in the deepest account behind any line: the Depth control's max.
+    max_depth: usize,
 }
 
 impl From<&CashFlowStatement> for WireCashFlow {
@@ -4226,12 +4242,17 @@ impl From<&CashFlowStatement> for WireCashFlow {
                         .map(|line| WireCfLine {
                             name: line.name.clone(),
                             source: wire_cf_source(line.source),
+                            label: line.label.clone(),
+                            account: line.account.clone(),
                             total: WireCfColumns::from(&line.total),
                             rows: line
                                 .rows
                                 .iter()
                                 .map(|row| WireCfRow {
                                     account: row.account.clone(),
+                                    kind: outline_kind(row.kind),
+                                    label: row.label.clone(),
+                                    level: row.level,
                                     amounts: WireCfColumns::from(&row.amounts),
                                 })
                                 .collect(),
@@ -4248,6 +4269,8 @@ impl From<&CashFlowStatement> for WireCashFlow {
                 .map(|line| WireCfCashLine {
                     name: line.name.clone(),
                     source: wire_cf_source(line.source),
+                    label: line.label.clone(),
+                    account: line.account.clone(),
                     beginning: WireCfColumns::from(&line.beginning),
                     ending: WireCfColumns::from(&line.ending),
                     rows: line
@@ -4255,6 +4278,9 @@ impl From<&CashFlowStatement> for WireCashFlow {
                         .iter()
                         .map(|row| WireCfCashRow {
                             account: row.account.clone(),
+                            kind: outline_kind(row.kind),
+                            label: row.label.clone(),
+                            level: row.level,
                             beginning: WireCfColumns::from(&row.beginning),
                             ending: WireCfColumns::from(&row.ending),
                         })
@@ -4264,6 +4290,7 @@ impl From<&CashFlowStatement> for WireCashFlow {
             beginning_cash: WireCfColumns::from(&report.beginning_cash),
             ending_cash: WireCfColumns::from(&report.ending_cash),
             reconciles: report.reconciles,
+            max_depth: report.max_depth,
         }
     }
 }

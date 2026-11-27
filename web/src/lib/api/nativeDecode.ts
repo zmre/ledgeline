@@ -230,6 +230,8 @@ import type {
     FlowNode,
     FlowReport,
     FlowSide,
+    OutlineFields,
+    OutlineKind,
     GapRow,
     GroupSource,
     IncomeStatementReport,
@@ -2159,11 +2161,20 @@ interface RawCfColumns {
     total?: RawMixed;
 }
 
+/** Plan 50 outline fields on a statement row. */
+interface RawOutlineFields {
+    kind?: string;
+    label?: string;
+    level?: number;
+}
+
 interface RawCfLine {
     name?: string;
     source?: string;
+    label?: string;
+    account?: string | null;
     total?: RawCfColumns;
-    rows?: {account?: string; amounts?: RawCfColumns}[];
+    rows?: (RawOutlineFields & {account?: string; amounts?: RawCfColumns})[];
 }
 
 interface RawCfSection {
@@ -2176,9 +2187,11 @@ interface RawCfSection {
 interface RawCfCashLine {
     name?: string;
     source?: string;
+    label?: string;
+    account?: string | null;
     beginning?: RawCfColumns;
     ending?: RawCfColumns;
-    rows?: {account?: string; beginning?: RawCfColumns; ending?: RawCfColumns}[];
+    rows?: (RawOutlineFields & {account?: string; beginning?: RawCfColumns; ending?: RawCfColumns})[];
 }
 
 interface RawCashFlowStatement {
@@ -2193,6 +2206,18 @@ interface RawCashFlowStatement {
     beginningCash?: RawCfColumns;
     endingCash?: RawCfColumns;
     reconciles?: boolean;
+    maxDepth?: number;
+}
+
+// MERGE SEAM (plan 50 WP3): the P&L/Balance Sheet branches decode the same
+// outline fields; keep one copy of this pair when they merge.
+const OUTLINE_KINDS: readonly OutlineKind[] = ["heading", "account", "other"];
+
+/** `{kind, label, level}` of an outline row, every one demanded. */
+function decodeOutlineFields(raw: RawOutlineFields, context: string): OutlineFields {
+    const level = num(raw.level, `${context} level`);
+    if (!Number.isInteger(level) || level < 0) throw new ApiShapeError(`${context} level: expected a whole number ≥ 0`);
+    return {kind: decodeEnum(OUTLINE_KINDS, raw.kind, `${context} kind`), label: str(raw.label, `${context} label`), level};
 }
 
 const CF_SECTION_KINDS: readonly CfSectionKind[] = ["operating", "investing", "financing"];
@@ -2247,10 +2272,13 @@ export function decodeCashFlowStatement(raw: unknown): CashFlowStatement {
                             Object.freeze({
                                 name: str(line.name, `${at} line #${j} name`),
                                 source: decodeEnum(CF_LINE_SOURCES, line.source, `${at} line #${j} source`),
+                                label: str(line.label, `${at} line #${j} label`),
+                                account: decodeNullableStr(line.account, `${at} line #${j} account`),
                                 total: columns(line.total, `${at} line #${j} total`),
                                 rows: frozen(
                                     decodeCfArray(line.rows, `${at} line #${j} rows`).map((row, k) =>
                                         Object.freeze({
+                                            ...decodeOutlineFields(row, `${at} line #${j} row #${k}`),
                                             account: str(row.account, `${at} line #${j} row #${k} account`),
                                             amounts: columns(row.amounts, `${at} line #${j} row #${k} amounts`),
                                         })
@@ -2271,11 +2299,14 @@ export function decodeCashFlowStatement(raw: unknown): CashFlowStatement {
                 return Object.freeze({
                     name: str(line.name, `${at} name`),
                     source: decodeEnum(CF_LINE_SOURCES, line.source, `${at} source`),
+                    label: str(line.label, `${at} label`),
+                    account: decodeNullableStr(line.account, `${at} account`),
                     beginning: columns(line.beginning, `${at} beginning`),
                     ending: columns(line.ending, `${at} ending`),
                     rows: frozen(
                         decodeCfArray(line.rows, `${at} rows`).map((row, k) =>
                             Object.freeze({
+                                ...decodeOutlineFields(row, `${at} row #${k}`),
                                 account: str(row.account, `${at} row #${k} account`),
                                 beginning: columns(row.beginning, `${at} row #${k} beginning`),
                                 ending: columns(row.ending, `${at} row #${k} ending`),
@@ -2288,6 +2319,7 @@ export function decodeCashFlowStatement(raw: unknown): CashFlowStatement {
         beginningCash: columns(report.beginningCash, "cash flow beginningCash"),
         endingCash: columns(report.endingCash, "cash flow endingCash"),
         reconciles: decodeBoolean(report.reconciles, "cash flow reconciles"),
+        maxDepth: num(report.maxDepth, "cash flow maxDepth"),
     });
 }
 

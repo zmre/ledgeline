@@ -62,6 +62,17 @@ pub(super) fn clip(account: &str, depth: usize) -> &str {
     }
 }
 
+/// The D2 label of `account`: its OWN `name:` tag (never an ancestor's), else
+/// its last segment, title-cased only when it looks code-like. For a line's
+/// own heading, labelled the same way as the rows beneath it.
+#[must_use]
+pub fn label_for(account: &str, names: &BTreeMap<String, String>) -> String {
+    names.get(account).map_or_else(
+        || label_segment(account.rsplit(':').next().unwrap_or(account)),
+        |name| name.trim().to_string(),
+    )
+}
+
 /// The outline for one line's `members`, clipped to `depth` (`None` = no
 /// clip, `Some(0)` = no rows, as hledger's totals-only). `names` holds the
 /// accounts' OWN declared `name:` tags.
@@ -121,10 +132,7 @@ struct Ctx<'a> {
 
 impl Ctx<'_> {
     fn label(&self, account: &str) -> String {
-        self.names.get(account).map_or_else(
-            || label_segment(account.rsplit(':').next().unwrap_or(account)),
-            |name| name.trim().to_string(),
-        )
+        label_for(account, self.names)
     }
 
     fn leaf(&self, account: &str) -> Tree {
@@ -482,6 +490,14 @@ mod tests {
         );
         assert_eq!(got[1].members, vec!["revenue:sales"]);
         assert_eq!(got[0].account, "revenue:sales");
+    }
+
+    #[test]
+    fn label_for_reads_the_accounts_own_name_else_its_last_segment() {
+        let names = BTreeMap::from([("liabilities:cc".to_string(), " Credit cards ".to_string())]);
+        assert_eq!(label_for("liabilities:cc", &names), "Credit cards");
+        assert_eq!(label_for("liabilities:cc:visa", &names), "Visa");
+        assert_eq!(label_for("assets:petty-cash", &names), "Petty Cash");
     }
 
     #[test]

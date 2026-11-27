@@ -54,29 +54,26 @@ describe("COMPONENT CashFlowStatementView", () => {
     it("reads the net change, and the beginning and ending cash with the detail open", () => {
         mount();
         expect(screen.getByTestId("cf-net-change").textContent).toContain("$9,500.00");
-        expect(rowLabels("cf-cash-beginning")).toEqual([
-            "Beginning cash",
-            "Operating cash",
-            "assets:bank:checking",
-            "assets:bank:savings",
-            "assets:petty-cash",
-        ]);
+        expect(rowLabels("cf-cash-beginning")).toEqual(["Beginning cash", "Operating cash", "Checking", "Savings", "Petty Cash"]);
         expect(screen.getByTestId("cf-cash-ending").textContent).toContain("$19,500.00");
     });
 
     it("opens a group line to its accounts", async () => {
         mount();
-        expect(rowLabels("cf-section-operating")).not.toContain("liabilities:card");
+        expect(rowLabels("cf-section-operating")).not.toContain("Card");
         await fireEvent.click(screen.getByRole("button", {name: /Payables/}));
-        expect(rowLabels("cf-section-operating")).toContain("liabilities:card");
+        expect(rowLabels("cf-section-operating")).toContain("Card");
+        // The label reads as the engine's outline; the full path is on hover.
+        const card = [...screen.getByTestId("cf-section-operating").querySelectorAll("tbody th span[title]")].find((el) => el.textContent?.trim() === "Card");
+        expect(card?.getAttribute("title")).toBe("liabilities:card");
     });
 
     it("folds the cash detail under both blocks at once", async () => {
         mount();
         const [beginning] = screen.getAllByRole("button", {name: /Operating cash/});
         await fireEvent.click(beginning);
-        expect(rowLabels("cf-cash-beginning")).toEqual(["Beginning cash", "Operating cash", "assets:petty-cash"]);
-        expect(rowLabels("cf-cash-ending")).toEqual(["Ending cash", "Operating cash", "assets:petty-cash"]);
+        expect(rowLabels("cf-cash-beginning")).toEqual(["Beginning cash", "Operating cash", "Petty Cash"]);
+        expect(rowLabels("cf-cash-ending")).toEqual(["Ending cash", "Operating cash", "Petty Cash"]);
     });
 
     it("warns only when the statement does not reconcile column by column", () => {
@@ -140,6 +137,6 @@ describe("COMPONENT CashFlowStatementView", () => {
         await press("j");
         await press("j"); // Payables, a group line
         await press("Enter");
-        expect(rowLabels("cf-section-operating")).toContain("liabilities:payable");
+        expect(rowLabels("cf-section-operating")).toContain("Payable");
     });
 });

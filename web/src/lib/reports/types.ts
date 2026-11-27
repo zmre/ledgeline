@@ -740,15 +740,26 @@ export type CfLineSource = "group" | "account";
 
 export type CfSectionKind = "operating" | "investing" | "financing";
 
-/** One account inside a line: its contribution (−Δ) per column. */
-export interface CfRow {
+/**
+ * One outline row inside a line (plan 50): an account, a heading over two or
+ * more of the line's accounts, or a heading's own postings. Its contribution
+ * (−Δ) per column is the sum of the accounts it stands for; a heading's is
+ * not printed.
+ */
+export interface CfRow extends OutlineFields {
+    /** Full account path, for hover. */
     account: string;
     amounts: CfColumns;
 }
 
 export interface CfLine {
+    /** The fold key's name: the `cfgroup:` value, or the account path at the report's depth. */
     name: string;
     source: CfLineSource;
+    /** What to print: the group name, or the account's own `name:` / humanized last segment. */
+    label: string;
+    /** The line's account (full path, for hover); null for a group line. */
+    account: string | null;
     total: CfColumns;
     rows: CfRow[];
 }
@@ -762,7 +773,8 @@ export interface CfSection {
     total: CfColumns;
 }
 
-export interface CfCashRow {
+/** One outline row inside a cash line, as `CfRow`. */
+export interface CfCashRow extends OutlineFields {
     account: string;
     beginning: CfColumns;
     ending: CfColumns;
@@ -771,6 +783,10 @@ export interface CfCashRow {
 export interface CfCashLine {
     name: string;
     source: CfLineSource;
+    /** As `CfLine.label`. */
+    label: string;
+    /** As `CfLine.account`. */
+    account: string | null;
     beginning: CfColumns;
     ending: CfColumns;
     rows: CfCashRow[];
@@ -793,4 +809,6 @@ export interface CashFlowStatement {
     endingCash: CfColumns;
     /** Net change equals ending − beginning cash in every column. False only when a posting date splits a transaction across columns. */
     reconciles: boolean;
+    /** Segments in the deepest account behind any line: the Depth control's max (plan 50 D9). */
+    maxDepth: number;
 }

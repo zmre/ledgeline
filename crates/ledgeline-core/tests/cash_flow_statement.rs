@@ -26,6 +26,7 @@ mod common;
 
 use ledgeline_core::Dec;
 use ledgeline_core::model::Commodity;
+use ledgeline_core::reports::outline::OutlineKind;
 use ledgeline_core::reports::{
     AccountTypes, CashFlowStatement, CfLine, CfLineSource, CfOpts, CfRole, CfSectionKind, CfTags,
     Interval, MixedAmount, cash_flow_statement, cf_role_resolver, declared_types, is_closing_entry,
@@ -272,6 +273,261 @@ fn a_cfgroup_collapses_accounts_from_different_parts_of_the_tree_into_one_line()
         payables.total.values.iter().map(cents).collect::<Vec<_>>(),
         [20_000, 30_000, -20_000]
     );
+}
+
+// ---------------------------------------------------------------------------
+// Lines as outlines (plan 50 WP3)
+// ---------------------------------------------------------------------------
+
+/// Two banks with checking and savings each (one bank named by `name:`), a
+/// receivable split by client, a prepaid policy and a named card. The cash
+/// is opened before the range, so the cash block has beginning balances.
+const OUTLINE_JOURNAL: &str = "\
+account assets:bank                 ; type: C
+account assets:bank:fcb             ; name: First Community Bank
+account assets:receivable           ; type: A
+account assets:prepaid              ; type: A
+account liabilities:card            ; type: L, name: Amex Platinum
+account equity:capital              ; type: E
+account revenue:sales               ; type: R
+account expenses:software           ; type: X
+
+2026-01-01 Open
+    assets:bank:ally:checking   $1000.00
+    assets:bank:ally:savings    $2000.00
+    assets:bank:fcb:checking    $3000.00
+    assets:bank:fcb:savings     $4000.00
+    equity:capital
+
+2026-02-01 Invoice Acme
+    assets:receivable:clients:acme    $500.00
+    revenue:sales
+
+2026-02-02 Invoice Globex
+    assets:receivable:clients:globex  $300.00
+    revenue:sales
+
+2026-02-03 Prepay insurance
+    assets:prepaid:insurance    $120.00
+    assets:bank:ally:checking
+
+2026-02-04 Software on the card
+    expenses:software           $50.00
+    liabilities:card
+";
+
+fn outline_statement(text: &str, depth: usize) -> CashFlowStatement {
+    let journal = parse_journal(text, "t.journal").expect("parses");
+    cash_flow_statement(
+        &journal.transactions,
+        &CfOpts {
+            from: "2026-02-01",
+            to: "2026-03-31",
+            interval: None,
+            depth,
+        },
+        &CfTags::from_declarations(&journal.accounts),
+    )
+    .expect("statement")
+}
+
+fn marker(kind: OutlineKind) -> &'static str {
+    match kind {
+        OutlineKind::Heading => "#",
+        OutlineKind::Account => "-",
+        OutlineKind::Other => "~",
+    }
+}
+
+/// Each operating line as `label` then its outline rows, indented by level.
+fn operating_outline(report: &CashFlowStatement) -> Vec<String> {
+    section(report, CfSectionKind::Operating)
+        .lines
+        .iter()
+        .flat_map(|line| {
+            std::iter::once(line.label.clone()).chain(line.rows.iter().map(|row| {
+                format!(
+                    "{}{} {}",
+                    "  ".repeat(row.level + 1),
+                    marker(row.kind),
+                    row.label
+                )
+            }))
+        })
+        .collect()
+}
+
+fn texts(rows: &[&str]) -> Vec<String> {
+    rows.iter().map(|row| (*row).to_string()).collect()
+}
+
+#[test]
+fn each_depth_reads_differently() {
+    let at = |depth| operating_outline(&outline_statement(OUTLINE_JOURNAL, depth));
+    assert_eq!(
+        at(1),
+        texts(&[
+            "Assets",
+            "  - Insurance",
+            "  # Clients",
+            "    - Acme",
+            "    - Globex",
+            "Liabilities",
+            "  - Amex Platinum",
+        ])
+    );
+    assert_eq!(
+        at(2),
+        texts(&[
+            "Prepaid",
+            "  - Insurance",
+            "Receivable",
+            "  - Acme",
+            "  - Globex",
+            "Amex Platinum",
+            "  - Amex Platinum",
+        ])
+    );
+    assert_eq!(
+        at(3),
+        texts(&[
+            "Insurance",
+            "  - Insurance",
+            "Clients",
+            "  - Acme",
+            "  - Globex",
+            "Amex Platinum",
+            "  - Amex Platinum",
+        ])
+    );
+    assert_eq!(
+        at(4),
+        texts(&[
+            "Insurance",
+            "  - Insurance",
+            "Acme",
+            "  - Acme",
+            "Globex",
+            "  - Globex",
+            "Amex Platinum",
+            "  - Amex Platinum",
+        ])
+    );
+}
+
+#[test]
+fn max_depth_is_the_deepest_account_behind_any_line_whatever_the_depth() {
+    for depth in [1, 2, 4] {
+        assert_eq!(outline_statement(OUTLINE_JOURNAL, depth).max_depth, 4);
+    }
+}
+
+#[test]
+fn a_single_account_line_is_labelled_by_its_account_not_its_path() {
+    let report = outline_statement(OUTLINE_JOURNAL, 2);
+    let lines = &section(&report, CfSectionKind::Operating).lines;
+    let prepaid = &lines[0];
+    assert_eq!(prepaid.name, "assets:prepaid");
+    assert_eq!(prepaid.label, "Prepaid");
+    assert_eq!(prepaid.account.as_deref(), Some("assets:prepaid"));
+    assert_eq!(prepaid.rows.len(), 1);
+    assert_eq!(prepaid.rows[0].account, "assets:prepaid:insurance");
+    // Its own `name:` tag wins over the segment.
+    let card = &lines[2];
+    assert_eq!(card.label, "Amex Platinum");
+    assert_eq!(card.account.as_deref(), Some("liabilities:card"));
+    // Row figures are the members they show; the line total is unchanged.
+    assert_eq!(cents(&lines[1].rows[0].amounts.total), -50_000);
+    assert_eq!(cents(&lines[1].rows[1].amounts.total), -30_000);
+    assert_eq!(cents(&lines[1].total.total), -80_000);
+}
+
+#[test]
+fn a_cfgroup_line_spanning_subtrees_outlines_its_accounts() {
+    let text = OUTLINE_JOURNAL
+        .replace(
+            "account assets:receivable           ; type: A",
+            "account assets:receivable           ; type: A, cfgroup: Working capital",
+        )
+        .replace(
+            "; type: L, name: Amex Platinum",
+            "; type: L, name: Amex Platinum, cfgroup: Working capital",
+        );
+    let report = outline_statement(&text, 2);
+    let line = section(&report, CfSectionKind::Operating)
+        .lines
+        .iter()
+        .find(|line| line.name == "Working capital")
+        .expect("the group line");
+    assert_eq!(line.label, "Working capital");
+    assert_eq!(line.account, None);
+    let rows: Vec<String> = line
+        .rows
+        .iter()
+        .map(|row| {
+            format!(
+                "{}{} {}",
+                "  ".repeat(row.level),
+                marker(row.kind),
+                row.label
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        texts(&["# Clients", "  - Acme", "  - Globex", "- Amex Platinum"])
+    );
+    // A heading's figures are its subtree's (not printed, but exact).
+    assert_eq!(cents(&line.rows[0].amounts.total), -80_000);
+    assert_eq!(cents(&line.total.total), -75_000);
+}
+
+#[test]
+fn the_cash_block_outlines_two_banks_each_with_checking_and_savings() {
+    let report = outline_statement(OUTLINE_JOURNAL, 2);
+    assert_eq!(report.cash.len(), 1);
+    let bank = &report.cash[0];
+    assert_eq!(bank.label, "Bank");
+    assert_eq!(bank.account.as_deref(), Some("assets:bank"));
+    let rows: Vec<(String, String, i128, i128)> = bank
+        .rows
+        .iter()
+        .map(|row| {
+            (
+                format!(
+                    "{}{} {}",
+                    "  ".repeat(row.level),
+                    marker(row.kind),
+                    row.label
+                ),
+                row.account.clone(),
+                cents(&row.beginning.total),
+                cents(&row.ending.total),
+            )
+        })
+        .collect();
+    let expect = |label: &str, account: &str, beginning: i128, ending: i128| {
+        (label.to_string(), account.to_string(), beginning, ending)
+    };
+    assert_eq!(
+        rows,
+        [
+            expect("# Ally", "assets:bank:ally", 300_000, 288_000),
+            expect("  - Checking", "assets:bank:ally:checking", 100_000, 88_000),
+            expect("  - Savings", "assets:bank:ally:savings", 200_000, 200_000),
+            expect(
+                "# First Community Bank",
+                "assets:bank:fcb",
+                700_000,
+                700_000
+            ),
+            expect("  - Checking", "assets:bank:fcb:checking", 300_000, 300_000),
+            expect("  - Savings", "assets:bank:fcb:savings", 400_000, 400_000),
+        ]
+    );
+    assert_eq!(cents(&bank.beginning.total), 1_000_000);
+    assert_eq!(cents(&bank.ending.total), 988_000);
+    assert!(report.reconciles);
 }
 
 // ---------------------------------------------------------------------------

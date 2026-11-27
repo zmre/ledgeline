@@ -6,7 +6,7 @@ import type {CompareSheetRow} from "#lib/export/xlsx.js";
 import type {AccountReport, BalanceSheetColumns, CashFlowStatement, IncomeStatementReport} from "#lib/reports/types.js";
 import {accountDisplaySections} from "#lib/reports/ui/accountReportRows.js";
 import {bsColumnSummaries, columnSectionRows} from "#lib/reports/ui/balanceSheetRows.js";
-import {cfDisplayModel, type CfDisplayRow} from "#lib/reports/ui/cashFlowRows.js";
+import {cfDisplayModel, isOutlineRow, type CfDisplayRow} from "#lib/reports/ui/cashFlowRows.js";
 import type {WindowReading} from "#lib/reports/ui/compareColumns.js";
 import {isDisplayModel} from "#lib/reports/ui/incomeStatementRows.js";
 
@@ -92,11 +92,12 @@ export function incomeStatementCompareRows(report: IncomeStatementReport): Compa
 export function cashFlowCompareRows(report: CashFlowStatement): CompareSheetRow[] {
     const model = cfDisplayModel(report, () => true);
     const rows: CompareSheetRow[] = [];
+    // An outline heading carries no figures (plan 50 D4); only lines are bold.
     const cfRow = (row: CfDisplayRow, reading: WindowReading): CompareSheetRow => ({
         label: row.label,
         indent: row.indent + 1,
-        bold: row.kind !== "account",
-        values: row.amounts.values,
+        bold: !isOutlineRow(row),
+        values: row.amounts?.values ?? null,
         reading,
     });
     for (const box of model.boxes) {

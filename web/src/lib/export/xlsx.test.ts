@@ -8,7 +8,7 @@ import {Workbook, type Worksheet} from "exceljs";
 import {decodeBalanceSheetColumns, decodeBalanceSheetReport, decodeIncomeStatementReport} from "#lib/api/nativeDecode.js";
 import {dec, type MixedAmount} from "#lib/domain/money.js";
 import type {Holding, HoldingsReport} from "#lib/holdings/types.js";
-import type {BudgetBar, BudgetReport, PeriodReport, SectionedReport} from "#lib/reports/types.js";
+import type {BudgetBar, BudgetReport, CashFlowStatement, CfLine, PeriodReport, SectionedReport} from "#lib/reports/types.js";
 import {CLASSIFIED_BALANCE_SHEET, GROUPED_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "#lib/testing/balanceSheetFixture.js";
 import {GROUPED_INCOME_STATEMENT, MULTI_STEP_INCOME_STATEMENT, UNCOMPARED_INCOME_STATEMENT} from "#lib/testing/incomeStatementFixture.js";
 import {
@@ -22,7 +22,7 @@ import {
     numberFormat,
     SAAS_SHEETS,
 } from "./xlsx";
-import {CASH_FLOW, CASH_FLOW_TOTAL} from "#lib/testing/cashFlowFixture.js";
+import {CASH_FLOW, CASH_FLOW_TOTAL, cfRow, flow} from "#lib/testing/cashFlowFixture.js";
 import type {SaasReport} from "#lib/reports/saasTypes.js";
 import {billingReport, householdReport, startupReport, usd as dollars} from "#lib/testing/saasFixture.js";
 import {periodsOf} from "#lib/reports/test-helpers.js";
@@ -1081,6 +1081,9 @@ describe("statement of cash flows workbook", () => {
     const title = "Statement of Cash Flows";
     const build = (report = CASH_FLOW) => buildCashFlowWorkbook(report, {title, params: "2026-01-01 to 2026-03-31, monthly"}, "$");
     const column = (ws: Worksheet, from: number, count: number, col = 1) => Array.from({length: count}, (_, i) => ws.getCell(from + i, col).value);
+    /** A cell note's text: exceljs reads a note back as rich text. */
+    const noteText = (note: unknown): string | undefined =>
+        typeof note === "string" ? note : (note as {texts?: {text: string}[]} | undefined)?.texts?.map((t) => t.text).join("");
 
     it("heads a column per month, a Total and the other commodities", async () => {
         const ws = await readBack(await build(), title);
@@ -1094,13 +1097,13 @@ describe("statement of cash flows workbook", () => {
         expect(column(ws, 5, 11)).toEqual([
             "Operating activities",
             "Net income",
-            "assets:equipment:accum-depreciation",
-            "assets:prepaid",
-            "assets:receivable",
+            "Accum Depreciation",
+            "Prepaid",
+            "Receivable",
             "Payables",
-            "liabilities:card",
-            "liabilities:payable",
-            "liabilities:deferred-revenue",
+            "Card",
+            "Payable",
+            "Deferred Revenue",
             "Net cash from operating activities",
             null,
         ]);
@@ -1118,6 +1121,31 @@ describe("statement of cash flows workbook", () => {
         expect(ws.getCell(row("Beginning cash"), 5).value).toBe(10000);
         expect(ws.getCell(row("Ending cash"), 5).value).toBe(19500);
         expect(ws.getCell(row("Net change in cash"), 5).font?.bold).toBe(true);
+    });
+
+    it("indents outline rows by level, leaves a heading's figures blank, and notes each label's full path", async () => {
+        const receivable: CfLine = {
+            name: "assets:receivable",
+            source: "account",
+            label: "Receivable",
+            account: "assets:receivable",
+            total: flow([-700, 0, 0]),
+            rows: [
+                {...cfRow("assets:receivable:clients", "Clients", flow([-700, 0, 0])), kind: "heading"},
+                cfRow("assets:receivable:clients:acme", "Acme", flow([-500, 0, 0]), 1),
+                cfRow("assets:receivable:clients:globex", "Globex", flow([-200, 0, 0]), 1),
+            ],
+        };
+        const report: CashFlowStatement = {...CASH_FLOW, sections: [{...CASH_FLOW.sections[0], lines: [receivable]}]};
+        const ws = await readBack(await build(report), title);
+        expect(column(ws, 7, 4)).toEqual(["Receivable", "Clients", "Acme", "Globex"]);
+        // Under the section (indent 1): the line, then the heading one in, its clients two in.
+        expect([7, 8, 9, 10].map((row) => ws.getCell(row, 1).alignment?.indent)).toEqual([1, 2, 3, 3]);
+        expect([2, 3, 4, 5].map((col) => ws.getCell(8, col).value ?? null)).toEqual([null, null, null, null]);
+        expect(ws.getCell(9, 5).value).toBe(-500);
+        expect(noteText(ws.getCell(7, 1).note)).toBe("assets:receivable");
+        expect(noteText(ws.getCell(8, 1).note)).toBe("assets:receivable:clients");
+        expect(noteText(ws.getCell(10, 1).note)).toBe("assets:receivable:clients:globex");
     });
 
     it("has a single Amount column on Interval = Total", async () => {

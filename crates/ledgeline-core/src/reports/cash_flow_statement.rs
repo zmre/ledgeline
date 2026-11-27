@@ -46,6 +46,7 @@ use super::account_groups::{BsTerm, declared_bs_terms, declared_groups_from, nea
 use super::account_types::{AccountType, AccountTypes};
 use super::income_statement::Columns;
 use super::mixed_amount::MixedAmount;
+use super::outline::{OutlineKind, OutlineNode, label_for, outline};
 use super::periods::{BucketSpan, Interval, range_buckets};
 use super::prices::PriceDb;
 use crate::holdings::{ValuationRole, declared_valuation_roles};
@@ -57,6 +58,12 @@ pub const CF_SECTION_TAG: &str = "cfsection";
 
 /// The `account` tag that names the line an account prints on.
 pub const CF_GROUP_TAG: &str = "cfgroup";
+
+/// The `account` tag holding an account's display name (plan 50 D2). Read
+/// off the account itself only: a line's label never borrows an ancestor's.
+// MERGE SEAM (plan 50 WP3): the P&L/Balance Sheet branches may add a shared
+// constant for this tag; fold this one into it.
+const NAME_TAG: &str = "name";
 
 /// The closed vocabulary of [`CF_SECTION_TAG`].
 ///
@@ -131,6 +138,8 @@ pub struct CfTags {
     pub terms: BTreeMap<String, BsTerm>,
     /// Declared `valuation:` per account.
     pub valuation: BTreeMap<String, ValuationRole>,
+    /// Each account's OWN `name:` tag (not inherited), for row labels.
+    pub names: BTreeMap<String, String>,
     /// The journal's base commodity, as the balance sheet picks it. An asset
     /// that holds anything else is an investment, non-current by default.
     pub base: Option<Commodity>,
@@ -148,6 +157,7 @@ impl CfTags {
             groups: declared_groups_from(accounts, CF_GROUP_TAG),
             terms: declared_bs_terms(accounts),
             valuation: declared_valuation_roles(accounts),
+            names: declared_groups_from(accounts, NAME_TAG),
             base: None,
         }
     }
@@ -283,12 +293,21 @@ pub enum CfLineSource {
     Account,
 }
 
-/// One account inside a line.
+/// One outline row inside a line (plan 50 D1–D5): an account, a heading
+/// over two or more of the line's accounts, or a heading's own postings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CfRow {
-    /// Full account name.
+    /// Full account name (shown on hover).
     pub account: String,
-    /// Its contribution (−Δ) per column, and their Total.
+    /// What the row is. A heading's `amounts` are its subtree's sum, which
+    /// a statement does not print (D4).
+    pub kind: OutlineKind,
+    /// What to print.
+    pub label: String,
+    /// Indent within the line, 0 = directly under it.
+    pub level: usize,
+    /// The contribution (−Δ) per column, and their Total, of the line's
+    /// accounts the row stands for.
     pub amounts: Columns,
 }
 
@@ -299,9 +318,13 @@ pub struct CfLine {
     pub name: String,
     /// Which of the two it is.
     pub source: CfLineSource,
-    /// The accounts behind the line, by name.
+    /// What to print: the `cfgroup:` name, or the account's D2 label.
+    pub label: String,
+    /// The line's account (an account line), for hover; `None` for a group.
+    pub account: Option<String>,
+    /// The line's accounts, as an outline.
     pub rows: Vec<CfRow>,
-    /// Summed over `rows`.
+    /// Summed over the line's accounts (a heading row is not counted twice).
     pub total: Columns,
 }
 
@@ -319,11 +342,17 @@ pub struct CfSection {
     pub total: Columns,
 }
 
-/// One cash account inside a cash line.
+/// One outline row inside a cash line, as [`CfRow`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CfCashRow {
-    /// Full account name.
+    /// Full account name (shown on hover).
     pub account: String,
+    /// What the row is.
+    pub kind: OutlineKind,
+    /// What to print.
+    pub label: String,
+    /// Indent within the line, 0 = directly under it.
+    pub level: usize,
     /// Balance at the start of each column. The Total is the first column's.
     pub beginning: Columns,
     /// Balance at the end of each column. The Total is the last column's.
@@ -337,11 +366,15 @@ pub struct CfCashLine {
     pub name: String,
     /// Which of the two it is.
     pub source: CfLineSource,
-    /// The accounts behind the line, by name.
+    /// What to print, as [`CfLine::label`].
+    pub label: String,
+    /// The line's account, as [`CfLine::account`].
+    pub account: Option<String>,
+    /// The line's cash accounts, as an outline.
     pub rows: Vec<CfCashRow>,
-    /// Summed over `rows`.
+    /// Summed over the line's accounts (a heading row is not counted twice).
     pub beginning: Columns,
-    /// Summed over `rows`.
+    /// Summed over the line's accounts (a heading row is not counted twice).
     pub ending: Columns,
 }
 
@@ -372,6 +405,9 @@ pub struct CashFlowStatement {
     /// `net_change` equals `ending_cash − beginning_cash` in every column. See
     /// the module docs for the one way it can be false.
     pub reconciles: bool,
+    /// Segments in the deepest account behind any line, cash included (at
+    /// least 1): the depth past which the statement reads the same.
+    pub max_depth: usize,
 }
 
 /// The statement of cash flows.
@@ -662,7 +698,8 @@ impl CfAccumulator {
             (CfSectionKind::Investing, "Investing activities"),
             (CfSectionKind::Financing, "Financing activities"),
         ] {
-            let mut by_line: BTreeMap<(String, CfLineSource), Vec<CfRow>> = BTreeMap::new();
+            let mut by_line: BTreeMap<(String, CfLineSource), BTreeMap<String, Columns>> =
+                BTreeMap::new();
             for (account, values) in self
                 .lines
                 .iter()
@@ -671,19 +708,33 @@ impl CfAccumulator {
                 if values.iter().all(MixedAmount::is_zero) {
                     continue;
                 }
-                let (name, source) = line_key(account);
-                by_line.entry((name, source)).or_default().push(CfRow {
-                    account: account.clone(),
-                    amounts: flow(values.clone())?,
-                });
+                by_line
+                    .entry(line_key(account))
+                    .or_default()
+                    .insert(account.clone(), flow(values.clone())?);
             }
             let lines: Vec<CfLine> = by_line
                 .into_iter()
-                .map(|((name, source), rows)| {
-                    let total = sum_columns(rows.iter().map(|row| &row.amounts), columns)?;
+                .map(|((name, source), members)| {
+                    let total = sum_columns(members.values(), columns)?;
+                    let rows = outline_rows(
+                        &members,
+                        &tags.names,
+                        |figures| sum_columns(figures.into_iter(), columns),
+                        |node, amounts| CfRow {
+                            account: node.account,
+                            kind: node.kind,
+                            label: node.label,
+                            level: node.level,
+                            amounts,
+                        },
+                    )?;
+                    let (label, account) = line_heading(&name, source, &tags.names);
                     Ok(CfLine {
                         name,
                         source,
+                        label,
+                        account,
                         rows,
                         total,
                     })
@@ -724,7 +775,10 @@ impl CfAccumulator {
             names.dedup();
             names
         };
-        let mut by_cash_line: BTreeMap<(String, CfLineSource), Vec<CfCashRow>> = BTreeMap::new();
+        let mut by_cash_line: BTreeMap<
+            (String, CfLineSource),
+            BTreeMap<String, (Columns, Columns)>,
+        > = BTreeMap::new();
         for account in cash_accounts {
             let mut balance = self.opening.get(account).cloned().unwrap_or_default();
             let mut beginning = Vec::with_capacity(columns);
@@ -744,28 +798,43 @@ impl CfAccumulator {
             if beginning.iter().chain(&ending).all(MixedAmount::is_zero) {
                 continue;
             }
-            let (name, source) = line_key(account);
-            by_cash_line
-                .entry((name, source))
-                .or_default()
-                .push(CfCashRow {
-                    account: account.clone(),
-                    beginning: point(beginning, Edge::First),
-                    ending: point(ending, Edge::Last),
-                });
+            by_cash_line.entry(line_key(account)).or_default().insert(
+                account.clone(),
+                (point(beginning, Edge::First), point(ending, Edge::Last)),
+            );
         }
+        let balances =
+            |figures: Vec<&(Columns, Columns)>| -> Result<(Columns, Columns), ReportError> {
+                Ok((
+                    sum_points(figures.iter().map(|(b, _)| b), columns, Edge::First)?,
+                    sum_points(figures.iter().map(|(_, e)| e), columns, Edge::Last)?,
+                ))
+            };
         let cash: Vec<CfCashLine> = by_cash_line
             .into_iter()
-            .map(|((name, source), rows)| {
+            .map(|((name, source), members)| {
+                let (beginning, ending) = balances(members.values().collect())?;
+                let rows = outline_rows(
+                    &members,
+                    &tags.names,
+                    balances,
+                    |node, (beginning, ending)| CfCashRow {
+                        account: node.account,
+                        kind: node.kind,
+                        label: node.label,
+                        level: node.level,
+                        beginning,
+                        ending,
+                    },
+                )?;
+                let (label, account) = line_heading(&name, source, &tags.names);
                 Ok(CfCashLine {
-                    beginning: sum_points(
-                        rows.iter().map(|row| &row.beginning),
-                        columns,
-                        Edge::First,
-                    )?,
-                    ending: sum_points(rows.iter().map(|row| &row.ending), columns, Edge::Last)?,
                     name,
                     source,
+                    label,
+                    account,
+                    beginning,
+                    ending,
                     rows,
                 })
             })
@@ -776,6 +845,18 @@ impl CfAccumulator {
             Edge::First,
         )?;
         let ending_cash = sum_points(cash.iter().map(|line| &line.ending), columns, Edge::Last)?;
+
+        let max_depth = sections
+            .iter()
+            .flat_map(|section| &section.lines)
+            .flat_map(|line| line.rows.iter().map(|row| row.account.as_str()))
+            .chain(
+                cash.iter()
+                    .flat_map(|line| line.rows.iter().map(|row| row.account.as_str())),
+            )
+            .map(|account| account.split(':').count())
+            .max()
+            .unwrap_or(1);
 
         let mut reconciles = true;
         for column in 0..columns {
@@ -797,6 +878,7 @@ impl CfAccumulator {
             beginning_cash,
             ending_cash,
             reconciles,
+            max_depth,
         })
     }
 }
@@ -807,6 +889,41 @@ fn bucket_of(buckets: &[BucketSpan], date: &str) -> Option<usize> {
     let index = buckets.partition_point(|bucket| bucket.to.as_str() < date);
     let bucket = buckets.get(index)?;
     (date >= bucket.from.as_str()).then_some(index)
+}
+
+/// A line's own label and hover account: a `cfgroup:` name is the user's
+/// own words and has no single account; an account line reads as its
+/// account's D2 label, however many accounts sit beneath it.
+fn line_heading(
+    name: &str,
+    source: CfLineSource,
+    names: &BTreeMap<String, String>,
+) -> (String, Option<String>) {
+    match source {
+        CfLineSource::Group => (name.to_string(), None),
+        CfLineSource::Account => (label_for(name, names), Some(name.to_string())),
+    }
+}
+
+/// A line's rows as an outline (plan 50 D1–D5) over its `members`, each
+/// member's own figures beside it. No depth clip: the line key already
+/// carries the depth, so the line's account is the outline's shared root and
+/// the builder absorbs it. Each row's figures are `sum` of the members it
+/// shows, with the same arithmetic as the line total.
+fn outline_rows<F, R>(
+    members: &BTreeMap<String, F>,
+    names: &BTreeMap<String, String>,
+    sum: impl Fn(Vec<&F>) -> Result<F, ReportError>,
+    row: impl Fn(OutlineNode, F) -> R,
+) -> Result<Vec<R>, ReportError> {
+    let accounts: BTreeSet<String> = members.keys().cloned().collect();
+    outline(&accounts, None, names)
+        .into_iter()
+        .map(|node| {
+            let figures = sum(node.members.iter().filter_map(|m| members.get(m)).collect())?;
+            Ok(row(node, figures))
+        })
+        .collect()
 }
 
 /// `account` cut to its first `depth` segments (at least one).
