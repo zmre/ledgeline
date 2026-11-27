@@ -142,7 +142,7 @@ test.describe("keyboard-first over the accrual fixture (:5199)", () => {
         const sheet = page.getByTestId("key-help");
         await expect(sheet).toBeVisible();
         const headings = sheet.getByRole("heading", {level: 4});
-        await expect(headings).toHaveText(["Global", "Go to", "Invoices"]);
+        await expect(headings).toHaveText(["Global", "Go to", "Time", "Invoices"]);
         await expect(sheet).toContainText("Search this list");
         await expect(sheet).toContainText("Go to Customers");
         await expect(sheet).toContainText("Next invoice");
@@ -154,7 +154,7 @@ test.describe("keyboard-first over the accrual fixture (:5199)", () => {
         await chord(page, "g", "d");
         await expect(page.getByTestId("dashboard")).toBeVisible();
         await page.keyboard.press("?");
-        await expect(sheet.getByRole("heading", {level: 4})).toHaveText(["Global", "Go to", "Home"]);
+        await expect(sheet.getByRole("heading", {level: 4})).toHaveText(["Global", "Go to", "Time", "Home"]);
         await expect(sheet).toContainText("Open the drafts");
         await page.keyboard.press("Escape");
         // 1 opens the drafts card's list.
