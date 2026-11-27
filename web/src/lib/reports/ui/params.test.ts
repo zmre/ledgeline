@@ -4,8 +4,11 @@ import {
     alignToEnd,
     budgetRedirect,
     confDepthDefault,
+    confIsDepth,
     defaultReportParams,
     intervalLabel,
+    isDepthFromSlider,
+    isDepthShown,
     MAX_COUNT,
     paramsToSearch,
     rangeKeys,
@@ -47,6 +50,8 @@ describe("UNIT reports/ui/params", () => {
                 // Shared by cf and nw. Neither statement reads it: both tabs
                 // ask the engine for an unclamped report.
                 depth: 3,
+                // The P&L's own depth: unlimited until someone slides it (plan 50 D8).
+                isDepth: null,
                 empty: false,
                 insStart: "2024-07-01",
                 insEnd: "2026-06-30",
@@ -66,7 +71,9 @@ describe("UNIT reports/ui/params", () => {
             expect(paramsToSearch({...DFLT, tab: "bs", interval: "quarterly", bsFrom: "2025-01-01"})).toBe(
                 "tab=bs&asof=2026-07-08&from=2025-01-01&interval=quarterly"
             );
+            // The P&L writes its depth only when one is set: absent is unlimited.
             expect(paramsToSearch({...DFLT, tab: "is", interval: "total"})).toBe("tab=is&from=2026-01-01&to=2026-12-31&interval=total");
+            expect(paramsToSearch({...DFLT, tab: "is", interval: "total", isDepth: 2})).toBe("tab=is&from=2026-01-01&to=2026-12-31&interval=total&depth=2");
             // Cash flow writes ITS OWN range as from/to, and no end or count.
             expect(paramsToSearch({...DFLT, tab: "cf"})).toBe("tab=cf&from=2025-08-01&to=2026-07-08&interval=monthly&depth=3");
             expect(paramsToSearch({...DFLT, tab: "nw"})).toBe("tab=nw&end=2026-07-08&interval=monthly&count=12&depth=3");
@@ -91,6 +98,7 @@ describe("UNIT reports/ui/params", () => {
                     interval: "quarterly",
                     count: 8,
                     depth: 3,
+                    isDepth: 4,
                 };
                 const parsed = searchToParams(paramsToSearch(params), DFLT);
                 const config = TAB_CONTROLS[tab];
@@ -102,7 +110,8 @@ describe("UNIT reports/ui/params", () => {
                 if (config.end) expect(parsed.end).toBe(params.end);
                 if (config.intervals.length > 0) expect(parsed.interval).toBe(params.interval);
                 if (config.count) expect(parsed.count).toBe(params.count);
-                if (config.depth) expect(parsed.depth).toBe(params.depth);
+                if (config.depth && tab === "is") expect(parsed.isDepth).toBe(params.isDepth);
+                else if (config.depth) expect(parsed.depth).toBe(params.depth);
             }
         });
 
@@ -147,23 +156,25 @@ describe("UNIT reports/ui/params", () => {
             expect(searchToParams("tab=is&from=2025-01-01&to=2025-06-30", DFLT).bsFrom).toBe(DFLT.bsFrom);
         });
 
-        it("still loads a bookmarked ?tab=is&depth=N, keeping the range it does honor", () => {
-            // Same posture, one tab further on. The range is what the P&L
-            // actually needs restoring, and it must survive the stale param
-            // beside it rather than being dropped with it.
+        it("reads a P&L link's depth as the P&L's own, never the shared one (plan 50 D8)", () => {
             const parsed = searchToParams("tab=is&from=2025-01-01&to=2025-06-30&depth=4", DFLT);
             expect(parsed.tab).toBe("is");
             expect([parsed.from, parsed.to]).toEqual(["2025-01-01", "2025-06-30"]);
-            expect(parsed.depth).toBe(4);
-            expect(paramsToSearch(parsed)).toBe("tab=is&from=2025-01-01&to=2025-06-30&interval=total");
+            expect(parsed.isDepth).toBe(4);
+            expect(parsed.depth).toBe(DFLT.depth);
+            expect(paramsToSearch(parsed)).toBe("tab=is&from=2025-01-01&to=2025-06-30&interval=total&depth=4");
+            // Absent or malformed: unlimited.
+            expect(searchToParams("tab=is&from=2025-01-01", DFLT).isDepth).toBeNull();
+            expect(searchToParams("tab=is&depth=deep", DFLT).isDepth).toBeNull();
+            // Another tab's depth never becomes the P&L's.
+            expect(searchToParams("tab=cf&depth=2", DFLT).isDepth).toBeNull();
         });
 
-        it("shows a depth slider on the period tabs and on neither statement", () => {
-            // The control is driven off this config, so this IS the assertion
-            // that the slider is gone from the P&L (`ReportControls` renders it
+        it("shows a depth slider on the period tabs and the P&L, not on the balance sheet", () => {
+            // The control is driven off this config (`ReportControls` renders it
             // `{#if config.depth}`).
             expect(TAB_CONTROLS.bs.depth).toBe(false);
-            expect(TAB_CONTROLS.is.depth).toBe(false);
+            expect(TAB_CONTROLS.is.depth).toBe(true);
             expect(TAB_CONTROLS.is.range).toBe(true);
             expect([TAB_CONTROLS.cf.depth, TAB_CONTROLS.nw.depth]).toEqual([true, true]);
         });
@@ -379,6 +390,13 @@ describe("UNIT hledger.conf depth defaults", () => {
         expect(confDepthDefault("cf", null)).toBeNull();
     });
 
+    it("seeds the P&L's depth from [incomestatement], clamped, or not at all", () => {
+        expect(confIsDepth(effective)).toBeNull();
+        expect(confIsDepth({...effective, incomestatement: {all: 2, perRegex: []}})).toBe(2);
+        expect(confIsDepth({...effective, incomestatement: {all: 0, perRegex: []}})).toBe(1);
+        expect(confIsDepth(null)).toBeNull();
+    });
+
     it("knows when a URL names its own depth", () => {
         expect(searchNamesDepth("?tab=cf&depth=2")).toBe(true);
         expect(searchNamesDepth("tab=cf")).toBe(false);
@@ -416,12 +434,30 @@ describe("UNIT reports/ui/params — the folded controls' summary", () => {
     it.each<[ReportTab, Partial<ReportParams>, string]>([
         ["bs", {interval: "total", asOf: "2026-07-08"}, "as of 2026-07-08 · Single date"],
         ["bs", {interval: "monthly", bsFrom: "2025-08-01", asOf: "2026-07-08"}, "2025-08-01 – 2026-07-08 · Monthly"],
-        ["is", {interval: "total", from: "2026-01-01", to: "2026-07-08"}, "2026-01-01 – 2026-07-08 · Total"],
+        ["is", {interval: "total", from: "2026-01-01", to: "2026-07-08"}, "2026-01-01 – 2026-07-08 · Total · all depths"],
+        ["is", {interval: "total", from: "2026-01-01", to: "2026-07-08", isDepth: 2, depth: 5}, "2026-01-01 – 2026-07-08 · Total · depth 2"],
         ["cf", {interval: "monthly", cfFrom: "2025-08-01", cfTo: "2026-07-08", depth: 2}, "2025-08-01 – 2026-07-08 · Monthly · depth 2"],
         ["nw", {interval: "yearly", count: 5, end: "2026-07-08", depth: 3}, "5 × yearly to 2026-07-08 · depth 3"],
         ["insights", {}, ""],
         ["subs", {}, ""],
     ])("%s %j reads %j", (tab, patch, summary) => {
         expect(at(tab, patch)).toBe(summary);
+    });
+});
+
+describe("UNIT reports/ui/params — the P&L's Depth slider (plan 50 D8)", () => {
+    const dflt = defaultReportParams("2026-07-08");
+
+    it("shows unlimited at the max, and a set depth as itself (capped at the max)", () => {
+        expect(isDepthShown({...dflt, isDepth: null}, 4)).toBe(4);
+        expect(isDepthShown({...dflt, isDepth: 2}, 4)).toBe(2);
+        expect(isDepthShown({...dflt, isDepth: 9}, 4)).toBe(4);
+        expect(isDepthShown({...dflt, isDepth: null}, 0)).toBe(1);
+    });
+
+    it("stores the max as unlimited, so a deeper journal still shows every account", () => {
+        expect(isDepthFromSlider(4, 4)).toBeNull();
+        expect(isDepthFromSlider(3, 4)).toBe(3);
+        expect(isDepthFromSlider(1, 4)).toBe(1);
     });
 });

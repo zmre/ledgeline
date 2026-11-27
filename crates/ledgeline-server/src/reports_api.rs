@@ -647,10 +647,15 @@ impl From<&DateRange> for WireDateRange {
     }
 }
 
-/// One account inside an expanded group.
+/// One outline row inside an expanded group (plan 50): `kind` is
+/// `"heading" | "account" | "other"`, `label` what to print, `level` the
+/// indent within the group, `account` the full path for hover.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WireIsRow {
+    kind: &'static str,
+    label: String,
+    level: usize,
     account: String,
     depth: usize,
     amounts: WireAmounts,
@@ -662,6 +667,9 @@ where
 {
     fn from(row: &IsRow<A>) -> Self {
         Self {
+            kind: outline_kind(row.kind),
+            label: row.label.clone(),
+            level: row.level,
             account: row.account.clone(),
             depth: row.depth,
             amounts: WireAmounts::from(&row.amounts),
@@ -798,6 +806,9 @@ pub(crate) struct WireIncomeStatementReport {
     /// Whether the GAAP ladder materialised — which is also what decides whether
     /// `opex` is titled "Expenses" or "Operating expenses".
     multi_step: bool,
+    /// The deepest member account's segment count, unclipped: the Depth
+    /// slider's max (plan 50 D8). `0` when the statement has no members.
+    max_depth: usize,
     /// Non-empty sections only, in ladder order.
     sections: Vec<WireIsSection>,
     net_income: WireAmounts,
@@ -820,6 +831,7 @@ impl WireIncomeStatementReport {
             base: report.base.as_ref().map(|base| base.0.clone()),
             value,
             multi_step: report.multi_step,
+            max_depth: report.max_depth,
             sections: report.sections.iter().map(WireIsSection::from).collect(),
             net_income: WireAmounts::from(&report.net_income),
             meta: WireReportMeta::from(&report.meta),
@@ -3296,6 +3308,9 @@ pub(crate) struct IncomeStatementGroupedQuery {
     /// `weekly`). Anything but `total` reports one column per bucket across
     /// `[from, to]` plus their Total.
     interval: Option<String>,
+    /// Clip each group's rows to this many account segments (plan 50 D8),
+    /// `hledger is --depth N`. Absent = unlimited; `0` = no rows (totals only).
+    depth: Option<usize>,
 }
 
 /// `?from=&to=&valueIn=` for the income statement's flow graphs.
@@ -3772,6 +3787,14 @@ pub(crate) async fn incomestatement(
 ///   of the columns. Interval mode has no comparison, so `compare` must be
 ///   absent or `none` (`previous` is a `400`), and the range may not be
 ///   backwards or span more than `MAX_BUCKETS` columns.
+/// - `depth=N` (default: unlimited) — clip each group's outline rows to `N`
+///   account segments, as `hledger is --depth N` (plan 50 D8). Totals never
+///   move. The response's `maxDepth` is the deepest member account, the
+///   slider's max.
+///
+/// Each group's `rows` are its readable outline (plan 50): `{kind, label,
+/// level, account, depth, amounts}`, headings where two or more rows share an
+/// ancestor, labels from the account's own `name:` tag or its last segment.
 ///
 /// An untagged journal gets two boxes and a Net income figure, with no ladder at
 /// all; `sections` carries only the boxes that have members, so there are never
@@ -3810,6 +3833,7 @@ pub(crate) async fn incomestatement_grouped(
         check_range(&from, &to, grain)?;
     }
     let raw_value_in = query.value_in;
+    let depth = query.depth;
 
     compute(move || {
         let journal = &snapshot.journal;
@@ -3817,6 +3841,7 @@ pub(crate) async fn incomestatement_grouped(
             declared,
             is_sections: sections,
             is_groups: groups,
+            names,
             ..
         } = StatementShape::of(journal);
         // The admission test asks about exactly the windows the statement will
@@ -3852,7 +3877,8 @@ pub(crate) async fn incomestatement_grouped(
             value,
             value_in,
             compare,
-            depth: None,
+            depth,
+            names: &names,
         };
         Ok(match grain {
             None => WireIncomeStatementReport::new(

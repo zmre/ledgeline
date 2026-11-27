@@ -1791,6 +1791,7 @@ impl Parity {
                 value_in: self.forecast.target.clone(),
                 compare: false,
                 depth: None,
+                names: &declared_groups(&self.journal, "name"),
             },
             self.cadence.interval,
             &self.declared,

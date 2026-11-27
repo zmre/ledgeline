@@ -383,6 +383,9 @@ interface RawAmounts {
 }
 
 interface RawIsRow {
+    kind?: string;
+    label?: string;
+    level?: number;
     account?: string;
     depth?: number;
     amounts?: RawAmounts;
@@ -429,6 +432,7 @@ interface RawIncomeStatementReport {
     sections?: RawIsSection[];
     netIncome?: RawAmounts;
     multiStep?: boolean;
+    maxDepth?: number;
     meta?: RawReportMeta | null;
 }
 
@@ -1979,6 +1983,12 @@ export function decodeBalanceSheetColumns(raw: unknown): BalanceSheetColumns {
 const IS_SECTION_KINDS: readonly IsSectionKind[] = ["revenue", "cogs", "opex", "depreciation", "interest", "tax", "other"];
 const IS_SUBTOTAL_KINDS: readonly IsSubtotalKind[] = ["grossProfit", "ebitda", "operatingIncome", "pretaxIncome"];
 
+/** `maxDepth`: required, a non-negative integer — the P&L's Depth slider is sized by it. */
+function decodeIsMaxDepth(raw: number | undefined): number {
+    if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0) throw new ApiShapeError("income statement maxDepth: expected a non-negative integer");
+    return raw;
+}
+
 /**
  * Which figures every `Amounts` in an income statement must carry, read once
  * off the report's two switches: `prior` (a window → every figure has a prior)
@@ -2036,7 +2046,12 @@ function decodeIsRow(raw: RawIsRow | undefined, context: string, mode: AmountsMo
     if (raw === undefined || typeof raw.account !== "string" || typeof raw.depth !== "number") {
         throw new ApiShapeError(`${context}: missing account/depth`);
     }
-    return Object.freeze({account: raw.account, depth: raw.depth, amounts: decodeAmounts(raw.amounts, `${context} amounts`, mode)});
+    return Object.freeze({
+        ...decodeOutlineFields(raw, context),
+        account: raw.account,
+        depth: raw.depth,
+        amounts: decodeAmounts(raw.amounts, `${context} amounts`, mode),
+    });
 }
 
 function decodeIsGroup(raw: RawIsGroup | undefined, context: string, mode: AmountsMode): IsGroup {
@@ -2145,6 +2160,7 @@ export function decodeIncomeStatementReport(raw: unknown): IncomeStatementReport
         // Required, not defaulted: it decides whether `opex` reads "Expenses" or
         // "Operating expenses", so a missing one would silently relabel a box.
         multiStep: decodeBoolean(report.multiStep, "income statement multiStep"),
+        maxDepth: decodeIsMaxDepth(report.maxDepth),
     };
     // Omitted (`skip_serializing_if = "Option::is_none"`) when nothing is unpriced.
     if (report.meta !== undefined && report.meta !== null) {

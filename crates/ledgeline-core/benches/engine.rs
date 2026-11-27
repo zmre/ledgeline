@@ -1049,6 +1049,7 @@ fn full_scan_run(fx: &Fixture, scenario: &Scenario) -> usize {
             value_in: forecast.target.clone(),
             compare: false,
             depth: None,
+            names: &std::collections::BTreeMap::new(),
         },
         window.interval,
         &declared,

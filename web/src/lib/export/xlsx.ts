@@ -43,7 +43,7 @@ import type {
     SectionedReport,
 } from "#lib/reports/types.js";
 import {asColumns, bsColumnSummaries, columnSectionRows} from "#lib/reports/ui/balanceSheetRows.js";
-import {compressIsRows, compressPeriodRows, compressSectionRows} from "#lib/reports/ui/displayRows.js";
+import {compressPeriodRows, compressSectionRows} from "#lib/reports/ui/displayRows.js";
 import {cfDisplayModel, type CfDisplayRow} from "#lib/reports/ui/cashFlowRows.js";
 import {amountsPct, isSummary} from "#lib/reports/ui/incomeStatementRows.js";
 import {periodTable} from "#lib/reports/ui/periodTable.js";
@@ -553,11 +553,13 @@ function addIncomeStatement(ws: Worksheet, report: IncomeStatementReport, cols: 
             labelCell(ws, rowIx, group.name, 1, true);
             setIsAmounts(ws, rowIx, cols, group.total, pct(group.total), base, true);
             rowIx += 1;
-            // The same compression the screen applies, so a single-child chain is
-            // one row in both places.
-            for (const {label, indent, row} of compressIsRows(group.rows)) {
-                labelCell(ws, rowIx, label, indent + 2);
-                setIsAmounts(ws, rowIx, cols, row.amounts, pct(row.amounts), base, false);
+            // The engine's outline (plan 50), exactly as the screen indents it:
+            // a heading prints its label and no figure, and every label carries
+            // its full account path as a cell note (the screen's hover).
+            for (const row of group.rows) {
+                labelCell(ws, rowIx, row.label, row.level + 2);
+                ws.getCell(rowIx, cols.label).note = row.account;
+                if (row.kind !== "heading") setIsAmounts(ws, rowIx, cols, row.amounts, pct(row.amounts), base, false);
                 rowIx += 1;
             }
         }

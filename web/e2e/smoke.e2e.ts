@@ -141,13 +141,13 @@ test("reports: balance sheet shows known fixture numbers", async ({page}) => {
     await expect(page.getByTestId("bs-check")).toHaveCount(0);
 
     // No depth slider on this tab: groups are the reading and the accounts under
-    // one are a drill-down, so the clamp had nothing left to say. It is still on
-    // the tabs whose tables it does move — but the P&L is no longer one of them
-    // (plans/13), so Cash Flow is what proves the control still exists at all.
+    // one are a drill-down, so the clamp had nothing left to say. It is on the
+    // tabs whose tables it does move — the P&L again since plan 50 D8, whose
+    // outline rows it folds — and on Cash Flow.
     const depthSlider = page.locator('input[aria-label="Account depth"]');
     await expect(depthSlider).toHaveCount(0);
     await page.getByRole("tab", {name: "P&L"}).click();
-    await expect(depthSlider).toHaveCount(0);
+    await expect(depthSlider).toHaveCount(1);
     await page.getByRole("tab", {name: "Cash Flow"}).click();
     await expect(depthSlider).toHaveCount(1);
 });
@@ -426,8 +426,7 @@ test("reports: the net worth tooltip names the segment under the pointer, else t
 test("reports: P&L groups start collapsed and open to their accounts", async ({page}) => {
     // The range the plan's ground-truth table pins, rather than the default
     // calendar year, so the figures below are the ones hledger printed for it.
-    // No `depth`: the tab has no such control any more and asks the engine for an
-    // unclamped report, so the URL carries nothing about it.
+    // No `depth`: absent is the P&L's unlimited default (plan 50 D8).
     await page.goto("/reports?tab=is&from=2026-01-01&to=2026-07-08");
 
     const expenses = page.getByTestId("is-section-opex");
@@ -447,12 +446,15 @@ test("reports: P&L groups start collapsed and open to their accounts", async ({p
     await expect(page.locator('[data-account="expenses:food:groceries"]')).toContainText("$1,272.50");
     await expect(page.locator('[data-account="expenses:food:restaurants"]')).toContainText("$381.88");
 
-    // Full depth, and single-child chains folded exactly as every other report
-    // table folds them: `expenses:housing` holds nothing itself, so the pair
-    // renders as one `expenses:housing:rent` row.
+    // Full depth, as the engine's readable outline (plan 50): rows are labelled
+    // by their own segment with the full path on hover, and Housing's lone
+    // account prints as one `Rent` row with no heading over it.
+    await expect(page.locator('[data-account="expenses:food:groceries"] th span')).toHaveText("Groceries");
+    await expect(page.locator('[data-account="expenses:food:groceries"] th span')).toHaveAttribute("title", "expenses:food:groceries");
     const housing = expenses.getByRole("button", {name: "Housing"});
     await housing.click();
     await expect(page.locator('[data-account="expenses:housing:rent"]')).toContainText("$13,125.00");
+    await expect(page.locator('[data-account="expenses:housing:rent"] th span')).toHaveText("Rent");
     await expect(page.locator('[data-account="expenses:housing"]')).toHaveCount(0);
 
     // A group that ran in only ONE window still appears, with an explicit zero on
@@ -461,6 +463,19 @@ test("reports: P&L groups start collapsed and open to their accounts", async ({p
     const unknownRow = page.locator('[data-is-row="opex/Unknown"]');
     await expect(unknownRow).toContainText("$75.00");
     await expect(unknownRow).toContainText("$0.00");
+});
+
+test("reports: P&L depth folds a group's accounts into their ancestor row", async ({page}) => {
+    // `depth=2` is `hledger is --depth 2`: Food's two accounts fold into one
+    // `expenses:food` row carrying the whole subtree, and the totals stay put.
+    await page.goto("/reports?tab=is&from=2026-01-01&to=2026-07-08&depth=2");
+
+    const expenses = page.getByTestId("is-section-opex");
+    await expenses.getByRole("button", {name: "Food"}).click();
+    await expect(page.locator('[data-account="expenses:food"]')).toContainText("$1,654.38");
+    await expect(page.locator('[data-account="expenses:food:groceries"]')).toHaveCount(0);
+    await expect(expenses.locator("tfoot")).toContainText("$28,626.48");
+    await expect(page.locator('input[aria-label="Account depth"]')).toHaveValue("2");
 });
 
 test("reports: balance-sheet groups start collapsed and open to their accounts", async ({page}) => {

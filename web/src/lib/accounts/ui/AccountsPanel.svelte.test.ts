@@ -100,8 +100,9 @@ describe("COMPONENT AccountsPanel", () => {
         expect(screen.getByLabelText("Cash flow section")).toBeDefined();
         expect(screen.getByLabelText("Cash flow line")).toBeDefined();
         expect(screen.getByLabelText("Startup metric role")).toBeDefined();
-        // Ten special tags (plan 37 added `kpi`), plus the Clearing account checkbox (plan 35 D2).
-        expect(screen.getAllByLabelText(/^About /).length).toBe(11);
+        expect(screen.getByLabelText("Display name")).toBeDefined();
+        // Eleven special tags (plan 37 added `kpi`, plan 50 `name`), plus the Clearing account checkbox (plan 35 D2).
+        expect(screen.getAllByLabelText(/^About /).length).toBe(12);
     });
 
     it("lets a brand-new name (known to nothing else) be added and edited", async () => {

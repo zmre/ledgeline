@@ -13,7 +13,12 @@ import {decodeIncomeStatementReport} from "#lib/api/nativeDecode.js";
 import {dec, type MixedAmount} from "#lib/domain/money.js";
 import {fmt} from "#lib/format/amounts.js";
 import type {IncomeStatementReport, IsSection} from "#lib/reports/types.js";
-import {GROUPED_INCOME_STATEMENT, MULTI_STEP_INCOME_STATEMENT, UNCOMPARED_INCOME_STATEMENT} from "#lib/testing/incomeStatementFixture.js";
+import {
+    GROUPED_INCOME_STATEMENT,
+    MULTI_STEP_INCOME_STATEMENT,
+    OUTLINED_INCOME_STATEMENT,
+    UNCOMPARED_INCOME_STATEMENT,
+} from "#lib/testing/incomeStatementFixture.js";
 import {amountsPct, fmtPct, isCursorRows, isDisplayModel, isGroupKey, isSummary, pctChange, sectionDisplayRows} from "./incomeStatementRows";
 
 const REPORT = decodeIncomeStatementReport(GROUPED_INCOME_STATEMENT);
@@ -52,8 +57,8 @@ describe("UNIT reports/ui/incomeStatementRows — sectionDisplayRows", () => {
         // the claim here is about Food's subtotal rather than about the first row.
         const food = rowsOf(EXPENSES, NONE).find((r) => r.label === "Food");
 
-        expect(food?.amounts.current.get("$")).toEqual({m: 165438n, p: 2});
-        expect(food?.amounts.prior?.get("$")).toEqual({m: 154635n, p: 2});
+        expect(food?.amounts?.current.get("$")).toEqual({m: 165438n, p: 2});
+        expect(food?.amounts?.prior?.get("$")).toEqual({m: 154635n, p: 2});
         expect(food?.account).toBeNull(); // a group heading is not an account
     });
 
@@ -66,21 +71,20 @@ describe("UNIT reports/ui/incomeStatementRows — sectionDisplayRows", () => {
 
         // Groups sort by name, so Dividends leads — see the fixture's note.
         expect(rows.map((r) => r.account)).toEqual([null, "income:dividends", null, "income:salary"]);
-        expect(rows.filter((r) => r.amounts.current.get("$")?.m === 3401000n)).toEqual([]);
+        expect(rows.filter((r) => r.amounts?.current.get("$")?.m === 3401000n)).toEqual([]);
     });
 
     it("expands one group without expanding its neighbours", () => {
         const rows = rowsOf(EXPENSES, only(isGroupKey("opex", "Food")));
 
-        // Labels are relative to the displayed PARENT, as in every other report
-        // table: the group's own root keeps its full path, its children are named
-        // by the segments below it.
+        // Labels are the engine's outline labels (plan 50): the group's
+        // accounts by their own humanized segment, no `expenses:food` path and
+        // no Food heading repeating the group's own name.
         expect(rows.map((r) => r.label)).toEqual([
             "Depreciation",
             "Food",
-            "expenses:food",
-            "groceries",
-            "restaurants",
+            "Groceries",
+            "Restaurants",
             "Housing",
             "Taxes",
             "Transport",
@@ -92,20 +96,41 @@ describe("UNIT reports/ui/incomeStatementRows — sectionDisplayRows", () => {
         // either side of it, which is the claim — expanding one opens exactly one.
         expect(rows[1].expanded).toBe(true);
         expect(rows[0].expanded).toBe(false);
-        expect(rows[5].expanded).toBe(false);
-        expect(rows[5].kind).toBe("group"); // the neighbour is still just its heading
+        expect(rows[4].expanded).toBe(false);
+        expect(rows[4].kind).toBe("group"); // the neighbour is still just its heading
     });
 
-    it("compresses single-child chains, testing BOTH periods before folding one", () => {
-        // `expenses:housing` has one child and the same figure in both windows, so
-        // the pair reads as one row rather than two lines carrying an identical
-        // balance. Folding on the current period alone would drop a parent that
-        // had postings of its own in the prior one.
+    it("prints a lone child as one row, labelled by the engine, its path kept for hover", () => {
+        // `expenses:housing:rent` is Housing's only account: the engine's
+        // outline sends one `Rent` row and no heading, and this adds nothing.
         const rows = rowsOf(EXPENSES, only(isGroupKey("opex", "Housing")));
         const accounts = rows.filter((r) => r.kind === "account");
 
         expect(accounts.map((r) => r.account)).toEqual(["expenses:housing:rent"]);
-        expect(accounts[0].label).toBe("expenses:housing:rent");
+        expect(accounts[0].label).toBe("Rent");
+        expect(accounts[0].indent).toBe(1);
+    });
+
+    it("indents by the engine's level, and gives a heading no figure", () => {
+        const outlined = decodeIncomeStatementReport(OUTLINED_INCOME_STATEMENT);
+        const opex = outlined.sections[1];
+        const rows = rowsOf(opex, only(isGroupKey("opex", "Travel")), outlined).filter((r) => r.kind !== "group");
+
+        expect(rows.map((r) => [r.kind, r.label, r.indent])).toEqual([
+            ["account", "Flights", 1],
+            ["heading", "Lodging", 1],
+            ["account", "Lodging (other)", 2],
+            ["account", "Hotels", 2],
+        ]);
+        // A heading prints its label only (plan 50 D4): no figure, no change.
+        const heading = rows[1];
+        expect(heading.amounts).toBeNull();
+        expect(heading.pct).toBeNull();
+        expect(heading.account).toBe("expenses:travel:lodging");
+        // The heading and its `(other)` row share an account; their keys do not.
+        expect(rows[2].account).toBe(heading.account);
+        expect(rows[2].key).not.toBe(heading.key);
+        expect(rows[2].amounts?.current.get("$")).toEqual({m: 4360n, p: 2});
     });
 
     it("keeps a row that exists in only one period, with an explicit zero on the other side", () => {
@@ -115,10 +140,10 @@ describe("UNIT reports/ui/incomeStatementRows — sectionDisplayRows", () => {
         // `MixedAmount` is what "nothing here" looks like on the wire.
         const accounts = rowsOf(EXPENSES, only(isGroupKey("opex", "Travel"))).filter((r) => r.kind === "account");
 
-        expect(accounts.map((r) => r.account)).toEqual(["expenses:travel", "expenses:travel:activities", "expenses:travel:flights", "expenses:travel:lodging"]);
+        expect(accounts.map((r) => r.account)).toEqual(["expenses:travel:activities", "expenses:travel:flights", "expenses:travel:lodging"]);
         const flights = accounts.find((r) => r.account === "expenses:travel:flights");
-        expect(flights?.amounts.current.get("$")).toEqual({m: 41280n, p: 2});
-        expect(flights?.amounts.prior?.size).toBe(0);
+        expect(flights?.amounts?.current.get("$")).toEqual({m: 41280n, p: 2});
+        expect(flights?.amounts?.prior?.size).toBe(0);
     });
 
     it("indents account rows beneath their group", () => {
@@ -358,7 +383,7 @@ describe("UNIT reports/ui/incomeStatementRows — isSummary", () => {
         expect(isSummary(uncompared).netIncome.prior).toBeUndefined();
         // Absent, never a zero: a zero would be a claim about a period that was
         // never computed.
-        expect(isCursorRows(isDisplayModel(uncompared, ALL)).every((r) => r.amounts.prior === undefined)).toBe(true);
+        expect(isCursorRows(isDisplayModel(uncompared, ALL)).every((r) => r.amounts?.prior === undefined)).toBe(true);
     });
 
     it("hands the model the very same object, so the panel and the workbook cannot diverge", () => {
@@ -440,7 +465,7 @@ describe("UNIT reports/ui/incomeStatementRows — interval mode", () => {
 
     it("gives every line one figure per bucket, its Total the same net income as the Total statement", () => {
         const model = isDisplayModel(MONTHLY, ALL);
-        expect(isCursorRows(model).every((r) => r.amounts.values?.length === 7)).toBe(true);
+        expect(isCursorRows(model).every((r) => r.amounts === null || r.amounts.values?.length === 7)).toBe(true);
         // Market-valued, but nothing on this journal is revalued between the
         // month ends and the range's end, so the sum of the months IS the
         // whole-range figure: $5,383.52.

@@ -273,6 +273,7 @@ fn statement_side_labels_are_the_statements_own_lines() {
                 value_in: None,
                 compare: true,
                 depth: None,
+                names: &declared_groups(&journal, "name"),
             },
             &declared_types(&account_decls(&journal)),
             &account_sections(&journal),

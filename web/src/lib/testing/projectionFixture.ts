@@ -230,7 +230,7 @@ export function journalFixture(n = 2): ForecastJournal {
 // ---------------------------------------------------------------------------
 
 /** The per-column arrays of a decoded report: re-picked, and a picked column in the second half keyed `projected:`. */
-// MERGE SEAM (plan 50 WP4): `amount` is the balance sheet outline row's per-column figure.
+// Plan 50: `amount` is the balance sheet outline row's per-column figure.
 const COLUMN_ARRAYS = new Set(["buckets", "columns", "periods", "values", "own", "inclusive", "amount", "total", "totals", "netWorth", "check", "balanced"]);
 
 /**

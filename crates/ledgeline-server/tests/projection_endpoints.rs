@@ -2717,10 +2717,10 @@ fn expense_line(id: &str, account: &str, mantissa: &str) -> Value {
 /// **A line on a PARENT beside lines on its leaves.** The seed starts at the
 /// page's depth, but after that a user may write a line at any level — here
 /// `expenses:food` itself, whose own history is empty, beside a line on its
-/// child `expenses:food:groceries`. The statements must show the parent as a
-/// row of its own under the Expenses group, reading as its subtree, with the
-/// child's row beneath it, and classify both as expenses (the parent is undeclared, so its
-/// type is inferred from `expenses`'s declared `type: X`).
+/// child `expenses:food:groceries`. The statements must show the parent's own
+/// postings as a row of their own in the Food group, beside the child's row,
+/// and classify both as expenses (the parent is undeclared, so its type is
+/// inferred from `expenses`'s declared `type: X`).
 #[tokio::test]
 async fn a_line_on_a_parent_account_is_its_own_row_beside_its_children() {
     let projection = run(json!({
@@ -2746,12 +2746,13 @@ async fn a_line_on_a_parent_account_is_its_own_row_beside_its_children() {
         .iter()
         .find(|group| group["name"] == "Food")
         .unwrap_or_else(|| panic!("a Food group: {section}"));
-    let rows: Vec<(String, u64, Vec<i128>)> = food["rows"]
+    let rows: Vec<(String, String, u64, Vec<i128>)> = food["rows"]
         .as_array()
         .expect("rows")
         .iter()
         .map(|row| {
             (
+                row["kind"].as_str().expect("kind").to_string(),
                 row["account"].as_str().expect("account").to_string(),
                 row["depth"].as_u64().expect("depth"),
                 row["amounts"]["values"]
@@ -2763,17 +2764,26 @@ async fn a_line_on_a_parent_account_is_its_own_row_beside_its_children() {
             )
         })
         .collect();
-    // The parent keeps a row of its own, and the child's $200 sits beneath it
-    // one level down — neither folded into the other nor lost. The parent's row
-    // reads as its whole SUBTREE, its own $300 plus the $200 beneath it, as
-    // `hledger is --tree` and the balance sheet both print a parent (2026-10-28:
-    // per-person wage lines under `wages-salaries` left that row at zero when
-    // a row held only its own postings).
+    // The parent's own $300 keeps a row of its own, beside the child's $200 —
+    // neither folded into the other nor lost. It is the readable outline's
+    // `(other)` row (plan 50 D5): the Food group's heading already names the
+    // parent, so its own postings print as "Food (other)" and the rows add up
+    // to the group total.
     assert_eq!(
         rows,
         [
-            ("expenses:food".to_string(), 2, vec![500, 500]),
-            ("expenses:food:groceries".to_string(), 3, vec![200, 200]),
+            (
+                "other".to_string(),
+                "expenses:food".to_string(),
+                2,
+                vec![300, 300]
+            ),
+            (
+                "account".to_string(),
+                "expenses:food:groceries".to_string(),
+                3,
+                vec![200, 200]
+            ),
         ],
         "{food}"
     );
@@ -2784,8 +2794,8 @@ async fn a_line_on_a_parent_account_is_its_own_row_beside_its_children() {
 
 /// **The page's depth slider reaches the income statement** (2026-10-28: it
 /// changed nothing there). At depth 2 the child folds into its parent, as
-/// `hledger is --depth 2` prints it; at depth 3 it is its own row again. The
-/// group total is the same either way.
+/// `hledger is --depth 2` prints it; at depth 3 it is its own row again, beside
+/// the parent's own postings. The group total is the same either way.
 #[tokio::test]
 async fn the_depth_slider_clips_the_income_statement_rows() {
     let food_rows = |depth: u64| async move {
@@ -2831,10 +2841,11 @@ async fn the_depth_slider_clips_the_income_statement_rows() {
         food_rows(2).await,
         [("expenses:food".to_string(), vec![500, 500])]
     );
+    // At depth 3 the parent's own postings are its `(other)` row (plan 50 D5).
     assert_eq!(
         food_rows(3).await,
         [
-            ("expenses:food".to_string(), vec![500, 500]),
+            ("expenses:food".to_string(), vec![300, 300]),
             ("expenses:food:groceries".to_string(), vec![200, 200]),
         ]
     );

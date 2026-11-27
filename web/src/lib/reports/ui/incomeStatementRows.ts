@@ -19,13 +19,16 @@
 
 import {EM_DASH} from "#lib/format/amounts.js";
 import type {Amounts, IncomeStatementReport, IsBucket, IsSection, IsSectionKind, IsSubtotalKind} from "#lib/reports/types.js";
-import {compressIsRows} from "./displayRows";
 import {pctChange} from "./percent";
 
 export {amountCell, type AmountCell} from "./amountCell";
 
-/** A group heading (always shown) or one of its accounts (only when expanded). */
-export type IsRowKind = "group" | "account";
+/**
+ * A group heading (always shown), or one of its outline rows (only when the
+ * group is expanded): an outline `heading` (label only, no figure) or an
+ * `account` (an account, a depth-clipped ancestor, or a heading's `(other)`).
+ */
+export type IsRowKind = "group" | "heading" | "account";
 
 export interface IsDisplayRow {
     kind: IsRowKind;
@@ -36,14 +39,21 @@ export interface IsDisplayRow {
      * refetch replaces the report with an equal-but-not-identical one.
      */
     key: string;
-    /** The group's name, or the compressed account label relative to its displayed parent. */
+    /** The group's name, or the engine's outline label (own `name:` tag, else a humanized segment). */
     label: string;
-    /** 0 for a group heading; 1 + the compression indent for its accounts. */
+    /** 0 for a group heading; 1 + the outline `level` for the rows inside it. */
     indent: number;
-    /** The account this row stands for — `data-account` and the journal drill-down. Null for a group. */
+    /**
+     * The full account path this row stands for — the label's hover text,
+     * `data-account` and the journal drill-down. Null for a group.
+     */
     account: string | null;
-    /** The figure(s) on the right: current, plus the prior period's when comparing, or one per bucket in interval mode. */
-    amounts: Amounts;
+    /**
+     * The figure(s) on the right: current, plus the prior period's when
+     * comparing, or one per bucket in interval mode. Null on an outline
+     * heading, which prints no amount (plan 50 D4): the group's Total says it.
+     */
+    amounts: Amounts | null;
     /** This line's % change against the prior period, or null when there is none (see `pctChange`). */
     pct: number | null;
     /** Group rows: whether the disclosure is currently open. Always false for an account row. */
@@ -151,11 +161,11 @@ export function fmtPct(pct: number | null): string {
 
 /**
  * One section's visible rows, in visual order: every group heading, each
- * followed by its accounts when it is expanded.
+ * followed by its outline rows when it is expanded.
  *
- * Account rows go through `compressIsRows`, so a single-child chain
- * (`expenses:housing` → `expenses:housing:rent`) reads as one row here exactly
- * as it does in every other report table.
+ * The outline is the engine's (plan 50): it decides headings, labels and
+ * levels, so a lone child already reads as one row and nothing here
+ * compresses or relabels anything. This only indents and keys.
  */
 export function sectionDisplayRows(section: IsSection, isExpanded: (key: string) => boolean, base: string | null): IsDisplayRow[] {
     const out: IsDisplayRow[] = [];
@@ -175,15 +185,18 @@ export function sectionDisplayRows(section: IsSection, isExpanded: (key: string)
             expandable,
         });
         if (!expanded) continue;
-        for (const display of compressIsRows(group.rows)) {
+        for (const row of group.rows) {
+            const heading = row.kind === "heading";
             out.push({
-                kind: "account",
-                key: `${key}/${display.row.account}`,
-                label: display.label,
-                indent: display.indent + 1,
-                account: display.row.account,
-                amounts: display.row.amounts,
-                pct: amountsPct(display.row.amounts, base),
+                kind: heading ? "heading" : "account",
+                // A heading with its own postings shares its account with its
+                // `(other)` row, so that one is told apart by a suffix.
+                key: `${key}/${row.account}${row.kind === "other" ? "#other" : ""}`,
+                label: row.label,
+                indent: row.level + 1,
+                account: row.account,
+                amounts: heading ? null : row.amounts,
+                pct: heading ? null : amountsPct(row.amounts, base),
                 expanded: false,
                 expandable: false,
             });

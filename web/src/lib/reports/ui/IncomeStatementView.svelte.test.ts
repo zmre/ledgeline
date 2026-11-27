@@ -17,7 +17,12 @@ import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {decodeIncomeStatementReport} from "#lib/api/nativeDecode.js";
 import type {AmountStyle} from "#lib/domain/types.js";
 import {keymap} from "#ui/keys/keymap.svelte.js";
-import {GROUPED_INCOME_STATEMENT, MULTI_STEP_INCOME_STATEMENT, UNCOMPARED_INCOME_STATEMENT} from "#lib/testing/incomeStatementFixture.js";
+import {
+    GROUPED_INCOME_STATEMENT,
+    MULTI_STEP_INCOME_STATEMENT,
+    OUTLINED_INCOME_STATEMENT,
+    UNCOMPARED_INCOME_STATEMENT,
+} from "#lib/testing/incomeStatementFixture.js";
 import {expectSharedGrid} from "#lib/testing/statementGrid.js";
 import IncomeStatementView from "./IncomeStatementView.svelte";
 
@@ -123,25 +128,42 @@ describe("COMPONENT IncomeStatementView", () => {
     });
 
     describe("expanding a group", () => {
-        it("reveals its accounts at full depth, each tagged with its account name", async () => {
+        it("reveals its outline rows by label, each tagged with and hovering its full account path", async () => {
             const {container} = mount();
             disclosure("Food").click();
             await tick();
 
-            const accounts = [...container.querySelectorAll("[data-account]")].map((el) => el.getAttribute("data-account"));
-            expect(accounts).toEqual(["expenses:food", "expenses:food:groceries", "expenses:food:restaurants"]);
+            const rows = [...container.querySelectorAll("[data-account]")];
+            expect(rows.map((el) => el.getAttribute("data-account"))).toEqual(["expenses:food:groceries", "expenses:food:restaurants"]);
+            expect(rows.map((el) => el.querySelector("th span")?.textContent?.trim())).toEqual(["Groceries", "Restaurants"]);
+            expect(rows.map((el) => el.querySelector("th span")?.getAttribute("title"))).toEqual(["expenses:food:groceries", "expenses:food:restaurants"]);
             expect(disclosure("Food").getAttribute("aria-expanded")).toBe("true");
         });
 
-        it("folds a single-child chain into one row, as every other report table does", async () => {
+        it("prints a lone child as one row, with no heading over it", async () => {
             const {container} = mount();
             disclosure("Housing").click();
             await tick();
 
-            // `expenses:housing` has one child and the same figure in both
-            // windows, so the pair is one row carrying the child's account name.
             expect(container.querySelector('[data-account="expenses:housing:rent"]')).not.toBeNull();
             expect(container.querySelector('[data-account="expenses:housing"]')).toBeNull();
+        });
+
+        it("indents by level and prints a heading's label with empty figure cells", async () => {
+            const {container} = mount(decodeIncomeStatementReport(OUTLINED_INCOME_STATEMENT));
+            disclosure("Travel").click();
+            await tick();
+
+            const rows = [...container.querySelectorAll('[data-account^="expenses:travel"]')];
+            const label = (el: Element) => el.querySelector("th span") as HTMLElement | null;
+            expect(rows.map((el) => label(el)?.textContent?.trim())).toEqual(["Flights", "Lodging", "Lodging (other)", "Hotels"]);
+            expect(rows.map((el) => label(el)?.style.paddingLeft)).toEqual(["1rem", "1rem", "2rem", "2rem"]);
+            // The heading: its label, then the same number of cells as its
+            // neighbours, all empty — the group's Total already counts its subtree.
+            const heading = rows[1];
+            expect(label(heading)?.getAttribute("title")).toBe("expenses:travel:lodging");
+            expect([...heading.querySelectorAll("td")].map((td) => td.textContent?.trim())).toEqual([""]);
+            expect(rows[3].querySelector("td")?.textContent).toContain("200.00");
         });
 
         it("keeps the rows clear of the sticky chrome the cursor scrolls them under", async () => {

@@ -82,7 +82,8 @@ export function incomeStatementCompareRows(report: IncomeStatementReport): Compa
     });
     for (const box of model.boxes) {
         rows.push(heading(box.title));
-        for (const row of box.rows) rows.push(line(row.label, row.indent + 1, row.kind === "group", row.amounts.values ?? []));
+        // An outline heading (plan 50) has no figures: `null`, as a section heading row.
+        for (const row of box.rows) rows.push(line(row.label, row.indent + 1, row.kind === "group", row.amounts === null ? null : (row.amounts.values ?? [])));
         rows.push(line(`Total ${box.title}`, 0, true, box.total.values ?? []));
         for (const subtotal of box.trailing) rows.push(line(subtotal.label, 0, true, subtotal.amounts.values ?? []));
     }

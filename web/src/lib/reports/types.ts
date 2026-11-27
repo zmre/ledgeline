@@ -292,8 +292,9 @@ export interface BalanceSheetColumns {
 //      prior period beside the current one.
 //   2. A section can trail SUBTOTALS (Gross profit, EBITDA, …), which print
 //      between the boxes rather than inside them.
-//   3. Rows carry one rolled-up figure, not the `own`/`inclusive` pair, so
-//      chain compression tests amounts rather than `own` (`compressIsRows`).
+//   3. Rows carry one figure, not the `own`/`inclusive` pair, and arrive as
+//      the engine's readable outline (plan 50): headings, labels and indent
+//      are decided in Rust, so nothing here compresses chains.
 //
 // `kind` is added by the decoder and is not on the wire. THREE report types now
 // carry a `sections` array (this one, `SectionedReport`, `BalanceSheetReport`),
@@ -380,8 +381,13 @@ export type IsSectionKind = "revenue" | "cogs" | "opex" | "depreciation" | "inte
  */
 export type IsSubtotalKind = "grossProfit" | "ebitda" | "operatingIncome" | "pretaxIncome";
 
-/** One account inside a group. `amounts` is the subaccount-INCLUSIVE roll-up. */
-export interface IsRow {
+/**
+ * One outline row inside a group (plan 50). `amounts` is the figure of the
+ * members the row stands for: a heading's or a depth-clipped account's whole
+ * subtree within the group, an `other` row's own postings. Headings print no
+ * amount; `account` is the full path, shown on hover.
+ */
+export interface IsRow extends OutlineFields {
     account: string;
     /** Number of `:`-separated segments in `account`. */
     depth: number;
@@ -392,7 +398,7 @@ export interface IsRow {
 export interface IsGroup {
     name: string;
     source: GroupSource;
-    /** Member rows, ancestors included and lexically sorted, so chain compression applies. */
+    /** Outline rows in display order: indent by `level`, headings carry no amount. */
     rows: IsRow[];
     /** Summed over MEMBERS, never over displayed rows, so collapsing a group cannot change it. */
     total: Amounts;
@@ -464,6 +470,8 @@ export interface IncomeStatementReport {
      * guessing that would relabel a box the engine had already named.
      */
     multiStep: boolean;
+    /** The deepest member account's segment count, unclipped: the Depth slider's max (plan 50 D8). 0 with no members. */
+    maxDepth: number;
     /** Present only when something noteworthy happened (commodities with no price to `base`). */
     meta?: ReportMeta;
 }

@@ -116,7 +116,11 @@
         for (const key of seedOpenGroups(
             seed,
             report.sections.flatMap((section) =>
-                section.groups.map((group) => ({key: isGroupKey(section.kind, group.name), accounts: group.rows.map((row) => row.account)}))
+                section.groups.map((group) => ({
+                    key: isGroupKey(section.kind, group.name),
+                    // The rows that print a figure: a heading only groups them.
+                    accounts: group.rows.filter((row) => row.kind !== "heading").map((row) => row.account),
+                }))
             ),
             depthSpec
         ))
@@ -146,7 +150,7 @@
         document.querySelector(`[data-is-row="${CSS.escape(String(cursor.key ?? ""))}"]`)?.scrollIntoView({block: "nearest"});
     }
 
-    /** Enter: open a group's disclosure, or drill a real account into the journal. */
+    /** Enter: open a group's disclosure, or drill an outline row's account (a heading's whole subtree) into the journal. */
     function activate(): void {
         const row = cursor.item;
         if (row === null) return;
@@ -255,6 +259,20 @@
             <td class="w-32 text-right align-top font-mono whitespace-nowrap text-muted tabular-nums">{@render amount(cell(amounts.prior), "")}</td>
             <td class="w-20 text-right align-top font-mono whitespace-nowrap text-muted tabular-nums" data-column="pct">{fmtPct(pct)}</td>
         {/if}
+    {/if}
+{/snippet}
+
+<!-- An outline heading's figure cells: empty, one per column, so the row's
+     cells (and the projected divider) line up with every other row. A heading
+     prints no amount (plan 50 D4); the group's Total says it. -->
+{#snippet blankFigures()}
+    {#if buckets !== null}
+        {#each buckets as bucket, i (bucket.key)}
+            <td class="w-28 min-w-28 {projectedEdge(i, edgeAt)}"></td>
+        {/each}
+        <td colspan={versus ? 2 : 1}></td>
+    {:else}
+        <td colspan={comparing ? 3 : 1}></td>
     {/if}
 {/snippet}
 
@@ -392,14 +410,21 @@
                                                     </span>
                                                 {/if}
                                             {:else}
-                                                <!-- Inline padding, not a class: the depth is data, and `ReportTable`
-                                         indents its own rows the same way (1rem per level). -->
-                                                <span class="whitespace-nowrap text-muted" style="padding-left: {row.indent}rem" title={row.account}
-                                                    >{row.label}</span
+                                                <!-- Inline padding, not a class: the level is data, and `ReportTable`
+                                         indents its own rows the same way (1rem per level). The label is the
+                                         engine's outline label; the full path is on hover (plan 50 D6). -->
+                                                <span
+                                                    class="whitespace-nowrap {row.kind === 'heading' ? '' : 'text-muted'}"
+                                                    style="padding-left: {row.indent}rem"
+                                                    title={row.account}>{row.label}</span
                                                 >
                                             {/if}
                                         </th>
-                                        {@render figures(row.amounts, row.pct, row.kind === "group" ? "font-medium" : "text-muted")}
+                                        {#if row.amounts === null}
+                                            {@render blankFigures()}
+                                        {:else}
+                                            {@render figures(row.amounts, row.pct, row.kind === "group" ? "font-medium" : "text-muted")}
+                                        {/if}
                                     </tr>
                                 {/each}
                                 {#if box.rows.length === 0}

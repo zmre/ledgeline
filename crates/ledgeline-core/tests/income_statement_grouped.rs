@@ -25,6 +25,7 @@
 mod common;
 
 use ledgeline_core::model::Commodity;
+use ledgeline_core::reports::outline::OutlineKind;
 use ledgeline_core::reports::{
     Amounts, DateRange, GroupSource, IncomeStatementReport, IsGroup, IsOpts, IsSection,
     IsSectionKind, IsSubtotalKind, MixedAmount, Valuation, account_decls, account_sections,
@@ -68,6 +69,7 @@ fn report_at(
                 value_in: None,
                 compare,
                 depth,
+                names: &declared_groups(journal, "name"),
             },
             &declared_types(&account_decls(journal)),
             &account_sections(journal),
@@ -1687,20 +1689,32 @@ fn wages_journal() -> Journal {
 fn a_parent_row_reads_as_its_subtree_as_hledger_tree_prints_it() {
     let journal = wages_journal();
     let report = report(&journal, "2026-02-01", "2026-02-28", Valuation::Cost, true);
-    let rows: BTreeMap<&str, &Amounts> = report
-        .section(IsSectionKind::Opex)
-        .groups
-        .iter()
-        .flat_map(|group| &group.rows)
+    let opex_rows = || {
+        report
+            .section(IsSectionKind::Opex)
+            .groups
+            .iter()
+            .flat_map(|group| &group.rows)
+    };
+    // The parent's own postings are its `(other)` row (plan 50 D5); every
+    // other row is keyed by its account.
+    let rows: BTreeMap<&str, &Amounts> = opex_rows()
+        .filter(|row| row.kind != OutlineKind::Other)
         .map(|row| (row.account.as_str(), &row.amounts))
         .collect();
-    // Current = February, prior = January.
+    // Current = February, prior = January. `wages-salaries` is a HEADING
+    // here (george and john sit under it); its figure is its subtree.
     assert_amounts(
         rows["expenses:people-costs:wages-salaries"],
         110_000,
         Some(100_000),
         "wages-salaries is its subtree",
     );
+    let own = opex_rows()
+        .find(|row| row.kind == OutlineKind::Other)
+        .expect("wages-salaries' own postings");
+    assert_eq!(own.account, "expenses:people-costs:wages-salaries");
+    assert_amounts(&own.amounts, 0, Some(100_000), "only its own postings");
     assert_amounts(
         rows["expenses:people-costs:wages-salaries:george"],
         60_000,
@@ -1800,12 +1814,14 @@ fn a_depth_folds_deeper_accounts_into_their_ancestor_as_hledger_does() {
     );
     assert_eq!(rows_at(Some(0)), owned(&[]));
     // No depth is every account with postings in the window — george and
-    // john included; `wages-salaries` itself posted only in January.
+    // john included, under a `wages-salaries` heading (plan 50 D1) whose own
+    // postings ran only in January, so it has no `(other)` row here.
     assert_eq!(
         rows_at(None),
         owned(&[
             ("expenses:office:rent", 30_000),
             ("expenses:people-costs:wages-salaries2", 5_000),
+            ("expenses:people-costs:wages-salaries", 110_000),
             ("expenses:people-costs:wages-salaries:george", 60_000),
             ("expenses:people-costs:wages-salaries:john", 50_000),
         ])

@@ -1742,8 +1742,7 @@ async fn incomestatement_grouped_honors_value_and_value_in() {
 }
 
 /// The new route validates `value` and `compare`, rejecting rather than
-/// defaulting — and takes no `depth` at all, which is silently ignored like any
-/// unknown param rather than changing the answer.
+/// defaulting. `depth` (plan 50 D8) clips the rows and never the totals.
 #[tokio::test]
 async fn incomestatement_grouped_validates_value_and_compare() {
     let journal = sample_journal();
@@ -1762,19 +1761,52 @@ async fn incomestatement_grouped_validates_value_and_compare() {
     let (_, message) = get_error(&journal, "/api/reports/incomestatement/grouped?value=fair").await;
     assert!(message.contains("market|cost|none"), "{message}");
 
-    // No depth on this report: passing one cannot change the answer.
+    let (status, _, _) = get_on(&journal, "/api/reports/incomestatement/grouped?depth=deep").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a depth must be a number");
+
+    // `depth=2` folds every `expenses:x:y` into its `expenses:x` row; the
+    // totals, and the slider's max, do not move.
+    let full = body_ok(
+        &journal,
+        "/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08",
+    )
+    .await;
+    let clipped = body_ok(
+        &journal,
+        "/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08&depth=2",
+    )
+    .await;
+    assert_eq!(full["netIncome"], clipped["netIncome"]);
+    assert_eq!(full["maxDepth"], 3);
+    assert_eq!(clipped["maxDepth"], 3);
+    let rows = |body: &serde_json::Value| -> Vec<(String, String, String)> {
+        body["sections"]
+            .as_array()
+            .expect("sections")
+            .iter()
+            .flat_map(|section| section["groups"].as_array().expect("groups").clone())
+            .filter(|group| group["name"] == "Food")
+            .flat_map(|group| group["rows"].as_array().expect("rows").clone())
+            .map(|row| {
+                (
+                    row["kind"].as_str().expect("kind").to_string(),
+                    row["label"].as_str().expect("label").to_string(),
+                    row["account"].as_str().expect("account").to_string(),
+                )
+            })
+            .collect()
+    };
+    let row = |kind: &str, label: &str, account: &str| {
+        (kind.to_string(), label.to_string(), account.to_string())
+    };
     assert_eq!(
-        body_ok(
-            &journal,
-            "/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08&depth=1"
-        )
-        .await,
-        body_ok(
-            &journal,
-            "/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-07-08"
-        )
-        .await
+        rows(&full),
+        [
+            row("account", "Groceries", "expenses:food:groceries"),
+            row("account", "Restaurants", "expenses:food:restaurants"),
+        ]
     );
+    assert_eq!(rows(&clipped), [row("account", "Food", "expenses:food")]);
 }
 
 /// Interval mode: one column per bucket across `[from, to]`, the first and

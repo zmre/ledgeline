@@ -2368,7 +2368,7 @@ const PROJECTION_RUN = {
 // projected, built from the statements above by picking columns. Every array
 // that runs per column is re-picked, and a picked column in the second block
 // gets its key prefixed `projected:` as the engine prefixes it.
-// MERGE SEAM (plan 50 WP4): `amount` is the balance sheet outline row's per-column figure.
+// Plan 50: `amount` is the balance sheet outline row's per-column figure.
 const COLUMN_ARRAYS = new Set(["buckets", "columns", "periods", "values", "own", "inclusive", "amount", "total", "totals", "netWorth", "check", "balanced"]);
 function pickColumns(raw: unknown, width: number, pick: number[]): unknown {
     const prefixed = (column: unknown, at: number): unknown => {

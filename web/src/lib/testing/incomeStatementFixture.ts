@@ -77,6 +77,21 @@ const usd = (cents: string) => ({$: d(cents, 2)});
 /** Current + prior, the wire's `Amounts`. */
 const both = (current: string, prior: string) => ({current: usd(current), prior: usd(prior)});
 
+/**
+ * One plan 50 outline row: `{kind, label, level, account, depth, amounts}`.
+ * `depth` is the account's own segment count, as the engine sends it.
+ */
+const row = (kind: "heading" | "account" | "other", label: string, level: number, account: string, amounts: unknown) => ({
+    kind,
+    label,
+    level,
+    account,
+    depth: account.split(":").length,
+    amounts,
+});
+/** The commonest row: an account directly under its group heading. */
+const leaf = (label: string, account: string, amounts: unknown) => row("account", label, 0, account, amounts);
+
 /** A line that exists in only ONE window: `{}` on the other side, never a missing key. */
 const currentOnly = (current: string) => ({current: usd(current), prior: {}});
 const priorOnly = (prior: string) => ({current: {}, prior: usd(prior)});
@@ -98,6 +113,7 @@ export const GROUPED_INCOME_STATEMENT: unknown = {
     // `false`: every member resolves to revenue or opex, so no rung of the
     // ladder has anything to stand on and `opex` is titled plain "Expenses".
     multiStep: false,
+    maxDepth: 3,
     sections: [
         {
             kind: "revenue",
@@ -112,13 +128,13 @@ export const GROUPED_INCOME_STATEMENT: unknown = {
                     name: "Dividends",
                     source: "segment",
                     total: both("5000", "3750"),
-                    rows: [{account: "income:dividends", depth: 2, amounts: both("5000", "3750")}],
+                    rows: [leaf("Dividends", "income:dividends", both("5000", "3750"))],
                 },
                 {
                     name: "Salary",
                     source: "segment",
                     total: both("3396000", "3936000"),
-                    rows: [{account: "income:salary", depth: 2, amounts: both("3396000", "3936000")}],
+                    rows: [leaf("Salary", "income:salary", both("3396000", "3936000"))],
                 },
             ],
             total: both("3401000", "3939750"),
@@ -136,48 +152,39 @@ export const GROUPED_INCOME_STATEMENT: unknown = {
                     name: "Depreciation",
                     source: "segment",
                     total: both("350000", "400000"),
-                    rows: [{account: "expenses:depreciation", depth: 2, amounts: both("350000", "400000")}],
+                    rows: [leaf("Depreciation", "expenses:depreciation", both("350000", "400000"))],
                 },
                 {
                     name: "Food",
                     source: "segment",
                     total: both("165438", "154635"),
                     rows: [
-                        {account: "expenses:food", depth: 2, amounts: both("165438", "154635")},
-                        {account: "expenses:food:groceries", depth: 3, amounts: both("127250", "129520")},
-                        {account: "expenses:food:restaurants", depth: 3, amounts: both("38188", "25115")},
+                        leaf("Groceries", "expenses:food:groceries", both("127250", "129520")),
+                        leaf("Restaurants", "expenses:food:restaurants", both("38188", "25115")),
                     ],
                 },
                 {
                     name: "Housing",
                     source: "segment",
                     total: both("1312500", "1117500"),
-                    // A single-child chain with nothing of its own: `compressIsRows`
-                    // folds these into one `housing:rent` row, on screen and in the
-                    // workbook.
-                    rows: [
-                        {account: "expenses:housing", depth: 2, amounts: both("1312500", "1117500")},
-                        {account: "expenses:housing:rent", depth: 3, amounts: both("1312500", "1117500")},
-                    ],
+                    // A lone child: the engine's outline (plan 50 D1) prints it as
+                    // one `Rent` row, never a `Housing` heading over it.
+                    rows: [leaf("Rent", "expenses:housing:rent", both("1312500", "1117500"))],
                 },
                 {
                     name: "Taxes",
                     source: "segment",
                     total: both("876000", "1011000"),
                     rows: [
-                        {account: "expenses:taxes", depth: 2, amounts: both("876000", "1011000")},
-                        {account: "expenses:taxes:federal", depth: 3, amounts: both("690000", "795000")},
-                        {account: "expenses:taxes:state", depth: 3, amounts: both("186000", "216000")},
+                        leaf("Federal", "expenses:taxes:federal", both("690000", "795000")),
+                        leaf("State", "expenses:taxes:state", both("186000", "216000")),
                     ],
                 },
                 {
                     name: "Transport",
                     source: "segment",
                     total: both("18654", "18215"),
-                    rows: [
-                        {account: "expenses:transport", depth: 2, amounts: both("18654", "18215")},
-                        {account: "expenses:transport:fuel", depth: 3, amounts: both("18654", "18215")},
-                    ],
+                    rows: [leaf("Fuel", "expenses:transport:fuel", both("18654", "18215"))],
                 },
                 {
                     name: "Travel",
@@ -187,10 +194,9 @@ export const GROUPED_INCOME_STATEMENT: unknown = {
                     // prior window, `flights` only in the current one. Both rows
                     // exist in both periods, one side explicitly empty.
                     rows: [
-                        {account: "expenses:travel", depth: 2, amounts: both("65640", "74910")},
-                        {account: "expenses:travel:activities", depth: 3, amounts: priorOnly("3960")},
-                        {account: "expenses:travel:flights", depth: 3, amounts: currentOnly("41280")},
-                        {account: "expenses:travel:lodging", depth: 3, amounts: both("24360", "70950")},
+                        leaf("Activities", "expenses:travel:activities", priorOnly("3960")),
+                        leaf("Flights", "expenses:travel:flights", currentOnly("41280")),
+                        leaf("Lodging", "expenses:travel:lodging", both("24360", "70950")),
                     ],
                 },
                 {
@@ -199,16 +205,13 @@ export const GROUPED_INCOME_STATEMENT: unknown = {
                     name: "Unknown",
                     source: "segment",
                     total: currentOnly("7500"),
-                    rows: [{account: "expenses:unknown", depth: 2, amounts: currentOnly("7500")}],
+                    rows: [leaf("Unknown", "expenses:unknown", currentOnly("7500"))],
                 },
                 {
                     name: "Utilities",
                     source: "segment",
                     total: both("66916", "75411"),
-                    rows: [
-                        {account: "expenses:utilities", depth: 2, amounts: both("66916", "75411")},
-                        {account: "expenses:utilities:electric", depth: 3, amounts: both("66916", "75411")},
-                    ],
+                    rows: [leaf("Electric", "expenses:utilities:electric", both("66916", "75411"))],
                 },
             ],
             total: both("2862648", "2851671"),
@@ -283,6 +286,7 @@ export const MULTI_STEP_INCOME_STATEMENT: unknown = {
     base: "$",
     value: "market",
     multiStep: true,
+    maxDepth: 3,
     sections: [
         {
             kind: "revenue",
@@ -292,13 +296,13 @@ export const MULTI_STEP_INCOME_STATEMENT: unknown = {
                     name: "Product",
                     source: "tag",
                     total: {current: usd("50000000")},
-                    rows: [{account: "income:product", depth: 2, amounts: {current: usd("50000000")}}],
+                    rows: [leaf("Product", "income:product", {current: usd("50000000")})],
                 },
                 {
                     name: "Services",
                     source: "tag",
                     total: {current: usd("12000000")},
-                    rows: [{account: "income:services", depth: 2, amounts: {current: usd("12000000")}}],
+                    rows: [leaf("Services", "income:services", {current: usd("12000000")})],
                 },
             ],
             total: {current: usd("62000000")},
@@ -314,16 +318,13 @@ export const MULTI_STEP_INCOME_STATEMENT: unknown = {
                     total: {current: usd("8400000")},
                     // Two accounts with no shared prefix below `cogs`, on one line
                     // only because both carry `isgroup: Cloud infrastructure`.
-                    rows: [
-                        {account: "cogs:cdn", depth: 2, amounts: {current: usd("1400000")}},
-                        {account: "cogs:hosting", depth: 2, amounts: {current: usd("7000000")}},
-                    ],
+                    rows: [leaf("Cdn", "cogs:cdn", {current: usd("1400000")}), leaf("Hosting", "cogs:hosting", {current: usd("7000000")})],
                 },
                 {
                     name: "Payment processing",
                     source: "tag",
                     total: {current: usd("1860000")},
-                    rows: [{account: "cogs:payments", depth: 2, amounts: {current: usd("1860000")}}],
+                    rows: [leaf("Payments", "cogs:payments", {current: usd("1860000")})],
                 },
             ],
             total: {current: usd("10260000")},
@@ -339,13 +340,13 @@ export const MULTI_STEP_INCOME_STATEMENT: unknown = {
                     name: "Salaries",
                     source: "segment",
                     total: {current: usd("31000000")},
-                    rows: [{account: "expenses:salaries", depth: 2, amounts: {current: usd("31000000")}}],
+                    rows: [leaf("Salaries", "expenses:salaries", {current: usd("31000000")})],
                 },
                 {
                     name: "Marketing",
                     source: "segment",
                     total: {current: usd("4650000")},
-                    rows: [{account: "expenses:marketing", depth: 2, amounts: {current: usd("4650000")}}],
+                    rows: [leaf("Marketing", "expenses:marketing", {current: usd("4650000")})],
                 },
             ],
             total: {current: usd("35650000")},
@@ -359,7 +360,7 @@ export const MULTI_STEP_INCOME_STATEMENT: unknown = {
                     name: "Depreciation",
                     source: "segment",
                     total: {current: usd("2400000")},
-                    rows: [{account: "expenses:depreciation", depth: 2, amounts: {current: usd("2400000")}}],
+                    rows: [leaf("Depreciation", "expenses:depreciation", {current: usd("2400000")})],
                 },
             ],
             total: {current: usd("2400000")},
@@ -373,7 +374,7 @@ export const MULTI_STEP_INCOME_STATEMENT: unknown = {
                     name: "Grants",
                     source: "tag",
                     total: {current: usd("3000000")},
-                    rows: [{account: "income:grants", depth: 2, amounts: {current: usd("3000000")}}],
+                    rows: [leaf("Grants", "income:grants", {current: usd("3000000")})],
                 },
                 {
                     // Negative: this box is a net contribution to income, so a cost
@@ -381,7 +382,7 @@ export const MULTI_STEP_INCOME_STATEMENT: unknown = {
                     name: "Legal settlement",
                     source: "tag",
                     total: {current: usd("-4500000")},
-                    rows: [{account: "expenses:legal:settlement", depth: 3, amounts: {current: usd("-4500000")}}],
+                    rows: [leaf("Settlement", "expenses:legal:settlement", {current: usd("-4500000")})],
                 },
             ],
             total: {current: usd("-1500000")},
@@ -395,7 +396,7 @@ export const MULTI_STEP_INCOME_STATEMENT: unknown = {
                     name: "Interest expense",
                     source: "tag",
                     total: {current: usd("1240000")},
-                    rows: [{account: "expenses:interest", depth: 2, amounts: {current: usd("1240000")}}],
+                    rows: [leaf("Interest", "expenses:interest", {current: usd("1240000")})],
                 },
             ],
             total: {current: usd("1240000")},
@@ -409,7 +410,7 @@ export const MULTI_STEP_INCOME_STATEMENT: unknown = {
                     name: "Income taxes",
                     source: "tag",
                     total: {current: usd("2300000")},
-                    rows: [{account: "expenses:taxes:income", depth: 3, amounts: {current: usd("2300000")}}],
+                    rows: [leaf("Income", "expenses:taxes:income", {current: usd("2300000")})],
                 },
             ],
             total: {current: usd("2300000")},
@@ -419,3 +420,30 @@ export const MULTI_STEP_INCOME_STATEMENT: unknown = {
     netIncome: {current: usd("8650000")},
     meta: {unpriced: []},
 };
+
+/**
+ * The uncompared statement with its Travel group replaced by a deeper outline
+ * (plan 50): a leaf, then a `Lodging` HEADING over its own `(other)` postings
+ * and a `Hotels` child — the shape sample.journal is too shallow to produce.
+ * Synthetic arithmetic, kept equal to the group's total: 412.80 + 43.60 +
+ * 200.00 = 656.40. A heading's `amounts` is its subtree (243.60), which the
+ * screen and the workbook must NOT print.
+ */
+export const OUTLINED_INCOME_STATEMENT: unknown = (() => {
+    const base = UNCOMPARED_INCOME_STATEMENT as {sections: {kind: string; groups: {name: string; rows: unknown[]}[]}[]};
+    const current = (cents: string) => ({current: usd(cents)});
+    const travel = [
+        leaf("Flights", "expenses:travel:flights", current("41280")),
+        row("heading", "Lodging", 0, "expenses:travel:lodging", current("24360")),
+        row("other", "Lodging (other)", 1, "expenses:travel:lodging", current("4360")),
+        row("account", "Hotels", 1, "expenses:travel:lodging:hotels", current("20000")),
+    ];
+    return {
+        ...base,
+        maxDepth: 4,
+        sections: base.sections.map((section) => ({
+            ...section,
+            groups: section.groups.map((group) => (group.name === "Travel" ? {...group, rows: travel} : group)),
+        })),
+    };
+})();

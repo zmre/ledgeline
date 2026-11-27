@@ -8,14 +8,13 @@ use super::account_types::{AccountType, AccountTypes};
 use super::aggregate::{PostingFilter, account_totals, at_depth, roll_up};
 use super::balance_sheet::{Valuation, signed, valued_keeping_unpriced};
 use super::mixed_amount::MixedAmount;
-use super::outline::clip;
+use super::outline::{OutlineKind, outline};
 use super::periods::{BucketSpan, Interval, add_days, days_between, range_buckets};
 use super::prices::{PriceDb, ValuationMeta, priced_count};
 use super::sections::build_section;
 use super::types::{ReportMeta, SectionedReport};
 use crate::model::{AccountDeclaration, Commodity, Journal, PriceDirective, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::Bound;
 
 /// Revenues + expenses over `[from, to]` (both INCLUSIVE). Presentation matches
 /// `hledger is`: revenues are sign-flipped (positive = earned); `grand_total` =
@@ -133,9 +132,12 @@ pub struct IsOpts<'a> {
     pub compare: bool,
     /// Clip each group's rows to this many account segments, as
     /// `hledger is --depth N` does: a deeper account folds into its ancestor
-    /// rather than disappearing. `None` lists every account (the Reports tab,
-    /// which has no depth control); `Some(0)` lists none. Totals never change.
+    /// rather than disappearing. `None` lists every account (the P&L's
+    /// default, plan 50 D8); `Some(0)` lists none. Totals never change.
     pub depth: Option<usize>,
+    /// Each account's OWN declared `name:` tag (not inherited), the row labels
+    /// of the outline (plan 50 D2). Empty: every label is a humanized segment.
+    pub names: &'a BTreeMap<String, String>,
 }
 
 /// An inclusive date range — the window a set of `prior` figures covers.
@@ -257,14 +259,23 @@ impl Figures {
 /// mode — here and on every statement type below.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IsRow<A = Amounts> {
-    /// Full, colon-delimited account name.
+    /// What the row is in the group's outline (plan 50 D1): a heading prints
+    /// its label only; an account or `(other)` row prints its figure.
+    pub kind: OutlineKind,
+    /// What to print: the account's own `name:` tag, else its humanized last
+    /// segment (`(other)` appended on an [`OutlineKind::Other`] row).
+    pub label: String,
+    /// Indent within the group, 0 = directly under the group heading.
+    pub level: usize,
+    /// Full, colon-delimited account name (shown on hover).
     pub account: String,
     /// Number of `:`-separated segments in `account`.
     pub depth: usize,
-    /// The account's total INCLUDING every member of its group beneath it,
-    /// displayed with its section's sign — the figure `hledger is --tree`
-    /// prints for it. Group and section totals never sum these rows; they sum
-    /// the members directly, so nothing here is counted twice.
+    /// The figure of the members this row stands for, displayed with its
+    /// section's sign: a heading's or a clipped account's whole subtree within
+    /// the group, an `(other)` row's own postings. Group and section totals
+    /// never sum these rows; they sum the members directly, so nothing here is
+    /// counted twice.
     pub amounts: A,
 }
 
@@ -277,8 +288,9 @@ pub struct IsGroup<A = Amounts> {
     /// Which resolution step named it ([`GroupSource::Tag`] or
     /// [`GroupSource::Segment`]; this statement has no built-in groups).
     pub source: GroupSource,
-    /// The group's accounts, sorted by name. There is no depth clamp on this
-    /// report, so these are simply its members.
+    /// The group's outline rows in display order (plan 50): its members,
+    /// clipped to the report's depth, with headings where two or more share
+    /// an ancestor.
     pub rows: Vec<IsRow<A>>,
     /// Summed over the group's MEMBERS, not over `rows` (RPT-1/RPT-4) — the two
     /// coincide here, and the test that says so is what keeps them coinciding.
@@ -340,6 +352,10 @@ pub struct IncomeStatementReport<A = Amounts> {
     pub net_income: A,
     /// Whether the GAAP ladder materialised — see [`multi_step`].
     pub multi_step: bool,
+    /// The deepest account (in `:`-segments) among the statement's members,
+    /// unclipped: the Depth slider's max, so it spans this P&L rather than the
+    /// whole journal. 0 for a statement with no members.
+    pub max_depth: usize,
     /// Commodities the market valuation could not reach (sorted, deduped).
     pub meta: ReportMeta,
 }
@@ -815,7 +831,7 @@ fn build_groups<A>(
     declared: &BTreeMap<String, String>,
     windows: &Windows,
     flip: bool,
-    depth: Option<usize>,
+    opts: &IsOpts,
     shape: Shape<A>,
 ) -> Result<Vec<IsGroup<A>>, ReportError> {
     let mut buckets: BTreeMap<String, (GroupSource, BTreeSet<String>)> = BTreeMap::new();
@@ -837,57 +853,41 @@ fn build_groups<A>(
             Ok(IsGroup {
                 name,
                 source,
-                rows: group_rows(&accounts, windows, flip, depth, shape)?,
+                rows: group_rows(&accounts, windows, flip, opts, shape)?,
                 total: shape(windows.sum(&accounts)?.signed(flip)?)?,
             })
         })
         .collect()
 }
 
-/// One group's rows: its members, CLIPPED to `depth` segments when there is
-/// one, each reading as its whole subtree within the group.
+/// One group's rows: the readable outline of its members (plan 50 D1–D5,
+/// [`outline`]), CLIPPED to `opts.depth` segments first, as
+/// `hledger is --depth N` does: `expenses:people-costs:wages-salaries:george`
+/// is not dropped but folded into `expenses:people-costs:wages-salaries`,
+/// which may not be a member itself. `Some(0)` is hledger's totals-only: no
+/// rows. `None` is no clamp, the Reports tab's default.
 ///
-/// The subtree is what the view's indented tree needs — a parent reads as
-/// everything beneath it, as `hledger is --tree` prints it — and it is also
-/// what makes the clip hledger's: under `--depth 3`,
-/// `expenses:people-costs:wages-salaries:george` is not dropped but folded
-/// into `expenses:people-costs:wages-salaries`, which may not be a member
-/// itself. `Some(0)` is hledger's totals-only: no rows. `None` is no clamp,
-/// which is what the Reports tab asks for.
-///
-/// Only this group's members count, so an ancestor shared with another group
-/// never borrows its figures; and totals are summed over members, never over
-/// these rows, so nothing here can move a number.
+/// Each row's figure is the sum of exactly the members the outline says it
+/// shows, so an ancestor shared with another group never borrows its figures;
+/// and totals are summed over members, never over these rows, so nothing here
+/// can move a number.
 fn group_rows<A>(
     accounts: &BTreeSet<String>,
     windows: &Windows,
     flip: bool,
-    depth: Option<usize>,
+    opts: &IsOpts,
     shape: Shape<A>,
 ) -> Result<Vec<IsRow<A>>, ReportError> {
-    let names: BTreeSet<&str> = match depth {
-        Some(0) => BTreeSet::new(),
-        Some(depth) => accounts
-            .iter()
-            .map(|account| clip(account, depth))
-            .collect(),
-        None => accounts.iter().map(String::as_str).collect(),
-    };
-    names
+    outline(accounts, opts.depth, opts.names)
         .into_iter()
-        .map(|account| {
-            // Every name under `account:` sorts into one contiguous run right
-            // after that prefix, so the subtree is a range read, not a scan of
-            // the whole group per row.
-            let prefix = format!("{account}:");
-            let below = accounts
-                .range::<str, _>((Bound::Included(prefix.as_str()), Bound::Unbounded))
-                .take_while(|member| member.starts_with(&prefix));
-            let own = accounts.get(account);
+        .map(|node| {
             Ok(IsRow {
-                depth: account.split(':').count(),
-                amounts: shape(windows.sum_of(own.into_iter().chain(below))?.signed(flip)?)?,
-                account: account.to_string(),
+                amounts: shape(windows.sum_of(&node.members)?.signed(flip)?)?,
+                depth: node.account.split(':').count(),
+                kind: node.kind,
+                label: node.label,
+                level: node.level,
+                account: node.account,
             })
         })
         .collect()
@@ -1163,6 +1163,12 @@ fn statement_from<A>(
             members.entry(kind).or_default().insert(account.clone());
         }
     }
+    let max_depth = members
+        .values()
+        .flatten()
+        .map(|account| account.split(':').count())
+        .max()
+        .unwrap_or(0);
 
     // Pass 1: which boxes exist and what they hold. `multi_step` — and with it
     // every title and the Operating income guard — depends on the answer, so it
@@ -1173,14 +1179,7 @@ fn statement_from<A>(
         let section_members = members.remove(&rung.kind).unwrap_or_default();
         let sum = windows.sum(&section_members)?;
         contributions.insert(rung.kind, sum.ma_neg()?);
-        let lines = build_groups(
-            &section_members,
-            groups,
-            &windows,
-            rung.flip,
-            opts.depth,
-            shape,
-        )?;
+        let lines = build_groups(&section_members, groups, &windows, rung.flip, opts, shape)?;
         if !lines.is_empty() {
             boxes.insert(rung.kind, (lines, shape(sum.signed(rung.flip)?)?));
         }
@@ -1242,6 +1241,7 @@ fn statement_from<A>(
         sections: rendered,
         net_income: shape(running)?,
         multi_step,
+        max_depth,
         meta: ReportMeta {
             unpriced: meta.unpriced,
         },
@@ -1514,5 +1514,281 @@ mod tests {
         assert_eq!(report.sections[0].total, usd_ma(920_000)); // 5000 + 4000 + 200
         assert_eq!(report.sections[1].total, usd_ma(24_999)); // 150.00 + 99.99
         assert_eq!(report.grand_total, usd_ma(895_001));
+    }
+
+    // --- plan 50 WP2: group rows are the readable outline -------------------
+
+    /// Each `(account, cents)` as one expense posting in January 2026, the
+    /// opex box's groups under `groups` (`isgroup:`) and `names` (own `name:`).
+    fn opex_groups(
+        postings: &[(&str, i128)],
+        groups: &[(&str, &str)],
+        names: &[(&str, &str)],
+        depth: Option<usize>,
+    ) -> IncomeStatementReport {
+        let txns = postings
+            .iter()
+            .zip(1..)
+            .map(|((account, cents), index)| {
+                txn(
+                    index,
+                    "2026-01-15",
+                    vec![
+                        (*account, vec![usd(*cents)]),
+                        ("assets:bank", vec![usd(-*cents)]),
+                    ],
+                )
+            })
+            .collect::<Vec<_>>();
+        let to_map = |pairs: &[(&str, &str)]| -> BTreeMap<String, String> {
+            pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect()
+        };
+        let names = to_map(names);
+        income_statement_grouped(
+            &txns,
+            &[],
+            &IsOpts {
+                from: "2026-01-01",
+                to: "2026-01-31",
+                value: Valuation::Cost,
+                value_in: None,
+                compare: false,
+                depth,
+                names: &names,
+            },
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &to_map(groups),
+        )
+        .expect("income statement")
+    }
+
+    /// `(kind, label, level, account, cents)` of one group's rows.
+    fn outline_of(
+        report: &IncomeStatementReport,
+        group: &str,
+    ) -> Vec<(OutlineKind, String, usize, String, MixedAmount)> {
+        report
+            .sections
+            .iter()
+            .flat_map(|section| &section.groups)
+            .find(|g| g.name == group)
+            .unwrap_or_else(|| panic!("group {group}"))
+            .rows
+            .iter()
+            .map(|row| {
+                (
+                    row.kind,
+                    row.label.clone(),
+                    row.level,
+                    row.account.clone(),
+                    row.amounts.current.clone(),
+                )
+            })
+            .collect()
+    }
+
+    fn row(
+        kind: OutlineKind,
+        label: &str,
+        level: usize,
+        account: &str,
+        cents: i128,
+    ) -> (OutlineKind, String, usize, String, MixedAmount) {
+        (
+            kind,
+            label.to_string(),
+            level,
+            account.to_string(),
+            usd_ma(cents),
+        )
+    }
+
+    /// D1 across subtrees: payroll processing has no sibling in the group so
+    /// prints as one leaf; accounting and legal roll up under a heading whose
+    /// figure is their subtree. The group total is still the members' sum.
+    #[test]
+    fn group_rows_outline_a_cross_subtree_group() {
+        let report = opex_groups(
+            &[
+                ("expenses:people-costs:payroll-processing-fees", 5_000),
+                ("expenses:people-costs:wages", 90_000),
+                ("expenses:professional-fees:accounting", 20_000),
+                ("expenses:professional-fees:legal", 30_000),
+            ],
+            &[
+                (
+                    "expenses:people-costs:payroll-processing-fees",
+                    "Professional Services",
+                ),
+                ("expenses:professional-fees", "Professional Services"),
+            ],
+            &[],
+            None,
+        );
+        use OutlineKind::{Account, Heading};
+        assert_eq!(
+            outline_of(&report, "Professional Services"),
+            [
+                row(
+                    Account,
+                    "Payroll Processing Fees",
+                    0,
+                    "expenses:people-costs:payroll-processing-fees",
+                    5_000
+                ),
+                row(
+                    Heading,
+                    "Professional Fees",
+                    0,
+                    "expenses:professional-fees",
+                    50_000
+                ),
+                row(
+                    Account,
+                    "Accounting",
+                    1,
+                    "expenses:professional-fees:accounting",
+                    20_000
+                ),
+                row(
+                    Account,
+                    "Legal",
+                    1,
+                    "expenses:professional-fees:legal",
+                    30_000
+                ),
+            ]
+        );
+        let group = report.sections[0]
+            .groups
+            .iter()
+            .find(|g| g.name == "Professional Services")
+            .expect("group");
+        assert_eq!(group.total.current, usd_ma(55_000));
+        // `depth` stays the account's own segment count.
+        assert_eq!(
+            group.rows.iter().map(|r| r.depth).collect::<Vec<_>>(),
+            [3, 2, 3, 3]
+        );
+    }
+
+    /// D5: a group's top account with its own postings shows them as a first
+    /// `(other)` row, so the rows add up to the group total.
+    #[test]
+    fn group_rows_list_a_parents_own_postings_as_other() {
+        let report = opex_groups(
+            &[
+                ("expenses:travel", 1_000),
+                ("expenses:travel:airfare", 120_000),
+                ("expenses:travel:ground-transport", 34_000),
+            ],
+            &[],
+            &[],
+            None,
+        );
+        use OutlineKind::{Account, Other};
+        assert_eq!(
+            outline_of(&report, "Travel"),
+            [
+                row(Other, "Travel (other)", 0, "expenses:travel", 1_000),
+                row(Account, "Airfare", 0, "expenses:travel:airfare", 120_000),
+                row(
+                    Account,
+                    "Ground Transport",
+                    0,
+                    "expenses:travel:ground-transport",
+                    34_000
+                ),
+            ]
+        );
+    }
+
+    /// D8: depth clips members first, so a lower depth folds leaves into
+    /// their ancestor row, whose figure is the whole subtree. Totals never move.
+    #[test]
+    fn group_rows_fold_under_depth() {
+        // `expenses:food` keeps Travel one group (the untagged fallback names
+        // groups after the first segment the section's members don't share).
+        let postings = [
+            ("expenses:food", 500),
+            ("expenses:travel:airfare", 120_000),
+            ("expenses:travel:lodging:hotels", 90_000),
+            ("expenses:travel:lodging:rentals", 41_000),
+        ];
+        use OutlineKind::{Account, Heading};
+        let full = opex_groups(&postings, &[], &[], None);
+        assert_eq!(
+            outline_of(&full, "Travel"),
+            [
+                row(Account, "Airfare", 0, "expenses:travel:airfare", 120_000),
+                row(Heading, "Lodging", 0, "expenses:travel:lodging", 131_000),
+                row(
+                    Account,
+                    "Hotels",
+                    1,
+                    "expenses:travel:lodging:hotels",
+                    90_000
+                ),
+                row(
+                    Account,
+                    "Rentals",
+                    1,
+                    "expenses:travel:lodging:rentals",
+                    41_000
+                ),
+            ]
+        );
+        let three = opex_groups(&postings, &[], &[], Some(3));
+        assert_eq!(
+            outline_of(&three, "Travel"),
+            [
+                row(Account, "Airfare", 0, "expenses:travel:airfare", 120_000),
+                row(Account, "Lodging", 0, "expenses:travel:lodging", 131_000),
+            ]
+        );
+        let two = opex_groups(&postings, &[], &[], Some(2));
+        assert_eq!(
+            outline_of(&two, "Travel"),
+            [row(Account, "Travel", 0, "expenses:travel", 251_000)]
+        );
+        assert!(
+            opex_groups(&postings, &[], &[], Some(0)).sections[0]
+                .groups
+                .iter()
+                .all(|g| g.rows.is_empty())
+        );
+        for report in [&full, &three, &two] {
+            assert_eq!(report.sections[0].total.current, usd_ma(251_500));
+            // The slider's max is the deepest member, whatever the clip.
+            assert_eq!(report.max_depth, 4);
+        }
+    }
+
+    /// D2: an account's own `name:` is its label; a child never borrows it.
+    #[test]
+    fn group_rows_label_from_own_name_tag() {
+        let report = opex_groups(
+            &[
+                ("expenses:food", 500),
+                ("expenses:travel:airfare", 120_000),
+                ("expenses:travel:lodging:hotels", 90_000),
+                ("expenses:travel:lodging:rentals", 41_000),
+            ],
+            &[],
+            &[
+                ("expenses:travel:airfare", "Flights"),
+                ("expenses:travel:lodging", "Accommodation"),
+            ],
+            None,
+        );
+        let labels = outline_of(&report, "Travel")
+            .into_iter()
+            .map(|(_, label, ..)| label)
+            .collect::<Vec<_>>();
+        assert_eq!(labels, ["Flights", "Accommodation", "Hotels", "Rentals"]);
     }
 }

@@ -101,6 +101,12 @@ export interface ReportParams {
     count: number;
     /** Account depth clamp. */
     depth: number;
+    /**
+     * The P&L's own depth (plan 50 D8): null = unlimited, its default. Its own
+     * field rather than `depth` because that one defaults to 3 and is shared
+     * by the period reports, while a P&L opens on every account.
+     */
+    isDepth: number | null;
     /** Accounts: whether declared and known accounts with nothing in any column are rows too. */
     empty: boolean;
     /** Insights: inclusive comparison-span start (split at its midpoint by the engine). */
@@ -142,13 +148,14 @@ export const TAB_CONTROLS: Record<ReportTab, ControlsConfig> = {
     // column per period end from a From date, the last column at As of: the
     // P&L's range-and-grain parameterisation (plans/24), anchored on As of.
     bs: {asOf: true, asOfFrom: true, range: false, end: false, intervals: ALL_INTERVALS, count: false, depth: false},
-    // The income statement dropped its depth slider for the same reason (plans/13):
-    // it is grouped now, and a clamp that hid accounts with no control on screen
-    // to ask for them back was the worst of both. The range stays — a P&L is a
-    // report ABOUT a period, and that is the one thing it cannot infer. The
-    // Interval is Total (one column, compared with the prior window) or one
-    // column per bucket plus a Total (plans/24).
-    is: {asOf: false, asOfFrom: false, range: true, end: false, intervals: ALL_INTERVALS, count: false, depth: false},
+    // The income statement's depth slider is back (plan 50 D8, re-opening plans/13
+    // D5): its rows are a readable outline now, so lowering the depth visibly
+    // folds leaves into their ancestor rows and raising it brings them back. It
+    // reads `isDepth` (null = unlimited, the default), never the shared `depth`.
+    // The range stays — a P&L is a report ABOUT a period, and that is the one
+    // thing it cannot infer. The Interval is Total (one column, compared with
+    // the prior window) or one column per bucket plus a Total (plans/24).
+    is: {asOf: false, asOfFrom: false, range: true, end: false, intervals: ALL_INTERVALS, count: false, depth: true},
     // Cash flow is a report about a period too (plans/24): From/To replaced
     // End + Periods, so the range is named rather than counted backwards.
     cf: {asOf: false, asOfFrom: false, range: true, end: false, intervals: ALL_INTERVALS, count: false, depth: true},
@@ -176,8 +183,24 @@ export function controlsSummary(p: ReportParams): string {
         const interval = intervalLabel(p.tab, p.interval);
         parts.push(config.count ? `${p.count} × ${interval.toLowerCase()} to ${p.end}` : interval);
     } else if (config.end) parts.push(`to ${p.end}`);
-    if (config.depth) parts.push(`depth ${p.depth}`);
+    // Plan 50: the P&L names its own depth.
+    if (config.depth) parts.push(p.tab === "is" ? (p.isDepth === null ? "all depths" : `depth ${p.isDepth}`) : `depth ${p.depth}`);
     return parts.join(" · ");
+}
+
+// --- The P&L's depth (plan 50 D8) -------------------------------------------
+
+/** What the P&L's Depth slider shows: its depth, or the max for unlimited. */
+export function isDepthShown(p: ReportParams, max: number): number {
+    return Math.max(1, Math.min(p.isDepth ?? max, max));
+}
+
+/**
+ * The P&L depth a slider value means: unlimited at the max, so a P&L slid all
+ * the way up keeps showing every account even after the journal grows deeper.
+ */
+export function isDepthFromSlider(value: number, max: number): number | null {
+    return value >= max ? null : value;
 }
 
 /**
@@ -282,6 +305,7 @@ export function defaultReportParams(now: ISODate = today()): ReportParams {
         // moving it back would change what the period reports show, which is a
         // separate decision from removing a control from two tabs.
         depth: 3,
+        isDepth: null,
         empty: false,
         insStart: ins.start,
         insEnd: ins.end,
@@ -415,7 +439,10 @@ export function paramsToSearch(p: ReportParams): string {
     if (c.end) q.set("end", p.end);
     if (c.intervals.length > 0) q.set("interval", p.interval);
     if (c.count) q.set("count", String(p.count));
-    if (c.depth) q.set("depth", String(p.depth));
+    // Plan 50: the P&L's `depth` is its own, absent = unlimited.
+    if (c.depth && p.tab === "is") {
+        if (p.isDepth !== null) q.set("depth", String(p.isDepth));
+    } else if (c.depth) q.set("depth", String(p.depth));
     if (p.tab === "accounts") q.set("empty", p.empty ? "1" : "0");
     return q.toString();
 }
@@ -462,6 +489,12 @@ function cashFlowRange(q: URLSearchParams, interval: ReportInterval, dflt: Repor
     return {cfFrom: parseDate(q.get("from"), dflt.cfFrom), cfTo: parseDate(q.get("to"), dflt.cfTo)};
 }
 
+/** A P&L link's `depth`: null (unlimited) when absent or malformed. 0 is the sentinel, below the clamp's floor of 1. */
+function isDepthParam(q: URLSearchParams): number | null {
+    const depth = clampedInt(q.get("depth"), 1, 99, 0);
+    return depth === 0 ? null : depth;
+}
+
 /** Parse a query string (with or without leading "?"); absent/malformed params fall back to `dflt`. */
 export function searchToParams(search: string, dflt: ReportParams): ReportParams {
     const q = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
@@ -486,7 +519,9 @@ export function searchToParams(search: string, dflt: ReportParams): ReportParams
         end: parseDate(q.get("end"), dflt.end),
         interval,
         count: clampedInt(q.get("count"), 1, MAX_COUNT, dflt.count),
-        depth: clampedInt(q.get("depth"), 1, 99, dflt.depth),
+        // Plan 50: on the P&L, `depth` is the P&L's own.
+        depth: tab === "is" ? dflt.depth : clampedInt(q.get("depth"), 1, 99, dflt.depth),
+        isDepth: tab === "is" ? isDepthParam(q) : dflt.isDepth,
         empty: tab === "accounts" ? q.get("empty") === "1" : dflt.empty,
         insStart: parseDate(q.get("istart"), dflt.insStart),
         insEnd: parseDate(q.get("iend"), dflt.insEnd),
@@ -539,6 +574,17 @@ const CONF_DEPTH_COMMAND: Partial<Record<ReportTab, DepthCommand>> = {cf: "cashf
 export function confDepthDefault(tab: ReportTab, effective: Readonly<Record<DepthCommand, DepthSpec>> | null): number | null {
     const command = CONF_DEPTH_COMMAND[tab];
     const all = command === undefined || effective === null ? null : effective[command].all;
+    return all === null ? null : Math.min(Math.max(all, 1), 99);
+}
+
+/**
+ * The P&L's depth from hledger.conf's `[incomestatement] --depth N` (plan 50
+ * D9's rule, applied to the P&L): clamped like the URL's, or null when the file
+ * sets none. The page seeds the slider with it once per config revision, never
+ * on a tab switch, and a URL `depth=` on a P&L link wins.
+ */
+export function confIsDepth(effective: Readonly<Record<DepthCommand, DepthSpec>> | null): number | null {
+    const all = effective === null ? null : effective.incomestatement.all;
     return all === null ? null : Math.min(Math.max(all, 1), 99);
 }
 
