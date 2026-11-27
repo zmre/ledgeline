@@ -38,6 +38,7 @@ mod serve;
 pub(crate) mod settings;
 pub(crate) mod settings_wire;
 pub(crate) mod templates;
+pub(crate) mod time;
 pub(crate) mod watch;
 
 use std::path::PathBuf;
@@ -315,6 +316,8 @@ mod settings_tests;
 mod spa_shell_csp_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod time_tests;
 
 #[cfg(test)]
 mod identity_tests {

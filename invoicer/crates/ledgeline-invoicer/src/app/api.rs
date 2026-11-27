@@ -12,6 +12,7 @@
 //! | `GET /api/dashboard`, `POST /api/ledgeline/open` | The receivables dashboard; the books in Ledgeline ([`super::dashboard`], 5a). |
 //! | `GET /api/invoices`         | `list --json` (`status`, `customer`, `type`, `open`, `overdue`, `from`, `to`, `aged`, `q`, `sort`, `dir`, `today`; PLAN 5b S1). |
 //! | `GET /api/invoices/{num}`   | `show --json` (`today`).                       |
+//! | `DELETE /api/invoices/{num}` | Delete a draft, releasing its time ([`super::editor`]). |
 //! | `GET /api/invoices/{num}/books` | The Books panel: what the journal holds (3b). |
 //! | `POST /api/preview`         | An invoice rendered from unsaved text (3b).    |
 //! | `/api/templates…`           | The templates, and starters not copied in (3b); the template editor (4d): [`super::templates`]. |
@@ -31,6 +32,7 @@
 //! | `GET`/`PUT /api/settings`, `POST /api/settings/check` | The Settings page: `[invoicer]`, read and saved ([`super::settings`]). |
 //! | `POST /api/session`         | The cookie MBR's pages need ([`super::mbr`]).  |
 //! | the invoice editor's routes | Form, compute, save, new, void, rebook… (4a): [`super::editor`]. |
+//! | `/api/time/…`               | Time tracking (plan 46): [`super::time`].      |
 //!
 //! Every route answers errors in one envelope ([`ApiError`]):
 //! `{"error": "…", "code": "…"}` with a status, plus any detail the case
@@ -74,7 +76,10 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/version", get(version))
         .route("/api/books", get(books))
         .route("/api/invoices", get(invoices))
-        .route("/api/invoices/{number}", get(invoice))
+        .route(
+            "/api/invoices/{number}",
+            get(invoice).delete(super::editor::delete_draft),
+        )
         .route("/api/invoices/{number}/books", get(invoice_books))
         .route("/api/preview", post(preview))
         .route(
@@ -100,6 +105,8 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/session", post(session))
         // The invoice editor (4a): its own table, merged.
         .merge(super::editor::routes())
+        // Time tracking (plan 46).
+        .merge(super::time::routes())
 }
 
 /// An API failure, the one envelope every route under `/api` answers with

@@ -2352,6 +2352,41 @@ unknownKey = { deep = [1, 2] }
     }
 
     #[test]
+    fn names_keep_places_and_refuse_too_many() {
+        let kind = Kind::Names { max: 5 };
+        let ok = kind
+            .check_json(&serde_json::json!(["clients:acme", "", " internal:admin "]))
+            .expect("names");
+        assert_eq!(
+            ok,
+            PrefValue::Names(vec![
+                "clients:acme".into(),
+                String::new(),
+                "internal:admin".into()
+            ])
+        );
+        assert!(
+            kind.check_json(&serde_json::json!(["a", "b", "c", "d", "e", "f"]))
+                .is_err()
+        );
+        assert!(kind.check_json(&serde_json::json!(["a\u{7}"])).is_err());
+        let item: Item =
+            toml_edit::value(toml_edit::Array::from_iter(["a", "b", "c", "d", "e", "f"]));
+        let (value, note) = kind.check_toml(&item).expect("clamped");
+        assert_eq!(
+            value,
+            PrefValue::Names(vec![
+                "a".into(),
+                "b".into(),
+                "c".into(),
+                "d".into(),
+                "e".into()
+            ])
+        );
+        assert!(note.is_some());
+    }
+
+    #[test]
     fn a_per_ledger_key_is_read_only_from_its_ledgers_table() {
         let document = parse(concat!(
             "lastProjectionId = \"old.journal\"\n",

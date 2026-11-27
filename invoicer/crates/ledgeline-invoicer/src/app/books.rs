@@ -15,7 +15,11 @@ use invoicer_core::edit;
 use invoicer_core::reconcile::{self, ReconcileOptions, Reconciled};
 use invoicer_core::session::{OpenError, Session};
 use invoicer_core::settings::{Settings, SettingsError};
+use invoicer_core::time::{TimeBooks, TimeOpError};
 use ledgeline_core::accrual::books_config;
+use ledgeline_core::time::book::TimePaths;
+use ledgeline_core::time::model::TimeBook;
+use ledgeline_core::time::timeclock::Moment;
 use ledgeline_core::vault::{Vault, VaultPath};
 use mbr_core::Config as MbrConfig;
 use mbr_core::raw_html::RawHtmlPolicy;
@@ -68,6 +72,23 @@ pub(crate) struct OpenBooks {
     changes: broadcast::Sender<Changed>,
     /// The editor's unsaved previews (invoicer PLAN 4a).
     drafts: DraftPreviews,
+    /// The time book (plan 46), read on first use and again after any
+    /// change to a time file ([`Self::forget_time`]); and the tracker's last
+    /// stop, which a timedot file doesn't record (snap, T-slots).
+    time: Mutex<TimeCache>,
+    /// Serializes this app's time writes: each re-reads and re-applies on a
+    /// change on disk, but two of ours needn't race.
+    time_writes: Mutex<()>,
+}
+
+/// [`OpenBooks`]' time state.
+#[derive(Default)]
+pub(crate) struct TimeCache {
+    /// The book as last read, with the settings it was read under.
+    book: Option<(Arc<TimeBook>, TimePaths)>,
+    /// When this app last stopped a timer, and which, per person (`""`:
+    /// none).
+    pub(crate) last_stop: std::collections::BTreeMap<String, (Moment, String)>,
 }
 
 impl std::fmt::Debug for OpenBooks {
@@ -103,6 +124,8 @@ impl OpenBooks {
             renderer: Mutex::new(None),
             changes: broadcast::channel(CHANGE_BACKLOG).0,
             drafts: DraftPreviews::default(),
+            time: Mutex::new(TimeCache::default()),
+            time_writes: Mutex::new(()),
         })
     }
 
@@ -197,6 +220,81 @@ impl OpenBooks {
         install_starters_in(&mut session, None)
     }
 
+    /// The time book's settings and paths, read now (`ledgeline.toml
+    /// [time]` may have changed).
+    ///
+    /// # Errors
+    /// When `[time]` or a configured path is unusable.
+    pub(crate) fn time_books(&self) -> Result<TimeBooks, TimeOpError> {
+        TimeBooks::open(Arc::clone(&self.vault), self.main.clone())
+    }
+
+    /// The time book, from the cache when it was read under the same
+    /// paths; `None` before setup.
+    ///
+    /// # Errors
+    /// When the roll-up doesn't parse.
+    pub(crate) fn time_book(
+        &self,
+        books: &TimeBooks,
+    ) -> Result<Option<Arc<TimeBook>>, TimeOpError> {
+        let mut cache = self.time.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((book, paths)) = &cache.book
+            && *paths == books.paths
+        {
+            return Ok(Some(Arc::clone(book)));
+        }
+        let book = books.load()?.map(Arc::new);
+        cache.book = book
+            .as_ref()
+            .map(|book| (Arc::clone(book), books.paths.clone()));
+        Ok(book)
+    }
+
+    /// Drop the cached time book: a time file changed (on disk, or by
+    /// this app's own write).
+    pub(crate) fn forget_time(&self) {
+        self.time
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .book = None;
+    }
+
+    /// The time state, locked (the tracker's last stop).
+    pub(crate) fn time_state(&self) -> MutexGuard<'_, TimeCache> {
+        self.time.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Hold while writing time files.
+    pub(crate) fn time_writes(&self) -> MutexGuard<'_, ()> {
+        self.time_writes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Whether `path` (a local path the watcher reported) is part of the
+    /// time book: a `.timedot`/`.timeclock` file anywhere under the folder,
+    /// or the roll-up, the accounts file or any file the book read.
+    fn is_time_file(&self, path: &Path) -> bool {
+        if path
+            .extension()
+            .is_some_and(|ext| ext == "timedot" || ext == "timeclock")
+        {
+            return true;
+        }
+        let Ok(vault_path) = self.vault.vault_path(path) else {
+            return false;
+        };
+        let cache = self.time.lock().unwrap_or_else(PoisonError::into_inner);
+        cache.book.as_ref().is_some_and(|(book, paths)| {
+            vault_path == paths.rollup
+                || vault_path == paths.accounts
+                || book.sources.iter().any(|s| s.path == vault_path)
+        }) || TimeBooks::open(Arc::clone(&self.vault), self.main.clone()).is_ok_and(|books| {
+            vault_path == books.paths.rollup || vault_path == books.paths.accounts
+        })
+    }
+
     /// Listen for change events ([`Changed`]).
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<Changed> {
         self.changes.subscribe()
@@ -207,6 +305,13 @@ impl OpenBooks {
     /// `GET /api/events`) which of the files it shows changed. PDFs and
     /// other files the app doesn't read are no event.
     pub(crate) fn apply_changes(&self, changed: &[PathBuf]) -> Option<Reconciled> {
+        // The time book follows the roll-up and every file it reads (plan
+        // 46 Phase 2), as the recognition file is followed.
+        let time: BTreeSet<&PathBuf> = changed.iter().filter(|p| self.is_time_file(p)).collect();
+        let settings_file = self.vault.root().join(SETTINGS_FILE);
+        if !time.is_empty() || changed.iter().any(|p| same_file(p, &settings_file)) {
+            self.forget_time();
+        }
         let report = self.reload_changed(changed);
         let journal_names: BTreeSet<_> = self
             .session()
@@ -222,6 +327,7 @@ impl OpenBooks {
                     || is_html(p)
                     || same_file(p, &settings)
                     || p.file_name().is_some_and(|n| journal_names.contains(n))
+                    || time.contains(p)
             })
             .filter_map(|p| match self.vault.vault_path(p) {
                 Ok(path) => Some(path.to_string()),

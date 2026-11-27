@@ -6,6 +6,7 @@
 //! ([`customers`]) write markdown only, never the journal (I2). The books (PLAN 2c): `send`, `void`,
 //! `rebook`, `apply-payment`, `reconcile`, `receivables` and `recognize`.
 //! The PDF (PLAN 3c): `pdf`, in a desktop build ([`pdf`], `app::pdf`).
+//! Time tracking (plan 46): `time …` ([`time_cli`]).
 //! Every command takes `--json`.
 //!
 //! This file parses arguments, opens the books and prints; each operation is
@@ -33,6 +34,7 @@ mod human;
 mod matching;
 mod pdf;
 mod starters;
+mod time_cli;
 
 use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser, Subcommand};
 use invoicer_core::books::{self, ApplyPayment, BooksError, InvoiceBooks, Recognize, Send, Void};
@@ -159,6 +161,9 @@ enum Command {
     Receivables(ReceivablesArgs),
     /// Post the recognition entries due through a date (never after today).
     Recognize(RecognizeArgs),
+    /// Time tracking (plan 46): the slot tracker, entries, unbilled time,
+    /// and billing it as an invoice draft or a contractor's bill.
+    Time(time_cli::TimeArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -191,6 +196,10 @@ struct VoidArgs {
     /// Default: today.
     #[arg(long, value_name = "DATE")]
     date: Option<String>,
+    /// What becomes of the invoice's tracked time: `release` (unbilled
+    /// again, the default) or `nobill` (written off).
+    #[arg(long, value_name = "release|nobill", default_value = "release")]
+    time: String,
 }
 
 #[derive(clap::Args, Debug)]
@@ -877,6 +886,7 @@ fn run(cli: &Cli, matches: Option<&ArgMatches>) -> Result<ExitCode, Failure> {
         Command::Customers(CustomersCommand::ImportCsv(args)) => customers::run_import(cli, args),
         Command::Send(args) => run_send(cli, args),
         Command::Void(args) => run_void(cli, args),
+        Command::Time(args) => time_cli::run(cli, args),
         Command::Pdf(args) => run_pdf(cli, args),
         Command::Rebook(args) => run_rebook(cli, args),
         Command::ApplyPayment(args) => run_apply_payment(cli, args),
@@ -1015,6 +1025,11 @@ fn export_pdf(
 }
 
 fn run_void(cli: &Cli, args: &VoidArgs) -> Result<ExitCode, Failure> {
+    let how = match args.time.as_str() {
+        "release" => invoicer_core::time::bill::Release::Release,
+        "nobill" => invoicer_core::time::bill::Release::Nobill,
+        other => return Err(Failure(format!("--time {other}: release or nobill"), None)),
+    };
     let mut session = open(cli)?;
     let number = number_of(&session, &args.document)?;
     let today = today(cli)?;
@@ -1026,17 +1041,21 @@ fn run_void(cli: &Cli, args: &VoidArgs) -> Result<ExitCode, Failure> {
     };
     let written = retried(flows::void(&mut session, &request))?;
     let mirror = written.mirror_change();
+    let time = time_cli::release_after_void(&session, &request.number, how);
     #[derive(Serialize)]
     struct Out {
         #[serde(flatten)]
         voided: books::Voided,
         mirror: Option<MirrorChange>,
+        /// What became of its tracked time (plan 46).
+        time: serde_json::Value,
     }
     emit(
         cli.json,
         &Out {
             voided: written.done,
             mirror,
+            time,
         },
         |o| human::voided(&o.voided, o.mirror.as_ref()),
     );

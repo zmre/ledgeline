@@ -11,7 +11,8 @@
 //! | `POST /api/invoices/{num}/compute`      | The text a form makes, its amounts and problems; with `books`, what it would book. Writes nothing. |
 //! | `PUT /api/invoices/{num}/form`          | Save a form over the revision read; a sent invoice only with `rebook` (then re-booked). |
 //! | `GET /api/invoices/{num}/deposits`      | The customer's open deposits, each with the row that applies it. |
-//! | `POST /api/invoices/{num}/void`         | `void` (a reversing entry in accrual books).               |
+//! | `POST /api/invoices/{num}/void`         | `void` (a reversing entry in accrual books); `time: release\|nobill` says what becomes of its time (plan 46). |
+//! | `DELETE /api/invoices/{num}`            | Delete a draft, releasing its time (served from [`super::api`]'s route). |
 //! | `POST /api/invoices/{num}/rebook`       | `rebook` (replace its transaction).                        |
 //! | `GET /api/invoices/{num}/payments`      | Cash books: the deposits that might pay it (`apply-payment N`). |
 //! | `POST /api/invoices/{num}/payments`     | Cash books: Apply payment (`apply-payment N --txn REF`); `dry_run` previews it. |
@@ -676,6 +677,10 @@ fn number_of(session: &Session, target: &str) -> Result<String, ApiError> {
 struct VoidBody {
     date: Option<String>,
     today: Option<String>,
+    /// What happens to its time (plan 46 B-invoice): `release` (the
+    /// default) or `nobill`.
+    #[serde(default)]
+    time: invoicer_core::time::bill::Release,
 }
 
 /// `POST /api/invoices/{num}/void`: the CLI's `void` (default date today).
@@ -702,7 +707,49 @@ async fn void(
         let (result, _) = flows::void(&mut session, &void);
         let written = result.map_err(|e| ApiError::from(&e))?;
         log_mirror(written.mirror.as_ref());
-        to_value(&written.done)
+        drop(session);
+        let mut out = to_value(&written.done)?;
+        out["time"] = super::time::release_after(books, &void.number, request.time);
+        Ok(out)
+    })
+    .await
+}
+
+/// `DELETE /api/invoices/{num}`: delete a draft (never a sent or void
+/// invoice: those are in the books) and release its time (plan 46 T10).
+/// `{deleted, number, time: {released}}`.
+pub(crate) async fn delete_draft(
+    State(state): State<AppState>,
+    Path(number): Path<String>,
+) -> ApiResult {
+    with_books(&state, StatusCode::OK, move |books| {
+        let mut session = books.session();
+        let path = find(&session, &number)?;
+        let doc = session
+            .index()
+            .doc(&path)
+            .ok_or_else(|| ApiError::not_found(format!("{path}: no such document")))?;
+        if doc.header.status != Some(Status::Draft) {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "status",
+                format!(
+                    "{path} is {}, not a draft: void it instead",
+                    doc.header.status.map_or("unset", Status::as_str)
+                ),
+            ));
+        }
+        let number = doc.number().map(str::to_string);
+        session.vault().remove_file(&path).map_err(|e| {
+            ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "storage", e.to_string())
+        })?;
+        let (index, vault) = session.parts_mut();
+        index.refresh(vault, std::slice::from_ref(&path));
+        drop(session);
+        let time = number.as_deref().map(|n| {
+            super::time::release_after(books, n, invoicer_core::time::bill::Release::Release)
+        });
+        Ok(json!({ "deleted": path.to_string(), "number": number, "time": time }))
     })
     .await
 }

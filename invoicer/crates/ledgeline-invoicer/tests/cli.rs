@@ -1752,3 +1752,187 @@ fn pdf_prints_a_starter_on_its_ready_signal() {
         assert!(text.contains("No. 105"), "{text}");
     }
 }
+
+/// `time …` (plan 46 T14) on a copy of `invoicer/fixtures/time`, whose
+/// clock is 2026-11-26: the tracker, the log, unbilled, a bill and a
+/// contractor's pay, with `--json` and its error codes.
+#[test]
+fn time_tracks_bills_and_pays_from_the_command_line() {
+    let books = Books::of("time");
+    let time = |args: &[&str], code: i32| -> Value {
+        let out = books
+            .bare()
+            .arg("-f")
+            .arg(books.journal())
+            .args(["--today", "2026-11-26", "--json", "time", "--person", "pat"])
+            .args(args)
+            .output()
+            .expect("runs");
+        assert_eq!(
+            out.status.code(),
+            Some(code),
+            "{args:?}: stdout {} stderr {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).expect("json")
+    };
+    let status = time(&["--now", "2026-11-26T09:00:00", "status"], 0);
+    assert_eq!(status["configured"], true);
+    assert_eq!(status["slots"][1]["account"], "clients:acme:advisory");
+
+    let started = time(&["--now", "2026-11-26T09:00:00", "toggle", "2"], 0);
+    assert_eq!(started["done"]["started"], "clients:acme:advisory");
+    assert_eq!(started["state"]["running"]["slot"], 2);
+    let switched = time(
+        &[
+            "--now",
+            "2026-11-26T09:47:20",
+            "start",
+            "clients:acme:tax-return",
+        ],
+        0,
+    );
+    assert_eq!(switched["done"]["stopped"]["days"][0][1], 47);
+    let stopped = time(&["--now", "2026-11-26T10:00:00", "stop"], 0);
+    assert_eq!(
+        stopped["done"]["stopped"]["account"],
+        "clients:acme:tax-return"
+    );
+    assert_eq!(
+        stopped["state"]["last"]["account"],
+        "clients:acme:tax-return"
+    );
+    let text = books.read("time/pat/2026-11.timedot");
+    assert!(
+        text.contains("clients:acme:advisory           107m  ; call with Fred about the K-1"),
+        "{text}"
+    );
+    assert!(
+        text.contains("clients:acme:tax-return          13m"),
+        "{text}"
+    );
+    let nothing = time(&["--now", "2026-11-26T10:00:00", "stop"], 2);
+    assert_eq!(nothing["code"], "conflict");
+    let note = time(&["note", "2", "re: the K-1"], 2);
+    assert_eq!(note["code"], "note-tag");
+    assert!(
+        note["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("\"re the K-1\"")),
+        "{note}"
+    );
+
+    let log = time(&["log", "--from", "2026-11-26", "--to", "2026-11-26"], 0);
+    assert_eq!(log["entries"].as_array().map(Vec::len), Some(3));
+    let unbilled = time(&["unbilled"], 0);
+    assert_eq!(unbilled["customers"][0]["customer"], "Acme Corp");
+
+    let preview = time(
+        &[
+            "bill",
+            "Acme Corp",
+            "--from",
+            "2026-11-01",
+            "--to",
+            "2026-11-30",
+            "--dry-run",
+        ],
+        0,
+    );
+    assert_eq!(preview["ready"], true, "{preview}");
+    let created = time(
+        &[
+            "bill",
+            "Acme Corp",
+            "--from",
+            "2026-11-01",
+            "--to",
+            "2026-11-30",
+            "--group",
+            "account-person",
+        ],
+        0,
+    );
+    assert_eq!(created["number"], "102");
+    assert!(
+        books
+            .read("time/pat/2026-11.timedot")
+            .contains("invoice: 102")
+    );
+    let released = time(&["release", "102"], 0);
+    assert_eq!(released["released"], 7);
+    assert!(
+        !books
+            .read("time/pat/2026-11.timedot")
+            .contains("invoice: 102")
+    );
+
+    let needs = time(&["pay", "riley"], 2);
+    assert_eq!(needs["ready"], false);
+    let paid = time(&["pay", "sam"], 0);
+    assert_eq!(paid["reference"], "sam timesheet 2026-11");
+    assert_eq!(paid["vendor"], "Lee Consulting");
+    assert!(
+        books
+            .read("books.journal")
+            .contains("Lee Consulting | sam timesheet 2026-11")
+    );
+
+    // `void --time nobill` writes 101's time off.
+    let voided = books.json(&["void", "101", "--time", "nobill"], 0);
+    assert_eq!(voided["time"]["released"], 2, "{voided}");
+    assert!(
+        books
+            .read("time/pat/2026-10.timedot")
+            .contains("nobill: invoice 101 void")
+    );
+}
+
+#[test]
+fn time_setup_creates_the_default_files_once() {
+    let books = Books::of("accrual");
+    let setup = |args: &[&str], code: i32| -> Value {
+        let out = books
+            .bare()
+            .arg("-f")
+            .arg(books.journal())
+            .args([
+                "--today",
+                "2026-11-26",
+                "--json",
+                "time",
+                "--person",
+                "pat",
+                "setup",
+            ])
+            .args(args)
+            .output()
+            .expect("runs");
+        assert_eq!(
+            out.status.code(),
+            Some(code),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).expect("json")
+    };
+    let dry = setup(&["--dry-run"], 0);
+    assert_eq!(dry["written"], false);
+    assert!(!books.file("time.journal").exists());
+    let done = setup(&[], 0);
+    assert_eq!(done["files"].as_array().map(Vec::len), Some(3));
+    assert!(
+        books
+            .read("time.journal")
+            .contains("include time/**/*.timedot")
+    );
+    assert!(
+        books
+            .read("time-accounts.journal")
+            .contains("account clients:contoso")
+    );
+    assert!(books.file("time/pat/2026-11.timedot").exists());
+    let again = setup(&[], 2);
+    assert_eq!(again["code"], "exists");
+}
