@@ -13,8 +13,8 @@ time into invoice drafts (Invoicer) or contractor bills (accounts payable).
 
 Nothing about time reaches the money journal unless the user includes it.
 
-> Status: **reviewed by Patrick 2026-11-26**; decisions T1–T18 settled, no
-> open questions. Nothing is built.
+> Status: **built 2026-11-26** on branch `2026-11-26-time-tracking` (Phases 1–5,
+> plus post-review core fixes). Phase 6 items remain future work.
 
 ## The ask (Patrick, 2026-11-26)
 
