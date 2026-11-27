@@ -11,7 +11,7 @@
 //! UPDATE_SNAPSHOTS=1 cargo test -p ledgeline-invoicer --test cli   # re-record
 //! ```
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -1860,6 +1860,18 @@ fn time_tracks_bills_and_pays_from_the_command_line() {
             .read("time/pat/2026-11.timedot")
             .contains("invoice: 102")
     );
+    // The draft still holds the rows: releasing its time by hand would bill
+    // the same hours twice.
+    let refused = time(&["release", "102"], 2);
+    assert_eq!(refused["code"], "invoice-exists", "{refused}");
+    assert!(
+        books
+            .read("time/pat/2026-11.timedot")
+            .contains("invoice: 102")
+    );
+    // Once the draft is gone, the tag is an orphan, and releases.
+    let draft = created["path"].as_str().expect("draft path");
+    fs::remove_file(books.file(draft)).expect("delete the draft");
     let released = time(&["release", "102"], 0);
     assert_eq!(released["released"], 7);
     assert!(
@@ -1870,6 +1882,7 @@ fn time_tracks_bills_and_pays_from_the_command_line() {
 
     let needs = time(&["pay", "riley"], 2);
     assert_eq!(needs["ready"], false);
+    assert!(!books.file("recognition.journal").exists());
     let paid = time(&["pay", "sam"], 0);
     assert_eq!(paid["reference"], "sam timesheet 2026-11");
     assert_eq!(paid["vendor"], "Lee Consulting");
@@ -1878,6 +1891,27 @@ fn time_tracks_bills_and_pays_from_the_command_line() {
             .read("books.journal")
             .contains("Lee Consulting | sam timesheet 2026-11")
     );
+    // Booking the bill writes the journal only.
+    assert!(!books.file("recognition.journal").exists());
+
+    // Unlocking the bill's time voids the bill, then frees its lines.
+    let unlocked = time(&["release", "--bill", "sam timesheet 2026-11"], 0);
+    assert_eq!(unlocked["voided"], true, "{unlocked}");
+    assert!(unlocked["released"].as_u64().expect("count") > 0);
+    let journal = books.read("books.journal");
+    assert!(journal.contains("Lee Consulting | sam timesheet 2026-11 (void)"));
+    assert!(
+        !books
+            .read("time/sam/2026-11.timedot")
+            .contains("bill: sam timesheet 2026-11")
+    );
+    // Again: already void, nothing more to do.
+    let again = time(&["release", "--bill", "sam timesheet 2026-11"], 0);
+    assert_eq!(
+        (again["voided"].clone(), again["released"].clone()),
+        (json!(false), json!(0))
+    );
+    assert!(!books.file("recognition.journal").exists());
 
     // `void --time nobill` writes 101's time off.
     let voided = books.json(&["void", "101", "--time", "nobill"], 0);

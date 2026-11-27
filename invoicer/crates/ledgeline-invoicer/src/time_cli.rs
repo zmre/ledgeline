@@ -95,10 +95,17 @@ enum TimeCommand {
     Bill(BillArgs),
     /// Pay a contractor's time: an accounts-payable bill.
     Pay(PayArgs),
-    /// Take `invoice: N` off its time (or make it nobill).
+    /// Take `invoice: N` off its time (or make it nobill): for an orphan
+    /// tag; refused while invoice N is a draft or sent and not void (delete
+    /// or void it instead). With `--bill REF`: void the accounts-payable
+    /// bill REF in the books and unlock its time.
     Release {
         /// The invoice number.
-        invoice: String,
+        #[arg(required_unless_present = "bill", conflicts_with = "bill")]
+        invoice: Option<String>,
+        /// The accounts-payable bill's reference (`bill:` on its time).
+        #[arg(long, value_name = "REF")]
+        bill: Option<String>,
         /// Mark the time nobill instead of unbilled.
         #[arg(long)]
         nobill: bool,
@@ -682,13 +689,45 @@ pub(crate) fn run(cli: &Cli, args: &TimeArgs) -> Result<ExitCode, Failure> {
                 )
             });
         }
-        TimeCommand::Release { invoice, nobill } => {
+        TimeCommand::Release {
+            invoice,
+            bill: bill_ref,
+            nobill,
+        } => {
             let how = if *nobill {
                 Release::Nobill
             } else {
                 Release::Release
             };
-            let done = bill::release(&books, None, invoice, how).map_err(fail)?;
+            if let Some(reference) = bill_ref {
+                let invoice_books = session.invoice_books();
+                let done =
+                    pay::unlock_bill(&books, None, &invoice_books, reference, how, &today(cli)?)
+                        .map_err(fail)?;
+                emit(cli.json, &done, |d| {
+                    format!(
+                        "{}Released {} lines of bill {}\n",
+                        if d.voided {
+                            format!("Voided bill {} in the books. ", d.bill)
+                        } else {
+                            String::new()
+                        },
+                        d.released,
+                        d.bill
+                    )
+                });
+                return Ok(ExitCode::SUCCESS);
+            }
+            let invoice = invoice.as_deref().unwrap_or_default();
+            let done = bill::release_by_hand(
+                &books,
+                None,
+                session.index(),
+                session.journal(),
+                invoice,
+                how,
+            )
+            .map_err(fail)?;
             let value = json!({ "invoice": invoice, "released": done.done, "how": how });
             emit(cli.json, &value, |_| {
                 format!("Released {} lines of invoice {invoice}\n", done.done)

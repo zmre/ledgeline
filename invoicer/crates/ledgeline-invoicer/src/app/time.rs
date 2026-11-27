@@ -19,13 +19,14 @@
 //! | `GET /api/time/summary`                 | Time by any groupings (note too), depth, top N, a period series; the roll-up's `file`. |
 //! | `GET /api/time/unbilled`                | Per customer, with suggested periods; needs-a-customer; orphan tags.    |
 //! | `POST /api/time/bill`                   | Preview (`preview: true`) or create an invoice draft from time.         |
-//! | `POST /api/time/release`                | `{invoice, how}`: take `invoice: N` off its time (or make it nobill).   |
+//! | `POST /api/time/release`                | `{invoice, how}`: take `invoice: N` off its time (or make it nobill), refused (`invoice-exists`) while N is a draft or sent and not void; `{bill, how}`: void AP bill `bill` and unlock its time. |
 //! | `GET /api/time/unpaid`                  | Per person (timekeepers), with suggested periods.                       |
 //! | `POST /api/time/pay`                    | Preview (needs) or book an accounts-payable bill from time.             |
 //!
 //! Errors are the API's envelope (`{"error", "code"}`, [`ApiError`]):
 //! `not-set-up` (409), `note-tag` (422, with `offending` and
-//! `suggestion`), `locked` (409), `conflict` (409), `external-change`
+//! `suggestion`), `locked` (409), `conflict` (409), `invoice-exists`
+//! (409), `external-change`
 //! (409), `exists` (409), `invalid`/`verify`/`settings` (422), `not-found`
 //! (404), `bad-request` (400), and the books bridge's codes for a bill.
 //!
@@ -100,9 +101,8 @@ impl From<TimeOpError> for ApiError {
         }
         let code = error.code();
         let status = match code {
-            "not-set-up" | "locked" | "conflict" | "external-change" | "exists" => {
-                StatusCode::CONFLICT
-            }
+            "not-set-up" | "locked" | "conflict" | "invoice-exists" | "external-change"
+            | "exists" => StatusCode::CONFLICT,
             "note-tag" | "invalid" | "verify" | "settings" => StatusCode::UNPROCESSABLE_ENTITY,
             "not-found" => StatusCode::NOT_FOUND,
             "bad-request" => StatusCode::BAD_REQUEST,
@@ -1021,22 +1021,81 @@ async fn bill_route(
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReleaseBody {
-    invoice: String,
+    #[serde(default)]
+    invoice: Option<String>,
+    #[serde(default)]
+    bill: Option<String>,
     #[serde(default)]
     how: Release,
+    #[serde(default)]
+    today: Option<String>,
 }
 
-/// `POST /api/time/release`: `{invoice, how: release|nobill}` — an orphan
-/// tag's fix, and what Delete draft and Void do.
+/// `POST /api/time/release`, one of:
+///
+/// - `{invoice, how: release|nobill}`: take `invoice: N` off its time (or
+///   make it nobill) — an orphan tag's fix. Refused, 409 `invoice-exists`,
+///   while invoice N is a draft (delete it) or sent and not void (void it):
+///   those flows release the time themselves. `{done, files, retried,
+///   included}`.
+/// - `{bill, how}`: void the accounts-payable bill whose reference is
+///   `bill`, then take `bill:` off its time (or swap it for `nobill`).
+///   Refused, 409 `conflict`, when the bill is paid. `{bill, released, how,
+///   voided, files}`.
 async fn release(
     State(state): State<AppState>,
     payload: Result<Json<ReleaseBody>, JsonRejection>,
 ) -> ApiResult {
     let request = body(payload)?;
-    time_write(state, move |time, book, _, _| {
-        bill::release(time, Some(book), &request.invoice, request.how)
-    })
-    .await
+    match (request.invoice, request.bill) {
+        (Some(invoice), None) => {
+            let books = state.open_books()?;
+            blocking(StatusCode::OK, move || {
+                let _guard = books.time_writes();
+                let (time, book) = time_of(&books)?;
+                let book = required(&time, book.as_ref())?;
+                let session = books.session();
+                let done = bill::release_by_hand(
+                    &time,
+                    Some(&book),
+                    session.index(),
+                    session.journal(),
+                    &invoice,
+                    request.how,
+                )?;
+                drop(session);
+                written(&books, &time, &done)
+            })
+            .await
+        }
+        (None, Some(reference)) => {
+            let today = today_of(request.today.as_deref())?;
+            let books = state.open_books()?;
+            blocking(StatusCode::OK, move || {
+                let _guard = books.time_writes();
+                let (time, book) = time_of(&books)?;
+                let book = required(&time, book.as_ref())?;
+                let mut session = books.session();
+                let invoice_books = session.invoice_books();
+                let done = pay::unlock_bill(
+                    &time,
+                    Some(&book),
+                    &invoice_books,
+                    &reference,
+                    request.how,
+                    &today,
+                );
+                books.forget_time();
+                let done = done?;
+                super::books::reload_after_write(&mut session);
+                to_value(done)
+            })
+            .await
+        }
+        _ => Err(ApiError::bad_request(
+            "give `invoice` or `bill` (one of them)".to_string(),
+        )),
+    }
 }
 
 /// `POST /api/time/pay`: with `preview` (or when something is needed), the

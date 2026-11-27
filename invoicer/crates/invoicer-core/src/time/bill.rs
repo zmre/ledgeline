@@ -19,11 +19,14 @@ use super::{
     hours_2, save_note_fields,
 };
 use crate::catalog::Catalog;
+use crate::doc::{DocType, Status};
 use crate::draft::{self, DraftRow, NewInvoice};
 use crate::frontmatter::FieldEdit;
 use crate::index::DocumentIndex;
 use crate::table::gfm::escape_cell;
 use ledgeline_core::Dec;
+use ledgeline_core::accrual::{INVOICE_TAG, VOID_TAG};
+use ledgeline_core::model::Journal;
 use ledgeline_core::reports::periods::{Interval, bucket_end, bucket_key, bucket_start};
 use ledgeline_core::time::model::{TimeBook, TimeEntry};
 use ledgeline_core::time::query::{self, suggest_periods};
@@ -843,8 +846,81 @@ pub enum Release {
     Nobill,
 }
 
+/// Why `invoice: number`'s time can't be released **by hand** (T10,
+/// B-invoice), if it can't: invoice `number` still exists as a draft, or as
+/// a sent invoice that isn't void (its note, or the books without a note).
+/// Releasing then would leave the draft's rows, or the sent invoice, and
+/// unbilled time for the same hours: billed twice. An orphan tag (no such
+/// invoice), a deleted draft and a void invoice can be released. Deleting a
+/// draft and voiding an invoice release their time themselves.
+#[must_use]
+pub fn release_refusal(index: &DocumentIndex, journal: &Journal, number: &str) -> Option<String> {
+    let docs: Vec<_> = index
+        .docs()
+        .filter(|doc| {
+            doc.number() == Some(number)
+                && matches!(doc.header.doc_type, None | Some(DocType::Invoice))
+        })
+        .collect();
+    if docs
+        .iter()
+        .any(|doc| doc.header.status == Some(Status::Draft))
+    {
+        return Some(format!(
+            "invoice {number} is still a draft; delete the draft to release its time"
+        ));
+    }
+    if docs
+        .iter()
+        .any(|doc| doc.header.status != Some(Status::Void))
+    {
+        return Some(format!(
+            "invoice {number} is sent; void it to release its time (or write it off)"
+        ));
+    }
+    let tagged = |txn: &ledgeline_core::model::Transaction, name: &str| {
+        txn.tags
+            .iter()
+            .any(|(tag, value)| tag == name && value.trim() == number)
+    };
+    let booked = || {
+        crate::numbering::booked_numbers(journal)
+            .iter()
+            .any(|n| n == number)
+    };
+    let voided = || {
+        journal
+            .transactions
+            .iter()
+            .any(|txn| tagged(txn, INVOICE_TAG) && txn.tags.iter().any(|(tag, _)| tag == VOID_TAG))
+    };
+    (docs.is_empty() && booked() && !voided())
+        .then(|| format!("invoice {number} is booked and not void; void it to release its time"))
+}
+
+/// [`release`] asked for by hand (Unbilled's orphan fix, `time release N`):
+/// refused while invoice `number` exists ([`release_refusal`]).
+///
+/// # Errors
+/// [`TimeOpError::InvoiceExists`]; as [`release`].
+pub fn release_by_hand(
+    books: &TimeBooks,
+    book: Option<&TimeBook>,
+    index: &DocumentIndex,
+    journal: &Journal,
+    number: &str,
+    how: Release,
+) -> Result<Written<usize>, TimeOpError> {
+    if let Some(why) = release_refusal(index, journal, number) {
+        return Err(TimeOpError::InvoiceExists(why));
+    }
+    release(books, book, number, how)
+}
+
 /// Take `invoice: number` off every line that carries it, or turn it into
-/// `nobill`. Returns how many lines changed (0 when none carry it).
+/// `nobill`. Returns how many lines changed (0 when none carry it). No
+/// check on the invoice: the draft-delete and void flows call it; a person's
+/// request goes through [`release_by_hand`].
 ///
 /// # Errors
 /// [`TimeOpError`].

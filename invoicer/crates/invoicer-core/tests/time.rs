@@ -1182,4 +1182,85 @@ fn paying_a_contractor_books_a_payable_and_tags_the_time() {
             .read("people/Riley Chen.md")
             .contains("pay_rate: $60\n")
     );
+    assert!(
+        !books.root.join("recognition.journal").exists(),
+        "booking a bill writes the journal only"
+    );
+
+    // Unlocking sam's bill: a void dated before the bill is refused by the
+    // books after the tags came off, so the lines are put back exactly.
+    let sam_file = books.read("time/sam/2026-11.timedot");
+    let invoice_books = session.invoice_books();
+    let refused = pay::unlock_bill(
+        &time,
+        None,
+        &invoice_books,
+        "sam timesheet 2026-11",
+        Release::Release,
+        "2026-11-01",
+    );
+    assert!(refused.is_err(), "{refused:?}");
+    assert_eq!(books.read("time/sam/2026-11.timedot"), sam_file);
+    assert!(!books.read("books.journal").contains("(void)"));
+    // Dated today: voided, then the lines are free.
+    let done = pay::unlock_bill(
+        &time,
+        None,
+        &invoice_books,
+        "sam timesheet 2026-11",
+        Release::Release,
+        TODAY,
+    )
+    .expect("unlock");
+    assert!(done.voided);
+    assert_eq!(done.released, 4);
+    assert!(
+        !books
+            .read("time/sam/2026-11.timedot")
+            .contains("bill: sam timesheet")
+    );
+    // Voided, the reference can be billed again.
+    let session = books.session();
+    let book = time.require().expect("book");
+    let again = pay::preview(
+        &book,
+        session.index(),
+        session.journal(),
+        &request("sam"),
+        TODAY,
+    )
+    .expect("preview");
+    assert!(
+        again.needs.iter().all(|n| n.field != "reference"),
+        "{:?}",
+        again.needs
+    );
+
+    // A paid bill keeps its time: the payment's link is detected.
+    let journal = books.read("books.journal").replace(
+        "liabilities:accounts payable  $-180.00  ; vendor: Riley Chen",
+        "liabilities:accounts payable  $-180.00  ; vendor: Riley Chen, match: m-77",
+    );
+    assert!(journal.contains("match: m-77"), "{journal}");
+    std::fs::write(
+        books.root.join("books.journal"),
+        format!(
+            "{journal}\n2026-11-27 Pay Riley\n    liabilities:accounts payable  $180.00  ; match: m-77\n    assets:checking\n"
+        ),
+    )
+    .expect("pay riley");
+    let riley_file = books.read("time/riley/2026-11.timedot");
+    let paid = pay::unlock_bill(
+        &time,
+        None,
+        &books.session().invoice_books(),
+        "riley timesheet 2026-11",
+        Release::Release,
+        TODAY,
+    );
+    assert!(
+        matches!(&paid, Err(invoicer_core::time::TimeOpError::Conflict(why)) if why.contains("paid")),
+        "{paid:?}"
+    );
+    assert_eq!(books.read("time/riley/2026-11.timedot"), riley_file);
 }

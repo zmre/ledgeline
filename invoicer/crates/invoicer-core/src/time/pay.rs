@@ -14,10 +14,12 @@
 //!
 //! [`Loaded::write_document`]: ledgeline_core::accrual::ops::Loaded::write_document
 
+use super::bill::Release;
 use super::link::{Timekeeper, note_as_timekeeper, timekeeper_for, timekeepers};
 use super::report::PeriodView;
 use super::{
-    EntryRef, Qty, TimeBooks, TimeOpError, entry_id, find_entries, hours_2, save_note_fields,
+    EntryRef, Qty, TimeBooks, TimeOpError, before_edit, entry_id, find_entries, hours_2,
+    save_note_fields, snapshots,
 };
 use crate::books::InvoiceBooks;
 use crate::customers::ContactKind;
@@ -28,8 +30,9 @@ use ledgeline_core::accrual::invoice::{
     Direction, DocumentLine, DocumentSpec, money, tag_value_from,
 };
 use ledgeline_core::accrual::schedule::{Party, PartyKind};
-use ledgeline_core::accrual::{AccrualRole, AccrualRoles, DUE_TAG, REFERENCE_TAG};
-use ledgeline_core::model::Journal;
+use ledgeline_core::accrual::{AccrualRole, AccrualRoles, DUE_TAG, REFERENCE_TAG, VOID_TAG};
+use ledgeline_core::matching::MATCH_TAG;
+use ledgeline_core::model::{Journal, Transaction};
 use ledgeline_core::reports::periods::{Interval, bucket_key};
 use ledgeline_core::time::model::TimeBook;
 use ledgeline_core::time::query::{self, Cadence, suggest_periods};
@@ -440,11 +443,7 @@ pub fn preview(
                 .collect();
             reference_for(person, &dates)
         });
-    if journal.transactions.iter().any(|txn| {
-        txn.tags
-            .iter()
-            .any(|(name, value)| name == REFERENCE_TAG && value.trim() == reference)
-    }) {
+    if booked_reference(journal, &reference) {
         needs.push(Need {
             field: "reference",
             message: format!("a bill with reference {reference} is already booked"),
@@ -476,6 +475,21 @@ pub fn preview(
         ready: needs.is_empty(),
         needs,
     })
+}
+
+/// Whether a bill with `reference` is booked and not voided: a void's
+/// reversal carries the reference too, so each one cancels one booking.
+fn booked_reference(journal: &Journal, reference: &str) -> bool {
+    let (voids, booked): (Vec<&Transaction>, Vec<&Transaction>) = journal
+        .transactions
+        .iter()
+        .filter(|txn| {
+            txn.tags
+                .iter()
+                .any(|(name, value)| name == REFERENCE_TAG && value.trim() == reference)
+        })
+        .partition(|txn| txn.tags.iter().any(|(name, _)| name == VOID_TAG));
+    booked.len() > voids.len()
 }
 
 /// Create a timekeeper note for `person` (*Create note…*): beside the other
@@ -709,6 +723,138 @@ pub fn create(
             .collect(),
         saved_to_note,
         note_created,
+    })
+}
+
+/// What [`unlock_bill`] did.
+#[derive(Debug, Clone, Serialize)]
+pub struct BillReleased {
+    /// The bill's reference.
+    pub bill: String,
+    /// How many lines changed.
+    pub released: usize,
+    /// `release` (unbilled again) or `nobill` (written off).
+    pub how: Release,
+    /// Whether the bill was voided now (`false`: it was void already, or
+    /// no bill carries the reference).
+    pub voided: bool,
+    /// The files written.
+    pub files: Vec<String>,
+}
+
+/// Unlock the time on the accounts-payable bill `reference` (B-ap): void
+/// the bill in the books (plan 45's void: a reversal linked to it), then
+/// take `bill: reference` off its lines, or swap it for `nobill: bill
+/// <reference> void`. Tags first, as billing does: the lines are changed,
+/// then the bill voided; when the void fails, the lines are put back as they
+/// were. A bill already void, or tags with no bill (an orphan), just have
+/// their tags changed.
+///
+/// # Errors
+/// [`TimeOpError::Conflict`] when the bill is paid (a payment is linked to
+/// it) or two bills carry the reference; [`TimeOpError::Books`] when the
+/// void is refused (closed books, a future-dated bill);
+/// [`TimeOpError`].
+pub fn unlock_bill(
+    books: &TimeBooks,
+    book: Option<&TimeBook>,
+    invoice_books: &InvoiceBooks,
+    reference: &str,
+    how: Release,
+    today: &str,
+) -> Result<BillReleased, TimeOpError> {
+    use ledgeline_core::accrual::ops::OpsError;
+    let reference = reference.trim();
+    if reference.is_empty() {
+        return Err(TimeOpError::BadRequest(
+            "which bill? give its reference".to_string(),
+        ));
+    }
+    // Always the journal on disk, never a warm (possibly stale) copy: a
+    // bill missed here would have its time released while it stays booked.
+    let fresh = || {
+        invoice_books
+            .books()
+            .load()
+            .map_err(|e| TimeOpError::Books(e.into()))
+    };
+    let loaded = fresh()?;
+    let must_void = match loaded.find_by_reference(AccrualRole::Payable, reference) {
+        Ok(found) if loaded.is_voided(&found) => false,
+        Ok(found) => {
+            let settlement = &found.transaction.postings[found.settlement.posting];
+            if settlement.tags.iter().any(|(name, _)| name == MATCH_TAG) {
+                return Err(TimeOpError::Conflict(format!(
+                    "bill {reference} is paid (a payment is linked to it), so its time stays \
+                     on it; unlink the payment first to void the bill"
+                )));
+            }
+            true
+        }
+        Err(OpsError::DocumentNotFound(_)) => false,
+        Err(OpsError::DuplicateDocument(_)) => {
+            return Err(TimeOpError::Conflict(format!(
+                "two bills carry reference {reference}; void the wrong one in Ledgeline first"
+            )));
+        }
+        Err(other) => return Err(TimeOpError::Books(other.into())),
+    };
+    drop(loaded);
+    let tagged = books.write(book, |book, files| {
+        let names = &book.tags;
+        let refs: BTreeSet<EntryRef> = book
+            .entries
+            .iter()
+            .filter(|entry| entry.tag(names, TagRole::Bill) == Some(reference))
+            .map(EntryRef::of)
+            .collect();
+        let mut before = BTreeMap::new();
+        // Last line first: removing a tag can remove the continuation line
+        // it was on, which would shift every later line of the file.
+        for at in refs.iter().rev() {
+            before_edit(files, &at.file, &mut before)?;
+            super::entries::set_tag(files, at, names.name(TagRole::Bill), None)?;
+            if how == Release::Nobill {
+                super::entries::set_tag(
+                    files,
+                    at,
+                    names.name(TagRole::Nobill),
+                    Some(&format!("bill {reference} void")),
+                )?;
+            }
+        }
+        Ok((refs.len(), snapshots(files, &before)))
+    })?;
+    let (released, snaps) = tagged.done;
+    if must_void {
+        let voided = fresh().and_then(|mut loaded| {
+            match loaded.void_by_reference(AccrualRole::Payable, reference, today, None) {
+                Err(OpsError::ExternalChange) => fresh()?
+                    .void_by_reference(AccrualRole::Payable, reference, today, None)
+                    .map_err(|e| TimeOpError::Books(e.into())),
+                other => other.map_err(|e| TimeOpError::Books(e.into())),
+            }
+        });
+        if let Err(error) = voided {
+            return Err(match books.restore(&snaps) {
+                Ok(()) => error,
+                Err(undo) => TimeOpError::Conflict(format!(
+                    "bill {reference} wasn't voided ({error}), and its time is already \
+                     released ({undo}); tag it bill: {reference} again by hand"
+                )),
+            });
+        }
+    }
+    Ok(BillReleased {
+        bill: reference.to_string(),
+        released,
+        how,
+        voided: must_void,
+        files: tagged
+            .saved
+            .iter()
+            .map(|p| books.paths.relative(p))
+            .collect(),
     })
 }
 

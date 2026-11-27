@@ -541,7 +541,8 @@ A sidebar block, pinned above the section links, on every Invoicer screen:
   any timedot file:
   - Changes are verified by re-parse.
   - A line tagged with a **sent** invoice or a booked bill is read-only. The
-    unlock path is to void or release the invoice/bill.
+    unlock path is to void the invoice (Void releases its time), or to
+    release the bill (which voids it in the books first).
   - Timeclock sessions edit as start/end; tags go on the `o` line.
 - **Bulk:** select rows, then *Mark billable / Mark nobill / Move to account
   / Set person*.
@@ -670,6 +671,11 @@ Lifecycle:
 - **Delete a draft** removes its `invoice:` tags (releases the time).
 - **Void** a sent invoice asks: *Release the time* (the default) or *Mark it
   nobill*.
+- **Release by hand** (`POST /api/time/release {invoice}`, `time release
+  N`) is for orphan tags only: refused (409 `invoice-exists`) while invoice
+  N is a draft or sent and not void, since the draft's rows (or the sent
+  invoice) and the unbilled time would bill the same hours twice. Allowed
+  for no such invoice, a deleted draft, a void invoice.
 - **Rebook** after editing hours leaves the time tags alone. The invoice is
   the truth for money (ARCHITECTURE §1.3).
 
@@ -719,6 +725,13 @@ Lifecycle:
   `bill: <reference>`.
 - Contractor time can still be rebilled to the customer. The `invoice` and
   `bill` tags are independent.
+- **Release a bill** (`POST /api/time/release {bill: REF, how}`, `time
+  release --bill REF [--nobill]`): the lines lose `bill: REF` (or swap it for
+  `nobill: bill REF void`) first, then the bill is voided in the books
+  (plan 45's void, found by `reference:`). When the void fails, the lines
+  are put back byte for byte. A paid bill (a payment linked) is refused. A
+  bill already void, or tags with no bill, just have their tags changed.
+  Booking a bill never creates the recognition file.
 - **Getting their time in.** A contractor can:
   1. send a `.timedot` file that we drop into `time/<person>/`;
   2. use the same app pointed at a shared folder;
