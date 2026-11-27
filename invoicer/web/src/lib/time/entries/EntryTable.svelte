@@ -19,8 +19,8 @@
     import {CURSOR_ROW, rowKeys} from "#lib/keys/rowKeys.svelte.js";
     import type {EntryView} from "../api/entries.js";
     import {billingText, flatten, type EntryGroup} from "./group.js";
-    import {dayHeading} from "./dates.js";
-    import {formatDuration} from "./duration.js";
+    import {dayHeading} from "../dates.js";
+    import {formatDuration} from "../duration.js";
 
     let {
         groups,

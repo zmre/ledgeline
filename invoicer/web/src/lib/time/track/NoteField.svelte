@@ -6,7 +6,7 @@
 <script lang="ts">
     import {untrack} from "svelte";
     import {EditorApiError} from "#lib/editorApi.js";
-    import {noteProblem, type NoteProblem} from "./format.js";
+    import {noteProblem, type NoteProblem} from "../note.js";
 
     let {
         label,

@@ -9,7 +9,7 @@
 // Every link into Entries names its dates explicitly (`from` and `to`), so
 // it never depends on the two pages sharing a preset.
 import type {SummaryParams} from "../api/summary.js";
-import {addDays, addMonths, daysBetween, isIsoDate, isMonthEnd, isMonthStart, mondayOf, monthEnd, monthStart, quarterStart} from "./dates.js";
+import {addDays, addMonths, daysBetween, isIsoDate, isMonthEnd, isMonthStart, mondayOf, monthEnd, monthStart, quarterStart} from "../dates.js";
 
 export const PRESETS = ["this-week", "last-week", "this-month", "last-month", "this-quarter", "ytd", "last-12-months"] as const;
 export type Preset = (typeof PRESETS)[number];

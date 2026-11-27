@@ -3,7 +3,8 @@
      is set. Today's figure is live (`todaySeconds`, the running timer in). -->
 <script lang="ts">
     import type {Day} from "#lib/time/types.js";
-    import {durationText, weekdayOf} from "./format.js";
+    import {weekdayName} from "../dates.js";
+    import {durationText} from "../duration.js";
 
     let {week, today, todaySeconds, target}: {week: Day[]; today: string; todaySeconds: number; target: number} = $props();
 
@@ -20,7 +21,7 @@
                 aria-current={day.date === today ? "date" : undefined}
                 data-testid="time-week-{day.date}"
             >
-                <span>{weekdayOf(day.date)}</span>
+                <span>{weekdayName(day.date)}</span>
                 <span class="tabular-nums">{durationText(day.seconds)}</span>
             </li>
         {/each}

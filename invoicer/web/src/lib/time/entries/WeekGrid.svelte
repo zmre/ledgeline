@@ -11,8 +11,8 @@
 <script lang="ts">
     import AccountInput from "#ui/components/AccountInput.svelte";
     import {isOpenLine, type WeekCell, type WeekGrid} from "./group.js";
-    import {shortDate, weekdayName} from "./dates.js";
-    import {formatDuration, parseDuration} from "./duration.js";
+    import {dayMonth, weekdayName} from "../dates.js";
+    import {formatDuration, parseDuration} from "../duration.js";
 
     let {
         grid,
@@ -93,7 +93,7 @@
                     <th class="sticky left-0 z-10 bg-base-100">Account</th>
                     {#each grid.days as day (day)}
                         <th class={["text-right whitespace-nowrap", day === today && "text-primary"]} data-testid="week-day">
-                            {weekdayName(day)}<br /><span class="font-normal">{shortDate(day)}</span>
+                            {weekdayName(day)}<br /><span class="font-normal">{dayMonth(day)}</span>
                         </th>
                     {/each}
                     <th class="text-right">Total</th>

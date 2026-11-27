@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest";
-import {addMonths, rangeText, workingDays} from "./dates.js";
+import {addMonths, rangeText, workingDays} from "../dates.js";
 import {
     apiFilter,
     autoGrain,

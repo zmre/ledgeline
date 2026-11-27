@@ -3,7 +3,8 @@
      text, print or share. Printing shows the card alone (the page hides the
      rest under `print:`). -->
 <script lang="ts">
-    import {dayCardText, dayHeading, durationText, type CardRow} from "./format.js";
+    import {durationText} from "../duration.js";
+    import {dayCardText, dayHeading, type CardRow} from "./format.js";
 
     let {
         date,

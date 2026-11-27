@@ -1,40 +1,10 @@
-// Track's pure helpers: durations as people read them, the platform key
-// hints, the note check (the server's `note_problem`, mirrored so Track can
-// warn while you type), the day card, and the optimistic toggle.
+// Track's pure helpers: a running timer as people read it, the platform key
+// hints, the day card, and the optimistic toggle.
 import {describe, expect, it} from "vitest";
-import {
-    accountLabel,
-    addMinutes,
-    dayCardRows,
-    dayCardText,
-    daysBetween,
-    durationText,
-    elapsedText,
-    noteProblem,
-    optimisticStop,
-    optimisticToggle,
-    roundedMinutes,
-    slotHint,
-    stopHint,
-} from "./format.js";
+import {accountLabel, addMinutes, dayCardRows, dayCardText, dayHeading, elapsedText, optimisticStop, optimisticToggle, slotHint, stopHint} from "./format.js";
 import {running, trackState} from "./fixtures.js";
 
 describe("UNIT time durations", () => {
-    it("rounds each session to the minute, half up (T4)", () => {
-        expect(roundedMinutes(29)).toBe(0);
-        expect(roundedMinutes(30)).toBe(1);
-        expect(roundedMinutes(80)).toBe(1);
-        expect(roundedMinutes(90)).toBe(2);
-        expect(roundedMinutes(-5)).toBe(0);
-    });
-
-    it("reads banked totals as 45m, 2h, 2h 05m, and nothing as a dash", () => {
-        expect(durationText(0)).toBe("—");
-        expect(durationText(45 * 60)).toBe("45m");
-        expect(durationText(2 * 3600)).toBe("2h");
-        expect(durationText(2 * 3600 + 5 * 60)).toBe("2h 05m");
-    });
-
     it("counts a running timer in seconds until it reaches an hour", () => {
         expect(elapsedText(42.7)).toBe("42s");
         expect(elapsedText(12 * 60 + 5)).toBe("12m 05s");
@@ -46,8 +16,7 @@ describe("UNIT time durations", () => {
     });
 
     it("does date and time arithmetic by calendar, never by parsing text", () => {
-        expect(daysBetween("2026-11-25", "2026-11-26")).toBe(1);
-        expect(daysBetween("2026-10-31", "2026-11-26")).toBe(26);
+        expect(dayHeading("2026-11-26")).toBe("Thu 26 Nov");
         expect(addMinutes("2026-11-25T22:30:00", 240)).toBe("2026-11-26T02:30");
     });
 });
@@ -58,26 +27,6 @@ describe("UNIT time key hints (K)", () => {
         expect(slotHint(0, false)).toBe("Ctrl+Shift+0");
         expect(stopHint(true)).toBe("⌥⌘.");
         expect(stopHint(false)).toBe("Ctrl+Shift+.");
-    });
-});
-
-describe("UNIT the note check, as the server makes it", () => {
-    it("lets plain notes through", () => {
-        expect(noteProblem("")).toBeNull();
-        expect(noteProblem("call about the K-1")).toBeNull();
-        expect(noteProblem("drafts, emails and a call")).toBeNull();
-    });
-
-    it("names the word hledger would read as a tag, with the server's rewrite", () => {
-        // The server's own case (time_tests.rs).
-        expect(noteProblem("call re: K-1")).toMatchObject({offending: "re:", suggestion: "call re K-1"});
-        expect(noteProblem("call at 10:30")).toMatchObject({offending: "10:", suggestion: "call at 10.30"});
-        expect(noteProblem("ok, then todo: file it")).toMatchObject({offending: "todo:", suggestion: "ok, then todo file it"});
-    });
-
-    it("refuses what would end the note early", () => {
-        expect(noteProblem("call; then email")).toMatchObject({offending: ";", suggestion: "call, then email"});
-        expect(noteProblem("two\nlines")).toMatchObject({offending: "a line break", suggestion: "two lines"});
     });
 });
 

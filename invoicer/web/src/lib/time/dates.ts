@@ -1,4 +1,5 @@
-// ISO calendar dates (`YYYY-MM-DD`) for the time dashboard's periods. The
+// ISO calendar dates (`YYYY-MM-DD`) for every time page: Track, Entries'
+// periods and week grid, the dashboard's periods, and billing. The
 // arithmetic runs on UTC midnights, so no time zone or daylight-saving
 // change can move a date. Weeks start on Monday (ISO 8601, as the server's
 // `2026-W48` buckets do); working days are Monday to Friday.
@@ -16,7 +17,7 @@ export function isIsoDate(text: string): boolean {
 
 const toUtc = (date: string): Date => {
     const [y, m, d] = date.split("-").map(Number);
-    return new Date(Date.UTC(y, m - 1, d));
+    return new Date(Date.UTC(y, (m ?? 1) - 1, d ?? 1));
 };
 
 const fromUtc = (d: Date): string => d.toISOString().slice(0, 10);
@@ -41,6 +42,11 @@ export const isWorkingDay = (date: string): boolean => weekday(date) < 5;
 /** The Monday of `date`'s week. */
 export const mondayOf = (date: string): string => addDays(date, -weekday(date));
 
+/** The seven dates of the week starting `monday`. */
+export function weekDates(monday: string): string[] {
+    return Array.from({length: 7}, (_, i) => addDays(monday, i));
+}
+
 /** The last day of `date`'s month. */
 export function monthEnd(date: string): string {
     const d = toUtc(date);
@@ -48,6 +54,9 @@ export function monthEnd(date: string): string {
 }
 
 export const monthStart = (date: string): string => `${date.slice(0, 8)}01`;
+
+/** The first and last day of `date`'s month. */
+export const monthRange = (date: string): {from: string; to: string} => ({from: monthStart(date), to: monthEnd(date)});
 
 export const isMonthStart = (date: string): boolean => date.endsWith("-01");
 
@@ -73,6 +82,9 @@ export function addMonths(date: string, months: number): string {
     return fromUtc(new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth(), day)));
 }
 
+/** A month (`YYYY-MM`) moved by `months`: `2026-11` back one is `2026-10`. */
+export const shiftMonth = (month: string, months: number): string => addMonths(`${month}-01`, months).slice(0, 7);
+
 /** Monday-to-Friday days in `from`..=`to` (0 when `to` is before `from`). */
 export function workingDays(from: string, to: string): number {
     const span = daysBetween(from, to) + 1;
@@ -93,7 +105,9 @@ export function eachDay(from: string, to: string): string[] {
 const DAY_MONTH = new Intl.DateTimeFormat("en-US", {month: "short", day: "numeric", timeZone: "UTC"});
 const DAY_MONTH_YEAR = new Intl.DateTimeFormat("en-US", {month: "short", day: "numeric", year: "numeric", timeZone: "UTC"});
 const MONTH = new Intl.DateTimeFormat("en-US", {month: "short", timeZone: "UTC"});
+const MONTH_LONG = new Intl.DateTimeFormat("en-US", {month: "long", timeZone: "UTC"});
 const MONTH_YEAR = new Intl.DateTimeFormat("en-US", {month: "short", year: "numeric", timeZone: "UTC"});
+const MONTH_YEAR_LONG = new Intl.DateTimeFormat("en-US", {month: "long", year: "numeric", timeZone: "UTC"});
 const WEEKDAY = new Intl.DateTimeFormat("en-US", {weekday: "short", timeZone: "UTC"});
 
 /** "Nov 26". */
@@ -102,10 +116,16 @@ export const dayMonth = (date: string): string => DAY_MONTH.format(toUtc(date));
 export const dayMonthYear = (date: string): string => DAY_MONTH_YEAR.format(toUtc(date));
 /** "Nov". */
 export const monthName = (date: string): string => MONTH.format(toUtc(date));
+/** "November". */
+export const longMonthName = (date: string): string => MONTH_LONG.format(toUtc(date));
 /** "Nov 2026". */
 export const monthYear = (date: string): string => MONTH_YEAR.format(toUtc(date));
+/** "November 2026" for a month (`2026-11`) or any date in it. */
+export const longMonthYear = (month: string): string => MONTH_YEAR_LONG.format(toUtc(month.length === 7 ? `${month}-01` : month));
 /** "Thu". */
 export const weekdayName = (date: string): string => WEEKDAY.format(toUtc(date));
+/** "Thu, Nov 26": a day heading. */
+export const dayHeading = (date: string): string => `${weekdayName(date)}, ${dayMonth(date)}`;
 
 /** "Nov 1 – 26, 2026", "Oct 27 – Nov 2, 2026", "Dec 1, 2025 – Nov 30, 2026". */
 export function rangeText(from: string, to: string): string {

@@ -15,7 +15,7 @@
     import DateInput from "#ui/components/DateInput.svelte";
     import {searchKeys} from "#lib/keys/pageSearch.svelte.js";
     import {SearchBox} from "#lib/searchBox.svelte.js";
-    import {rangeText} from "./dates.js";
+    import {rangeText} from "../dates.js";
     import type {DashMeta} from "./meta.js";
     import {isFiltered, PRESET_LABELS, PRESETS, UNATTRIBUTED, type DashQuery, type Preset, type Range} from "./query.js";
 

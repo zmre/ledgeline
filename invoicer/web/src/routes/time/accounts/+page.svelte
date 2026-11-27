@@ -28,7 +28,7 @@
     import RenameDialog from "#lib/time/accounts/RenameDialog.svelte";
     import {AccountsStore} from "#lib/time/accounts/accountsStore.svelte.js";
     import type {TagChange} from "#lib/time/accounts/edit.js";
-    import {addMonths, monthName} from "#lib/time/entries/dates.js";
+    import {shiftMonth, longMonthYear} from "#lib/time/dates.js";
 
     const thisMonth = localToday().slice(0, 7);
     const month = $derived(/^\d{4}-\d{2}$/.test(page.url.searchParams.get("month") ?? "") ? (page.url.searchParams.get("month") as string) : thisMonth);
@@ -126,8 +126,8 @@
                 enabled: () => view !== null && dialog === null,
                 run: () => (dialog = {kind: "add", parent: null}),
             },
-            {keys: "[", label: "Previous month", group: "Time accounts", run: () => setMonth(addMonths(month, -1))},
-            {keys: "]", label: "Next month", group: "Time accounts", run: () => setMonth(addMonths(month, 1))},
+            {keys: "[", label: "Previous month", group: "Time accounts", run: () => setMonth(shiftMonth(month, -1))},
+            {keys: "]", label: "Next month", group: "Time accounts", run: () => setMonth(shiftMonth(month, 1))},
         ],
     });
 </script>
@@ -141,9 +141,9 @@
         <h1 class="text-2xl font-semibold tracking-tight">Time accounts</h1>
         <div class="flex flex-wrap items-center gap-2">
             <div class="flex items-center gap-1" data-testid="accounts-month">
-                <button type="button" class="btn btn-ghost btn-sm" onclick={() => setMonth(addMonths(month, -1))} aria-label="Previous month">←</button>
-                <span class="min-w-32 text-center text-sm font-medium" data-testid="accounts-month-label">{monthName(month)}</span>
-                <button type="button" class="btn btn-ghost btn-sm" onclick={() => setMonth(addMonths(month, 1))} aria-label="Next month">→</button>
+                <button type="button" class="btn btn-ghost btn-sm" onclick={() => setMonth(shiftMonth(month, -1))} aria-label="Previous month">←</button>
+                <span class="min-w-32 text-center text-sm font-medium" data-testid="accounts-month-label">{longMonthYear(month)}</span>
+                <button type="button" class="btn btn-ghost btn-sm" onclick={() => setMonth(shiftMonth(month, 1))} aria-label="Next month">→</button>
             </div>
             {#if view !== null && view.file_exists}
                 <button type="button" class="btn btn-primary btn-sm" onclick={() => (dialog = {kind: "add", parent: null})} data-testid="accounts-add"

@@ -1,6 +1,7 @@
-// Durations as people type and read them, mirroring the server
-// (`invoicer_core::time::parse_duration` and `TimeQty`'s Display) so the
-// week grid can work out a cell's change before it writes, and a sum the
+// Durations as people type and read them, for every time page: Track's
+// banked totals, Entries' week grid and sums, billing. They mirror the
+// server (`invoicer_core::time::parse_duration` and `TimeQty`'s Display), so
+// the week grid can work out a cell's change before it writes, and a sum the
 // page makes reads like the server's own figures. The server stays the
 // judge: a duration it refuses still comes back as its sentence.
 
@@ -43,8 +44,11 @@ export function parseDuration(text: string): number | null {
     return scaled(compact, 3600);
 }
 
-/** Whole minutes, half up: what a timedot line holds. */
-export const roundMinutes = (seconds: number): number => Math.sign(seconds) * Math.floor(Math.abs(seconds) / 60 + 0.5);
+/** Whole minutes, half up (T4), what a timedot line holds: 30 s is 1m, 1m29s is 1m; a negative rounds the same way, below zero. */
+export function roundMinutes(seconds: number): number {
+    const minutes = Math.floor((Math.abs(seconds) + 30) / 60);
+    return seconds < 0 && minutes > 0 ? -minutes : minutes;
+}
 
 /** `1h 05m`, `45m`, `2h`, `0m`: as the server writes `quantity.text`. */
 export function formatDuration(seconds: number): string {
@@ -61,25 +65,7 @@ export function formatDuration(seconds: number): string {
 /** What a write sends for `seconds`: whole minutes, `90m`. */
 export const minutesText = (seconds: number): string => `${roundMinutes(seconds)}m`;
 
-/** A note hledger would read differently, and why: the same rule as the server's, to warn while typing. */
-export interface NoteWarning {
-    /** What to take out: `re:`, `;`, "a line break". */
-    offending: string;
-    message: string;
-}
-
-/**
- * A note's problem, or null. hledger reads `word:` in a comment as a tag and
- * `;` as the end of the note; the server refuses both (`note-tag`) and
- * suggests a rewrite, which the form then offers.
- */
-export function noteWarning(note: string): NoteWarning | null {
-    if (note.includes(";")) return {offending: ";", message: "A note can't hold “;”: it would end the note early."};
-    if (/[\n\r]/.test(note)) return {offending: "a line break", message: "A note is one line."};
-    const tag = /(?:^|[\s,])([^\s,:]+):/.exec(note);
-    if (tag !== null) {
-        const offending = `${tag[1]}:`;
-        return {offending, message: `hledger reads “${offending}” as a tag named “${tag[1]}”, so the note would change meaning. Reword it.`};
-    }
-    return null;
+/** A banked total: `45m`, `2h`, `2h 05m`; nothing (or less than none) is `—`. */
+export function durationText(seconds: number): string {
+    return roundMinutes(Math.max(0, seconds)) === 0 ? "—" : formatDuration(Math.max(0, seconds));
 }

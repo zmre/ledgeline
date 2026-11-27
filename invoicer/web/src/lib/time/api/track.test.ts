@@ -1,6 +1,7 @@
 // The tracker's API decoding: the state's shape check, the account names
 // Other… offers (archived ones left out), and today's lines for the card.
 import {describe, expect, it} from "vitest";
+import {accountRow, accountsView, entry, list, qty} from "#lib/time/testing.js";
 import {trackState} from "#lib/time/track/fixtures.js";
 import {accountNamesOf, dayLinesOf, isTrackState} from "./track.js";
 
@@ -13,28 +14,22 @@ describe("UNIT the tracker's API answers", () => {
     });
 
     it("lists the accounts, leaving archived ones out", () => {
-        const body = {
+        const archived = {value: "yes", from: "internal:old", inherited: false};
+        const view = accountsView({
             accounts: [
-                {account: "clients:acme", archived: null},
-                {account: "internal:old", archived: {value: "yes", from: "internal:old", inherited: false}},
-                {account: "internal:old:sub", archived: {value: "yes", from: "internal:old", inherited: true}},
-                {account: "internal:admin"},
-                {nope: 1},
+                accountRow({account: "clients:acme"}),
+                accountRow({account: "internal:old", archived}),
+                accountRow({account: "internal:old:sub", archived: {...archived, inherited: true}}),
+                accountRow({account: "internal:admin", archived: {...archived, value: "no"}}),
             ],
-        };
-        expect(accountNamesOf(body)).toEqual(["clients:acme", "internal:admin"]);
-        expect(accountNamesOf({})).toEqual([]);
+        });
+        expect(accountNamesOf(view)).toEqual(["clients:acme", "internal:admin"]);
+        expect(accountNamesOf({accounts: []})).toEqual([]);
     });
 
     it("reads today's lines as account, seconds and note", () => {
-        const body = {
-            entries: [
-                {account: "clients:acme:advisory", quantity: {seconds: 3600, hours: "1", text: "1h"}, note: "call"},
-                {account: "internal:admin", quantity: {seconds: 900}, note: null},
-                {account: "broken"},
-            ],
-        };
-        expect(dayLinesOf(body)).toEqual([
+        const lines = list([entry({quantity: qty(60), note: "call"}), entry({account: "internal:admin", quantity: qty(15), note: ""})]);
+        expect(dayLinesOf(lines)).toEqual([
             {account: "clients:acme:advisory", seconds: 3600, note: "call"},
             {account: "internal:admin", seconds: 900, note: ""},
         ]);

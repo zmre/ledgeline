@@ -1,7 +1,7 @@
 // Entries' URL contract: parse and serialize round-trip, defaults stay out
 // of the URL, periods resolve against today, and the API gets what it reads.
 import {describe, expect, it} from "vitest";
-import {addDays, addMonths, isIsoDate, mondayOf, monthRange, weekDates} from "./dates.js";
+import {addDays, shiftMonth, isIsoDate, mondayOf, monthRange, weekDates} from "../dates.js";
 import {
     clearEntriesFilters,
     entriesApiQuery,
@@ -86,7 +86,7 @@ describe("UNIT time dates", () => {
         expect(mondayOf("2026-11-23")).toBe("2026-11-23");
         expect(weekDates("2026-11-23").at(-1)).toBe("2026-11-29");
         expect(monthRange("2026-02-10")).toEqual({from: "2026-02-01", to: "2026-02-28"});
-        expect(addMonths("2026-01", -1)).toBe("2025-12");
-        expect(addMonths("2026-12", 1)).toBe("2027-01");
+        expect(shiftMonth("2026-01", -1)).toBe("2025-12");
+        expect(shiftMonth("2026-12", 1)).toBe("2027-01");
     });
 });

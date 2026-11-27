@@ -20,7 +20,9 @@
     import DayCard from "./DayCard.svelte";
     import NoteField from "./NoteField.svelte";
     import WeekStrip from "./WeekStrip.svelte";
-    import {clockOf, dayCardRows, daysBetween, dayHeading, durationText, elapsedText, weekdayOf, type CardRow} from "./format.js";
+    import {daysBetween, weekdayName} from "../dates.js";
+    import {durationText} from "../duration.js";
+    import {clockOf, dayCardRows, dayHeading, elapsedText, type CardRow} from "./format.js";
     import {failureText, PIN_COUNT, type Tracker} from "./tracker.svelte.js";
 
     let {tracker, pick = null}: {tracker: Tracker; /** Open the picker for this slot at once (`?pick=0` from the app-wide keys). */ pick?: number | null} =
@@ -196,7 +198,7 @@
         if (slot.last_used === null || shown === null || slot.last_used === shown.today) return null;
         const days = daysBetween(slot.last_used, shown.today);
         if (days === 1) return "yesterday";
-        if (days < 7) return weekdayOf(slot.last_used);
+        if (days < 7) return weekdayName(slot.last_used);
         return slot.last_used;
     }
 

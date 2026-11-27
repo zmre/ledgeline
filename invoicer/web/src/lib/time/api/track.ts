@@ -1,6 +1,8 @@
-// The tracker's API calls (plan 46 Phase 3): the state Track and the lamp
-// show, the tracker's writes, setup, and the two small reads Track needs from
-// elsewhere (the account names for Other…, today's lines for the day card).
+// The tracker's API calls (plan 46 Phase 3): `GET /api/time/state` (this is
+// its one reader: Track, the lamp, the dashboard and billing all come here),
+// the tracker's writes and setup. The reads Track needs from elsewhere (the
+// account names for Other…, today's lines for the day card) go through those
+// endpoints' own modules, ./accounts.ts and ./entries.ts.
 // Same-origin and token-gated like lib/api.ts. A refusal is an EditorApiError
 // carrying the server's `code` (`not-set-up`, `note-tag`, `conflict`,
 // `external-change`) and its whole body (`offending`, `suggestion`).
@@ -8,6 +10,8 @@
 // `TrackApi` is the seam the tracker store takes, so its tests pass their own.
 import {send} from "#lib/editorApi.js";
 import type {TrackState} from "#lib/time/types.js";
+import {declareAccount, fetchAccounts, type AccountsView} from "./accounts.js";
+import {fetchEntries, type EntryList} from "./entries.js";
 
 const isObject = (body: unknown): body is Record<string, unknown> => typeof body === "object" && body !== null && !Array.isArray(body);
 
@@ -86,33 +90,24 @@ function write(path: string, body: unknown): Promise<TrackWrite> {
     return send<TrackWrite>("POST", path, (b) => isWrite(b) && (!isObject(b) || b.state === undefined || isTrackState(b.state)), body);
 }
 
-/** The account names `GET /api/time/accounts` lists, archived ones left out. */
-export function accountNamesOf(body: unknown): string[] {
-    if (!isObject(body) || !Array.isArray(body.accounts)) return [];
-    const names: string[] = [];
-    for (const row of body.accounts) {
-        if (!isObject(row) || typeof row.account !== "string") continue;
-        const archived = isObject(row.archived) && typeof row.archived.value === "string" && /^(yes|y|true|1)$/i.test(row.archived.value);
-        if (!archived) names.push(row.account);
-    }
-    return names;
+/** The declared account names the tree lists, in its order, archived ones left out. */
+export function accountNamesOf(view: Pick<AccountsView, "accounts">): string[] {
+    return view.accounts.filter((row) => row.archived === null || !/^(yes|y|true|1)$/i.test(row.archived.value)).map((row) => row.account);
 }
 
-/** Today's lines from `GET /api/time/entries`: account, seconds, note. */
-export function dayLinesOf(body: unknown): DayLine[] {
-    if (!isObject(body) || !Array.isArray(body.entries)) return [];
-    const lines: DayLine[] = [];
-    for (const row of body.entries) {
-        if (!isObject(row) || typeof row.account !== "string" || !isObject(row.quantity)) continue;
-        const seconds = typeof row.quantity.seconds === "number" ? row.quantity.seconds : 0;
-        lines.push({account: row.account, seconds, note: typeof row.note === "string" ? row.note : ""});
-    }
-    return lines;
+/** A list's lines as account, seconds and note (the day card's). */
+export function dayLinesOf(list: Pick<EntryList, "entries">): DayLine[] {
+    return list.entries.map((row) => ({account: row.account, seconds: row.quantity.seconds, note: row.note}));
+}
+
+/** `GET /api/time/state`: the tracker, or `{configured: false, setup}` before setup. */
+export function fetchTrackState(): Promise<TrackState> {
+    return send<TrackState>("GET", "/api/time/state", isTrackState);
 }
 
 /** The server's API. */
 export const httpTrackApi: TrackApi = {
-    state: () => send<TrackState>("GET", "/api/time/state", isTrackState),
+    state: fetchTrackState,
     toggle: (target) => write("/api/time/toggle", target),
     stop: (options = {}) => write("/api/time/stop", options),
     adjust: (target, minutes) => write("/api/time/adjust", {...target, minutes}),
@@ -120,11 +115,11 @@ export const httpTrackApi: TrackApi = {
     note: (target, note) => send("POST", "/api/time/note", isObject, {...target, note}),
     setup: (person, dryRun) => send<SetupAnswer>("POST", "/api/time/setup", (b) => isObject(b) && Array.isArray(b.files), {person, dry_run: dryRun}),
     adopt: (file, dryRun) => send<AdoptAnswer>("POST", "/api/time/adopt", (b) => isObject(b) && typeof b.file === "string", {file, dry_run: dryRun}),
-    declare: (account) => send("POST", "/api/time/accounts/declare", isObject, {account}),
-    accountNames: async () => accountNamesOf(await send<unknown>("GET", "/api/time/accounts", isObject)),
+    declare: (account) => declareAccount(account),
+    accountNames: async () => accountNamesOf(await fetchAccounts()),
     dayLines: async (date, person) => {
         const who = person === null ? "" : `&person=${encodeURIComponent(person)}`;
-        return dayLinesOf(await send<unknown>("GET", `/api/time/entries?from=${date}&to=${date}${who}`, isObject));
+        return dayLinesOf(await fetchEntries(`from=${date}&to=${date}${who}`));
     },
     savePrefs: (values) => send("PATCH", "/api/ui-prefs", isObject, {time: values}),
 };

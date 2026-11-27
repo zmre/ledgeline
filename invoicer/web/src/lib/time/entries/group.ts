@@ -3,8 +3,8 @@
 // days), plus what an edited grid cell writes and the day-over-24-hours
 // check. Pure, so each is unit-tested without the page.
 import type {EntryView} from "../api/entries.js";
-import {formatDuration, minutesText} from "./duration.js";
-import {weekDates} from "./dates.js";
+import {formatDuration, minutesText} from "../duration.js";
+import {weekDates} from "../dates.js";
 
 /** A run of entries under one heading, with their total. */
 export interface EntryGroup {

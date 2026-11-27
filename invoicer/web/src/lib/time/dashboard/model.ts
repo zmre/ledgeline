@@ -23,7 +23,7 @@ import {
     rangeText,
     weekdayName,
     workingDays,
-} from "./dates.js";
+} from "../dates.js";
 import type {Drill, Grain, Range, Split} from "./query.js";
 
 /** The fact table's grouping, in this order. */

@@ -1,7 +1,7 @@
 // Durations read and written as the server does (parse_duration, TimeQty's
-// Display), and the note check that warns before the server refuses.
+// Display), and the banked totals Track shows.
 import {describe, expect, it} from "vitest";
-import {formatDuration, minutesText, noteWarning, parseDuration, roundMinutes} from "./duration.js";
+import {durationText, formatDuration, minutesText, parseDuration, roundMinutes} from "./duration.js";
 
 describe("UNIT time durations", () => {
     it("reads every form the server takes", () => {
@@ -37,12 +37,21 @@ describe("UNIT time durations", () => {
         for (const minutes of [1, 45, 60, 65, 130, 600]) expect(parseDuration(formatDuration(minutes * 60))).toBe(minutes * 60);
     });
 
-    it("warns about a tag, a semicolon or a line break in a note", () => {
-        expect(noteWarning("call with Fred")).toBeNull();
-        expect(noteWarning("re: K-1")?.offending).toBe("re:");
-        expect(noteWarning("met at 10:30")?.offending).toBe("10:");
-        expect(noteWarning("one; two")?.offending).toBe(";");
-        expect(noteWarning("one\ntwo")?.offending).toBe("a line break");
-        expect(noteWarning("see https://example.com")?.offending).toBe("https:");
+    it("rounds each session to the minute, half up (T4)", () => {
+        expect(roundMinutes(29)).toBe(0);
+        expect(roundMinutes(30)).toBe(1);
+        expect(roundMinutes(80)).toBe(1);
+        expect(roundMinutes(90)).toBe(2);
+        expect(roundMinutes(-5)).toBe(0);
+        expect(roundMinutes(-90)).toBe(-2);
+    });
+
+    it("reads banked totals as 45m, 2h, 2h 05m, and nothing as a dash", () => {
+        expect(durationText(0)).toBe("—");
+        expect(durationText(29)).toBe("—");
+        expect(durationText(-600)).toBe("—");
+        expect(durationText(45 * 60)).toBe("45m");
+        expect(durationText(2 * 3600)).toBe("2h");
+        expect(durationText(2 * 3600 + 5 * 60)).toBe("2h 05m");
     });
 });

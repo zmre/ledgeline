@@ -11,7 +11,7 @@
 //     tree; elsewhere it falls back to the query, with a caveat.
 //   - hledger knows a person only from a `person:` tag; time the Invoicer
 //     attributes by its folder (`time/sam/…`) carries none.
-import {addDays, isMonthEnd, isMonthStart} from "./dates.js";
+import {addDays, isMonthEnd, isMonthStart} from "../dates.js";
 import {UNATTRIBUTED, type DashQuery, type Grain, type Range, type Split} from "./query.js";
 
 export interface Command {

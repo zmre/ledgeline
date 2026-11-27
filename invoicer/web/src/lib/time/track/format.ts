@@ -1,26 +1,14 @@
 // Track's and the lamp's pure helpers (plan 46 T-slots, T-light): how a
-// duration reads, the slot key hints per platform, the note check the server
-// also makes (so Track can warn while you type), the day card's text, and the
-// optimistic toggle (a slot lights before the write comes back, T-perf).
+// running timer reads, the slot key hints per platform, the day card's text,
+// and the optimistic toggle (a slot lights before the write comes back,
+// T-perf). Durations are ../duration.ts, dates ../dates.ts and the note
+// check ../note.ts, shared with Entries and billing.
 // No runes, no DOM: every function here is tested in the node project.
 import type {Qty, RunningView, Slot, TrackState} from "#lib/time/types.js";
+import {monthName, weekdayName} from "../dates.js";
+import {durationText, roundMinutes} from "../duration.js";
 
 const pad = (n: number): string => String(n).padStart(2, "0");
-
-/** Whole minutes, half up (T4): 30 s is 1m, 1m29s is 1m. */
-export function roundedMinutes(seconds: number): number {
-    return Math.floor((Math.max(0, seconds) + 30) / 60);
-}
-
-/** A banked total: `45m`, `2h`, `2h 55m`; nothing is `—`. */
-export function durationText(seconds: number): string {
-    const minutes = roundedMinutes(seconds);
-    if (minutes === 0) return "—";
-    const h = Math.floor(minutes / 60);
-    const m = minutes % 60;
-    if (h === 0) return `${m}m`;
-    return m === 0 ? `${h}h` : `${h}h ${pad(m)}m`;
-}
 
 /** A running timer, live: `42s`, `12m 05s`, then `1h 22m`. */
 export function elapsedText(seconds: number): string {
@@ -38,17 +26,9 @@ export function clockOf(moment: string): string {
     return /T(\d{2}:\d{2})/.exec(moment)?.[1] ?? moment;
 }
 
-/** `Thu` from `2026-11-26` (the local calendar). */
-export function weekdayOf(date: string): string {
-    const [y, m, d] = date.split("-").map(Number);
-    return new Date(y, (m ?? 1) - 1, d ?? 1).toLocaleDateString("en-US", {weekday: "short"});
-}
-
-/** `Thu 26 Nov` from `2026-11-26`. */
+/** `Thu 26 Nov` from `2026-11-26`: Track's day heading (Entries' is `dayHeading` in ../dates.ts). */
 export function dayHeading(date: string): string {
-    const [y, m, d] = date.split("-").map(Number);
-    const day = new Date(y, (m ?? 1) - 1, d ?? 1);
-    return `${day.toLocaleDateString("en-US", {weekday: "short"})} ${d} ${day.toLocaleDateString("en-US", {month: "short"})}`;
+    return `${weekdayName(date)} ${Number(date.slice(8))} ${monthName(date)}`;
 }
 
 /** An account for people when the server gave no label: `clients:acme:tax` → `clients · acme · tax`. */
@@ -64,75 +44,6 @@ export function slotHint(key: number, mac: boolean): string {
 /** The app-wide stop key. */
 export function stopHint(mac: boolean): string {
     return mac ? "⌥⌘." : "Ctrl+Shift+.";
-}
-
-/** Why a note can't be written as typed, and a rewording that can. */
-export interface NoteProblem {
-    /** What hledger would misread: `re:`, `;`, `a line break`. */
-    offending: string;
-    message: string;
-    suggestion: string | null;
-}
-
-/** The tag hledger reads in one comma-separated piece: the word before its first colon. */
-function tagIn(segment: string): string | null {
-    const colon = segment.indexOf(":");
-    if (colon === -1) return null;
-    const words = segment
-        .slice(0, colon)
-        .split(/\s+/)
-        .filter((w) => w !== "");
-    return words.length === 0 ? null : words[words.length - 1];
-}
-
-function firstTag(note: string): string | null {
-    for (const segment of note.split(",")) {
-        const tag = tagIn(segment);
-        if (tag !== null) return tag;
-    }
-    return null;
-}
-
-// Control characters are what the server refuses (`char::is_control`).
-// eslint-disable-next-line no-control-regex -- matching control characters is the point
-const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
-// eslint-disable-next-line no-control-regex -- as above
-const CONTROL_ALL = /[\u0000-\u001f\u007f-\u009f]/g;
-
-/** The rewording the server suggests: `;` as `,`, `10:30` as `10.30`, other colons dropped. */
-function suggestNote(note: string): string | null {
-    let out = "";
-    for (let at = 0; at < note.length; at += 1) {
-        const c = note[at];
-        if (c === ";") out += ",";
-        else if (c === ":") {
-            if (at > 0 && /\d/.test(note[at - 1]) && /\d/.test(note[at + 1] ?? "")) out += ".";
-        } else out += c;
-    }
-    out = out
-        .replace(CONTROL_ALL, " ")
-        .split(/\s+/)
-        .filter((w) => w !== "")
-        .join(" ");
-    return out !== "" && firstTag(out) === null ? out : null;
-}
-
-/**
- * What the server's note check (`note_problem`) would refuse, so Track warns
- * as you type: a `word:` hledger would read as a tag, a `;` or a line break
- * that would end the note early. Null when the note is fine.
- */
-export function noteProblem(note: string): NoteProblem | null {
-    const breaks = note.includes(";") || CONTROL.test(note);
-    const tag = firstTag(note);
-    if (!breaks && tag === null) return null;
-    const suggestion = suggestNote(note);
-    if (breaks) {
-        const offending = note.includes(";") ? ";" : "a line break";
-        return {offending, message: `A note can't hold ${offending}: it would end the note early.`, suggestion};
-    }
-    const offending = `${tag}:`;
-    return {offending, message: `“${offending}” would be read as a tag, so the note would change meaning.`, suggestion};
 }
 
 /** One account on the day card: its total and its notes. */
@@ -195,15 +106,6 @@ const plus = (q: Qty, seconds: number): Qty => {
     return {seconds: total, hours: String(total / 3600), text: durationText(total)};
 };
 
-/** Days from `from` to `to` (ISO dates), by calendar. */
-export function daysBetween(from: string, to: string): number {
-    const utc = (date: string): number => {
-        const [y, m, d] = date.split("-").map(Number);
-        return Date.UTC(y, (m ?? 1) - 1, d ?? 1);
-    };
-    return Math.round((utc(to) - utc(from)) / 86_400_000);
-}
-
 /** `moment` (`YYYY-MM-DDTHH:MM:SS`, local) plus `minutes`, as `YYYY-MM-DDTHH:MM` (a datetime field's value). */
 export function addMinutes(moment: string, minutes: number): string {
     const parts = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(moment);
@@ -222,7 +124,7 @@ export function stamp(at: Date): string {
 function banked(state: TrackState, elapsed: number): TrackState {
     const running = state.running;
     if (running === null) return state;
-    const add = roundedMinutes(elapsed) * 60;
+    const add = roundMinutes(Math.max(0, elapsed)) * 60;
     const slots = state.slots.map((s) =>
         s.running || (running.slot !== null && s.key === running.slot) ? {...s, running: false, today: plus(s.today, add)} : s
     );

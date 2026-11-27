@@ -8,7 +8,8 @@
     import {dismissible} from "#ui/keys/dismissible.js";
     import {modalKeys} from "#lib/keys/modalKeys.svelte.js";
     import type {Guard, RunningView} from "#lib/time/types.js";
-    import {addMinutes, clockOf, dayHeading, durationText} from "./format.js";
+    import {durationText} from "../duration.js";
+    import {addMinutes, clockOf, dayHeading} from "./format.js";
 
     let {
         guard,

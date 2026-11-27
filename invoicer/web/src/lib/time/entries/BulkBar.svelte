@@ -8,7 +8,7 @@
 <script lang="ts">
     import AccountInput from "#ui/components/AccountInput.svelte";
     import type {BulkOp} from "../api/entries.js";
-    import {formatDuration} from "./duration.js";
+    import {formatDuration} from "../duration.js";
 
     let {
         count,

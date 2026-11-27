@@ -30,8 +30,8 @@
     import EntryTable from "#lib/time/entries/EntryTable.svelte";
     import WeekGrid from "#lib/time/entries/WeekGrid.svelte";
     import {EntriesStore, type WriteOutcome} from "#lib/time/entries/entriesStore.svelte.js";
-    import {addDays, mondayOf, shortDate} from "#lib/time/entries/dates.js";
-    import {formatDuration} from "#lib/time/entries/duration.js";
+    import {addDays, mondayOf, dayMonth} from "#lib/time/dates.js";
+    import {formatDuration} from "#lib/time/duration.js";
     import {groupByAccount, groupByDay, overDayWarnings, planCellEdit, weekGrid, type WeekCell} from "#lib/time/entries/group.js";
     import {
         clearEntriesFilters,
@@ -253,7 +253,7 @@
     {#if query.group === "week"}
         <div class="flex flex-wrap items-center gap-2" data-testid="week-nav">
             <button type="button" class="btn btn-ghost btn-sm" onclick={() => setWeek(addDays(monday, -7))} aria-label="Previous week">←</button>
-            <span class="font-medium" data-testid="week-label">Week of {shortDate(monday)}, {monday.slice(0, 4)}</span>
+            <span class="font-medium" data-testid="week-label">Week of {dayMonth(monday)}, {monday.slice(0, 4)}</span>
             <button type="button" class="btn btn-ghost btn-sm" onclick={() => setWeek(addDays(monday, 7))} aria-label="Next week">→</button>
             {#if query.week !== ""}
                 <button type="button" class="btn btn-ghost btn-sm" onclick={() => setWeek(today)}>This week</button>

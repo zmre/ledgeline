@@ -13,7 +13,8 @@
     import DateInput from "#ui/components/DateInput.svelte";
     import type {EntryEdit, EntryView, NewEntry} from "../api/entries.js";
     import type {WriteOutcome} from "./entriesStore.svelte.js";
-    import {noteWarning, parseDuration} from "./duration.js";
+    import {parseDuration} from "../duration.js";
+    import {noteProblem} from "../note.js";
 
     let {
         entry = null,
@@ -52,7 +53,7 @@
     let error = $state<string | null>(null);
     let suggestion = $state<string | null>(null);
 
-    const warning = $derived(noteWarning(note));
+    const warning = $derived(noteProblem(note));
     const durationBad = $derived(duration.trim() !== "" && parseDuration(duration) === null);
 
     /** What the server is asked to change: only what differs from the line. */

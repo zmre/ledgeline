@@ -9,7 +9,7 @@
 // unattributed), `customer`, `billable` (`yes`/`no`), `billed`, `account`,
 // `q`, `group` (`day`, the default; `week`; `account`) and `week` (the
 // week grid's Monday; absent is this week).
-import {addDays, isIsoDate, mondayOf, monthRange} from "./dates.js";
+import {addDays, isIsoDate, mondayOf, monthRange} from "../dates.js";
 
 export const PERIODS = ["this-week", "last-week", "this-month", "last-month", "this-year", "last-year", "all"] as const;
 export type Period = (typeof PERIODS)[number];

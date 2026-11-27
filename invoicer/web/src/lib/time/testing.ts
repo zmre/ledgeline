@@ -2,7 +2,7 @@
 // time fixture (invoicer/fixtures/time). Each takes overrides.
 import type {AccountRow, AccountsView, Inherited} from "./api/accounts.js";
 import type {EntryList, EntryView, Qty} from "./api/entries.js";
-import {formatDuration} from "./entries/duration.js";
+import {formatDuration} from "./duration.js";
 
 /** A Qty of `minutes`. */
 export const qty = (minutes: number): Qty => ({seconds: minutes * 60, hours: String(minutes / 60), text: formatDuration(minutes * 60)});

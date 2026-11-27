@@ -6,10 +6,13 @@
 // order) and everyone's all-time hours (`GET /api/time/summary?group=person`:
 // the people to filter by, and whether there is any time at all).
 //
-// The decoders read only the fields used here, so this page doesn't break
-// when Track or Accounts grow theirs.
-import {send} from "#lib/editorApi.js";
+// Each endpoint is read through its own module (../api/); `metaOf` takes
+// only the fields it uses, so its tests stay small.
+import type {AccountRow} from "../api/accounts.js";
+import {fetchAccounts} from "../api/accounts.js";
 import {fetchSummary} from "../api/summary.js";
+import {fetchTrackState} from "../api/track.js";
+import type {TrackState} from "../types.js";
 
 export interface DashMeta {
     configured: boolean;
@@ -34,52 +37,14 @@ export interface DashMeta {
     customerOrder: string[];
 }
 
-interface StateBody {
-    configured: boolean;
-    person: string | null;
-    weekly_target: number;
-}
+type StateBody = Pick<TrackState, "configured" | "person" | "weekly_target">;
 
-interface AccountBody {
-    account: string;
-    depth: number;
+/** The fields of an account row the meta reads. */
+type AccountBody = Pick<AccountRow, "account" | "depth"> & {
     customer: {value: string; from: string} | null;
     billable: {value: string} | null;
     total: {seconds: number};
-}
-
-const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
-
-function isState(body: unknown): body is StateBody {
-    return (
-        isRecord(body) &&
-        typeof body.configured === "boolean" &&
-        (body.person === null || typeof body.person === "string") &&
-        typeof body.weekly_target === "number"
-    );
-}
-
-function isAccount(v: unknown): v is AccountBody {
-    return (
-        isRecord(v) &&
-        typeof v.account === "string" &&
-        typeof v.depth === "number" &&
-        (v.customer === null || (isRecord(v.customer) && typeof v.customer.value === "string" && typeof v.customer.from === "string")) &&
-        (v.billable === null || (isRecord(v.billable) && typeof v.billable.value === "string")) &&
-        isRecord(v.total) &&
-        typeof v.total.seconds === "number"
-    );
-}
-
-function isAccounts(body: unknown): body is {accounts: AccountBody[]; undeclared: string[]} {
-    return (
-        isRecord(body) &&
-        Array.isArray(body.accounts) &&
-        body.accounts.every(isAccount) &&
-        Array.isArray(body.undeclared) &&
-        body.undeclared.every((u) => typeof u === "string")
-    );
-}
+};
 
 const byHours = (totals: ReadonlyMap<string, number>): string[] =>
     [...totals.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([k]) => k);
@@ -124,13 +89,10 @@ export function metaOf(
 
 /** The meta, or `{configured: false}` before setup (when the other two routes refuse). */
 export async function fetchDashMeta(): Promise<DashMeta> {
-    const state = await send<StateBody>("GET", "/api/time/state", isState);
+    const state = await fetchTrackState();
     if (!state.configured) {
         return metaOf(state, {accounts: [], undeclared: []}, []);
     }
-    const [accounts, people] = await Promise.all([
-        send<{accounts: AccountBody[]; undeclared: string[]}>("GET", "/api/time/accounts", isAccounts),
-        fetchSummary({group: ["person"]}),
-    ]);
+    const [accounts, people] = await Promise.all([fetchAccounts(), fetchSummary({group: ["person"]})]);
     return metaOf(state, accounts, people.rows);
 }
