@@ -33,7 +33,8 @@ accounts behind it, at full depth, laid out
 [as on the P&L](income-statement.md#how-accounts-inside-a-line-are-laid-out):
 two banks with a checking and a savings account each read as two bank headings
 with Checking and Savings under each, and a heading prints no amount of its
-own. Hover a label for its full account path.
+own. Hover a label for its full account path. An account that is zero in every
+shown column, such as one you've closed, isn't listed.
 
 There is no depth control on this tab. Depth stopped meaning anything useful once
 groups became the reading: a group's roots are shown whatever their depth, and the

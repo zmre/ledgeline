@@ -168,7 +168,7 @@ impl BsGroup {
         &self,
         names: &BTreeMap<String, String>,
     ) -> Result<Vec<BsRow<MixedAmount>>, ReportError> {
-        outline_rows(&self.members, names, |figures| {
+        outline_rows(&self.members, names, MixedAmount::is_zero, |figures| {
             Ok(figures
                 .into_iter()
                 .try_fold(MixedAmount::new(), |acc, ma| acc.ma_add(ma))?)
@@ -197,12 +197,23 @@ pub struct BsRow<A> {
 
 /// The outline over `members` (each account's own figure, of type `A`), each
 /// row's amount being `sum` over the figures of the members it shows.
+///
+/// A member that `is_zero` (on a pivot: zero in EVERY column) is left out
+/// before the outline is built, so a closed account with nothing in the shown
+/// dates is not listed, and a heading it alone would have earned is not
+/// either. Totals are summed over members elsewhere, so dropping zeros can't
+/// move them.
 fn outline_rows<A>(
     members: &BTreeMap<String, A>,
     names: &BTreeMap<String, String>,
+    is_zero: impl Fn(&A) -> bool,
     sum: impl Fn(Vec<&A>) -> Result<A, ReportError>,
 ) -> Result<Vec<BsRow<A>>, ReportError> {
-    let accounts: BTreeSet<String> = members.keys().cloned().collect();
+    let accounts: BTreeSet<String> = members
+        .iter()
+        .filter(|(_, figure)| !is_zero(figure))
+        .map(|(account, _)| account.clone())
+        .collect();
     outline(&accounts, None, names)
         .into_iter()
         .map(|node| {
@@ -1317,15 +1328,20 @@ pub fn pivot_balance_sheets(
                     let by_account = members
                         .remove(&(group.term, group.name.clone()))
                         .unwrap_or_default();
-                    group.rows = outline_rows(&by_account, names, |figures| {
-                        (0..columns).try_fold(empty(), |mut acc, column| {
-                            acc[column] =
-                                figures.iter().try_fold(MixedAmount::new(), |sum, per| {
-                                    sum.ma_add(&per[column])
-                                })?;
-                            Ok(acc)
-                        })
-                    })?;
+                    group.rows = outline_rows(
+                        &by_account,
+                        names,
+                        |per: &Vec<MixedAmount>| per.iter().all(MixedAmount::is_zero),
+                        |figures| {
+                            (0..columns).try_fold(empty(), |mut acc, column| {
+                                acc[column] =
+                                    figures.iter().try_fold(MixedAmount::new(), |sum, per| {
+                                        sum.ma_add(&per[column])
+                                    })?;
+                                Ok(acc)
+                            })
+                        },
+                    )?;
                     Ok(group)
                 })
                 .collect::<Result<_, ReportError>>()?;
@@ -2485,6 +2501,99 @@ mod tests {
                 "  - Mm 600.00"
             ]
         );
+    }
+
+    /// `banks()` plus two closures: `assets:bank:b:old` opens and closes in
+    /// January, `assets:broker:mm` is emptied in February.
+    fn banks_with_closed_accounts() -> Vec<Transaction> {
+        let closures = [
+            ("2026-01-05", "assets:bank:b:old", 10_000),
+            ("2026-01-20", "assets:bank:b:old", -10_000),
+            ("2026-02-15", "assets:broker:mm", -60_000),
+        ];
+        banks()
+            .into_iter()
+            .chain(
+                closures
+                    .into_iter()
+                    .zip(100..)
+                    .map(|((date, account, cents), index)| {
+                        txn(
+                            index,
+                            date,
+                            vec![
+                                (account, vec![usd(cents)]),
+                                ("equity:opening", vec![usd(-cents)]),
+                            ],
+                        )
+                    }),
+            )
+            .collect()
+    }
+
+    /// A closed account is not listed: zero on a single date, zero in EVERY
+    /// column of a pivot. Zero in only some columns keeps it.
+    #[test]
+    fn zero_accounts_are_not_listed() {
+        let journal = banks_with_closed_accounts();
+        let sheet = balance_sheet_grouped(
+            &journal,
+            &[],
+            &bank_opts("2026-12-31"),
+            &BTreeMap::new(),
+            &bank_groups(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        // `mm` is zero: the Broker heading it earned goes with it.
+        assert_eq!(
+            lines(
+                &group(&sheet, 0, "Reserves").rows(&BTreeMap::new()).unwrap(),
+                cents
+            ),
+            ["- Bank · Reserve 500.00", "- Broker · Cd 700.00"]
+        );
+        assert!(
+            group(&sheet, 0, "Cash")
+                .rows(&bank_names())
+                .unwrap()
+                .iter()
+                .all(|row| row.account != "assets:bank:b:old")
+        );
+
+        let ends = ["2026-01-31".to_string(), "2026-03-31".to_string()];
+        let reports = balance_sheet_columns(
+            &journal,
+            &[],
+            &bank_opts("2026-03-31"),
+            &ends,
+            &BTreeMap::new(),
+            &bank_groups(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let pivot = pivot_balance_sheets(&reports, &bank_names()).unwrap();
+        let rows_of = |name: &str| {
+            let group = pivot.sections[0]
+                .groups
+                .iter()
+                .find(|g| g.name == name)
+                .unwrap();
+            lines(&group.rows, |figures: &Vec<MixedAmount>| {
+                figures.iter().map(cents).collect::<Vec<_>>().join("|")
+            })
+        };
+        // `mm` had money in January, so it stays; `old` never did at a column end.
+        assert_eq!(
+            rows_of("Reserves"),
+            [
+                "- Bank · Reserve 500.00|500.00",
+                "# Broker",
+                "  - Cd -|700.00",
+                "  - Mm 600.00|-",
+            ]
+        );
+        assert!(rows_of("Cash").iter().all(|line| !line.contains("Old")));
     }
 
     /// The pivot lays ONE outline over every column's members, so a member
