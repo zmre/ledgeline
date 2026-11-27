@@ -193,6 +193,33 @@ impl<'a> OtherInputs<'a> {
     /// currency already, so the balance sheet's rule — caller's override, else
     /// the price database's base — is both simpler and what the rest of the app
     /// shows.
+    /// The account owning `account`'s row ([`row_roots`]); itself when it
+    /// owns its own.
+    fn row_root<'s>(&'s self, account: &'s str) -> &'s str {
+        self.row_roots.get(account).map_or(account, String::as_str)
+    }
+
+    /// Every commodity the in-scope (and [`selected`](HoldingsScope::selection))
+    /// rows hold at `scope.as_of` — the symbols a live quote could move.
+    ///
+    /// # Errors
+    /// Returns [`ReportError`] on decimal overflow.
+    pub fn held_commodities(
+        &self,
+        scope: &HoldingsScope,
+    ) -> Result<BTreeSet<Commodity>, ReportError> {
+        let base = self.base(scope);
+        Ok(rows_at(self, scope, &scope.as_of, &base)?
+            .into_iter()
+            .flat_map(|row| {
+                row.commodities
+                    .iter()
+                    .map(|(commodity, _)| commodity.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect())
+    }
+
     fn base(&self, scope: &HoldingsScope) -> Commodity {
         scope
             .value_in
@@ -490,7 +517,10 @@ impl OtherInputs<'_> {
     /// # Errors
     /// Returns [`ReportError`] on decimal overflow.
     pub fn first_holding_date(&self, scope: &HoldingsScope) -> Result<Option<String>, ReportError> {
-        let qualifies = ever_held(self, scope_accounts(scope))?;
+        let in_scope = scope_accounts(scope);
+        let qualifies = ever_held(self, |account| {
+            in_scope(account) && scope.selects(self.row_root(account))
+        })?;
         Ok(self
             .txns
             .iter()
@@ -544,10 +574,13 @@ fn rows_at(
         {
             continue;
         }
-        let root = inputs
-            .row_roots
-            .get(account)
-            .map_or(account.as_str(), String::as_str);
+        let root = inputs.row_root(account);
+        // The holdings filter (`HoldingsScope::selection`) is keyed by the ROW,
+        // so it applies after the roll-up: selecting a house selects both its
+        // cost and its mark account.
+        if !scope.selects(root) {
+            continue;
+        }
         held.entry(root).or_default().ma_add_assign(&commodities)?;
 
         // A mark contributes to value and NOT to cost. Everything else is money

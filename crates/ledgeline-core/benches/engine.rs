@@ -136,6 +136,7 @@ impl Fixture {
             as_of: AS_OF.to_string(),
             gain_since: None,
             value_in: None,
+            selection: Default::default(),
         };
 
         Self {

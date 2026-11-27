@@ -138,6 +138,7 @@ fn per_point_reports(
                 as_of: date.clone(),
                 gain_since: None,
                 value_in: Some(base_commodity.clone()),
+                selection: Default::default(),
             };
             compute_holdings(txns, prices, accounts, commodity_tags, &point_scope)
                 .expect("per-point report")
@@ -173,6 +174,7 @@ fn per_point_series(
             as_of: date.clone(),
             gain_since: None,
             value_in: Some(base_commodity.clone()),
+            selection: Default::default(),
         };
         let report = compute_holdings(txns, prices, accounts, commodity_tags, &point_scope)
             .expect("per-point report");
