@@ -172,6 +172,14 @@ impl Ctx<'_> {
     /// The subtree at `account`, whose shown accounts are `accounts`.
     fn node(&self, account: &str, accounts: &[&str]) -> Tree {
         match accounts {
+            // A lone account reached through a collapsed chain keeps the
+            // chain's first level in its label: `assets:bank:wise:eur` beside
+            // two other banks reads "Wise · Eur", not a bare "Eur". A root
+            // (`expenses`, `assets`) says nothing, so it never prefixes.
+            [only] if *only != account && account.contains(':') => Tree {
+                label: format!("{} · {}", self.label(account), self.label(only)),
+                ..self.leaf(only)
+            },
             [only] => self.leaf(only),
             _ => {
                 let spine = self.spine(account, accounts);
@@ -377,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn lone_chain_collapses_to_its_leaf() {
+    fn lone_chain_collapses_to_its_leaf_under_its_first_level() {
         assert_eq!(
             plain(&[
                 "expenses:people-costs:payroll-processing-fees",
@@ -385,7 +393,7 @@ mod tests {
                 "expenses:professional-fees:legal"
             ]),
             vec![
-                "- Payroll Processing Fees",
+                "- People Costs · Payroll Processing Fees",
                 "# Professional Fees",
                 "  - Accounting",
                 "  - Legal"

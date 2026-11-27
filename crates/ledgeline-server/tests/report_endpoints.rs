@@ -537,7 +537,7 @@ async fn balancesheet_grouped_reports_groups_and_their_provenance() {
             "account 1 Checking assets:bank:checking",
             "account 1 Savings assets:bank:savings",
             "account 1 Wise assets:bank:wise",
-            "account 0 Taxable assets:broker:taxable",
+            "account 0 Broker · Taxable assets:broker:taxable",
         ]
     );
     assert_eq!(

@@ -369,7 +369,7 @@ fn each_depth_reads_differently() {
         at(1),
         texts(&[
             "Assets",
-            "  - Insurance",
+            "  - Prepaid · Insurance",
             "  # Clients",
             "    - Acme",
             "    - Globex",

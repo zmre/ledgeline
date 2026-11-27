@@ -82,7 +82,10 @@ Travel
   or more of the line's accounts sit under it. A heading has no amount of its
   own; the line's total covers everything.
 - **A lone account isn't wrapped.** If only one account sits under a parent,
-  it prints on its own, with no heading above it.
+  it prints on its own, with no heading above it, labelled with the first
+  level it came through: `assets:bank:wise:eur` beside two other banks reads
+  **Wise · Eur**. A top-level name (`assets`, `expenses`) is never used this
+  way.
 - **The line's own heading isn't repeated.** Accounts that all sit under
   `expenses:travel` go directly under the Travel group, not under a second
   "Travel" heading.

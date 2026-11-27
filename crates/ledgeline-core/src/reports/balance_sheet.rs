@@ -2476,9 +2476,10 @@ mod tests {
                 cents
             ),
             // `assets:bank:b:reserve` has no sibling in this group, so its
-            // chain collapses into it and Bank B's name is not borrowed.
+            // chain collapses into it, labelled with the chain's first level
+            // (`assets:bank`); Bank B's own name is not borrowed.
             [
-                "- Reserve 500.00",
+                "- Bank · Reserve 500.00",
                 "# Broker",
                 "  - Cd 700.00",
                 "  - Mm 600.00"
@@ -2510,7 +2511,7 @@ mod tests {
                     .unwrap(),
                 cents
             ),
-            ["- Reserve 500.00", "- Mm 600.00"]
+            ["- Bank · Reserve 500.00", "- Broker · Mm 600.00"]
         );
         let pivot = pivot_balance_sheets(&reports, &bank_names()).unwrap();
         let reserves = pivot.sections[0]
@@ -2525,7 +2526,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("|")),
             [
-                "- Reserve 500.00|500.00",
+                "- Bank · Reserve 500.00|500.00",
                 "# Broker",
                 "  - Cd -|700.00",
                 "  - Mm 600.00|600.00"

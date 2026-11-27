@@ -1957,7 +1957,7 @@ mod tests {
             [
                 row(
                     Account,
-                    "Payroll Processing Fees",
+                    "People Costs · Payroll Processing Fees",
                     0,
                     "expenses:people-costs:payroll-processing-fees",
                     5_000
@@ -2309,7 +2309,7 @@ mod tests {
             budget_rows(&report, "Travel"),
             vec![
                 brow(Account, "Airfare", 0, 10_000, None),
-                brow(Account, "Hotels", 0, 20_000, Some(22_000)),
+                brow(Account, "Lodging · Hotels", 0, 20_000, Some(22_000)),
             ]
         );
     }
@@ -2387,7 +2387,7 @@ mod tests {
                 brow(Account, "Dining", 1, 5_000, None),
                 brow(Account, "Groceries", 1, 10_000, Some(12_000)),
                 brow(Total, "Total Food", 0, 15_000, Some(52_000)),
-                brow(Account, "Airfare", 0, 7_000, None),
+                brow(Account, "Travel · Airfare", 0, 7_000, None),
             ]
         );
         let group = the_group(&report, "Living");

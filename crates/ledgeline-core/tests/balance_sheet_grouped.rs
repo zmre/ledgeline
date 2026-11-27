@@ -778,7 +778,8 @@ fn outline_rows_show_only_their_groups_money() {
 
     // Unclipped, the cash group reads like a bookkeeper's list: the three bank
     // accounts under one Bank heading, the brokerage's cash as a lone leaf
-    // (its chain has no sibling in this group, so it collapses).
+    // (its chain has no sibling in this group, so it collapses, keeping the
+    // chain's first level: "Broker · Cash", and "Wise · Eur" under Bank).
     let report = report(&journal, "2026-07-08", None, Valuation::Market);
     assert_eq!(
         outline_of(group(&report, BsSectionKind::Assets, CASH_GROUP)),
@@ -787,8 +788,8 @@ fn outline_rows_show_only_their_groups_money() {
             "  - Checking",
             "  - Savings",
             // `assets:bank:wise:eur`: a lone chain collapses into its leaf.
-            "  - Eur",
-            "- Cash"
+            "  - Wise · Eur",
+            "- Broker · Cash"
         ]
     );
     assert_eq!(
