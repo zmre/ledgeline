@@ -8,6 +8,7 @@ use super::account_types::{AccountType, AccountTypes};
 use super::aggregate::{PostingFilter, account_totals, at_depth, roll_up};
 use super::balance_sheet::{Valuation, signed, valued_keeping_unpriced};
 use super::mixed_amount::MixedAmount;
+use super::outline::clip;
 use super::periods::{BucketSpan, Interval, add_days, days_between, range_buckets};
 use super::prices::{PriceDb, ValuationMeta, priced_count};
 use super::sections::build_section;
@@ -890,14 +891,6 @@ fn group_rows<A>(
             })
         })
         .collect()
-}
-
-/// `account`'s first `depth` segments (`depth` ≥ 1).
-fn clip(account: &str, depth: usize) -> &str {
-    match account.match_indices(':').nth(depth.max(1) - 1) {
-        Some((cut, _)) => &account[..cut],
-        None => account,
-    }
 }
 
 /// A grouped, market-valued income statement whose GAAP subtotal ladder appears

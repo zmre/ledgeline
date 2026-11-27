@@ -38,6 +38,7 @@ pub mod insights;
 pub mod kpi;
 pub mod mixed_amount;
 pub mod net_worth;
+pub mod outline;
 pub mod periods;
 pub mod prices;
 pub mod reference;
