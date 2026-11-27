@@ -122,7 +122,8 @@ and Ledgeline keeps the prices current for you while it is open:
 - **Shortly after it starts**, and then **about once an hour**, it checks your
   journal for stocks missing the **latest closing price** — today's once US
   markets have closed (after 21:30 UTC on a weekday), otherwise the previous
-  weekday's.
+  weekday's. A coin's latest close is yesterday's (midnight UTC) on every day
+  of the week; see [Crypto](crypto.md).
 - **It fills in weekly history.** For each of the last *N* Monday-to-Sunday
   weeks (6 by default, 0 to 52), a stock with no `P` line anywhere in that week
   gets the week's Friday close — or the week's last trading day, when the

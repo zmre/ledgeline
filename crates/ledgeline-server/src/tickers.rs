@@ -217,6 +217,14 @@ pub(crate) fn judge(symbol: &WirePriceSymbol, instrument: Option<&Instrument>) -
     Verdict::Accept
 }
 
+/// Whether `symbol` is a coin: tagged as one, or Yahoo said so the last time
+/// its ticker was fetched (`remembered`). What gives it weekend closes
+/// (plan 48 C9).
+#[must_use]
+pub(crate) fn is_coin(symbol: &WirePriceSymbol, remembered: Option<&Instrument>) -> bool {
+    symbol.crypto || remembered.is_some_and(Instrument::is_crypto)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,5 +357,15 @@ commodity 1.0000 ETH
             judge(&tickers.resolve("SOL"), Some(&untyped)),
             Verdict::Accept
         );
+    }
+
+    #[test]
+    fn a_coin_is_tagged_or_remembered_as_one() {
+        let journal = journal(COINS);
+        let tickers = Tickers::with_base(&journal, "$");
+        assert!(is_coin(&tickers.resolve("BTC"), None));
+        assert!(!is_coin(&tickers.resolve("VTI"), None));
+        let coin = instrument("CRYPTOCURRENCY", "Ethereum USD");
+        assert!(is_coin(&tickers.resolve("ETH"), Some(&coin)));
     }
 }

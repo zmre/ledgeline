@@ -107,10 +107,16 @@ base currency.
 
 - **Update prices** and automatic updates fetch daily closes for coins like any
   other holding. Yahoo dates a coin's daily close at midnight UTC.
-- **Weekends.** Automatic updates follow the stock-market calendar, so they do
-  not fill in Saturday and Sunday closes. On the 1 week chart the weekend is
-  drawn flat at Friday's price. The [delayed quote](index.md#the-value-over-time-chart)
-  for today still applies on any day.
+- **Every day is a trading day.** Automatic updates give a coin yesterday's
+  close (midnight UTC) every day of the week, weekends included, and the
+  weekly history takes each week's Sunday close rather than Friday's. A coin
+  counts as one when it is tagged `type: crypto` or `assetclass: crypto`, or
+  when Yahoo said so the last time Ledgeline fetched it. The
+  [delayed quote](index.md#the-value-over-time-chart) for today applies on any
+  day too.
+- **A missing day takes the day before.** Yahoo occasionally has no close for
+  a coin's day. Nothing is written for it, and valuation uses the previous
+  close.
 - **Small prices keep their digits.** A fetched price is written with six
   significant digits, and never fewer decimals than your base currency uses:
   USDT is `$0.99874`, a token worth a fraction of a cent is `$0.00000358`, and
@@ -132,6 +138,5 @@ base currency.
 [Plan 48](https://github.com/zmre/ledgeline/blob/main/plans/48-crypto-holdings-research.md)
 covers the gaps above:
 
-- weekend closes for coins;
 - staking rewards and reinvested income counted as return rather than as new
   money in.

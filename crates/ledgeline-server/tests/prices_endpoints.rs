@@ -1132,3 +1132,56 @@ commodity 1.00 USDT  ; type: crypto
         "{written}"
     );
 }
+
+/// Plan 48 WP3: on a Sunday a coin gets Saturday's close while a stock in
+/// the same run still targets Friday's, which it already has.
+#[tokio::test]
+async fn an_auto_run_on_a_sunday_records_a_coins_saturday_close() {
+    let main = "\
+commodity 1.00000000 BTC  ; type: crypto
+
+include prices.journal
+
+2026-09-01 buy
+    assets:crypto    0.50000000 BTC @ $60000.00
+    assets:broker    10 AAPL @ $200.00
+    assets:cash
+";
+    let prices = "\
+P 2026-11-06 AAPL $255.00
+P 2026-11-06 BTC $70000.00
+P 2026-11-13 AAPL $261.00
+P 2026-11-13 BTC $71000.00
+";
+    let tree = Tree::with_files(
+        main,
+        &[
+            ("prices.journal", prices),
+            (
+                "ledgeline.toml",
+                "[ui]\nautoPrices = true\nautoPricesWeeks = 0\n",
+            ),
+        ],
+        FakeFeed::with_history([
+            (
+                "BTC-USD",
+                FakeHistory::Closes(vec![
+                    ("2026-11-13", dec(7_100_000, 2)),
+                    ("2026-11-14", dec(7_200_000, 2)),
+                ]),
+            ),
+            (
+                "AAPL",
+                FakeHistory::Closes(vec![("2026-11-13", dec(26100, 2))]),
+            ),
+        ]),
+    );
+    tree.state
+        .run_auto_prices_once(unix_at("2026-11-15", 12))
+        .await;
+    assert_eq!(tree.requests(), 1, "only the coin is missing anything");
+    assert_eq!(
+        tree.read("prices.journal"),
+        format!("{prices}P 2026-11-14 BTC $72000.00\n")
+    );
+}
