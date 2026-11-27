@@ -1,0 +1,26 @@
+* Time — pat — October 2026
+# Kept by hand in org mode: dots are quarter hours, letters are quarter hours
+# tagged t:LETTER (a is prep, b is review).
+
+** 2026-10-05 Mon  ; person: pat
+*** clients:acme:tax-return  ....  ; first look, invoice: 101
+*** clients:acme:advisory  ..  ; invoice: 101
+*** internal:admin  .
+
+** 2026-10-06 Tue  ; person: pat
+*** clients:globex:audit  .... ....
+*** clients:acme:tax-return  aab
+
+** 2026-10-07 Wed  ; person: pat
+*** clients:acme:travel  2h  ; drive to site
+*** clients:initech:discovery  1.5  ; invoice: 102
+*** internal:sales  45m
+
+** 2026-10-20 Tue  ; person: pat
+*** clients:acme:tax-return  3h  ; invoice: 101
+*** clients:acme:advisory  20m  ; nobill: courtesy call
+*** clients:globex:audit  2,5h
+
+** 2026-10-30 Fri  ; person: pat
+*** clients:acme:advisory  1h  ; year-end planning
+*** clients:initech:discovery  30m

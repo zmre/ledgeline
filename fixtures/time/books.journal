@@ -1,0 +1,26 @@
+; Small books for the time-tracking fixture (plan 46). The time roll-up is
+; NOT included here; with-time.journal includes both, to prove that hours
+; never reach a money report.
+account assets:checking                 ; type: C
+account assets:receivable               ; type: A
+account equity:opening                  ; type: E
+account income:consulting               ; type: R
+account expenses:software               ; type: X
+
+commodity $1,000.00
+
+2026-09-01 Opening balance
+    assets:checking                    $5,000.00
+    equity:opening
+
+2026-10-31 Acme Corp  ; invoice: 101, customer: Acme Corp
+    assets:receivable                  $1,250.00
+    income:consulting
+
+2026-11-15 Payment from Acme Corp  ; invoice: 101
+    assets:checking                    $1,250.00
+    assets:receivable
+
+2026-11-20 Software
+    expenses:software                     $49.00
+    assets:checking

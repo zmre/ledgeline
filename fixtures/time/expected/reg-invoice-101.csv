@@ -1,0 +1,4 @@
+"txnidx","date","code","description","account","amount","total"
+"1","2026-10-05","","Mon","(clients:acme:tax-return)","1.00","1.00"
+"1","2026-10-05","","Mon","(clients:acme:advisory)","0.50","1.50"
+"4","2026-10-20","","Tue","(clients:acme:tax-return)","3.00","4.50"
