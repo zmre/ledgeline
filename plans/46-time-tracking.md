@@ -549,19 +549,59 @@ account used in files but not declared (shown as *undeclared*, with
 
 ### T-dash. Dashboard and surveys
 
-The time-period selector is shared with the Entries page.
+Patrick, 2026-11-26: the dashboard has to be useful for time tracking
+**outside invoicing**, not just as a route to billing. That means plenty of
+graphs, top-N lists, filters, period selection, billable vs not, and
+account depth. His answers to the design questions:
 
-- **Hours by top-level branch and customer**, billable versus non-billable,
-  for the selected period, with the previous period beside it.
-- **Unbilled (WIP) by customer**: hours, estimated value at the suggested
-  item's rate, oldest unbilled date, and the customer's `cadence`. Each row
-  has **Bill…**.
-- **Where the time went**: a tree with a roll-up at each level (`bal
-  --tree`), switchable by person.
-- **Week strip**: hours per day this week versus a target (`[time]
-  weekly-target`, optional).
-- Charts are built under the dataviz skill. Every figure has the hledger
-  command that reproduces it in its tooltip, as plan 37 does.
+| #  | Decision                                                                                                    |
+|----|-------------------------------------------------------------------------------------------------------------|
+| W1 | **Invoicer only.** No Ledgeline Time tab, now or later. (This replaces Phase 6 item 6.)                     |
+| W2 | **Views:** KPI tiles, hours over time, the account tree with depth, and top-N lists.                       |
+| W3 | **A fixed, well-designed page.** No customizable widgets or saved views. Every figure drills into Entries with the same filters. |
+
+**Filter bar**, at the top of the page and written into the URL:
+
+- period: presets plus custom, with **compare to the previous period** on
+  by default;
+- person;
+- customer;
+- billable: all / billable / non-billable;
+- account depth (1–N);
+- account filter (a prefix or a query).
+
+It uses the same URL contract as Entries, so drilling down keeps every
+filter.
+
+**Page, top to bottom:**
+
+1. **KPI tiles:**
+   - total hours;
+   - billable hours and billable %;
+   - average per working day;
+   - days tracked out of working days;
+   - unbilled hours, shown only when some billable account has a customer.
+
+   Each tile shows the change against the previous period.
+2. **Hours over time:**
+   - stacked bars, by day, week or month (chosen automatically from the
+     period length, and switchable);
+   - the split is by top-level branch, customer, person or billable;
+   - an optional weekly-target line.
+3. **Account tree with depth:** a collapsible tree table with roll-ups at
+   each level (`bal --tree`). Columns: hours, % of total, billable hours,
+   change. Depth follows the filter bar, and each level can be expanded on
+   its own.
+4. **Top-N lists** (N = 10, plus "Other"), each with its change against the
+   previous period: accounts at the chosen depth, customers, people (hidden
+   when there's only one), and notes (most frequent note text).
+
+Built under the dataviz skill. Every figure's tooltip gives the hledger
+command that reproduces it, as plan 37 does. Data comes from
+`GET /api/time/summary`, which supports grouping by any one or two
+dimensions, depth, top-N and period series. The billing pieces (Unbilled by
+customer with **Bill…**) live on the Unbilled view (B-unbilled), not on the
+dashboard.
 
 ### B-unbilled. Which invoices to create
 
@@ -910,7 +950,7 @@ New module `crates/ledgeline-core/src/time/`:
 4. **Imports**: Toggl, Harvest and Clockify CSV; calendar (ICS) events as
    draft entries.
 5. **Project budgets** with 75/90/100% alerts.
-6. **A Ledgeline Time tab** (read-only reports) once core is proven.
+6. ~~A Ledgeline Time tab~~: dropped (W1).
 7. **iOS**: Track as the phone's main screen, a widget, and a Watch
    complication.
 8. **Hardware**: an EARLY/Timeular cube or Stream Deck mapped to slots
