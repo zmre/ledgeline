@@ -111,21 +111,12 @@ base currency.
   not fill in Saturday and Sunday closes. On the 1 week chart the weekend is
   drawn flat at Friday's price. The [delayed quote](index.md#the-value-over-time-chart)
   for today still applies on any day.
-- **Small prices are rounded today.** A fetched price is rounded to your base
-  currency's decimals. For a stablecoin that barely matters: USDT at $0.99874
-  is written as `$1.00`. A token worth less than half a cent is written as
-  `$0.00`, which values the holding at nothing, so fetched prices are not
-  usable for such tokens yet. hledger itself keeps every decimal you write, so
-  a price you enter by hand is exact:
-
-  ```journal
-  P 2026-11-26 PEPE $0.00000358
-  ```
-
-  Fetching still adds its rounded price for any date that has no price in the
-  prices file, and the prices file is read after your own lines, so its
-  `$0.00` would win. Until this is fixed, keep sub-cent tokens out of a
-  ledger you update prices for, or delete the fetched lines for them.
+- **Small prices keep their digits.** A fetched price is written with six
+  significant digits, and never fewer decimals than your base currency uses:
+  USDT is `$0.99874`, a token worth a fraction of a cent is `$0.00000358`, and
+  bitcoin is `$61656.01`. hledger reads at most ten decimals, so nothing
+  smaller than that is written. How dollar amounts display elsewhere does not
+  change.
 
 ## Not supported
 
@@ -141,7 +132,6 @@ base currency.
 [Plan 48](https://github.com/zmre/ledgeline/blob/main/plans/48-crypto-holdings-research.md)
 covers the gaps above:
 
-- small prices kept to their significant digits;
 - weekend closes for coins;
 - staking rewards and reinvested income counted as return rather than as new
   money in.

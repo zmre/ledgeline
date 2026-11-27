@@ -94,10 +94,13 @@ Holdings page say so. See [Crypto](crypto.md).
   with no tags (`BTC`, `ETH`, `SOL`, …) priced as something that is not a coin
   is recorded, because you may hold that ETF, and the summary and the Holdings
   page warn about it.
-- **Writes in your journal's own style.** The fetched quote is rounded to the
-  precision your journal already uses for the base commodity, so an update reads
-  as `P 2026-08-31 AAPL $315.23` rather than the ten-digit float Yahoo answers
-  with.
+- **Writes in your journal's own style.** The fetched quote is written in the
+  style your journal already uses for the base commodity, rounded to six
+  significant digits but never to fewer decimals than that style has. An
+  update reads as `P 2026-08-31 AAPL $315.23` rather than the ten-digit float
+  Yahoo answers with, while a price under a dollar keeps the digits that
+  matter: `$0.0412` for a penny stock, `$0.99874` for a stablecoin. A price is
+  never written with more than ten decimals, hledger's own limit.
 - **Keeps the file in date order.** Each new line goes straight after the
   last `P` line dated on or before it, so same-day prices stay together; a
   price older than every other goes before the first, and a file with no `P`

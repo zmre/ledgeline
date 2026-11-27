@@ -67,6 +67,7 @@ use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::response::Response;
 use futures::stream::{self, StreamExt};
+use ledgeline_core::decimal::MAX_PARSE_PLACES;
 use ledgeline_core::edit::render_amount;
 use ledgeline_core::holdings::{HoldingsScope, ScopeMode, compute_holdings};
 use ledgeline_core::model::{Amount, Commodity, Journal};
@@ -105,22 +106,23 @@ const MAX_ID_BYTES: usize = 1024;
 /// See [`MAX_ID_BYTES`].
 const MAX_ID_COMPONENTS: usize = 9;
 
-/// A ceiling on a freshly-fetched quote's own precision, applied BEFORE
-/// [`infer_style`] ever sees it.
+/// How many significant digits a fetched price keeps (plan 48 C8).
 ///
 /// Yahoo's chart JSON encodes a close as an `f64`, and printing one back out
 /// (`FetchedPrice` is built from it in `yahoo.rs`) routinely yields something
 /// like `366.8500061035` for what is, to every human involved, `366.85` — a
-/// binary-float artifact, not ten meaningful digits. Without this cap, a
-/// COMMODITY WITH NO ESTABLISHED STYLE YET (nothing else in the journal prices
-/// it) would carry that noise straight into `infer_style`'s fallback
-/// `default_style(commodity, places)`, whose `precision` is exactly the
-/// `places` it was handed — six is generous for anything Yahoo prices
-/// (mutual-fund NAVs included) while discarding the float tail. The SECOND,
-/// tighter round in [`apply_update`] — to the quote commodity's actual
-/// established style, when the journal has one — is what turns this into the
-/// clean two-decimal price a person would write.
-const MAX_FETCHED_QUOTE_PLACES: u32 = 6;
+/// binary-float artifact, not ten meaningful digits. Six significant digits
+/// discard that tail while keeping what a price actually says: a stablecoin's
+/// `0.99874`, a penny stock's `0.0412`, a meme token's `0.00000358`. Rounding
+/// to the base currency's own two decimals instead — what this did before —
+/// wrote USDT as `$1.00` and a sub-cent token as `$0.00`, valuing the holding
+/// at nothing. See [`fetched_quantity`].
+const SIGNIFICANT_DIGITS: u32 = 6;
+
+/// The most fractional digits a fetched price is written with: hledger's own
+/// parse limit ([`MAX_PARSE_PLACES`]), so the journal never holds a digit
+/// hledger would round away on reading it back.
+const MAX_FETCHED_QUOTE_PLACES: u32 = MAX_PARSE_PLACES;
 
 // ===========================================================================
 // Wire types
@@ -848,18 +850,17 @@ pub(crate) fn apply_update(
             Verdict::Accept => symbol.note.clone(),
         };
         for price in prices {
-            // See `MAX_FETCHED_QUOTE_PLACES`: bound the raw quote BEFORE it
-            // can influence a fallback style, then round again to whatever
-            // precision the journal actually established for this commodity
-            // (a no-op when that is already <= the bound).
+            // The journal's own style for the base commodity (two decimals
+            // for a `$` ledger, when it established none), and the fetched
+            // price to its significant digits, never fewer decimals than
+            // that style ([`fetched_quantity`]).
             //
             // Rounded ABOVE the duplicate branch, not inside the write branch:
             // both outcomes report `price` on the wire, and a `duplicate`
             // echoing the raw `f64` tail while an `updated` echoed `228.00`
             // would be two different answers to one question.
-            let bounded = round_to_places(price.quantity, MAX_FETCHED_QUOTE_PLACES);
-            let style = infer_style(journal, &plan.quote, bounded.places);
-            let quantity = round_to_places(bounded, style.precision);
+            let style = infer_style(journal, &plan.quote, DEFAULT_QUOTE_PLACES);
+            let quantity = fetched_quantity(price.quantity, style.precision);
             let outcome = if line_exists(&plan.text, &price.date, &symbol.symbol) {
                 Outcome::Duplicate
             } else {
@@ -956,6 +957,50 @@ fn no_price(symbol: WirePriceSymbol, outcome: Outcome) -> WirePriceResult {
         price: None,
         name: None,
     }
+}
+
+/// The decimals a fetched price gets in a journal that never wrote its base
+/// commodity with any: a currency's usual two.
+const DEFAULT_QUOTE_PLACES: u32 = 2;
+
+/// A fetched price as written: [`SIGNIFICANT_DIGITS`] significant digits
+/// (half-even), at most [`MAX_FETCHED_QUOTE_PLACES`] decimals, trailing zeros
+/// dropped — but never fewer decimals than `floor`, the base currency's own
+/// precision, so `$61,656.01` stays two-decimal and `$228` reads `$228.00`.
+///
+/// Only the `P` line's number changes: how the base currency DISPLAYS comes
+/// from posting amounts (`journal_meta::report_styles`), never from prices, so
+/// a `$0.00000358` price does not make every dollar amount eight-decimal.
+fn fetched_quantity(raw: Dec, floor: u32) -> Dec {
+    let bounded = round_to_places(raw, MAX_FETCHED_QUOTE_PLACES);
+    let places = significant_places(bounded)
+        .min(MAX_FETCHED_QUOTE_PLACES)
+        .max(floor);
+    let trimmed = round_to_places(bounded, places).normalized();
+    if trimmed.places < floor {
+        trimmed.rounded(floor).unwrap_or(trimmed)
+    } else {
+        trimmed
+    }
+}
+
+/// The fractional digits `value` needs to show [`SIGNIFICANT_DIGITS`]
+/// significant digits: none past them for `61656.01`, six past the leading
+/// zeros for `0.00000358`. Zero needs none.
+fn significant_places(value: Dec) -> u32 {
+    let digits = value
+        .mantissa
+        .unsigned_abs()
+        .checked_ilog10()
+        .map_or(0, |log| log + 1);
+    if digits == 0 {
+        return 0;
+    }
+    // `digits - places` is how many digits sit left of the point (zero or
+    // less for a value under one).
+    let integer_digits = i64::from(digits) - i64::from(value.places);
+    let wanted = i64::from(SIGNIFICANT_DIGITS) - integer_digits;
+    u32::try_from(wanted.max(0)).unwrap_or(u32::MAX)
 }
 
 /// Round `value` to exactly `places` fractional digits, half-even. A no-op
@@ -1276,6 +1321,63 @@ mod tests {
         assert_eq!(tally.get(FsPath::new("/j/a.journal")), Some(&2));
         assert_eq!(tally.get(FsPath::new("/j/b.journal")), Some(&1));
         assert_eq!(tally.get(FsPath::new("/j/c.journal")), None);
+    }
+
+    fn fetched(text: &str, floor: u32) -> String {
+        let quantity = fetched_quantity(Dec::parse(text, '.').unwrap(), floor);
+        ledgeline_core::edit::render_amount(&Amount {
+            commodity: CoreCommodity("$".to_string()),
+            quantity,
+            style: ledgeline_core::model::AmountStyle {
+                precision: floor,
+                ..default_dollar_style()
+            },
+            cost: None,
+        })
+    }
+
+    fn default_dollar_style() -> ledgeline_core::model::AmountStyle {
+        crate::edit_api::infer_style(
+            &ledgeline_core::parse::parse_journal("", "t").unwrap(),
+            &CoreCommodity("$".to_string()),
+            2,
+        )
+    }
+
+    /// Plan 48 WP2's cases: a fetched price keeps six significant digits,
+    /// never fewer decimals than the base currency's own.
+    #[test]
+    fn a_fetched_price_keeps_its_significant_digits() {
+        assert_eq!(fetched("0.99874", 2), "$0.99874", "a stablecoin");
+        assert_eq!(fetched("0.9987040162086487", 2), "$0.998704");
+        assert_eq!(fetched("0.00000358", 2), "$0.00000358", "a meme token");
+        assert_eq!(fetched("61656.01", 2), "$61656.01", "bitcoin");
+        assert_eq!(fetched("0.0412", 2), "$0.0412", "a penny stock");
+        assert_eq!(fetched("366.8500061035", 2), "$366.85", "float noise");
+        assert_eq!(
+            fetched("228", 2),
+            "$228.00",
+            "padded to the base's decimals"
+        );
+        assert_eq!(fetched("228.1", 2), "$228.10");
+        assert_eq!(fetched("1234.5678", 4), "$1234.5678", "a four-decimal base");
+    }
+
+    /// hledger reads at most ten decimals; a price is never written with more.
+    #[test]
+    fn a_fetched_price_never_has_more_decimals_than_hledger_reads() {
+        assert_eq!(fetched("0.000000003581234", 2), "$0.0000000036");
+        assert_eq!(fetched("0.00000000000001", 2), "$0.00");
+    }
+
+    #[test]
+    fn significant_places_counts_past_the_leading_zeros() {
+        assert_eq!(significant_places(Dec::new(6_165_601, 2)), 1);
+        assert_eq!(significant_places(Dec::new(99_874, 5)), 6);
+        assert_eq!(significant_places(Dec::new(358, 8)), 11);
+        assert_eq!(significant_places(Dec::new(1_234_567, 0)), 0);
+        assert_eq!(significant_places(Dec::new(0, 4)), 0);
+        assert_eq!(significant_places(Dec::new(-412, 4)), 7);
     }
 
     #[test]

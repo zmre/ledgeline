@@ -1099,3 +1099,36 @@ include prices.journal
         "the ETF's price never lands on the coin"
     );
 }
+
+/// Plan 48 WP2: a stablecoin's price keeps its significant digits instead of
+/// being rounded to the dollar's two decimals (`$1.00`).
+#[tokio::test]
+async fn a_stablecoins_price_keeps_its_significant_digits() {
+    let journal = "\
+commodity 1.00 USDT  ; type: crypto
+
+2026-01-05 buy tether
+    assets:crypto    100.00 USDT @ $1.00
+    assets:cash
+";
+    let tree = Tree::with(
+        journal,
+        FakeFeed::new([(
+            "USDT-USD",
+            FakeQuote::Price("2026-11-26", dec(9_987_400_162_086_487, 16)),
+        )]),
+    );
+    post_json(&tree, "/api/prices/file", json!({})).await;
+    let (code, body) = post_json(
+        &tree,
+        "/api/prices/update",
+        json!({"journalId": "prices.journal"}),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    let written = tree.read("prices.journal");
+    assert!(
+        written.ends_with("P 2026-11-26 USDT $0.99874\n"),
+        "{written}"
+    );
+}
