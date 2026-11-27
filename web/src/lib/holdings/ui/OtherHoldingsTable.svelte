@@ -118,15 +118,15 @@
 
 {#snippet money(v: Dec | null)}
     {#if v === null}
-        <span class="text-base-content/40">{EM_DASH}</span>
+        <span class="text-muted">{EM_DASH}</span>
     {:else}
-        <span class={toNumber(v) < 0 ? "text-error" : ""}>{format(v)}</span>
+        <span class={toNumber(v) < 0 ? "text-error-text" : ""}>{format(v)}</span>
     {/if}
 {/snippet}
 
 {#snippet changeMoney(v: Dec | null)}
     {#if v === null}
-        <span class="text-base-content/40">{EM_DASH}</span>
+        <span class="text-muted">{EM_DASH}</span>
     {:else}
         <span class={signClass(toNumber(v))}>{format(v)}</span>
     {/if}
@@ -159,9 +159,9 @@
                     aria-current={cursor.key === h.account ? "true" : undefined}
                 >
                     <th class="min-w-32 font-normal whitespace-normal md:whitespace-nowrap" title={h.account}>
-                        {h.name}<span class="block text-xs [overflow-wrap:anywhere] text-base-content/60 md:hidden">{h.account}</span>
+                        {h.name}<span class="block text-xs [overflow-wrap:anywhere] text-muted md:hidden">{h.account}</span>
                     </th>
-                    <th class="hidden font-normal whitespace-nowrap text-base-content/70 md:table-cell">{h.account}</th>
+                    <th class="hidden font-normal whitespace-nowrap text-muted md:table-cell">{h.account}</th>
                     <td class="text-right font-mono whitespace-nowrap tabular-nums" data-testid="held-{h.account}">
                         {formatHeldCommodities(h.commodities, base, formatUnits)}
                     </td>
@@ -169,7 +169,7 @@
                     <td class="text-right font-mono whitespace-nowrap tabular-nums">{@render money(h.cost)}</td>
                     <td class="text-right font-mono whitespace-nowrap tabular-nums">{@render changeMoney(h.change)}</td>
                     <td class="text-right font-mono whitespace-nowrap tabular-nums">
-                        <span class={h.changePct === null ? "text-base-content/40" : signClass(h.changePct)}>{formatGainPct(h.changePct)}</span>
+                        <span class={h.changePct === null ? "text-muted" : signClass(h.changePct)}>{formatGainPct(h.changePct)}</span>
                     </td>
                 </tr>
             {/each}

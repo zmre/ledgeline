@@ -92,7 +92,7 @@
     <input
         bind:this={field}
         type="text"
-        class="shrink-0 bg-transparent text-base-content/50 outline-none placeholder:text-base-content/25 focus:text-base-content"
+        class="shrink-0 bg-transparent text-muted outline-none placeholder:text-base-content/25 focus:text-base-content"
         style="width: {width}ch"
         bind:value
         {placeholder}

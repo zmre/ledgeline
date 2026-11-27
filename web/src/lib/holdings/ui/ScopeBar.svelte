@@ -60,7 +60,7 @@
         <!-- Below sm each of these takes a full line, labels in one column,
              rather than wrapping wherever the widths happen to break. -->
         <label class="flex w-full items-center gap-2 sm:ml-auto sm:w-auto">
-            <span class="w-10 shrink-0 text-xs text-base-content/70 sm:w-auto">Period</span>
+            <span class="w-10 shrink-0 text-xs text-muted sm:w-auto">Period</span>
             <select
                 class="select min-w-0 flex-1 select-sm sm:w-44 sm:flex-none"
                 value={gainPeriod}
@@ -74,7 +74,7 @@
             </select>
         </label>
         <label class="flex w-full items-center gap-2 sm:w-auto">
-            <span class="w-10 shrink-0 text-xs text-base-content/70 sm:w-auto">As of</span>
+            <span class="w-10 shrink-0 text-xs text-muted sm:w-auto">As of</span>
             <input
                 type="date"
                 class="input min-w-0 flex-1 input-sm sm:w-40 sm:flex-none"
@@ -86,7 +86,7 @@
     </div>
     {#if selectedAccounts.length > 0}
         <div class="flex flex-wrap items-center gap-1">
-            <span class="text-xs text-base-content/60">{mode === "include" ? "Only:" : "All except:"}</span>
+            <span class="text-xs text-muted">{mode === "include" ? "Only:" : "All except:"}</span>
             {#each selectedAccounts as name (name)}
                 <span class="badge max-w-full gap-1 badge-outline">
                     <span class="truncate">{name}</span>

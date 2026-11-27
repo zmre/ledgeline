@@ -44,14 +44,14 @@ use ledgeline_core::reports::{
     GapRow, GroupSource, IS_GROUP_TAG, IncomeStatementReport, InsightsOpts, InsightsPeriod,
     InsightsReport, Interval, InvestmentPerf, IsGroup, IsOpts, IsRow, IsSection, IsSectionKind,
     IsSubtotal, IsSubtotalKind, LabelKind, MetricDelta, MixedAmount, MoverRow, NetWorthOpts,
-    PerfPoint, PeriodReport, PeriodRow, ReportError, ReportMeta, ReportRow, RowKind, Section,
-    SectionedReport, Subscription, SubscriptionOpts, SubscriptionsReport, TopTxn, Valuation,
-    account_decls, account_sections, balance_sheet, balance_sheet_columns, balance_sheet_grouped,
-    budget_gaps, budget_report, budget_summary, cash_flow_statement, compared_windows,
-    declared_groups, declared_types, detect_subscriptions, gap_totals, income_statement,
-    income_statement_columns, income_statement_flows, income_statement_grouped, insights,
-    interval_windows, net_worth, pivot_balance_sheets, prices_any_on_sheet, prices_any_on_sheets,
-    prices_any_on_statement, range_buckets,
+    PayeeRow, PerfPoint, PeriodReport, PeriodRow, ReportError, ReportMeta, ReportRow, RowKind,
+    Section, SectionedReport, Subscription, SubscriptionOpts, SubscriptionsReport, TopTxn,
+    Valuation, account_decls, account_sections, balance_sheet, balance_sheet_columns,
+    balance_sheet_grouped, budget_gaps, budget_report, budget_summary, cash_flow_statement,
+    compared_windows, declared_groups, declared_types, detect_subscriptions, gap_totals,
+    income_statement, income_statement_columns, income_statement_flows, income_statement_grouped,
+    insights, interval_windows, net_worth, pivot_balance_sheets, prices_any_on_sheet,
+    prices_any_on_sheets, prices_any_on_statement, range_buckets,
 };
 use ledgeline_core::reports::{
     BillingCustomers, Bridge, BridgeCustomers, COVERAGE_MIN_DEFAULT, CustomerMove, CustomerRow,
@@ -1466,6 +1466,30 @@ impl From<&TopTxn> for WireTopTxn {
     }
 }
 
+/// A Top Payees row (Box 11). `previous`, `delta` and `pct` are `null` for a
+/// payee with no spending in the previous period.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WirePayeeRow {
+    payee: String,
+    current: WireDec,
+    previous: Option<WireDec>,
+    delta: Option<WireDec>,
+    pct: Option<f64>,
+}
+
+impl From<&PayeeRow> for WirePayeeRow {
+    fn from(row: &PayeeRow) -> Self {
+        Self {
+            payee: row.payee.clone(),
+            current: row.current.into(),
+            previous: row.previous.map(WireDec::from),
+            delta: row.delta.map(WireDec::from),
+            pct: row.pct,
+        }
+    }
+}
+
 /// The full insights dashboard payload.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1485,6 +1509,7 @@ pub(crate) struct WireInsightsReport {
     revenue_changes: Vec<WireChangeRow>,
     movers: Vec<WireMoverRow>,
     top_txns: Vec<WireTopTxn>,
+    top_payees: Vec<WirePayeeRow>,
     /// Anything held at the end of either half — the SPA hides Investment
     /// Performance when false.
     has_holdings: bool,
@@ -1538,6 +1563,7 @@ impl From<&InsightsReport> for WireInsightsReport {
                 .collect(),
             movers: report.movers.iter().map(WireMoverRow::from).collect(),
             top_txns: report.top_txns.iter().map(WireTopTxn::from).collect(),
+            top_payees: report.top_payees.iter().map(WirePayeeRow::from).collect(),
             has_holdings: report.has_holdings,
             meta: report.meta.as_ref().map(WireReportMeta::from),
         }

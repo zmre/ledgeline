@@ -268,7 +268,7 @@ export const METRIC_HELP = {
         formula: "Σ segment MRR now of customers paying 12 months ago ÷ Σ their MRR then",
     },
 
-    // The four lists.
+    // The five lists.
     expensechanges: {
         label: "Biggest Expense Changes",
         title: "Biggest Expense Changes",
@@ -289,6 +289,12 @@ export const METRIC_HELP = {
         title: "Top Transactions",
         text: "This period's transactions with the biggest income or expense impact. Payments, transfers, moves to deferred revenue and closing entries drop out.",
         formula: "the larger of the debit and credit sides of its revenue and expense postings",
+    },
+    toppayees: {
+        label: "Top Payees",
+        title: "Top Payees",
+        text: "Who got the most of your spending this period, compared with the previous period. Only spending paid from cash, a bank or a card counts, and refunds count against the payee. Card payments, paychecks and taxes are left out.",
+        formula: "expenses grouped by payee, the part of the description before |",
     },
 } as const satisfies Record<string, MetricHelp>;
 

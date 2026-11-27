@@ -44,25 +44,26 @@ A command that works on one invoice takes its number (`105`) or its file. A file
 
 ## Commands
 
-| Command         | Does                                                                           | Writes                   |
-|-----------------|--------------------------------------------------------------------------------|--------------------------|
-| `new`           | Create a draft invoice                                                         | an invoice file          |
-| `list`          | List invoices, newest first                                                    | nothing                  |
-| `show`          | Show one invoice: its fields, its computed table, its problems                 | nothing                  |
-| `set`           | Set or remove fields in an invoice                                             | the invoice file         |
-| `recalc`        | Rewrite bill-table amounts that don't add up                                   | invoice files            |
-| `check`         | Check every invoice, customer and the catalog against each other and the books | nothing                  |
-| `next-number`   | Print the next invoice number                                                  | nothing                  |
-| `config`        | Print the settings the app is using                                            | nothing                  |
-| `customers`     | List customers, or show one                                                    | nothing                  |
-| `send`          | Book an invoice and mark it sent                                               | the journal and the file |
-| `void`          | Reverse an invoice's booking and mark it void                                  | the journal and the file |
-| `rebook`        | Re-book a sent invoice after an edit                                           | the journal              |
-| `apply-payment` | Cash books: apply a deposit to an invoice, or undo it                          | the journal and the file |
-| `reconcile`     | Update each sent invoice's paid status from the books                          | invoice files            |
-| `pdf`           | Export an invoice's PDF                                                        | a PDF                    |
-| `receivables`   | Open invoices, aging, DSO and average days to pay                              | nothing                  |
-| `recognize`     | Post the recognition entries due                                               | the journal              |
+| Command          | Does                                                                           | Writes                   |
+|------------------|--------------------------------------------------------------------------------|--------------------------|
+| `new`            | Create a draft invoice                                                         | an invoice file          |
+| `list`           | List invoices, newest first                                                    | nothing                  |
+| `show`           | Show one invoice: its fields, its computed table, its problems                 | nothing                  |
+| `set`            | Set or remove fields in an invoice                                             | the invoice file         |
+| `recalc`         | Rewrite bill-table amounts that don't add up                                   | invoice files            |
+| `check`          | Check every invoice, customer and the catalog against each other and the books | nothing                  |
+| `next-number`    | Print the next invoice number                                                  | nothing                  |
+| `config`         | Print the settings the app is using                                            | nothing                  |
+| `customers`      | List customers, or show one                                                    | nothing                  |
+| `send`           | Book an invoice and mark it sent                                               | the journal and the file |
+| `void`           | Reverse an invoice's booking and mark it void                                  | the journal and the file |
+| `rebook`         | Re-book a sent invoice after an edit                                           | the journal              |
+| `update-company` | Copy your company's current details into a sent invoice, and re-book it        | the file and the journal |
+| `apply-payment`  | Cash books: apply a deposit to an invoice, or undo it                          | the journal and the file |
+| `reconcile`      | Update each sent invoice's paid status from the books                          | invoice files            |
+| `pdf`            | Export an invoice's PDF                                                        | a PDF                    |
+| `receivables`    | Open invoices, aging, DSO and average days to pay                              | nothing                  |
+| `recognize`      | Post the recognition entries due                                               | the journal              |
 
 ### new
 
@@ -208,7 +209,7 @@ ledgeline-invoicer customers new "Northwind Traders" --email ap@northwind.exampl
 | `--revenue-account ACCOUNT`                                                                                                       | The revenue account for this customer's lines                                      |
 | `--invoice-template PATH`                                                                                                         | The customer's invoice template, such as `/invoices/tpl/x.html`                    |
 | `--ledger-customer NAME`                                                                                                          | The name the books use, when it differs                                            |
-| `--contract LINK\|PATH`                                                                                                           | A contract; repeat for more                                                        |
+| `--contract LINK\|PATH`                                                                                                           | A contract: a note link, a path in the books, or a file outside them (`~/…`, `file:///…`); repeat for more |
 | `--portal-name`, `--portal-url`, `--portal-login`, `--portal-supplier-id`, `--portal-requires-reference`, `--portal-instructions` | The billing portal. The login is a username, never a password                      |
 
 A name any note already has is refused, whatever its case, and an existing file is never overwritten. `--dry-run` prints the note without writing it.
@@ -263,6 +264,14 @@ ledgeline-invoicer rebook 105
 ```
 
 Replaces a sent invoice's booking with one that matches the file. Does nothing when they already agree. `--dry-run` shows what is booked and what would be. Refused for an invoice in a closed period.
+
+### update-company
+
+```sh
+ledgeline-invoicer update-company 105
+```
+
+Replaces the invoice's copy of your company's details (name, email, phone, address, logo) with the company note's, keeping everything else in the file as it was, then re-books a sent invoice. Drafts don't need it: they always use the company's current details. `show` says when a sent invoice's details are out of date. Refused for a void invoice, for an invoice in a closed period, and when no company is set.
 
 ### apply-payment
 

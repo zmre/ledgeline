@@ -212,10 +212,10 @@
     {#if loading}
         <div class="flex justify-center py-10" aria-label="Loading chart"><span class="loading loading-spinner"></span></div>
     {:else if chartError !== null}
-        <p class="py-10 text-center text-sm text-error">Couldn't draw the chart: {chartError}</p>
+        <p class="py-10 text-center text-sm text-error-text">Couldn't draw the chart: {chartError}</p>
     {:else if mode === "pie"}
         {#if pieSlices.length === 0}
-            <p class="py-10 text-center text-sm text-base-content/60">
+            <p class="py-10 text-center text-sm text-muted">
                 {#if pieCredits.length === 0}
                     No {commodity} activity in the filtered period.
                 {:else}
@@ -239,7 +239,7 @@
                                 {@const d = data as PieDatum}
                                 <div class="flex items-center gap-2 text-xs">
                                     <span class="inline-block h-2 w-2 rounded-full" style="background:{colorOf[d.account] ?? chartColors.other}"></span>
-                                    <span class="text-base-content/70">{d.account}</span>
+                                    <span class="text-muted">{d.account}</span>
                                     <span class="font-semibold">{d.formatted}</span>
                                 </div>
                             {/snippet}
@@ -255,12 +255,12 @@
         {/if}
         <!-- Categories that net to a credit have no area in a pie; name them instead of drawing them positive. -->
         {#if pieCredits.length > 0}
-            <p class="mt-1 px-1 text-xs text-base-content/60" data-testid="insights-pie-credits">
+            <p class="mt-1 px-1 text-xs text-muted" data-testid="insights-pie-credits">
                 Not shown (net credit in this period): {pieCredits.map((d) => `${d.account} ${d.formatted}`).join(", ")}.
             </p>
         {/if}
     {:else if rows.length === 0}
-        <p class="py-10 text-center text-sm text-base-content/60">No {commodity} activity in the filtered period.</p>
+        <p class="py-10 text-center text-sm text-muted">No {commodity} activity in the filtered period.</p>
     {:else}
         <div class="h-64 w-full sm:h-72" data-testid="insights-line">
             <LineChart

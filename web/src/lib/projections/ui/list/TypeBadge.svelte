@@ -31,11 +31,11 @@
         income: "bg-(--chart-in)/12 text-(--chart-in)",
         expense: "bg-(--chart-out)/14 text-(--chart-out)",
         asset: "bg-info/12 text-info",
-        cash: "bg-primary/16 text-primary",
+        cash: "bg-primary/16 text-primary-text",
         liability: "bg-warning/12 text-warning",
         equity: "bg-secondary/14 text-secondary",
-        gain: "bg-base-content/10 text-base-content/70",
-        conversion: "bg-base-content/10 text-base-content/70",
+        gain: "bg-base-content/10 text-muted",
+        conversion: "bg-base-content/10 text-muted",
     };
 
     const BASE =
@@ -46,7 +46,7 @@
     <span aria-hidden="true"></span>
 {:else if type === null}
     <span
-        class={[BASE, "bg-base-content/6 text-base-content/45", dim && "opacity-60"]}
+        class={[BASE, "bg-base-content/6 text-muted", dim && "opacity-60"]}
         title="{account} has no account type. Declare one in the journal or this file (account {account}  ; type: Asset, Liability, Equity, Revenue or Expense)."
         data-type-badge="none"><span aria-hidden="true">?</span><span class="sr-only">no account type</span></span
     >

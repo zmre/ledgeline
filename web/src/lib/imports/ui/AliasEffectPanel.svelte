@@ -194,7 +194,7 @@
                     </p>
                 {/if}
                 {#if confError !== null}
-                    <p class="text-xs text-error" use:reveal={{arm}} data-testid="imports-cli-parity-error">{confError}</p>
+                    <p class="text-xs text-error-text" use:reveal={{arm}} data-testid="imports-cli-parity-error">{confError}</p>
                 {/if}
             </div>
         {/if}

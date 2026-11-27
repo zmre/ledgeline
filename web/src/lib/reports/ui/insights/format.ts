@@ -12,7 +12,7 @@ import {isZero, sub, toNumber, type Dec, type MixedAmount} from "#lib/domain/mon
 import type {AmountStyle} from "#lib/domain/types.js";
 import {absDec, fmt, ZERO} from "#lib/format/amounts.js";
 import {sentimentClass} from "#lib/format/sign.js";
-import type {MetricDelta} from "#lib/reports/insightsTypes.js";
+import type {MetricDelta, PayeeRow} from "#lib/reports/insightsTypes.js";
 
 export {fmt, fmtSignedAmount, fmtSignedPct} from "#lib/format/amounts.js";
 export {signClass} from "#lib/format/sign.js";
@@ -50,6 +50,17 @@ export function deltaLine(metric: MetricDelta, base: string, styles: ReadonlyMap
     const amount = fmt(base, absDec(change), styles);
     const pct = metric.pct === null ? "" : ` (${Math.abs(metric.pct).toFixed(1)}%)`;
     return {arrow, text: `${amount}${pct}`, klass: sentimentClass(change.m, goodWhenUp)};
+}
+
+/**
+ * A Top Payees row's change line, styled like every other delta on the
+ * dashboard (`▲ $200.00 (40.0%)`, red when spending rose). Null for a payee
+ * with no previous spending: there is nothing to compare against.
+ */
+export function payeeChange(row: PayeeRow, base: string, styles: ReadonlyMap<string, AmountStyle>): DeltaLine | null {
+    if (row.previous === null || row.delta === null) return null;
+    const one = (amount: Dec): MixedAmount => new Map([[base, amount]]);
+    return deltaLine({current: one(row.current), previous: one(row.previous), delta: one(row.delta), pct: row.pct}, base, styles, false);
 }
 
 /** A single-commodity MetricDelta over the base, for figures the engine sends as two plain Decs. */
@@ -145,7 +156,7 @@ export const BURN_MULTIPLE_BANDS: readonly BurnBand[] = [
     {upTo: 1, label: "Very efficient", klass: "text-success"},
     {upTo: 2, label: "Good", klass: ""},
     {upTo: 3, label: "Suspect", klass: "text-warning"},
-    {upTo: Infinity, label: "Bad", klass: "text-error"},
+    {upTo: Infinity, label: "Bad", klass: "text-error-text"},
 ];
 
 /** The band a burn multiple falls in: exactly 1 is Good, exactly 2 still Good, exactly 3 still Suspect. */

@@ -26,12 +26,12 @@
     </header>
 
     {#each staged.notes as note, i (i)}
-        <p class="text-sm {noteIsWarning(note) ? 'text-warning' : 'text-base-content/60'}" role={noteIsWarning(note) ? "alert" : undefined}>
+        <p class="text-sm {noteIsWarning(note) ? 'text-warning' : 'text-muted'}" role={noteIsWarning(note) ? "alert" : undefined}>
             {noteText(note)}
         </p>
     {/each}
     {#if staged.unknownNoteCount > 0}
-        <p class="text-xs text-base-content/50">
+        <p class="text-xs text-muted">
             {staged.unknownNoteCount}
             note{staged.unknownNoteCount === 1 ? "" : "s"} from the engine that this build of Ledgeline doesn't understand — it is newer than this page.
         </p>
@@ -61,6 +61,6 @@
     </div>
 
     {#if staged.preview.rows.length === 0}
-        <p class="text-sm text-base-content/60">The conversion produced no rows at all — there is nothing here to import.</p>
+        <p class="text-sm text-muted">The conversion produced no rows at all — there is nothing here to import.</p>
     {/if}
 </section>

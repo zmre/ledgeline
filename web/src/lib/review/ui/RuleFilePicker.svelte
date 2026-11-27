@@ -47,7 +47,7 @@
         {#if current === null}
             <span class="font-medium text-warning">Choose a rules file</span>
         {:else}
-            <span class="text-base-content/70">Saving to</span>
+            <span class="text-muted">Saving to</span>
         {/if}
         {#if current !== null && choice.candidates.length === 1}
             <strong class="font-mono font-semibold" data-testid="review-rule-file-name">{labelOf(current.rulesId)}</strong>
@@ -71,14 +71,14 @@
             </select>
         {/if}
         {#if current === null}
-            <span class="text-xs text-base-content/55">the ledger doesn't say which</span>
+            <span class="text-xs text-muted">the ledger doesn't say which</span>
         {:else if reason !== ""}
-            <span class="text-xs text-base-content/55" data-testid="review-rule-file-reason">({reason})</span>
+            <span class="text-xs text-muted" data-testid="review-rule-file-reason">({reason})</span>
         {/if}
         <span class="grow"></span>
         <button
             type="button"
-            class="text-xs text-base-content/55 underline-offset-2 hover:text-base-content hover:underline"
+            class="text-xs text-muted underline-offset-2 hover:text-base-content hover:underline"
             aria-expanded={why}
             onclick={() => (why = !why)}
             data-testid="review-rule-file-why"
@@ -93,7 +93,7 @@
                     <span class={["font-mono", candidate.rulesId === picked ? "font-semibold text-base-content" : "text-base-content/75"]}
                         >{candidate.rulesId}</span
                     >
-                    <span class="text-base-content/55">{candidate.reasons.join(" · ") || "No reason given."}</span>
+                    <span class="text-muted">{candidate.reasons.join(" · ") || "No reason given."}</span>
                 </li>
             {/each}
         </ul>

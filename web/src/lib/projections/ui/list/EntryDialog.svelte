@@ -205,7 +205,7 @@
             <h2 id={headingId} class="text-base font-semibold tracking-tight">{title}</h2>
             {#if canDisable(draft.item.kind)}
                 <label class="ml-auto flex cursor-pointer items-center gap-2 text-sm">
-                    <span class={draft.item.disabled ? "text-base-content/50" : "text-base-content/80"}>{draft.item.disabled ? "Turned off" : "Enabled"}</span>
+                    <span class={draft.item.disabled ? "text-muted" : "text-base-content/80"}>{draft.item.disabled ? "Turned off" : "Enabled"}</span>
                     <input
                         type="checkbox"
                         class="toggle toggle-primary toggle-sm"
@@ -226,7 +226,7 @@
             {/if}
             {#if canDisable(draft.item.kind)}
                 <label class="flex flex-col gap-1">
-                    <span class="text-xs text-base-content/60">Comment above this entry</span>
+                    <span class="text-xs text-muted">Comment above this entry</span>
                     <textarea
                         class="textarea min-h-0 w-full font-mono text-sm placeholder:font-sans"
                         rows={Math.max(1, draft.attached.split("\n").length)}
@@ -264,13 +264,9 @@
 
             <section class="flex flex-col gap-1" aria-label="What a save writes">
                 <div class="flex items-baseline justify-between gap-2">
-                    <span class="text-xs font-medium text-base-content/70"
-                        >Writes <span class="font-normal text-base-content/45">— exact, from the server</span></span
-                    >
+                    <span class="text-xs font-medium text-muted">Writes <span class="font-normal text-muted">— exact, from the server</span></span>
                     {#if preview.pending}
-                        <span class="flex items-center gap-1 text-xs text-base-content/45"
-                            ><span class="loading loading-xs loading-spinner"></span>rendering</span
-                        >
+                        <span class="flex items-center gap-1 text-xs text-muted"><span class="loading loading-xs loading-spinner"></span>rendering</span>
                     {/if}
                 </div>
                 <pre
@@ -280,11 +276,11 @@
                     ]}
                     data-testid="entry-dialog-writes">{preview.text === "" ? "" : preview.text.replace(/\n$/, "")}</pre>
                 {#if preview.text === "" && !preview.pending && preview.refusal === null}
-                    <p class="text-xs text-base-content/45">Fill in the fields to see the text this writes.</p>
+                    <p class="text-xs text-muted">Fill in the fields to see the text this writes.</p>
                 {/if}
                 <div aria-live="polite">
                     {#if preview.refusal !== null}
-                        <p class="text-xs text-error" role="alert" data-testid="entry-dialog-refusal">{preview.refusal}</p>
+                        <p class="text-xs text-error-text" role="alert" data-testid="entry-dialog-refusal">{preview.refusal}</p>
                     {:else if preview.failure !== null}
                         <p class="text-xs text-warning" data-testid="entry-dialog-failure">Couldn't preview the text: {preview.failure}</p>
                     {/if}
@@ -301,7 +297,7 @@
         </div>
 
         <footer class="flex flex-wrap items-center gap-2 border-t border-base-content/8 px-5 py-3">
-            <span class="text-xs text-base-content/45">{isNew ? "Nothing is added until you press Done." : "Changes apply when you press Done."}</span>
+            <span class="text-xs text-muted">{isNew ? "Nothing is added until you press Done." : "Changes apply when you press Done."}</span>
             <span class="grow"></span>
             <button type="button" class="btn btn-ghost btn-sm" onclick={cancel} data-testid="entry-dialog-cancel">Cancel</button>
             <button

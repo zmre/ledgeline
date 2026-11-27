@@ -27,7 +27,7 @@
 
 <div class="flex max-w-full min-w-0 flex-wrap items-end gap-x-4 gap-y-2 rounded-box bg-base-200 px-3 py-2">
     <label class="form-control max-w-full min-w-0">
-        <span class="label-text mb-1 block text-xs text-base-content/70">Compare</span>
+        <span class="label-text mb-1 block text-xs text-muted">Compare</span>
         <select class="select w-56 max-w-full select-sm" value={activePreset} onchange={(e) => onPreset(e.currentTarget.value)} aria-label="Comparison preset">
             {#each INSIGHTS_PRESETS as preset (preset.id)}
                 <option value={preset.id}>{preset.label}</option>
@@ -38,7 +38,7 @@
         </select>
     </label>
     <label class="form-control">
-        <span class="label-text mb-1 block text-xs text-base-content/70">Start</span>
+        <span class="label-text mb-1 block text-xs text-muted">Start</span>
         <input
             type="date"
             class="input w-40 max-w-full input-sm"
@@ -48,7 +48,7 @@
         />
     </label>
     <label class="form-control">
-        <span class="label-text mb-1 block text-xs text-base-content/70">End</span>
+        <span class="label-text mb-1 block text-xs text-muted">End</span>
         <input type="date" class="input w-40 max-w-full input-sm" value={end} onchange={(e) => setEnd(e.currentTarget.value)} aria-label="Comparison end" />
     </label>
 </div>

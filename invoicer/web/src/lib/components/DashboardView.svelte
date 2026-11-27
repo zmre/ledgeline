@@ -163,7 +163,7 @@
                         {/if}
                     </div>
                     {#if openError !== null}
-                        <p class="text-xs text-error" role="alert" data-testid="open-ledgeline-error">{openError}</p>
+                        <p class="text-xs text-error-text" role="alert" data-testid="open-ledgeline-error">{openError}</p>
                     {/if}
                 </section>
             </li>

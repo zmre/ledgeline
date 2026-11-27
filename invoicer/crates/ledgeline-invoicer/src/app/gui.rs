@@ -176,14 +176,31 @@ struct Context {
 }
 
 /// A link the window may hand to the system's default app, re-serialized:
-/// any plain https page (the browser) or addressed `mailto:` (the mail
-/// app). Notes and invoices are the user's own content, so their web and
-/// email links open; everything else (http, ports, credentials, `file:`,
-/// scripts) stays blocked.
+/// any plain https page (the browser), an addressed `mailto:` (the mail
+/// app) or a plain `tel:` number (the customer page's Call: FaceTime or the
+/// phone app). Notes and invoices are the user's own content, so their web
+/// and email links open; everything else (http, ports, credentials,
+/// `file:`, scripts) stays blocked.
 fn external_url(candidate: &str) -> Option<String> {
     shell::plain_https(candidate)
-        .or_else(|| shell::plain_mailto(candidate))
         .map(String::from)
+        .or_else(|| shell::plain_mailto(candidate).map(String::from))
+        .or_else(|| plain_tel(candidate))
+}
+
+/// A `tel:` link that is only a number: an optional leading `+`, digits
+/// (at least three), and the dial-string pause and wait characters
+/// (`,` `;` `p` `w`), as the customer page writes one. Anything else
+/// (spaces, letters, parameters, an empty number) is refused.
+fn plain_tel(candidate: &str) -> Option<String> {
+    let number = candidate.trim().strip_prefix("tel:")?;
+    let digits = number.trim_start_matches('+');
+    let plain = digits.chars().filter(char::is_ascii_digit).count() >= 3
+        && digits
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, ',' | ';' | 'p' | 'w'))
+        && digits.starts_with(|c: char| c.is_ascii_digit());
+    plain.then(|| format!("tel:{number}"))
 }
 
 /// The window's `open_external` ([`shell::build_webview`]): hand an
@@ -490,6 +507,8 @@ mod tests {
                 "mailto:ap@example.com?subject=Invoice 108&body=Hi",
                 "mailto:ap@example.com?subject=Invoice%20108&body=Hi",
             ),
+            ("tel:+15551234567", "tel:+15551234567"),
+            ("tel:3035550142,12", "tel:3035550142,12"),
         ] {
             assert_eq!(external_url(link).as_deref(), Some(opened), "{link}");
         }
@@ -505,7 +524,13 @@ mod tests {
             "file:///etc/passwd",
             "javascript:alert(1)",
             "data:text/html,<p>hi</p>",
-            "tel:+15551234567",
+            "tel:",
+            "tel:+",
+            "tel:12",
+            "tel:+1 555 0100",
+            "tel:555-0100",
+            "tel:+1555;phone-context=x",
+            "tel:call me",
             "mailto:",
             "mailto:?subject=hi",
             "not a url",

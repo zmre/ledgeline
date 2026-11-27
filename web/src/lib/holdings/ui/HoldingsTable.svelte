@@ -11,7 +11,7 @@
      forces overflow-y to auto per CSS). The wrapper scrolls horizontally
      only, for small screens — vertical scrolling belongs to the page.
      Right-aligned numerics via the exact domain formatters (2dp display
-     cap), em-dash for null cells, negatives in text-error (gain cells
+     cap), em-dash for null cells, negatives in text-error-text (gain cells
      additionally show positives in text-success), "inferred" badge when the
      price came from a cost annotation instead of a P directive. A tfoot
      totals row (always below the body, whatever the sort) shows the ENGINE's
@@ -110,15 +110,15 @@
 
 {#snippet money(v: Dec | null)}
     {#if v === null}
-        <span class="text-base-content/40">{EM_DASH}</span>
+        <span class="text-muted">{EM_DASH}</span>
     {:else}
-        <span class={toNumber(v) < 0 ? "text-error" : ""}>{format(v)}</span>
+        <span class={toNumber(v) < 0 ? "text-error-text" : ""}>{format(v)}</span>
     {/if}
 {/snippet}
 
 {#snippet gainMoney(v: Dec | null)}
     {#if v === null}
-        <span class="text-base-content/40">{EM_DASH}</span>
+        <span class="text-muted">{EM_DASH}</span>
     {:else}
         <span class={signClass(toNumber(v))}>{format(v)}</span>
     {/if}
@@ -155,7 +155,7 @@
                     aria-current={cursor.key === h.symbol ? "true" : undefined}
                 >
                     <th class="min-w-32 font-normal whitespace-normal md:whitespace-nowrap" title={h.accounts.join(", ")}>
-                        {h.name}{#if h.name !== h.symbol}<span class="block text-xs font-medium text-base-content/60 md:hidden">{h.symbol}</span>{/if}
+                        {h.name}{#if h.name !== h.symbol}<span class="block text-xs font-medium text-muted md:hidden">{h.symbol}</span>{/if}
                     </th>
                     <th class="hidden font-medium md:table-cell">{h.symbol}</th>
                     <td class="text-right font-mono whitespace-nowrap tabular-nums" data-testid="shares-{h.symbol}">{formatShares(h.shares)}</td>
@@ -170,7 +170,7 @@
                     </td>
                     <td class="text-right font-mono whitespace-nowrap tabular-nums">
                         {#if h.price === null}
-                            <span class="text-base-content/40">{EM_DASH}</span>
+                            <span class="text-muted">{EM_DASH}</span>
                         {:else}
                             {format(h.price.qty)}
                             {#if h.price.source === "cost"}
@@ -182,7 +182,7 @@
                     </td>
                     <td class="whitespace-nowrap">
                         {#if h.price === null}
-                            <span class="text-base-content/40">{EM_DASH}</span>
+                            <span class="text-muted">{EM_DASH}</span>
                         {:else}
                             {h.price.date}
                         {/if}
@@ -190,7 +190,7 @@
                     <td class="text-right font-mono whitespace-nowrap tabular-nums">{@render money(h.marketValue)}</td>
                     <td class="text-right font-mono whitespace-nowrap tabular-nums">{@render gainMoney(h.gain)}</td>
                     <td class="text-right font-mono whitespace-nowrap tabular-nums">
-                        <span class={h.gainPct === null ? "text-base-content/40" : signClass(h.gainPct)}>{formatGainPct(h.gainPct)}</span>
+                        <span class={h.gainPct === null ? "text-muted" : signClass(h.gainPct)}>{formatGainPct(h.gainPct)}</span>
                     </td>
                 </tr>
             {/each}

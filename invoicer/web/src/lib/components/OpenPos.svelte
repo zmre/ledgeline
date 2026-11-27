@@ -6,24 +6,40 @@
      suggesting it, invoices that quote it keep their reference, and the
      server notes it under `## Closed POs` in the note's body.
 
+     A PO's attachment (its PDF, say) shows as a contract does
+     (`AttachmentLink`); editing a PO here keeps it (the form attaches and
+     removes them).
+
      The edit row is part of the page's form element, so its buttons are
      `type="button"` and Enter in a field saves the row, not the page. -->
 <script lang="ts">
     import DateInput from "#ui/components/DateInput.svelte";
-    import {posOf, type PoForm, type PoUsage} from "#lib/customers.js";
+    import {posOf, shortDate, type PoForm, type PoUsage} from "#lib/customers.js";
+    import AttachmentLink from "./AttachmentLink.svelte";
     import ConfirmDialog from "./ConfirmDialog.svelte";
+    import CopyButton from "./CopyButton.svelte";
+    import Icon from "./Icon.svelte";
 
     let {
         usage,
         busy = false,
         onSave,
         invoiceHref,
+        noteHref,
+        fileHref,
+        onOpenFile,
     }: {
         usage: PoUsage[];
         busy?: boolean;
         /** Write the whole list; true when saved. */
         onSave: (pos: PoForm[]) => Promise<boolean>;
         invoiceHref: (number: string) => string;
+        /** The app's view of a note (an attachment that is one). */
+        noteHref: (path: string) => string;
+        /** Where a file in the books opens in a browser tab. */
+        fileHref: (path: string) => string;
+        /** Open a file in its viewer (the window); absent: a link, or text outside the books. */
+        onOpenFile?: (path: string) => void;
     } = $props();
 
     /** The row being edited: its index, or `null` for a new PO. */
@@ -87,6 +103,23 @@
         if (po.invoiced !== null) return `${po.invoiced} invoiced`;
         return po.amount;
     };
+
+    /** Between a PO's details. */
+    const SEP = " · ";
+
+    /** An amount as written ("$40,000", "-$1,200.50") as a number; null when it doesn't read. */
+    const amountOf = (text: string | null): number | null => {
+        if (text === null) return null;
+        const n = Number(text.replace(/[^\d.-]/g, ""));
+        return text.match(/\d/) === null || Number.isNaN(n) ? null : n;
+    };
+
+    /** How much of the PO is invoiced (0–1, over 1 when over), when its amount and what is left are known. */
+    const invoicedShare = (po: PoUsage): number | null => {
+        const amount = amountOf(po.amount);
+        const left = amountOf(po.remaining);
+        return amount === null || left === null || amount <= 0 ? null : (amount - left) / amount;
+    };
 </script>
 
 {#snippet editRow()}
@@ -111,7 +144,7 @@
                 >Expires
                 <DateInput class="w-full" bind:value={editing.expires} onkeydown={rowKey} aria-label="Expires" data-testid="po-expires" />
             </label>
-            {#if rowError !== null}<p role="alert" class="text-sm text-error sm:col-span-3" data-testid="po-error">{rowError}</p>{/if}
+            {#if rowError !== null}<p role="alert" class="text-sm text-error-text sm:col-span-3" data-testid="po-error">{rowError}</p>{/if}
             <div class="flex flex-wrap justify-end gap-2 sm:col-span-3">
                 <button type="button" class="btn btn-ghost btn-sm" disabled={busy} onclick={() => (editing = null)} data-testid="po-cancel">Cancel</button>
                 <button type="button" class="btn btn-primary btn-sm" disabled={busy} onclick={() => void saveRow()} data-testid="po-save"
@@ -122,65 +155,85 @@
     {/if}
 {/snippet}
 
-<section class="rounded-box border border-base-300 p-4 text-sm" data-testid="customer-open-pos" aria-labelledby="open-pos-heading">
-    <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <h2 id="open-pos-heading" class="text-sm font-semibold tracking-wide text-base-content/70 uppercase">Open POs</h2>
+<section class="text-sm" data-testid="customer-open-pos" aria-labelledby="open-pos-heading">
+    <div class="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+        <h2 id="open-pos-heading" class="text-sm font-semibold text-base-content">Open POs</h2>
+        {#if usage.length === 0 && editing?.at !== null}
+            <p class="text-muted" data-testid="po-none">No open POs.</p>
+        {/if}
         {#if editing === null}
-            <button type="button" class="btn btn-outline btn-xs" disabled={busy} onclick={add} data-testid="po-add">Add PO</button>
+            <button type="button" class="btn ml-auto btn-ghost btn-xs" disabled={busy} onclick={add} data-testid="po-add">Add PO</button>
         {/if}
     </div>
-    {#if usage.length === 0 && editing?.at !== null}
-        <p class="text-base-content/60" data-testid="po-none">None. Add the customer's purchase orders to quote them on invoices.</p>
-    {/if}
-    <ul class="flex flex-col gap-2">
+    <ul class="divide-y divide-base-300">
         {#each usage as po, at (po.reference)}
             {#if editing?.at === at}
-                <li>{@render editRow()}</li>
+                <li class="py-2">{@render editRow()}</li>
             {:else}
-                <li class="flex flex-wrap items-start justify-between gap-x-3 gap-y-1" data-testid="po-row" data-reference={po.reference}>
-                    <div class="min-w-0">
-                        <span class="font-medium break-words">{po.reference}</span>
-                        {#if po.expired}<span class="ml-1 badge badge-sm badge-warning">Expired</span>{/if}
-                        <div class="text-xs text-base-content/70">
-                            {[usedText(po), po.expires === null ? null : `${po.expired ? "expired" : "expires"} ${po.expires}`]
-                                .filter((t) => t !== null)
-                                .join(" · ")}
-                        </div>
-                        {#if po.invoices.length > 0}
-                            <div class="text-xs text-base-content/70">
-                                Invoiced on
+                {@const used = usedText(po)}
+                {@const share = invoicedShare(po)}
+                <li class="group flex flex-col gap-1 py-2" data-testid="po-row" data-reference={po.reference}>
+                    <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                        <span class="flex min-w-0 items-center gap-1">
+                            <span class="font-medium break-words">{po.reference}</span>
+                            {#if po.expired}<span class="badge badge-sm badge-warning">Expired</span>{/if}
+                            <CopyButton value={po.reference} what="PO reference" />
+                        </span>
+                        {#if used !== null}<span class="text-right tabular-nums">{used}</span>{/if}
+                    </div>
+                    <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                        <div class="min-w-0 text-xs text-muted">
+                            {#if po.expires !== null}<span class="tabular-nums" title={po.expires}
+                                    >{po.expired ? "Expired" : "Expires"} {shortDate(po.expires)}</span
+                                >{/if}{#if po.expires !== null && po.invoices.length > 0}{SEP}{/if}{#if po.invoices.length > 0}Invoiced on
                                 <!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- the page passes an href built with resolve() -->
                                 {#each po.invoices as number, i (number)}<a class="link" href={invoiceHref(number)}>{number}</a>{i < po.invoices.length - 1
                                         ? ", "
-                                        : ""}{/each}
-                            </div>
-                        {/if}
-                    </div>
-                    {#if editing === null}
-                        <div class="flex gap-1">
-                            <button
-                                type="button"
-                                class="btn btn-ghost btn-xs"
-                                disabled={busy}
-                                onclick={() => edit(at)}
-                                aria-label="Edit {po.reference}"
-                                data-testid="po-edit-button">Edit</button
-                            >
-                            <button
-                                type="button"
-                                class="btn btn-ghost btn-xs"
-                                disabled={busy}
-                                onclick={() => (closing = po)}
-                                aria-label="Close {po.reference}"
-                                data-testid="po-close-button">Close</button
-                            >
+                                        : ""}{/each}{/if}
                         </div>
+                        <div class="flex flex-wrap items-center gap-1">
+                            {#if po.attachment != null}
+                                <span class="inline-flex min-w-0 items-center gap-1 px-1 text-xs" data-testid="view-po-attachment">
+                                    <Icon name="paperclip" class="size-3.5 text-muted" />
+                                    <span data-testid="po-attachment" class="min-w-0">
+                                        <AttachmentLink attachment={po.attachment} {noteHref} {fileHref} {onOpenFile} testid="po-attachment-link" />
+                                    </span>
+                                </span>
+                            {/if}
+                            {#if editing === null}
+                                <button
+                                    type="button"
+                                    class="btn btn-ghost btn-xs"
+                                    disabled={busy}
+                                    onclick={() => edit(at)}
+                                    aria-label="Edit {po.reference}"
+                                    data-testid="po-edit-button">Edit</button
+                                >
+                                <button
+                                    type="button"
+                                    class="btn btn-ghost btn-xs"
+                                    disabled={busy}
+                                    onclick={() => (closing = po)}
+                                    aria-label="Close {po.reference}"
+                                    data-testid="po-close-button">Close</button
+                                >
+                            {/if}
+                        </div>
+                    </div>
+                    {#if share !== null}
+                        <progress
+                            class="progress h-1 w-full {share > 0.9 ? 'progress-warning' : 'progress-primary'}"
+                            value={Math.min(share, 1)}
+                            max="1"
+                            aria-label="{po.reference}: {Math.round(share * 100)}% invoiced"
+                            data-testid="po-progress"
+                        ></progress>
                     {/if}
                 </li>
             {/if}
         {/each}
         {#if editing !== null && editing.at === null}
-            <li>{@render editRow()}</li>
+            <li class="py-2">{@render editRow()}</li>
         {/if}
     </ul>
 </section>

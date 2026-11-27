@@ -105,6 +105,44 @@ test("insights: list boxes rank leaf accounts, movers, and top transactions", as
     await expect(topTxns).toContainText("$5,660.00");
 });
 
+// Box 11 over the default split (current 2025-07-01 … 2026-06-30), verified
+// against the live /api/insights response: rent leads ($22,425.00, prev
+// $21,600.00), Hotel Adlon is new, Costco $866.50 against $845.71. Card
+// payments (Chase), the paycheck (Acme Corp) and the car's depreciation (no
+// cash or card moved) never appear.
+test("insights: top payees rank this period's spending and open the journal by keyboard", async ({page}) => {
+    await page.goto("/reports");
+
+    const box = page.getByTestId("insights-box-toppayees");
+    const rows = box.getByTestId("top-payee-row");
+    await expect(rows).toHaveCount(10);
+    await expect(rows.first()).toContainText("Oakview Properties");
+    await expect(rows.first()).toContainText("$22,425.00");
+    await expect(rows.first()).toContainText("prev $21,600.00");
+    await expect(rows.first()).toContainText("▲ $825.00 (3.8%)");
+
+    // Never seen before this period: "new", no invented percent.
+    const hotel = rows.filter({hasText: "Hotel Adlon"});
+    await expect(hotel).toContainText("new");
+    await expect(hotel).not.toContainText("%");
+
+    await expect(box).not.toContainText("Chase");
+    await expect(box).not.toContainText("Acme Corp");
+    await expect(box).not.toContainText("depreciation");
+
+    // Keyboard: focus the row's link and press Enter.
+    const costco = box.getByRole("link", {name: /Costco/});
+    await expect(costco).toContainText("$866.50");
+    await costco.focus();
+    await page.keyboard.press("Enter");
+
+    // Lands on the journal, searching that payee over the current period.
+    await expect(page).toHaveURL(/[?&]q=Costco/);
+    await expect(page).toHaveURL(/[?&]from=2025-07-01/);
+    await expect(page).toHaveURL(/[?&]to=2026-06-30/);
+    await expect(page.getByLabel("Search transactions")).toHaveValue("Costco");
+});
+
 test("insights: change lists rank by money moved and hide categories with no prior history", async ({page}) => {
     await page.goto("/reports");
 

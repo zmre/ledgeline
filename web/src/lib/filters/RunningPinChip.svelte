@@ -42,7 +42,7 @@
     <span aria-hidden="true">⚖</span>
     <span class="truncate">Running balance: <span class="font-mono">{pin.account}</span></span>
     {#if refused}
-        <span class="text-error" data-testid="running-pin-refused">not in this journal</span>
+        <span class="text-error-text" data-testid="running-pin-refused">not in this journal</span>
     {:else if commodities.length > 1 && commodity !== null}
         <select
             class="select h-5 min-h-0 w-auto select-xs"
@@ -56,7 +56,12 @@
         </select>
     {/if}
     {#if failure !== null}
-        <button type="button" class="cursor-pointer text-error underline-offset-2 hover:underline" onclick={jumpToFailure} data-testid="running-first-failure">
+        <button
+            type="button"
+            class="cursor-pointer text-error-text underline-offset-2 hover:underline"
+            onclick={jumpToFailure}
+            data-testid="running-first-failure"
+        >
             ✗ first failure {failure.date}
         </button>
     {/if}

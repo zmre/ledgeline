@@ -116,8 +116,8 @@
     {#snippet children(run)}
         <section class="flex flex-col gap-3 rounded-box border border-base-content/10 p-3" aria-label="Dry run" data-testid="imports-dry-run">
             {#if !run.ok}
-                <h2 class="text-sm font-semibold tracking-tight text-error">hledger refused this import.</h2>
-                <p class="text-xs text-base-content/60">This is hledger's own output, unedited — it usually names the row it choked on.</p>
+                <h2 class="text-sm font-semibold tracking-tight text-error-text">hledger refused this import.</h2>
+                <p class="text-xs text-muted">This is hledger's own output, unedited — it usually names the row it choked on.</p>
                 <!-- VERBATIM. See (1) at the head of this file. -->
                 <pre
                     class="max-h-96 overflow-auto rounded-box bg-base-300 p-3 text-xs whitespace-pre-wrap"
@@ -211,7 +211,7 @@
                         Write changes
                     </button>
                     {#if run.count === 0}
-                        <span class="text-xs text-base-content/60">There is nothing new to import — every row is already in your journal.</span>
+                        <span class="text-xs text-muted">There is nothing new to import — every row is already in your journal.</span>
                     {/if}
                 </div>
                 {#if review !== null}
@@ -228,7 +228,7 @@
                      see the head of this file for why nothing here builds it. -->
                 <div>
                     <h3 class="mb-1 text-xs font-semibold tracking-tight">Do this again from a terminal</h3>
-                    <p class="mb-1 text-xs text-base-content/60">
+                    <p class="mb-1 text-xs text-muted">
                         Run from the folder holding your journal. The paths are relative to it, so this works next month with a new statement file.
                     </p>
                     <div class="flex items-center gap-2">

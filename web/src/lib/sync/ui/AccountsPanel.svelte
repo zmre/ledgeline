@@ -85,7 +85,7 @@
             This Ledgeline engine can't sync with banks. Update Ledgeline to link accounts through SimpleFIN.
         </div>
     {:else if status === null}
-        <p class="flex items-center gap-2 text-sm text-base-content/60" role="status">
+        <p class="flex items-center gap-2 text-sm text-muted" role="status">
             <span class="loading loading-xs loading-spinner"></span> Loading accounts…
         </p>
     {:else if !status.available}
@@ -94,7 +94,7 @@
         <div class="flex flex-wrap items-start justify-between gap-3">
             <div class="flex flex-col gap-1">
                 {#if line !== null}<span class="text-sm" data-testid="sync-status-line">{line}</span>{/if}
-                <a href="{resolve('/settings')}?tab=sync" class="link text-xs text-base-content/70 link-hover">⚙ Sync settings</a>
+                <a href="{resolve('/settings')}?tab=sync" class="link text-xs text-muted link-hover">⚙ Sync settings</a>
                 {#if syncStore.pollError !== null}
                     <span class="text-xs text-warning" role="status">Couldn't refresh: {syncStore.pollError}</span>
                 {/if}
@@ -125,7 +125,7 @@
         {#if orphans.length > 0}
             <section class="flex flex-col gap-2" aria-label="Not connected on this computer">
                 <h3 class="font-semibold">Not connected on this computer</h3>
-                <p class="text-xs text-base-content/70">These links are in this ledger's settings, but this computer has no access key for them.</p>
+                <p class="text-xs text-muted">These links are in this ledger's settings, but this computer has no access key for them.</p>
                 <ul class="rounded-box border border-base-content/10">
                     {#each orphans as account (account.key)}
                         <LinkedAccountRow {account} {now} connected={false} onOpen={(key) => (drawer = {key, focus: null})} {onEffect} />
@@ -145,11 +145,11 @@
         <section class="flex flex-col gap-2" aria-label="Manual downloads" bind:this={manualSection} data-testid="sync-manual">
             <h3 class="font-semibold">Manual downloads</h3>
             {#if syncStore.manualError !== null}
-                <p class="text-sm text-error" role="alert">{syncStore.manualError}</p>
+                <p class="text-sm text-error-text" role="alert">{syncStore.manualError}</p>
             {:else if syncStore.manual === null}
-                <p class="text-sm text-base-content/60">Loading…</p>
+                <p class="text-sm text-muted">Loading…</p>
             {:else if syncStore.manual.length === 0}
-                <p class="text-sm text-base-content/60">Every bank and card account in your journal is linked.</p>
+                <p class="text-sm text-muted">Every bank and card account in your journal is linked.</p>
             {:else}
                 <ul class="rounded-box border border-base-content/10">
                     {#each syncStore.manual as account (account.account)}

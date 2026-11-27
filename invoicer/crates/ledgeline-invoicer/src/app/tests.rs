@@ -485,6 +485,8 @@ async fn preview_renders_saved_and_unsaved_text_and_writes_nothing() {
     for (template, marker) in [
         ("/invoices/tpl/classic.html", "class=\"letterhead\""),
         ("/invoices/tpl/modern.html", "class=\"meta\""),
+        ("/invoices/tpl/classic-logo.html", "class=\"letterhead\""),
+        ("/invoices/tpl/modern-logo.html", "class=\"meta\""),
     ] {
         let (status, page, _) = preview(
             &app,
@@ -508,10 +510,27 @@ async fn preview_renders_saved_and_unsaved_text_and_writes_nothing() {
     assert_eq!(snapshot(&root), before, "a preview writes nothing");
 }
 
+/// Every shipped starter, as `template:` names it in the fixtures' books.
+const STARTER_TEMPLATES: [&str; 4] = [
+    "/invoices/tpl/classic.html",
+    "/invoices/tpl/modern.html",
+    "/invoices/tpl/classic-logo.html",
+    "/invoices/tpl/modern-logo.html",
+];
+
+#[test]
+fn the_starter_list_here_is_every_starter() {
+    let shipped: Vec<String> = crate::starters::STARTERS
+        .iter()
+        .map(|s| format!("/invoices/tpl/{}", s.file))
+        .collect();
+    assert_eq!(shipped, STARTER_TEMPLATES);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_starters_render_every_kind_of_row_and_state() {
     let app = app();
-    for template in ["/invoices/tpl/classic.html", "/invoices/tpl/modern.html"] {
+    for template in STARTER_TEMPLATES {
         let render = |number: &'static str| {
             preview(
                 &app,
@@ -676,6 +695,8 @@ async fn templates_list_the_books_then_the_starters() {
             ("/invoices/tpl/myco-default.html".to_string(), false, true),
             ("/invoices/tpl/classic.html".to_string(), true, false),
             ("/invoices/tpl/modern.html".to_string(), true, false),
+            ("/invoices/tpl/classic-logo.html".to_string(), true, false),
+            ("/invoices/tpl/modern-logo.html".to_string(), true, false),
         ]
     );
     assert_eq!(list[0]["name"], "MyCo default");
@@ -875,6 +896,8 @@ async fn the_company_logo_shows_when_the_invoice_carries_it() {
         None,
         Some("/invoices/tpl/classic.html"),
         Some("/invoices/tpl/modern.html"),
+        Some("/invoices/tpl/classic-logo.html"),
+        Some("/invoices/tpl/modern-logo.html"),
     ] {
         let with = |number: &str| match template {
             Some(t) => serde_json::json!({"number": number, "template": t}),
@@ -933,6 +956,185 @@ async fn the_company_logo_shows_when_the_invoice_carries_it() {
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+const LOGO_STARTERS: [&str; 2] = [
+    "/invoices/tpl/classic-logo.html",
+    "/invoices/tpl/modern-logo.html",
+];
+
+/// The "with logo" starters' "Your logo" box, which only the app's preview
+/// draws, and only where the invoice has no logo.
+const LOGO_BOX: &str = "class=\"logo-slot\"";
+
+fn logo_box_and_image(page: &str) -> (bool, bool) {
+    (
+        page.contains(LOGO_BOX) || page.contains(">Your logo<"),
+        page.contains("<img class=\"logo\""),
+    )
+}
+
+/// In the app's preview (the picker, the invoice and template editors), a
+/// "with logo" starter shows the "Your logo" box where the invoice has no
+/// logo (101) and the logo where it has one (105). The other starters never
+/// draw the box.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_logo_box_shows_in_the_preview_where_there_is_no_logo() {
+    let app = app();
+    for template in LOGO_STARTERS {
+        let (status, page, _) = preview(
+            &app,
+            serde_json::json!({"number": "101", "template": template}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{template}: {page}");
+        assert_eq!(
+            logo_box_and_image(&page),
+            (true, false),
+            "{template}: {page}"
+        );
+        // The company still shows beside it.
+        assert!(
+            page.contains("class=\"company-name\">My Company<"),
+            "{template}"
+        );
+
+        let (status, page, _) = preview(
+            &app,
+            serde_json::json!({"number": "105", "template": template}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{template}: {page}");
+        assert_eq!(
+            logo_box_and_image(&page),
+            (false, true),
+            "{template}: {page}"
+        );
+
+        // The preview page the frames load, and unsaved text, the same.
+        let cookie = session_cookie(&app).await;
+        let request = get(&format!(
+            "/.ledgeline-invoicer/preview?number=101&template={}",
+            template.replace('/', "%2F")
+        ))
+        .header(header::COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+        let (status, _, page) = send(&app.router, request).await;
+        assert_eq!(status, StatusCode::OK, "{template}: {page}");
+        assert_eq!(logo_box_and_image(&page), (true, false), "{template}");
+        let source = std::fs::read_to_string(app.books.vault().root().join(INVOICE_105))
+            .unwrap()
+            .replace("invoicer_logo: /company/logo.png\n", "");
+        let (status, page, _) = preview(
+            &app,
+            serde_json::json!({"path": INVOICE_105, "source": source, "template": template}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{template}: {page}");
+        assert_eq!(logo_box_and_image(&page), (true, false), "{template}");
+    }
+    for template in ["/invoices/tpl/classic.html", "/invoices/tpl/modern.html"] {
+        let (_, page, _) = preview(
+            &app,
+            serde_json::json!({"number": "101", "template": template}),
+        )
+        .await;
+        assert_eq!(logo_box_and_image(&page), (false, false), "{template}");
+    }
+}
+
+/// What a customer gets never has the box: MBR's page for the saved invoice
+/// (what the PDF export prints, and what MBR's browser shows) and the
+/// standalone render (MBR's static build, QuickLook) render the saved file,
+/// which never carries the preview's flag. With a logo, the logo shows.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_logo_box_never_reaches_real_output() {
+    let app = app();
+    let root = books_root(&app);
+    let renderer = app.books.renderer().expect("a renderer");
+    for template in LOGO_STARTERS {
+        for (note, page_url, has_logo) in [
+            (
+                "invoices/2026-09-01 Contoso Invoice 101.md",
+                "/invoices/2026-09-01%20Contoso%20Invoice%20101/",
+                false,
+            ),
+            (
+                INVOICE_105,
+                "/invoices/2026-11-10%20Customer%20X%20Invoice%20105/",
+                true,
+            ),
+        ] {
+            let file = root.join(note);
+            let text = std::fs::read_to_string(&file).unwrap();
+            let text = text.replace("/invoices/tpl/myco-default.html", template);
+            assert!(text.contains(template), "{note} names {template}");
+            std::fs::write(&file, &text).unwrap();
+            app.books.apply_changes(std::slice::from_ref(&file));
+
+            let (status, _, page) = send(&app.router, authed(page_url)).await;
+            assert_eq!(status, StatusCode::OK, "{template} {note}: {page}");
+            assert!(
+                page.contains("class=\"brand\""),
+                "{template} {note}: {page}"
+            );
+            assert_eq!(
+                logo_box_and_image(&page),
+                (false, has_logo),
+                "{template} {note}: MBR's page"
+            );
+
+            let page = renderer
+                .render_source(std::path::Path::new(note), &text)
+                .expect("renders");
+            assert!(
+                page.contains("class=\"brand\""),
+                "{template} {note}: {page}"
+            );
+            assert_eq!(
+                logo_box_and_image(&page),
+                (false, has_logo),
+                "{template} {note}: standalone"
+            );
+            std::fs::write(
+                &file,
+                text.replace(template, "/invoices/tpl/myco-default.html"),
+            )
+            .unwrap();
+            app.books.apply_changes(std::slice::from_ref(&file));
+        }
+    }
+}
+
+/// The preview's flag changes nothing for a template that doesn't read it:
+/// Classic's and Modern's preview is the page the saved file renders to.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_preview_flag_leaves_other_templates_as_they_were() {
+    let app = app();
+    let root = books_root(&app);
+    let renderer = app.books.renderer().expect("a renderer");
+    let text = std::fs::read_to_string(root.join(INVOICE_105)).unwrap();
+    for (template, starter) in [
+        ("/invoices/tpl/classic.html", &crate::starters::STARTERS[0]),
+        ("/invoices/tpl/modern.html", &crate::starters::STARTERS[1]),
+    ] {
+        let (status, previewed, _) = preview(
+            &app,
+            serde_json::json!({"number": "105", "template": template}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{previewed}");
+        let unflagged = renderer
+            .render_source_with_template(
+                std::path::Path::new(INVOICE_105),
+                &text,
+                std::path::Path::new(template.trim_start_matches('/')),
+                starter.source,
+            )
+            .expect("renders");
+        assert_eq!(previewed, unflagged, "{template}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1590,6 +1792,8 @@ async fn a_preview_is_a_gated_page_under_mbrs_policy() {
     for (template, marker) in [
         ("%2Finvoices%2Ftpl%2Fclassic.html", "No. 108"),
         ("%2Finvoices%2Ftpl%2Fmodern.html", "#108"),
+        ("%2Finvoices%2Ftpl%2Fclassic-logo.html", "No. 108"),
+        ("%2Finvoices%2Ftpl%2Fmodern-logo.html", "#108"),
     ] {
         let request = get(&format!(
             "/.ledgeline-invoicer/preview?number=108&template={template}"
@@ -2195,7 +2399,7 @@ async fn a_starter_previews_in_books_without_the_base() {
     .unwrap();
     let before = snapshot(&root);
     let mut folded = Vec::new();
-    for template in ["/invoices/tpl/classic.html", "/invoices/tpl/modern.html"] {
+    for template in STARTER_TEMPLATES {
         for number in ["104", "105", "108"] {
             let (status, page, _) = preview(
                 &app,
@@ -2228,7 +2432,7 @@ async fn a_starter_previews_in_books_without_the_base() {
     // The same pages through the real `extends`, the base on disk.
     std::fs::write(root.join(BASE_FILE), crate::starters::BASE.source).unwrap();
     let mut extended = Vec::new();
-    for template in ["/invoices/tpl/classic.html", "/invoices/tpl/modern.html"] {
+    for template in STARTER_TEMPLATES {
         for number in ["104", "105", "108"] {
             let (status, page, _) = preview(
                 &app,

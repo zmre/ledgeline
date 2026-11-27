@@ -27,7 +27,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Router, response::Response};
 use invoicer_core::customer_edit::{self, CustomerError, CustomerFields};
 use invoicer_core::customers::{ContactKind, Customer, CustomerLookup, is_customer};
@@ -49,6 +49,49 @@ pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/customers", get(list).post(create))
         .route("/api/customers/{*key}", get(detail).put(update))
+        .route("/api/customer-portal", post(open_portal))
+}
+
+/// `POST /api/customer-portal`'s body.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PortalBody {
+    /// The customer: a note path or a name, as `GET /api/customers/{key}`
+    /// takes it.
+    customer: String,
+}
+
+/// `POST /api/customer-portal`: `{url, opened}`, as an invoice's portal
+/// (`POST /api/invoices/{num}/portal`). Only the plain `https` portal the
+/// customer note names is ever opened.
+async fn open_portal(
+    State(state): State<AppState>,
+    body: Result<Json<PortalBody>, JsonRejection>,
+) -> ApiResult {
+    let Json(body) = body.map_err(|e| ApiError::bad_request(e.body_text()))?;
+    let books = state.open_books()?;
+    let url = tokio::task::spawn_blocking(move || {
+        let session = books.session();
+        let path = find(&session, &body.customer)?;
+        session
+            .index()
+            .site()
+            .note(&path)
+            .and_then(Customer::from_note)
+            .and_then(|c| c.billing_portal)
+            .and_then(|p| p.url)
+            .as_deref()
+            .and_then(super::pdf::plain_https)
+            .ok_or_else(|| {
+                ApiError::status(
+                    StatusCode::NOT_FOUND,
+                    "the customer has no billing portal with an https URL",
+                )
+            })
+    })
+    .await
+    .map_err(|e| ApiError::internal(format!("the request failed: {e}")))??;
+    super::pdf::open_url_answer(&state, &url)
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -302,6 +345,12 @@ async fn detail(
         let customer = Customer::from_note(&note).ok_or_else(|| {
             ApiError::status(StatusCode::NOT_FOUND, format!("{path}: not a contact"))
         })?;
+        // The body (the customer's notes) is in the file, not the index.
+        let source = session
+            .vault()
+            .read(&path)
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+            .map_err(|e| ApiError::internal(format!("{path}: {e}")))?;
         let problems = views::document_problems(&session);
         let detail = views::customer_detail(&session, &customer, &problems, &today);
         let open = account::open_items(&session, &today);
@@ -314,9 +363,16 @@ async fn detail(
             map.insert("hash".into(), json!(note.stamp.fingerprint.token()));
             map.insert(
                 "form".into(),
-                to_value(customer_edit::fields_of(&customer, &note))?,
+                to_value(customer_edit::fields_of(&customer, &note, &source))?,
             );
             map.insert("backlinks".into(), to_value(&links)?);
+            // The portal link the page offers: a plain `https` URL only.
+            let portal_url = customer
+                .billing_portal
+                .as_ref()
+                .and_then(|p| p.url.as_deref())
+                .and_then(super::pdf::plain_https);
+            map.insert("portal_url".into(), json!(portal_url));
         }
         Ok(value)
     })

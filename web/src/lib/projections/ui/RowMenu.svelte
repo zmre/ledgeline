@@ -190,7 +190,7 @@
     >
         {#each items as item (item.label)}
             <li>
-                <button type="button" role="menuitem" class={item.danger === true ? "text-error" : ""} onclick={() => choose(item)}>
+                <button type="button" role="menuitem" class={item.danger === true ? "text-error-text" : ""} onclick={() => choose(item)}>
                     {item.label}
                 </button>
             </li>

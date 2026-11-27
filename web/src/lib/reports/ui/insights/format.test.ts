@@ -19,6 +19,7 @@ import {
     fmtSignedPct,
     growthLine,
     monthlyAverage,
+    payeeChange,
     pointsLine,
     signClass,
 } from "./format";
@@ -57,20 +58,20 @@ describe("insights format helpers", () => {
         expect(rev.text).toBe("$500.00 (50.0%)");
 
         const exp = deltaLine(up, "$", styles, false);
-        expect(exp.klass).toBe("text-error");
+        expect(exp.klass).toBe("text-error-text");
     });
 
     test("deltaLine: a decrease flips arrow and sentiment", () => {
         const down = metric(80000n, 100000n, -20);
         const good = deltaLine(down, "$", styles, true);
         expect(good.arrow).toBe("▼");
-        expect(good.klass).toBe("text-error");
+        expect(good.klass).toBe("text-error-text");
     });
 
     test("deltaLine: no change is neutral with no percent", () => {
         const flat = deltaLine(metric(100000n, 100000n, null), "$", styles, true);
         expect(flat.arrow).toBe("▪");
-        expect(flat.klass).toBe("text-base-content/50");
+        expect(flat.klass).toBe("text-muted");
         expect(flat.text).toBe("$0.00");
     });
 
@@ -92,10 +93,10 @@ describe("insights format helpers", () => {
 
     test("signClass maps sign to a colour, for numbers and bigints", () => {
         expect(signClass(5)).toBe("text-success");
-        expect(signClass(-1)).toBe("text-error");
-        expect(signClass(0n)).toBe("text-base-content/50");
+        expect(signClass(-1)).toBe("text-error-text");
+        expect(signClass(0n)).toBe("text-muted");
         expect(signClass(3n)).toBe("text-success");
-        expect(signClass(null)).toBe("text-base-content/50");
+        expect(signClass(null)).toBe("text-muted");
     });
 });
 
@@ -131,15 +132,15 @@ describe("startup-metrics format helpers (plans/37)", () => {
 
     test("pointsLine: the change in points, coloured by sentiment, null without a comparison", () => {
         expect(pointsLine(81.8632607062359, 80, true)).toEqual({arrow: "▲", text: "1.9 pp", klass: "text-success"});
-        expect(pointsLine(78, 80, true)).toEqual({arrow: "▼", text: "2.0 pp", klass: "text-error"});
+        expect(pointsLine(78, 80, true)).toEqual({arrow: "▼", text: "2.0 pp", klass: "text-error-text"});
         expect(pointsLine(80.01, 80, true)?.arrow).toBe("▪");
         expect(pointsLine(80, null, true)).toBeNull();
     });
 
     test("growthLine: a percentage that is itself the change", () => {
-        expect(growthLine(0, true)).toEqual({arrow: "▪", text: "0.0% growth", klass: "text-base-content/50"});
+        expect(growthLine(0, true)).toEqual({arrow: "▪", text: "0.0% growth", klass: "text-muted"});
         expect(growthLine(12.5, true)?.klass).toBe("text-success");
-        expect(growthLine(-12.5, true)).toEqual({arrow: "▼", text: "12.5% growth", klass: "text-error"});
+        expect(growthLine(-12.5, true)).toEqual({arrow: "▼", text: "12.5% growth", klass: "text-error-text"});
         expect(growthLine(null, true)).toBeNull();
     });
 
@@ -155,7 +156,7 @@ describe("startup-metrics format helpers (plans/37)", () => {
         expect(burnBand(2.01).klass).toBe("text-warning");
         expect(burnBand(3).label).toBe("Suspect");
         expect(burnBand(3.5).label).toBe("Bad");
-        expect(burnBand(3.5).klass).toBe("text-error");
+        expect(burnBand(3.5).klass).toBe("text-error-text");
     });
 
     test("baseMetric: two Decs as a MetricDelta, null pct from a zero base", () => {
@@ -163,5 +164,26 @@ describe("startup-metrics format helpers (plans/37)", () => {
         expect(metric.delta.get("$")).toEqual(d(27000n, 0));
         expect(metric.pct).toBeCloseTo(62.5, 10);
         expect(baseMetric(d(1n, 0), d(0n, 0), "$").pct).toBeNull();
+    });
+});
+
+describe("payeeChange", () => {
+    test("reads like the other deltas: spending up is red, with the engine's percent", () => {
+        const change = payeeChange({payee: "Costco", current: d(70000n, 2), previous: d(50000n, 2), delta: d(20000n, 2), pct: 40}, "$", styles);
+        expect(change).toEqual({arrow: "▲", text: "$200.00 (40.0%)", klass: "text-error-text"});
+    });
+
+    test("spending down is green", () => {
+        const change = payeeChange({payee: "Rent", current: d(88000n, 2), previous: d(90000n, 2), delta: d(-2000n, 2), pct: -2.2222}, "$", styles);
+        expect(change).toEqual({arrow: "▼", text: "$20.00 (2.2%)", klass: "text-success"});
+    });
+
+    test("a previous total of zero has a change but no percent", () => {
+        const change = payeeChange({payee: "Even", current: d(2000n, 2), previous: d(0n, 0), delta: d(2000n, 2), pct: null}, "$", styles);
+        expect(change?.text).toBe("$20.00");
+    });
+
+    test("a payee new this period has no change line at all", () => {
+        expect(payeeChange({payee: "Cafe", current: d(6000n, 2), previous: null, delta: null, pct: null}, "$", styles)).toBeNull();
     });
 });

@@ -120,7 +120,7 @@
                     />
                 </span>
             </span>
-            <span class="text-xs text-base-content/50">
+            <span class="text-xs text-muted">
                 {#if entry.asOf === null}
                     No activity
                 {:else}
@@ -131,6 +131,6 @@
                 {/if}
             </span>
         </span>
-        <span class="shrink-0 font-mono text-sm tabular-nums {negative && negativeIsWrong ? 'font-semibold text-error' : ''}">{formatted}</span>
+        <span class="shrink-0 font-mono text-sm tabular-nums {negative && negativeIsWrong ? 'font-semibold text-error-text' : ''}">{formatted}</span>
     </button>
 </li>

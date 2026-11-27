@@ -154,9 +154,9 @@
 
 {#snippet list(title: string, rows: BalanceRow[], negativeIsWrong: boolean)}
     <section>
-        <h3 class="sticky top-0 z-10 bg-base-200 py-1 text-xs font-semibold tracking-wide text-base-content/60 uppercase">{title}</h3>
+        <h3 class="sticky top-0 z-10 bg-base-200 py-1 text-xs font-semibold tracking-wide text-muted uppercase">{title}</h3>
         {#if rows.length === 0}
-            <p class="px-1 py-1 text-xs text-base-content/50">None.</p>
+            <p class="px-1 py-1 text-xs text-muted">None.</p>
         {:else}
             <ul class="divide-y divide-base-300/60">
                 {#each rows as entry (entry.account)}
@@ -191,9 +191,9 @@
                 onchange={(e) => (settings.hideZeroBalances = e.currentTarget.checked)}
             />
             Hide zero balances
-            {#if hiddenCount > 0}<span class="text-base-content/50">({hiddenCount})</span>{/if}
+            {#if hiddenCount > 0}<span class="text-muted">({hiddenCount})</span>{/if}
         </label>
-        <span class="ml-auto text-xs text-base-content/50">as of {asOf}</span>
+        <span class="ml-auto text-xs text-muted">as of {asOf}</span>
     </div>
 
     <!-- Same `stats` treatment as the activity tab's big numbers so the two
@@ -225,7 +225,7 @@
                 {#if pinnedTrend !== null}
                     <BalanceTrend series={pinnedTrend} />
                 {:else if trendError !== null}
-                    <p class="py-6 text-center text-xs text-error">Couldn't chart {pin.account}: {trendError.message}</p>
+                    <p class="py-6 text-center text-xs text-error-text">Couldn't chart {pin.account}: {trendError.message}</p>
                 {:else}
                     <div class="flex h-full items-center justify-center" aria-label="Loading balance line"><span class="loading loading-spinner"></span></div>
                 {/if}
@@ -239,7 +239,7 @@
                                 {@const d = data as Slice}
                                 <div class="flex items-center gap-2 text-xs">
                                     <span class="inline-block h-2 w-2 rounded-full" style="background:{d.color}"></span>
-                                    <span class="text-base-content/70">{d.account}</span>
+                                    <span class="text-muted">{d.account}</span>
                                     <span class="font-semibold">{d.formatted}</span>
                                 </div>
                             {/snippet}
@@ -249,7 +249,7 @@
             </div>
         {/if}
         {#if nothingHeld}
-            <p class="flex-1 py-6 text-center text-sm text-base-content/60">
+            <p class="flex-1 py-6 text-center text-sm text-muted">
                 No cash or short-term liability accounts hold {commodity}. Declare your bank and card accounts with
                 <code class="text-xs">type: C</code>
                 and <code class="text-xs">type: L</code> to see them here.
@@ -270,7 +270,7 @@
          and a guess that quietly takes a debt off the reader's screen is the one
          failure this heuristic can cause. Naming them makes it correctable. -->
     {#if guessed.length > 0}
-        <p class="px-1 text-xs text-base-content/50" data-testid="balances-guessed">
+        <p class="px-1 text-xs text-muted" data-testid="balances-guessed">
             Treated as long-term from the name, so not counted above: {guessed.join(", ")}. Tag an account
             <code>bsterm: current</code> to include it.
         </p>

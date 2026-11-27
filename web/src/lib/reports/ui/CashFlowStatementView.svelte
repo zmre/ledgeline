@@ -135,9 +135,9 @@
 </script>
 
 {#snippet amount(c: AmountCell, size: string)}
-    <span class="{size} {c.negative ? 'text-error' : ''}">{c.text}</span>
+    <span class="{size} {c.negative ? 'text-error-text' : ''}">{c.text}</span>
     {#if c.extras.length > 0}
-        <span class="block text-xs font-normal text-base-content/50">{c.extras.join(" · ")}</span>
+        <span class="block text-xs font-normal text-muted">{c.extras.join(" · ")}</span>
     {/if}
 {/snippet}
 
@@ -193,25 +193,24 @@
             {#if row.expandable}
                 <button
                     type="button"
-                    class="flex cursor-pointer items-center gap-1.5 text-left font-medium hover:text-primary"
+                    class="flex cursor-pointer items-center gap-1.5 text-left font-medium hover:text-primary-text"
                     aria-expanded={row.expanded}
                     onclick={() => toggle(row)}
                 >
-                    <span
-                        class="inline-block w-3 shrink-0 text-[0.65rem] text-base-content/40 transition-transform {row.expanded ? 'rotate-90' : ''}"
-                        aria-hidden="true">▶</span
+                    <span class="inline-block w-3 shrink-0 text-[0.65rem] text-muted transition-transform {row.expanded ? 'rotate-90' : ''}" aria-hidden="true"
+                        >▶</span
                     >
                     {row.label}
                 </button>
             {:else if row.kind === "account"}
-                <span class="whitespace-nowrap text-base-content/70" style="padding-left: {row.indent * 1.25}rem" title={row.account}>{row.label}</span>
+                <span class="whitespace-nowrap text-muted" style="padding-left: {row.indent * 1.25}rem" title={row.account}>{row.label}</span>
             {:else}
                 <span class="flex items-center gap-1.5 font-medium" title={row.account ?? undefined}>
                     <span class="inline-block w-3 shrink-0" aria-hidden="true"></span>{row.label}
                 </span>
             {/if}
         </th>
-        {@render figures(row.amounts, row.kind === "account" ? "text-base-content/70" : "font-medium", reading)}
+        {@render figures(row.amounts, row.kind === "account" ? "text-muted" : "font-medium", reading)}
     </tr>
 {/snippet}
 
@@ -224,7 +223,7 @@
             {#if grid}
                 <thead>
                     <ProjectedHeadRow columns={buckets?.length ?? 0} projectedFrom={edgeAt} {trailing} fixed compareLabel={band} />
-                    <tr class="text-[0.65rem] text-base-content/40">{@render figureHeads(`${title} line`)}</tr>
+                    <tr class="text-[0.65rem] text-muted">{@render figureHeads(`${title} line`)}</tr>
                 </thead>
             {/if}
             <tbody>
@@ -238,7 +237,7 @@
 {/snippet}
 
 <div class="flex flex-col gap-4" data-testid="cash-flow-statement">
-    <p class="-mb-1 text-xs text-base-content/50">At cost, for {report.from} to {report.to}</p>
+    <p class="-mb-1 text-xs text-muted">At cost, for {report.from} to {report.to}</p>
 
     <!-- Interval mode: one sideways scroller, one width, so every block keeps
          the same column edges. Total mode: `contents`, exactly as before. -->
@@ -260,7 +259,7 @@
                             {@render template()}
                             <thead>
                                 <ProjectedHeadRow columns={buckets?.length ?? 0} projectedFrom={edgeAt} {trailing} fixed={grid} compareLabel={band} />
-                                <tr class="text-[0.65rem] text-base-content/40">{@render figureHeads(`${box.title} line`)}</tr>
+                                <tr class="text-[0.65rem] text-muted">{@render figureHeads(`${box.title} line`)}</tr>
                             </thead>
                             <tbody>
                                 {#each box.rows as row (row.key)}
@@ -294,7 +293,7 @@
                         {@render template()}
                         <thead>
                             <ProjectedHeadRow columns={buckets?.length ?? 0} projectedFrom={edgeAt} {trailing} fixed={grid} compareLabel={band} />
-                            <tr class="text-[0.65rem] text-base-content/40">{@render figureHeads(block.title)}</tr>
+                            <tr class="text-[0.65rem] text-muted">{@render figureHeads(block.title)}</tr>
                         </thead>
                         <tbody>
                             <tr class="text-sm">
@@ -315,7 +314,7 @@
          one side of a transaction in the next period, the Total column still
          agrees, and nothing needs fixing. -->
     {#if !report.reconciles}
-        <p class="text-xs text-base-content/50" role="note" data-testid="cf-unreconciled">
+        <p class="text-xs text-muted" role="note" data-testid="cf-unreconciled">
             In some periods the net change in cash differs from the change in cash balances. A posting date can do this by placing one side of a transaction in
             a different period from the other. The Total column still agrees.
         </p>

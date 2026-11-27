@@ -193,7 +193,7 @@
                     {#if blocker !== null}
                         <span class="text-sm text-warning" role="status">{blocker}</span>
                     {:else if action === "testImport"}
-                        <span class="text-sm text-base-content/60">Nothing is written until you have seen what it proposes.</span>
+                        <span class="text-sm text-muted">Nothing is written until you have seen what it proposes.</span>
                     {/if}
                 </div>
             {/if}

@@ -1,10 +1,11 @@
-//! The invoice page's two writes (invoicer PLAN, Phase 3 feedback F9–F10),
+//! The invoice page's writes (invoicer PLAN, Phase 3 feedback F9–F10),
 //! each the CLI's own library call:
 //!
 //! | Route                                | Does                                                          |
 //! |--------------------------------------|---------------------------------------------------------------|
 //! | `POST /api/invoices/{num}/template`  | `{template}`: write the invoice's `template:` (`set`), copying a starter in on first use. |
 //! | `POST /api/invoices/{num}/recalc`    | `{rebook?, today?}`: rewrite its amounts (`recalc`); a sent invoice is re-booked too (`rebook`), only with `rebook: true`. |
+//! | `POST /api/invoices/{num}/company`   | `{today?}`: Update from company (`update-company`): its `invoicer_*` keys from the company note; a sent invoice is re-booked too. |
 //!
 //! **Template.** Any template `GET /api/templates` lists (one in the books,
 //! or a starter, copied into `templates-dir` once the invoice names it; never
@@ -32,6 +33,13 @@
 //! `path`, `cause` (the books' code, [`BooksError::code`]) and an `error`
 //! saying how to finish (Re-book, or `ledgeline-invoicer rebook N`). The
 //! editor's save answers the same ([`super::editor`]).
+//!
+//! **Update from company.** A draft follows the company note wherever it is
+//! shown ([`invoicer_core::company`]); a sent invoice keeps what was sent
+//! until this is asked for. It is a sent-invoice edit like any other: checked
+//! as re-booking would book it, written (only the company keys), re-booked.
+//! `sent_hash` stays as it was, so the next export says the PDF differs from
+//! what the customer has.
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
@@ -288,6 +296,66 @@ pub(crate) async fn recalc(
                 }))
             }
         }
+    })
+    .await
+}
+
+/// `POST /api/invoices/{num}/company`'s body.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CompanyBody {
+    /// Today (YYYY-MM-DD): a re-booking's restatement date.
+    pub today: Option<String>,
+}
+
+/// `POST /api/invoices/{num}/company`: Update from company
+/// ([`flows::update_company`]), `{changed, written, rebooked}`. A sent
+/// invoice is checked as re-booking would book it before its file changes,
+/// then re-booked ([`rebook_written`]); `rebooked` is `null` otherwise. A
+/// void invoice, or no company, is `422`.
+pub(crate) async fn update_company(
+    State(state): State<AppState>,
+    Path(number): Path<String>,
+    body: Result<Json<CompanyBody>, JsonRejection>,
+) -> ApiResult {
+    let body = match body {
+        Ok(Json(body)) => body,
+        Err(JsonRejection::MissingJsonContentType(_)) => CompanyBody::default(),
+        Err(e) => return Err(ApiError::bad_request(e.body_text())),
+    };
+    let today = today(body.today.as_deref())?;
+    let books = state.open_books()?;
+    blocking(StatusCode::OK, move || {
+        let mut session = books.session();
+        let path = session
+            .find(&number)
+            .map_err(|e| ApiError::status(StatusCode::NOT_FOUND, e.to_string()))?
+            .path
+            .clone();
+        let (outcome, rebook) = flows::update_company(&mut session, &path, &today).map_err(
+            |refused| match refused {
+                flows::UpdateRefused::Refused(why) => {
+                    ApiError::status(StatusCode::UNPROCESSABLE_ENTITY, why)
+                }
+                flows::UpdateRefused::Write(error) => write_error(&error),
+                flows::UpdateRefused::Books(error) => books_error(&error),
+            },
+        )?;
+        let rebooked = match rebook {
+            Some(number) => Some(to_value(&rebook_written(
+                &mut session,
+                &number,
+                &today,
+                &path,
+                true,
+            )?)?),
+            None => None,
+        };
+        Ok(json!({
+            "changed": outcome.changed,
+            "written": outcome.written,
+            "rebooked": rebooked,
+        }))
     })
     .await
 }

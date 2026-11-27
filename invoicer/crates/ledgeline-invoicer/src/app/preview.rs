@@ -23,6 +23,29 @@
 //! runs, nothing loads from another host, `frame-ancestors 'self'`), passes
 //! the same gate as MBR's pages (the session cookie), and its relative links
 //! resolve from the note's own page (`<base>`).
+//!
+//! **The preview flag.** Every preview renders the note with
+//! `invoicer_preview: true` added to its frontmatter ([`PREVIEW_FLAG`],
+//! [`flagged`]; nothing is written). It is how a template tells the app's
+//! preview from real output: the "with logo" starters draw a "Your logo"
+//! box where an invoice has no logo only `{% if fm.invoicer_preview %}`.
+//! The PDF export prints MBR's page for the saved file, and MBR's browser,
+//! its static build and QuickLook render the saved file too, so none of
+//! them ever has the flag: the box's markup is never in what a customer
+//! gets, CSS or no CSS. A frontmatter that can't be edited safely is
+//! rendered as it is (no box, never a failed preview).
+//!
+//! **Drafts follow the company** ([`invoicer_core::company`]). Every
+//! preview of a draft, saved or unsaved, renders it with the company note's
+//! details as they are now. MBR renders the saved file itself and has no
+//! hook to change what it reads, so a draft whose file holds an older copy
+//! is rendered here instead, as MBR's page at its own URL ([`draft_page`],
+//! from [`super::mbr::fallback`]): the app's frame, MBR in a browser tab and
+//! the PDF export all show the current details. That page is MBR's
+//! standalone render, without the flag (never the "Your logo" box), so it
+//! has no sidebar or search in a browser tab until Send writes the details
+//! into the file. A draft whose copy is current, and every other note, is
+//! MBR's own page.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -48,6 +71,16 @@ pub(crate) const PREVIEW_PAGE: &str = "/.ledgeline-invoicer/preview";
 
 /// The largest unsaved source accepted.
 pub(crate) const MAX_SOURCE_BYTES: usize = 1024 * 1024;
+
+/// The frontmatter key only the app's preview sets (see the module docs).
+pub(crate) const PREVIEW_FLAG: &str = "invoicer_preview";
+
+/// `source` with [`PREVIEW_FLAG`] set to `true` in its frontmatter, for the
+/// render alone; as it is when its frontmatter can't be edited safely.
+fn flagged(source: String) -> String {
+    invoicer_core::frontmatter::set(&source, PREVIEW_FLAG, serde_json::Value::Bool(true))
+        .unwrap_or(source)
+}
 
 /// The request body.
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -113,6 +146,16 @@ impl PreviewError {
 /// # Errors
 /// [`PreviewError`].
 pub(crate) fn render(books: &OpenBooks, request: PreviewRequest) -> Result<Preview, PreviewError> {
+    render_note(books, request, true)
+}
+
+/// [`render`], with the preview flag (`flag`) or without it (a page that
+/// stands in for MBR's: [`draft_page`]).
+fn render_note(
+    books: &OpenBooks,
+    request: PreviewRequest,
+    flag: bool,
+) -> Result<Preview, PreviewError> {
     let (note, templates_dir) = {
         let session = books.session();
         let note = match (&request.number, &request.path) {
@@ -156,6 +199,12 @@ pub(crate) fn render(books: &OpenBooks, request: PreviewRequest) -> Result<Previ
         (None, None) => None,
     };
 
+    // A draft follows the company (see the module docs).
+    let source = {
+        let session = books.session();
+        invoicer_core::company::as_shown(session.index(), &**vault, &source).into_owned()
+    };
+    let source = if flag { flagged(source) } else { source };
     let renderer = books.renderer().map_err(PreviewError::Internal)?;
     let started = Instant::now();
     let note_rel = Path::new(note.as_str());
@@ -196,6 +245,62 @@ pub(crate) fn render(books: &OpenBooks, request: PreviewRequest) -> Result<Previ
         template: override_template.map(|(p, _)| format!("/{p}")),
         render_ms,
     })
+}
+
+/// MBR's page at `url_path` when it is a draft whose file holds an older
+/// copy of your company: rendered with the company's details as they are
+/// now, without the preview flag (see the module docs). `None` for every
+/// other page, and when the render fails: MBR then serves the file as it
+/// is. Runs on the blocking pool.
+pub(crate) fn draft_page(books: &OpenBooks, url_path: &str) -> Option<String> {
+    let wanted = percent_decoded(url_path)?;
+    let (note, text) = {
+        let session = books.session();
+        let doc = session
+            .index()
+            .docs()
+            .filter(|d| d.header.status == Some(invoicer_core::doc::Status::Draft))
+            .find(|d| {
+                percent_decoded(&crate::pdf::page_url(&d.path)).as_deref() == Some(&wanted)
+            })?;
+        let source = session.vault().read_to_string(&doc.path).ok()?;
+        let (text, _) =
+            invoicer_core::company::current_text(session.index(), session.vault(), &source)
+                .ok()??;
+        (doc.path.clone(), text)
+    };
+    let request = PreviewRequest {
+        path: Some(note.to_string()),
+        source: Some(text),
+        ..PreviewRequest::default()
+    };
+    render_note(books, request, false).ok().map(|p| p.html)
+}
+
+/// A URL path with its `%XX` escapes decoded; `None` when they don't make
+/// UTF-8.
+fn percent_decoded(path: &str) -> Option<String> {
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        let escaped = (bytes[at] == b'%')
+            .then(|| bytes.get(at + 1..at + 3))
+            .flatten()
+            .and_then(|hex| std::str::from_utf8(hex).ok())
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        match escaped {
+            Some(byte) => {
+                out.push(byte);
+                at += 3;
+            }
+            None => {
+                out.push(bytes[at]);
+                at += 1;
+            }
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 /// How many unsaved previews are kept for the frame (the editor posts one
@@ -552,6 +657,40 @@ mod tests {
         ] {
             assert_eq!(with_base(kept, "/x/"), kept);
         }
+    }
+
+    #[test]
+    fn a_preview_flags_the_note_it_renders_and_nothing_else() {
+        let note = "---\ntitle: Invoice 101\ninvoice_num: 101\n---\n\nBody text.\n";
+        assert_eq!(
+            flagged(note.to_string()),
+            "---\ntitle: Invoice 101\ninvoice_num: 101\ninvoicer_preview: true\n---\n\nBody text.\n"
+        );
+        // A note's own value is the preview's while previewing.
+        assert_eq!(
+            flagged("---\ninvoicer_preview: false\nx: 1\n---\nB\n".to_string()),
+            "---\ninvoicer_preview: true\nx: 1\n---\nB\n"
+        );
+        // A frontmatter that can't be edited safely renders as it is.
+        let odd = "---\n[unclosed\n---\nB\n";
+        assert_eq!(flagged(odd.to_string()), odd);
+    }
+
+    #[test]
+    fn url_paths_decode_as_page_urls_encode() {
+        let note = VaultPath::new("invoices/2026-11-17 Customer X (draft) #2.md").unwrap();
+        assert_eq!(
+            percent_decoded(&crate::pdf::page_url(&note)).as_deref(),
+            Some("/invoices/2026-11-17 Customer X (draft) #2/")
+        );
+        // Another encoder's spelling of the same path.
+        assert_eq!(
+            percent_decoded("/invoices/2026-11-17%20Customer%20X%20%28draft%29%20%232/").as_deref(),
+            Some("/invoices/2026-11-17 Customer X (draft) #2/")
+        );
+        // A stray `%` is kept; bytes that aren't UTF-8 are no path.
+        assert_eq!(percent_decoded("/100%/").as_deref(), Some("/100%/"));
+        assert_eq!(percent_decoded("/%ff/"), None);
     }
 
     #[test]

@@ -46,7 +46,7 @@
 
 <section class="flex flex-col gap-3 rounded-box border border-warning/40 p-3" aria-label="Unmapped {sourceLabel} accounts" data-testid="qb-unmapped">
     <h2 class="text-sm font-semibold tracking-tight">Map {sourceLabel} accounts</h2>
-    <p class="text-xs text-base-content/60">
+    <p class="text-xs text-muted">
         These account names come straight from the export. Where Ledgeline can tell what an account is, it fills in a suggestion; check each one, type the
         Ledgeline account it should be, and Ledgeline adds a plain <code>alias</code> for it — the same mapping the Account Aliases tab edits. A mapping on a parent
         account also covers its own sub-accounts.
@@ -79,7 +79,7 @@
                 </label>
             </div>
             {#if problems.length > 0}
-                <ul class="list-inside list-disc text-xs text-error" data-testid="qb-mapping-problems">
+                <ul class="list-inside list-disc text-xs text-error-text" data-testid="qb-mapping-problems">
                     {#each problems as problem (problem)}
                         <li>{problem}</li>
                     {/each}
@@ -94,7 +94,7 @@
             Map accounts
         </button>
         {#if error !== null}
-            <span class="text-sm text-error" role="alert" data-testid="qb-mapping-error">{error}</span>
+            <span class="text-sm text-error-text" role="alert" data-testid="qb-mapping-error">{error}</span>
         {/if}
     </div>
 </section>

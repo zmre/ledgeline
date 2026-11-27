@@ -29,7 +29,7 @@
     <div class="card border border-base-content/5 bg-base-200 shadow-sm" data-testid={testid}>
         <div class="card-body gap-2 p-4">
             <div class="flex flex-wrap items-center justify-between gap-2">
-                <span class="text-xs font-semibold tracking-wide text-base-content/60 uppercase">MRR by {shown.key}</span>
+                <span class="text-xs font-semibold tracking-wide text-muted uppercase">MRR by {shown.key}</span>
                 {#if segments.length > 1}
                     <select
                         class="select-bordered select select-xs"
@@ -64,7 +64,7 @@
                         {#each shown.rows as row (row.value)}
                             {@const change = sub(row.mrrCurr, row.mrrPrev)}
                             <tr data-testid="{testid}-row">
-                                <td class={row.value === "(unassigned)" ? "text-base-content/60 italic" : ""}>{row.value}</td>
+                                <td class={row.value === "(unassigned)" ? "text-muted italic" : ""}>{row.value}</td>
                                 <td class="text-right font-mono tabular-nums">{fmt(base, row.mrrCurr, styles)}</td>
                                 <td class="text-right font-mono tabular-nums {sentimentClass(change.m, true)}">{fmtSignedAmount(change, base, styles)}</td>
                                 <td class="text-right tabular-nums">{row.customersCurr ?? "—"}</td>

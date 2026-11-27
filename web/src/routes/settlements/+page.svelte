@@ -48,7 +48,7 @@
     {#if accrual.enabled}
         <SettlementsPanel onEdit={openInEditor} />
     {:else}
-        <p class="text-sm text-base-content/70" data-testid="settlements-off">
+        <p class="text-sm text-muted" data-testid="settlements-off">
             Invoice matching appears when the ledger has a receivable or payable account.
             <a class="link" href={DOCS} target="_blank" rel="noopener noreferrer">How it works</a>
         </p>

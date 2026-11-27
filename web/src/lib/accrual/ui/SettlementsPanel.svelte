@@ -172,11 +172,11 @@
 {#snippet side(label: string, item: SettleSide, testid: string, key: string)}
     <div class="flex min-w-0 flex-col gap-0.5 rounded-box border border-base-content/10 p-3" data-testid={testid}>
         <span class="flex items-center justify-between gap-2">
-            <span class="text-xs tracking-wide text-base-content/50 uppercase">{label}</span>
+            <span class="text-xs tracking-wide text-muted uppercase">{label}</span>
             {@render disclosure(key, item.description || label)}
         </span>
         <span class="truncate font-medium" title={item.description}>{item.description || "(no description)"}</span>
-        <span class="text-sm text-base-content/70"><span class="font-mono">{shortDate(item.date)}</span> · <span class="truncate">{item.account}</span></span>
+        <span class="text-sm text-muted"><span class="font-mono">{shortDate(item.date)}</span> · <span class="truncate">{item.account}</span></span>
         <span class="font-mono text-sm tabular-nums">{money(item.amount)}</span>
         {#if item.invoice !== null || item.party !== null}
             <span class="flex flex-wrap gap-1 text-xs">
@@ -194,14 +194,14 @@
     <section class="flex flex-col gap-1" data-testid={testid}>
         <h3 class="text-sm font-semibold">{title} <span class="badge badge-ghost badge-sm tabular-nums">{items.length}</span></h3>
         {#if items.length === 0}
-            <p class="text-sm text-base-content/50">None.</p>
+            <p class="text-sm text-muted">None.</p>
         {:else}
             <ul class="divide-y divide-base-content/10 text-sm">
                 {#each items as item (`${item.index}:${item.posting}`)}
                     {@const key = `open:${item.index}:${item.posting}`}
                     <li class="py-1" data-testid="settlements-open-row">
                         <div class="flex items-center gap-3">
-                            <span class="w-16 shrink-0 font-mono text-base-content/60">{shortDate(item.date)}</span>
+                            <span class="w-16 shrink-0 font-mono text-muted">{shortDate(item.date)}</span>
                             <span class="min-w-0 grow truncate">{item.description || "(no description)"}</span>
                             {#if item.invoice !== null}<span class="badge badge-ghost badge-sm">INV {item.invoice}</span>{/if}
                             <span class="shrink-0 font-mono tabular-nums">{money(item.amount)}</span>
@@ -302,16 +302,16 @@
     {/if}
 
     {#if view === null}
-        <div class="flex items-center justify-center gap-2 py-10 text-sm text-base-content/60" role="status">
+        <div class="flex items-center justify-center gap-2 py-10 text-sm text-muted" role="status">
             {#if accrual.error !== null}
-                <span class="text-error">Couldn't read the invoices: {accrual.error}</span>
+                <span class="text-error-text">Couldn't read the invoices: {accrual.error}</span>
             {:else}
                 <span class="loading loading-sm loading-spinner"></span> Reading invoices and payments…
             {/if}
         </div>
     {:else}
         {#if view.proposals.length === 0}
-            <p class="py-6 text-center text-sm text-base-content/60" data-testid="settlements-empty">No invoice has a payment to propose in the lookback.</p>
+            <p class="py-6 text-center text-sm text-muted" data-testid="settlements-empty">No invoice has a payment to propose in the lookback.</p>
         {/if}
         <datalist id="settlement-fee-accounts">
             {#each journal.accountNames as name (name)}
@@ -339,7 +339,7 @@
                     {#if proposal.ambiguous}<span class="badge badge-sm badge-warning">ambiguous</span>{/if}
                     {#if proposal.byNumber}<span class="badge badge-ghost badge-sm">invoice number</span>{/if}
                     {#if proposal.byParty}<span class="badge badge-ghost badge-sm">same {proposal.invoice.party?.kind ?? "party"}</span>{/if}
-                    <span class="text-base-content/60" data-testid="settlement-gap">{gapText(proposal)}</span>
+                    <span class="text-muted" data-testid="settlement-gap">{gapText(proposal)}</span>
                 </header>
                 <div class="grid gap-3 sm:grid-cols-2">
                     {@render side("Invoice", proposal.invoice, "settlement-invoice", cardKey(proposal))}
@@ -367,7 +367,7 @@
                         </span>
                     {:else}
                         {#if busy}
-                            <span class="ml-auto text-xs text-base-content/60" data-testid="settlement-wait">One moment: updating the list…</span>
+                            <span class="ml-auto text-xs text-muted" data-testid="settlement-wait">One moment: updating the list…</span>
                         {:else if !linkable(proposal) && proposal.fit.kind !== "over"}
                             <span class="ml-auto flex items-center gap-2 text-xs text-warning" role="status" data-testid="settlement-stale">
                                 Can't link right now: the journal needs a refresh.

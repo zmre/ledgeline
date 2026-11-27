@@ -219,6 +219,26 @@
           "credit-note"
         ],
         "starter": true
+      },
+      {
+        "value": "/invoices/tpl/classic-logo.html",
+        "name": "Classic with logo",
+        "kinds": [
+          "invoice",
+          "estimate",
+          "credit-note"
+        ],
+        "starter": true
+      },
+      {
+        "value": "/invoices/tpl/modern-logo.html",
+        "name": "Modern with logo",
+        "kinds": [
+          "invoice",
+          "estimate",
+          "credit-note"
+        ],
+        "starter": true
       }
     ],
     "companies": [

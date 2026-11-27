@@ -97,7 +97,7 @@
             }}
             data-testid="sync-folder"
         />
-        <span class="text-xs {folderOk ? 'text-base-content/60' : 'text-error'}">
+        <span class="text-xs {folderOk ? 'text-muted' : 'text-error-text'}">
             {folderOk ? "Relative to your journal's folder." : "Use a folder inside your journal's folder, like imports/sync."}
         </span>
     </label>
@@ -119,7 +119,7 @@
                 data-testid="sync-keep"
             />
             <span>days</span>
-            <span class="text-xs text-base-content/60">{settings.syncKeepSourceDays === 0 ? "0 keeps every one" : "older ones are deleted"}</span>
+            <span class="text-xs text-muted">{settings.syncKeepSourceDays === 0 ? "0 keeps every one" : "older ones are deleted"}</span>
         </span>
     </label>
 
@@ -143,7 +143,7 @@
         </span>
     </label>
 
-    <div class="flex flex-col gap-2 text-sm text-base-content/70">
+    <div class="flex flex-col gap-2 text-sm text-muted">
         <p>
             With this on, Ledgeline syncs while it's open: once each morning after your bank's overnight update, and again when the time above has passed. New
             transactions go into your journal unreviewed. Possible duplicates are held for you to look at.
@@ -160,20 +160,20 @@
     <section class="flex flex-col gap-2">
         <h3 class="font-semibold">Connections</h3>
         {#if connections.length === 0}
-            <p class="text-sm text-base-content/60">No connections on this computer.</p>
+            <p class="text-sm text-muted">No connections on this computer.</p>
         {:else}
             <ul class="flex flex-col gap-2">
                 {#each connections as connection (connection.id)}
                     <li class="flex flex-col gap-2 rounded-box border border-base-content/10 p-3" data-testid="sync-settings-connection">
                         <div class="flex flex-wrap items-center gap-3">
                             <span class="font-medium">{connection.name}</span>
-                            {#if connection.host !== null}<span class="font-mono text-xs text-base-content/60">{connection.host}</span>{/if}
+                            {#if connection.host !== null}<span class="font-mono text-xs text-muted">{connection.host}</span>{/if}
                             {#if connection.connected && confirming !== connection.id}
                                 <button type="button" class="btn ml-auto btn-outline btn-error btn-xs" onclick={() => (confirming = connection.id)}
                                     >Disconnect…</button
                                 >
                             {:else if !connection.connected}
-                                <span class="ml-auto text-xs text-base-content/60"
+                                <span class="ml-auto text-xs text-muted"
                                     >{connection.state === "elsewhere" ? "Syncs on another computer" : "Not connected on this computer"}</span
                                 >
                             {/if}

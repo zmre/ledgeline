@@ -22,6 +22,7 @@
     import {today} from "#lib/reports/periods.js";
     import {METRIC_HELP} from "./metricHelp";
     import {boxVisibility, runwayText, sameSpan, showsStartup} from "./startup";
+    import TopPayeesList from "./TopPayeesList.svelte";
     import TopTxnsList from "./TopTxnsList.svelte";
 
     let {params = $bindable(), serverUrl, styles}: {params: ReportParams; serverUrl: string | null; styles: ReadonlyMap<string, AmountStyle>} = $props();
@@ -77,7 +78,7 @@
     <div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
         <PeriodControl bind:start={params.insStart} bind:end={params.insEnd} />
         {#if insights.refreshing}
-            <span class="flex items-center gap-2 text-xs text-base-content/60" role="status" data-testid="insights-refreshing">
+            <span class="flex items-center gap-2 text-xs text-muted" role="status" data-testid="insights-refreshing">
                 <span class="loading loading-sm loading-spinner motion-reduce:hidden" aria-hidden="true"></span>
                 Updating…
             </span>
@@ -112,7 +113,7 @@
                 <!-- plans/37 decision 4: boxes that don't apply hide, and the grid reflows. -->
                 {@const shows = boxVisibility(report, startup)}
                 {@const runway = shows.runway && startup !== null ? runwayText(startup.current, base, styles) : null}
-                <div class="text-xs text-base-content/60">
+                <div class="text-xs text-muted">
                     Current <span class="font-medium text-base-content/80">{period.currStart} → {period.currEnd}</span>
                     vs previous <span class="font-medium text-base-content/80">{period.prevStart} → {period.prevEnd}</span>
                 </div>
@@ -212,7 +213,7 @@
                     {/snippet}
                 </AsyncSection>
 
-                <!-- Boxes 7–10: the "biggest / top" lists (current period). `hasPrevious`
+                <!-- Boxes 7–11: the "biggest / top" lists (current period). `hasPrevious`
              lets an empty list say "not enough history" rather than "no changes". -->
                 <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <ChangeList
@@ -239,6 +240,7 @@
                         testid="insights-box-revenuechanges"
                     />
                     <TopTxnsList rows={report.topTxns} {base} {styles} testid="insights-box-toptxns" />
+                    <TopPayeesList rows={report.topPayees} {base} {styles} from={period.currStart} to={period.currEnd} testid="insights-box-toppayees" />
                 </div>
             {/snippet}
         </AsyncSection>

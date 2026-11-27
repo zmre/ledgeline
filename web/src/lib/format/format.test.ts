@@ -10,9 +10,9 @@ import {NEUTRAL_CLASS, sentimentClass, signClass} from "./sign";
 describe("UNIT signClass", () => {
     it("is green above zero and red below it", () => {
         expect(signClass(1)).toBe("text-success");
-        expect(signClass(-1)).toBe("text-error");
+        expect(signClass(-1)).toBe("text-error-text");
         expect(signClass(1n)).toBe("text-success");
-        expect(signClass(-1n)).toBe("text-error");
+        expect(signClass(-1n)).toBe("text-error-text");
     });
 
     it("is NEUTRAL at exactly zero — not green", () => {
@@ -32,8 +32,8 @@ describe("UNIT signClass", () => {
 describe("UNIT sentimentClass colours by whether the change is welcome", () => {
     it("reads the same delta oppositely for revenue and expenses", () => {
         expect(sentimentClass(50, true)).toBe("text-success"); // revenue up: good
-        expect(sentimentClass(50, false)).toBe("text-error"); // expenses up: bad
-        expect(sentimentClass(-50, true)).toBe("text-error");
+        expect(sentimentClass(50, false)).toBe("text-error-text"); // expenses up: bad
+        expect(sentimentClass(-50, true)).toBe("text-error-text");
         expect(sentimentClass(-50, false)).toBe("text-success");
     });
 

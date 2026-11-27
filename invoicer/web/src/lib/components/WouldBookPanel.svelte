@@ -24,7 +24,7 @@
     {#if books === null}
         <span class="loading loading-sm loading-spinner" aria-label="Loading the books"></span>
     {:else if books.error !== null}
-        <p class="text-sm text-error" data-testid="would-book-error">{books.error}</p>
+        <p class="text-sm text-error-text" data-testid="would-book-error">{books.error}</p>
     {:else}
         {#if status === "draft"}
             {#if books.would_book !== null}

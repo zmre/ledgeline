@@ -260,7 +260,7 @@
                     aria-label="Text of {name}"
                     spellcheck="false"
                     data-testid="settings-auto-text"></textarea>
-                <p class="text-xs text-base-content/60">
+                <p class="text-xs text-muted">
                     One <code>= QUERY</code> line, then its postings, each indented. Written to the file exactly as typed.
                 </p>
             {/if}
@@ -297,7 +297,7 @@
 >
     {#snippet children(loaded)}
         <div class="flex max-w-4xl flex-col gap-4" data-testid="settings-auto">
-            <p class="text-sm text-base-content/70">
+            <p class="text-sm text-muted">
                 An automatic posting rule (<code>= QUERY</code> followed by postings) adds those postings to every transaction the query matches — hledger's
                 <em>auto postings</em>. Ledgeline shows what they add but never writes it into a transaction: to change a generated posting, change its rule.
             </p>
@@ -342,7 +342,7 @@
             {/if}
 
             {#if loaded.rules.length === 0}
-                <p class="text-sm text-base-content/60" data-testid="settings-auto-empty">This journal has no automatic posting rules.</p>
+                <p class="text-sm text-muted" data-testid="settings-auto-empty">This journal has no automatic posting rules.</p>
             {:else}
                 <ul class="flex flex-col gap-3">
                     {#each loaded.rules as rule (rule.index)}
@@ -357,7 +357,7 @@
                             <div class="card-body gap-2 p-4">
                                 <div class="flex flex-wrap items-center gap-2">
                                     <code class="font-semibold">= {rule.query}</code>
-                                    <span class="font-mono text-xs text-base-content/50">{location(rule)}</span>
+                                    <span class="font-mono text-xs text-muted">{location(rule)}</span>
                                     {#if rule.unsupported !== null}
                                         <span class="badge badge-sm badge-warning" title={rule.unsupported} data-testid="settings-auto-locked"
                                             >🔒 not applied</span
@@ -370,7 +370,7 @@
                                     {#if canEdit(loaded, rule) && editingRule?.index !== rule.index}
                                         <span class="grow"></span>
                                         {#if confirmingDelete !== null && isRule(rule, confirmingDelete)}
-                                            <span class="text-xs text-base-content/70">Delete this rule from <code>{rule.file}</code>?</span>
+                                            <span class="text-xs text-muted">Delete this rule from <code>{rule.file}</code>?</span>
                                             <button
                                                 type="button"
                                                 class="btn btn-error btn-xs"
@@ -385,7 +385,7 @@
                                             >
                                             <button
                                                 type="button"
-                                                class="btn btn-ghost text-error btn-xs"
+                                                class="btn btn-ghost text-error-text btn-xs"
                                                 onclick={() => askDelete(rule)}
                                                 data-testid="settings-auto-delete">Delete</button
                                             >
@@ -393,7 +393,7 @@
                                     {/if}
                                 </div>
                                 {#if rule.unsupported !== null}
-                                    <p class="text-xs text-base-content/60">
+                                    <p class="text-xs text-muted">
                                         This engine cannot read this rule's query ({rule.unsupported}), so it never fires here.
                                     </p>
                                 {/if}

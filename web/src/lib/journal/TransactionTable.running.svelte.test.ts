@@ -98,7 +98,7 @@ describe("COMPONENT TransactionTable running balance", () => {
         expect(cellOf("Paycheck", "running-change").textContent).toContain("$5,000.00");
         expect(cellOf("Paycheck", "running-balance").textContent).toContain("$5,000.00");
         const rent = within(cellOf("Rent", "running-change")).getByText("$-250.00");
-        expect(rent.className).toContain("text-error");
+        expect(rent.className).toContain("text-error-text");
     });
 
     it("leaves Change blank and dims a carried balance on a row that does not touch the account", async () => {
@@ -107,7 +107,7 @@ describe("COMPONENT TransactionTable running balance", () => {
         expect(cellOf("Dividend", "running-change").textContent?.trim()).toBe("");
         const carried = cellOf("Dividend", "running-balance").querySelector("[data-carried]") as HTMLElement;
         expect(carried.textContent).toBe("$4,750.00");
-        expect(carried.className).toContain("text-base-content/50");
+        expect(carried.className).toContain("text-muted");
         expect(cellOf("Paycheck", "running-balance").querySelector("[data-carried]")).toBeNull();
     });
 

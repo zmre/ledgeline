@@ -4,7 +4,7 @@
     let {heading, note, class: className = ""}: {heading: string; note?: string; class?: string} = $props();
 </script>
 
-<h3 class={["text-xs font-semibold tracking-tight text-base-content/70", className]}>
+<h3 class={["text-xs font-semibold tracking-tight text-muted", className]}>
     {heading}
-    {#if note !== undefined}<span class="font-normal text-base-content/40">· {note}</span>{/if}
+    {#if note !== undefined}<span class="font-normal text-muted">· {note}</span>{/if}
 </h3>

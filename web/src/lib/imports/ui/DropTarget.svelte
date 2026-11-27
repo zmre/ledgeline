@@ -99,10 +99,10 @@
 >
     {#if busy}
         <span class="loading loading-lg loading-spinner" aria-label="Reading the file"></span>
-        <p class="text-sm text-base-content/70">Reading the file…</p>
+        <p class="text-sm text-muted">Reading the file…</p>
     {:else}
         <h2 class="text-base font-semibold tracking-tight">Drop a statement here</h2>
-        <p class="max-w-lg text-sm text-base-content/60">
+        <p class="max-w-lg text-sm text-muted">
             Ledgeline reads {formatList(formats)}. It converts whatever you drop to one CSV, offers the rules file that fits it, and shows you every transaction
             it proposes before anything is written.
         </p>

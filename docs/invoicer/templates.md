@@ -13,12 +13,16 @@ You don't need to know HTML to change the colours, the font, the paper size or t
 
 ## The starters
 
-The app comes with two templates:
+The app comes with four templates:
 
-| Starter | Look                                                                   |
-|---------|------------------------------------------------------------------------|
-| Classic | A serif letterhead, ruled lines and a right-aligned bill table.        |
-| Modern  | A sans-serif page with one accent colour and the amount due in a band. |
+| Starter           | Look                                                                             |
+|-------------------|----------------------------------------------------------------------------------|
+| Classic           | A serif letterhead, ruled lines and a right-aligned bill table.                  |
+| Modern            | A sans-serif page with one accent colour and the amount due in a band.           |
+| Classic with logo | Classic, with your logo large at the top left and your company's name beside it. |
+| Modern with logo  | Modern, with your logo large at the top left and your company's name beside it.  |
+
+If you have a logo, pick one of the "with logo" starters. When an invoice has no logo yet, the preview shows a dashed "Your logo" box where it will go. The box is only in the preview: the PDF and every other copy of the invoice leave it out, and your company's name moves to the left edge. [Your logo](#your-logo) says how to add one.
 
 A starter is copied into your books folder, under `invoices/tpl/`, the first time an invoice uses it. From then on the copy is yours: the app never overwrites it. Until then, the Templates page lists the starter as read-only.
 
@@ -259,15 +263,29 @@ logo: logo.png
 
 The image can be a PNG, JPEG, GIF, SVG or WebP file. `logo.png` and `"[[logo.png]]"` look beside the company note first, then from the books folder. `/assets/logo.png` is from the books folder only. A web address, a file outside the books folder or a missing file means no logo.
 
-Each new invoice copies the logo's path into its `invoicer_logo` field, as it copies your address, so an old invoice keeps the logo it was sent with. Invoices written before you set the logo have no logo until you add that field to them.
+A draft always shows your company's details as they are now, the logo included: set the logo, and every draft has it in its preview, its PDF and when you send it. Sending writes the logo's path into the invoice's `invoicer_logo` field with your address, so a sent invoice keeps the logo it was sent with. To give a sent invoice your new logo, use **Update from company** on its page (see [Your company's details](files.md#your-companys-details)).
 
-The base's `header` block shows the logo above the title, no larger than 2.5 inches wide and 0.8 inches tall, with your company's name as its description for screen readers. Classic and Modern put it above your company's name. To place it yourself in your own `header` block, write:
+The base's `header` block shows the logo above the title, no larger than 2.5 inches wide and 0.8 inches tall, with your company's name as its description for screen readers. Classic and Modern put it above your company's name. Classic with logo and Modern with logo show it larger, up to about 2.5 inches wide and 1 inch tall, with your company's name beside it. To place it yourself in your own `header` block, write:
 
 ```text
 {% if fm.invoicer_logo %}
   <img class="logo" src="{{ fm.invoicer_logo | urlencode }}" alt="{{ fm.invoicer_name }}">
 {% endif %}
 ```
+
+### Something only the preview shows
+
+The app's preview sets `fm.invoicer_preview` to true. The PDF, mbr and every other copy of the invoice never set it. The "with logo" starters use it to draw the "Your logo" box only in the preview:
+
+```text
+{% if fm.invoicer_logo %}
+  <img class="logo" src="{{ fm.invoicer_logo | urlencode }}" alt="{{ fm.invoicer_name }}">
+{% elif fm.invoicer_preview %}
+  <div class="logo-slot">Your logo</div>
+{% endif %}
+```
+
+Don't write `invoicer_preview` in an invoice yourself. If you do, the box shows in its PDF too.
 
 ## When a template shows an error
 
