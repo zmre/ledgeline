@@ -79,6 +79,19 @@ A move between two of your own wallets changes nothing on Holdings: Ledgeline
 pools each coin across every account in scope. A network fee paid in the coin
 reduces what you hold.
 
+On the Performance chart that fee counts as a loss, not as money you took out,
+and its share of the cost basis goes with it. A staking reward booked against
+an income account counts as return, not as money you put in:
+
+```journal
+2026-04-01 Staking reward
+    assets:crypto:coinbase      0.01 ETH @ $3,000.00
+    income:staking
+```
+
+The reward's `@` value still joins the cost basis, so the holding's all-time
+gain (value minus cost) leaves the reward out. A gain over a period counts it.
+
 ## Stablecoins
 
 USDT, USDC and similar coins are priced like any other coin, so a depeg shows up.
@@ -134,6 +147,4 @@ covers the gaps above:
   `yahoo:` tag needed;
 - a warning when a well-known coin symbol is priced as something that is not a coin;
 - small prices kept to their significant digits;
-- weekend closes for coins;
-- staking rewards and reinvested income counted as return rather than as new
-  money in.
+- weekend closes for coins.
