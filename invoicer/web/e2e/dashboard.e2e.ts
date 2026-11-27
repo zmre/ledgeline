@@ -134,6 +134,16 @@ test.describe("the dashboard over the accrual fixture (:5199)", () => {
         await expect(page.getByTestId("sidebar-invoices")).not.toHaveAttribute("aria-current", "page");
     });
 
+    test("has no time row: these books don't track time", async ({page}) => {
+        // The time summary answers `not-set-up`; wait for it so the row has had its chance.
+        const summary = page.waitForResponse((r) => r.url().includes("/api/time/summary"));
+        await open(page);
+        await summary;
+        await expect(page.getByTestId("dashboard-total")).toBeVisible();
+        await expect(page.getByTestId("home-time-row")).toHaveCount(0);
+        await expect(page.getByTestId("home-time-error")).toHaveCount(0);
+    });
+
     test("shows the fixture's figures", async ({page}) => {
         await open(page);
         await expect(page.getByTestId("dashboard-total")).toHaveText("$22,850.00");

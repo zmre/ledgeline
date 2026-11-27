@@ -218,6 +218,8 @@ export default defineConfig({
         {name: "time", testMatch: "**/time-track.e2e.ts"},
         // Same server as Track; after it, so the two never write at once.
         {name: "time-dashboard", testMatch: "**/time-dashboard.e2e.ts", dependencies: ["time"]},
+        // Home's time row and a customer's time accounts: the same server again, after both.
+        {name: "time-home", testMatch: "**/time-home.e2e.ts", dependencies: ["time-dashboard"]},
         {name: "time-entries", testMatch: "**/time-entries.e2e.ts"},
         {name: "time-billing", testMatch: "**/time-billing.e2e.ts"},
         {
@@ -233,6 +235,7 @@ export default defineConfig({
                 "**/settings-new-file.e2e.ts",
                 "**/time-track.e2e.ts",
                 "**/time-dashboard.e2e.ts",
+                "**/time-home.e2e.ts",
                 "**/time-entries.e2e.ts",
                 "**/time-billing.e2e.ts",
                 "**/templates.e2e.ts",

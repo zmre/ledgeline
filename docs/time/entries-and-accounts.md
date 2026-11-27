@@ -105,6 +105,14 @@ Save writes the tags onto the account's line in `time-accounts.journal`. If an a
 
 **Rename** (<kbd>r</kbd>) renames the account and every account under it. It shows each line it will change, in the accounts file and in every time file, as **Where**, **Before** and **After**, and changes nothing until you confirm. Billed lines keep their `invoice:` and `bill:` tags.
 
+### On a customer's page
+
+A customer's page in the Invoicer has a **Time accounts** section listing every account that bills to that customer. That covers the account that names it in `customer:` and every account under it that inherits the link, laid out as a tree. Archived accounts are left out. Each row shows **This month** and **Unbilled**. As on this page, an account's hours include the accounts below it.
+
+An account's name or its month's hours opens Entries on that account this month, and its unbilled hours open its unbilled lines, whenever they were. **All time** opens all of the customer's time in Entries, and **Time accounts** opens this page. A customer that no time account names has no section, and neither does any customer before time tracking is set up.
+
+An account links to a customer when its `customer:` value is the customer's name in the books (its note's `ledger_customer`) or its title, the same match the Accounts page uses for **Create customer**.
+
 ### Undeclared accounts
 
 An account that has time but isn't declared in `time-accounts.journal` appears under **Not declared yet**, and in the tree with an **undeclared** badge. **Declare** adds it to the file, so you can give it a customer or make it billable.

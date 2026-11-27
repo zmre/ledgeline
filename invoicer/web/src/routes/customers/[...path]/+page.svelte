@@ -2,8 +2,10 @@
 
      It opens read-only: the contact, how it is invoiced, contracts, what it
      owes, its open invoices and every invoice, and the notes that link it
-     (`CustomerView`, `CustomerAccount`). Edit swaps the view for the form;
-     Save and Discard are top right, and Cancel returns to the view.
+     (`CustomerView`, `CustomerAccount`), and the time accounts linked to it
+     (`CustomerTimeAccounts`; absent when it has none). Edit swaps the view
+     for the form; Save and Discard are top right, and Cancel returns to the
+     view.
      Leaving with unsaved changes asks: Save, Discard, or stay.
 
      Saving sends only the fields changed since the note was read, with the
@@ -54,6 +56,7 @@
     import CustomerView from "#lib/components/CustomerView.svelte";
     import OpenPos from "#lib/components/OpenPos.svelte";
     import SaveDiscardDialog from "#lib/components/SaveDiscardDialog.svelte";
+    import CustomerTimeAccounts from "#lib/time/customer/CustomerTimeAccounts.svelte";
 
     const key = $derived(page.params.path ?? "");
 
@@ -271,6 +274,9 @@
     const noteHref = (path: string): string => resolve("/notes/[...path]", {path: routeParam(path)});
     /** MBR serves a file at its path in the books folder (behind the session cookie). */
     const fileHref = (path: string): string => pageUrl(path).replace(/\/$/, "");
+    const timeEntries = resolve("/time/entries");
+    const timeEntriesHref = (query: string): string => `${timeEntries}?${query}`;
+    const timeAccountsHref = resolve("/time/accounts");
 
     function openFile(path: string): void {
         openError = null;
@@ -365,6 +371,13 @@
                     </div>
                     <div class="flex min-w-0 flex-col gap-4">
                         <CustomerAccount {customer} {invoiceHref} {customerHref} {noteHref} onOpen={openInvoice} />
+                        {#key customer.path}
+                            <CustomerTimeAccounts
+                                names={[customer.ledger_customer, customer.title]}
+                                entriesHref={timeEntriesHref}
+                                accountsHref={timeAccountsHref}
+                            />
+                        {/key}
                     </div>
                 </div>
             </form>

@@ -63,7 +63,7 @@ The sidebar has six sections, and a **Time** group below them:
 |-----------|---------------------------------------------------------------------------------------------------|
 | Dashboard | What you are owed, what is overdue, what was paid recently. See [Dashboard](dashboard.md).        |
 | Invoices  | Every invoice, with filters for status, customer, dates and how late it is.                       |
-| Customers | The people and organizations you bill, what each owes, and their open purchase orders.            |
+| Customers | The people and organizations you bill, what each owes, their open purchase orders and, if you track time, their time accounts. |
 | Catalog   | Products and services you bill often, with their rate and the account each one books to.          |
 | Snippets  | Reusable text such as payment instructions and terms, copied into an invoice when you insert one. |
 | Templates | How invoices look on screen and on paper. See [Templates](templates.md).                          |

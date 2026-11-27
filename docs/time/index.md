@@ -25,6 +25,11 @@ Time tracking is the **Time** group in the Invoicer's sidebar, with five pages:
 
 Track is <kbd>g</kbd> <kbd>r</kbd> (r for recording) because <kbd>g</kbd> <kbd>t</kbd> already goes to Templates.
 
+Time shows up outside the Time group too:
+
+- The Invoicer's home page has a row with this week's hours, the billable share and what is unbilled, with **Bill…**. See [Dashboard](../invoicer/dashboard.md#time).
+- A customer's page lists the time accounts that bill to it, with this month's hours and the unbilled hours of each. See [Accounts](entries-and-accounts.md#on-a-customers-page).
+
 Above the sidebar's links, on every screen, a light shows what's being timed: a green ▶ with the account and the running time, or a grey ■ with the last account and the key that resumes it. Click it to stop or resume.
 
 ## Setting up
