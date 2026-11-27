@@ -54,6 +54,11 @@ Unbalanced virtual postings (`(account)` in parentheses) are left out for the sa
 | **Interval** | **Total**, **Monthly**, **Quarterly** or **Yearly** | Monthly |
 | **Account depth** | How deep an untagged account's line rolls up | 3 |
 
+The **Account depth** slider stops at the deepest account the statement
+actually lists, so every setting changes something. An `[cashflow] --depth`
+line in `hledger.conf` sets the starting depth once; switching tabs and back
+leaves the depth you picked alone.
+
 With an interval, there is one column per period and then **Total**. For the flows (net income, every line, the section totals, net change) the Total is the sum of the periods. For **Beginning cash** it is the first period's beginning balance, and for **Ending cash** the last period's ending balance, because adding up month-end balances means nothing. With Interval set to **Total** there is one column, headed **Amount**.
 
 A saved link from before Cash Flow had From and To (`?tab=cf&end=2026-06-30&count=6&interval=monthly`) still opens the same columns, and the address bar switches to the From/To form.
@@ -96,7 +101,9 @@ A misspelt value is ignored, the account falls back to the rules above, and [Pro
 
 ### `cfgroup:` names the line
 
-Without a tag, each account is its own line, rolled up to the **Account depth**, which matches QuickBooks' one-line-per-account layout. A line that stands for more than one account has an arrow that opens it to the accounts behind it.
+Without a tag, each account is its own line, rolled up to the **Account depth**, which matches QuickBooks' one-line-per-account layout. At depth 2, `assets:prepaid:insurance` and `assets:prepaid:rent` become one **Prepaid** line; at depth 3 they are two. A line is labelled by its account's `name:` tag or last segment, never its full path; hover the label for the path.
+
+A line that stands for more than one account has an arrow that opens it to the accounts behind it, laid out [as on the P&L](income-statement.md#how-accounts-inside-a-line-are-laid-out): each level once, headings only where two or more accounts share a parent.
 
 `cfgroup:` collapses accounts into one named line, even from different parts of the tree, for the "∆ in AR" style of a hand-built spreadsheet:
 
@@ -110,7 +117,7 @@ The tag inherits to sub-accounts. It works on cash accounts too: tag several ban
 
 ## The cash balances
 
-**Beginning cash** and **Ending cash** list every cash account with a balance or a movement in the range, by line, and start open so the per-account detail is on screen. Opening or closing a line under one opens or closes it under the other, so the two lists always line up.
+**Beginning cash** and **Ending cash** list every cash account with a balance or a movement in the range, by line, and start open so the per-account detail is on screen. Two banks with a checking and a savings account each read as two bank headings with Checking and Savings under each; a `name:` tag on the bank account (`account assets:bank:fcb ; name: First Community Bank`) names the heading. Opening or closing a line under one opens or closes it under the other, so the two lists always line up.
 
 ## Keyboard
 
@@ -124,7 +131,7 @@ The chart draws one currency. Anything else is named under it ("Charted in $ onl
 
 ## Export
 
-**Export .xlsx** writes the statement as on screen with every line opened: a column per period and Total (or one Amount column), amounts in your main currency as real numbers, and anything in another currency in an **Other commodities** column. The file is `cash-flow-<from>-to-<to>-<interval>.xlsx`.
+**Export .xlsx** writes the statement as on screen, at the screen's **Account depth**, with every line opened and each label's full account path as a cell note: a column per period and Total (or one Amount column), amounts in your main currency as real numbers, and anything in another currency in an **Other commodities** column. The file is `cash-flow-<from>-to-<to>-<interval>.xlsx`.
 
 ## API
 
@@ -136,5 +143,10 @@ GET /api/reports/cashflow
                               (default: monthly; daily and weekly also work)
       &depth=N                (default: 2)
 ```
+
+Each line carries `label` and `account` (`null` for a `cfgroup:` line), and its
+rows are outline rows `{kind, label, level, account, …}` with `kind` one of
+`heading`, `account` or `other`. A heading's figures are its subtree's total;
+the app doesn't print them. `maxDepth` is the deepest account behind any line.
 
 Without `from`, the older `end`, `count` and `interval` parameters name the same columns as before and are converted to the range they cover.

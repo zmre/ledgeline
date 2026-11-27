@@ -1,6 +1,7 @@
 # 50 — Readable account outlines in reports, P&L depth, budget column
 
 Decided with Patrick 2026-11-27. Branch `2026-11-26-reports-improvements`.
+Built 2026-11-27: WP1–WP6 merged on the branch (not yet pushed).
 
 ## Goal
 

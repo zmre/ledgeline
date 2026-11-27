@@ -33,6 +33,8 @@ and, for the intervals and Total column,
 | **From** | First day of the statement, inclusive | January 1 of the current year |
 | **To** | Last day of the statement, inclusive | December 31 of the current year |
 | **Interval** | **Total**, **Monthly**, **Quarterly** or **Yearly** | Total |
+| **Depth** | How many account levels a line lists; deeper accounts fold into their ancestor | All levels |
+| **Budget** | Adds an italic Budget column after Total | Off |
 
 Total gives one column for the whole range, compared with the range before it.
 The other three split the range into periods. The next two sections cover each
@@ -53,8 +55,82 @@ rolled-up `income` row, then every account under it, then a `Total Revenues`
 footer holding that same figure a third time. Groups replace the ancestor rows
 outright, and no number is printed twice.
 
-There is no depth control on this tab, for the reason it left the balance sheet:
-groups are the reading, and the accounts inside one are a drill-down.
+**Depth** trims the drill-down, not the groups. At depth 2,
+`expenses:travel:airfare` and `expenses:travel:hotel` fold into one Travel row,
+as `hledger is --depth 2` would print them. Group, section and net income totals
+never change with depth. The slider stops at the deepest account the statement
+actually lists. An `[incomestatement] --depth` line in `hledger.conf` sets the
+starting depth once; after that the slider is yours until the config changes.
+
+## How accounts inside a line are laid out
+
+The accounts under a group read like a bookkeeper's statement, not a list of
+paths. The same rules apply on the [balance sheet](balance-sheet.md) and in the
+[cash flow statement](cash-flow.md):
+
+```
+Travel
+    Airfare                     1,200
+    Ground Transport              340
+    Lodging
+        Hotels                    900
+        Short-term Rentals        410
+    Total Travel                2,850
+```
+
+- **Each level prints once.** A parent account becomes a heading only when two
+  or more of the line's accounts sit under it. A heading has no amount of its
+  own; the line's total covers everything.
+- **A lone account isn't wrapped.** If only one account sits under a parent,
+  it prints on its own, with no heading above it.
+- **The line's own heading isn't repeated.** Accounts that all sit under
+  `expenses:travel` go directly under the Travel group, not under a second
+  "Travel" heading.
+- **Grouping never crosses lines.** A "Professional Services" group that holds
+  `expenses:people-costs:payroll-processing-fees` and
+  `expenses:professional-fees:accounting` and `…:legal` shows Payroll
+  Processing Fees on its own and Accounting and Legal under a Professional Fees
+  heading, whatever other groups hold the rest of `people-costs`.
+- **A parent with its own postings** gets a first row, `<name> (other)`, for
+  them, so the rows beneath a heading add up.
+- **Labels are the account's last segment.** A segment that looks like code
+  (`ground-transport`) is title-cased (`Ground Transport`); one written for
+  people (`People Costs`, `4110 Rental Income`) prints exactly as written. If
+  two rows side by side would read the same, each is prefixed with its parent,
+  as in `Office · Other` and `Travel · Other`.
+- **A `name:` tag overrides the label**, for when the segment is a code:
+  `account assets:bank:fcb  ; name: First Community Bank`. The tag names that
+  account only; its children keep their own labels. Set it in
+  [Settings → Accounts](../settings/accounts.md).
+- **Hover any label to see its full account path.** In an export, the path is
+  a note on the label's cell.
+
+## The Budget column
+
+Tick **Budget** to set your [budget goals](../budget.md) beside the actuals. An
+italic **Budget** column appears right after Total (after Amount in Total mode,
+before Prior), covering the same From–To range. There is one Budget column, not
+one per period.
+
+Each goal sits on the row it describes:
+
+- A goal on a leaf account sits on that account's row.
+- A goal on a parent that the line shows as a heading adds a **Total** row
+  under the heading's children, carrying both the actual and the goal. Without
+  a budget, headings never get Total rows.
+- A goal on the account the whole group is made of sits on the group's total.
+- A goal on an account that depth folded away sits on the row it folded into.
+- Group, section, subtotal and net income rows show the sum of the goals
+  beneath them.
+
+A goal whose accounts are split across groups can't sit on any one row without
+comparing it against the wrong actual. It is counted only in the section total,
+and a note under the section says so: "Budget for People Costs spans groups:
+shown in section total only."
+
+Goals follow the same rules as the [Budget](../budget.md) page, including a
+parent goal collecting its children's spending. Goals on accounts that aren't
+on the P&L are ignored.
 
 ## The two tags
 
@@ -310,7 +386,11 @@ The **Export .xlsx** button writes what the screen shows: filled section
 headers, bold group rows, indented accounts, ruled subtotals, then net income.
 Every line is valued into one commodity, so the amount cells hold real numbers
 with a number format rather than text, and the workbook is arithmetic you can
-build on. Groups are written expanded whatever is collapsed on screen.
+build on. Groups are written expanded whatever is collapsed on screen, laid
+out [as on screen](#how-accounts-inside-a-line-are-laid-out) at the screen's
+**Depth**, with each label's full account path as a cell note. With **Budget**
+ticked, an italic Budget column follows Total (or Amount), and the title line
+adds "with budget".
 
 The columns depend on the Interval:
 
@@ -340,7 +420,20 @@ GET /api/reports/incomestatement/grouped
       &compare=previous|none  (default: previous)
       &interval=total|monthly|quarterly|yearly
                               (default: total; daily and weekly also work)
+      &depth=N                (optional; omit for every level, 0 for totals only)
+      &budget=1               (optional; adds the budget fields)
 ```
+
+Each group's `rows` are outline rows: `{kind, label, level, account, depth,
+amounts}`, where `kind` is `heading`, `account`, `other` or (with a budget)
+`total`, `level` is the indent within the group, and `account` is the full
+path. A heading's `amounts` is its subtree's total; the app doesn't print it.
+`maxDepth` is the deepest account the statement lists.
+
+With `budget=1`, every row, group, section and subtotal gains `budget` (a
+figure, or `null` where no goal sits), each section gains `budgetUnplaced:
+[{account, label}]` for goals split across groups, and the report gains
+`netIncomeBudget`. Without it, none of these keys appear.
 
 `interval=total` returns the same bytes it always did. Any other interval
 returns interval mode:

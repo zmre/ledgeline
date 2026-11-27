@@ -29,7 +29,11 @@ A chart of accounts is organised for bookkeeping; a balance sheet is organised f
 reading. You want to know what you hold in _cash_ and in _investments_ — not how
 much is in bank account A versus bank account B, nor how many shares of each
 ticker. So each line is a group, collapsed by default. Expand one to see the
-accounts behind it, at full depth.
+accounts behind it, at full depth, laid out
+[as on the P&L](income-statement.md#how-accounts-inside-a-line-are-laid-out):
+two banks with a checking and a savings account each read as two bank headings
+with Checking and Savings under each, and a heading prints no amount of its
+own. Hover a label for its full account path.
 
 There is no depth control on this tab. Depth stopped meaning anything useful once
 groups became the reading: a group's roots are shown whatever their depth, and the
@@ -368,7 +372,8 @@ verdict, so the number is there to look at.
 ## Export
 
 The XLSX export mirrors the screen: filled section headers, bold group rows,
-indented accounts, ruled subtotals, then the tie-out and its verdict.
+indented accounts (each label's full account path as a cell note), ruled
+subtotals, then the tie-out and its verdict.
 Because every line is valued into one commodity, the amount column holds real
 numbers with a number format rather than text, so the workbook is arithmetic you
 can build on. Anything unpriced goes in its own column rather than being dropped.
@@ -395,6 +400,12 @@ GET /api/reports/balancesheet/columns
       &interval=total|monthly|quarterly|yearly   (default: monthly; total = one column at `to`)
       &depth, &value, &valueIn                   (as above, applied to every column)
 ```
+
+Group `rows` are outline rows `{kind, label, level, account, amount}`, with
+`kind` one of `heading`, `account` or `other`; `amount` is one figure on
+`/grouped` and one per column on `/columns`. A heading's figure is its
+subtree's total; the app doesn't print it. With `depth`, deeper accounts are
+summed into their ancestor before the outline is built.
 
 `/columns` returns one tree with a figure per column, the same shape the
 [projection run](../projections/index.md) returns for its balance sheet. It
