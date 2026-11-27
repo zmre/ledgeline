@@ -6,7 +6,7 @@ import {scopeToSearch, searchToScope, searchToState, stateToSearch} from "./urlC
 const TODAY = "2026-07-08";
 
 function scope(overrides: Partial<HoldingsScope> = {}): HoldingsScope {
-    return {accounts: new Set<string>(), mode: "include", asOf: TODAY, gainPeriod: "all", holdings: new Set<string>(), ...overrides};
+    return {accounts: new Set<string>(), mode: "include", asOf: TODAY, gainPeriod: "12mo", holdings: new Set<string>(), ...overrides};
 }
 
 describe("UNIT holdings urlCodec — the holdings filter (plan 47)", () => {
@@ -54,10 +54,10 @@ describe("UNIT holdings urlCodec", () => {
             expect(scopeToSearch(s, TODAY)).toBe("acct=assets%253Abroker%2Cexpenses&mode=exclude");
         });
 
-        it("writes gain only when the window isn't all-time", () => {
-            expect(scopeToSearch(scope({gainPeriod: "all"}), TODAY)).toBe("");
+        it("writes gain only when the window isn't the 12-month default", () => {
+            expect(scopeToSearch(scope({gainPeriod: "12mo"}), TODAY)).toBe("");
             expect(scopeToSearch(scope({gainPeriod: "ytd"}), TODAY)).toBe("gain=ytd");
-            expect(scopeToSearch(scope({gainPeriod: "12mo"}), TODAY)).toBe("gain=12mo");
+            expect(scopeToSearch(scope({gainPeriod: "all"}), TODAY)).toBe("gain=all");
         });
 
         it("round-trips account names containing commas", () => {
@@ -83,9 +83,9 @@ describe("UNIT holdings urlCodec", () => {
             expect(searchToScope("?asof=notadate&mode=banana", TODAY)).toEqual(scope());
         });
 
-        it("parses gain and falls back to all-time on an unknown window", () => {
+        it("parses gain and falls back to the 12-month default on an unknown window", () => {
             expect(searchToScope("?gain=ytd", TODAY)).toEqual(scope({gainPeriod: "ytd"}));
-            expect(searchToScope("?gain=12mo", TODAY)).toEqual(scope({gainPeriod: "12mo"}));
+            expect(searchToScope("?gain=all", TODAY)).toEqual(scope({gainPeriod: "all"}));
             expect(searchToScope("?gain=banana", TODAY)).toEqual(scope());
         });
 

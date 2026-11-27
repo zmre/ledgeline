@@ -26,6 +26,11 @@ Each ticked benchmark is a dashed line in its own colour — always the same
 colour, whichever others are showing — and the legend under the chart names
 it. Ledgeline saves your choices with your other view settings (see [Settings files](../settings/settings-files.md)). None are ticked by default.
 
+When the chart is narrowed to some holdings (see
+[the Holdings menu](index.md#the-value-over-time-chart)), each benchmark is
+seeded from those holdings' money alone. That makes "how did my tech stocks do
+against the Nasdaq-100" a fair comparison.
+
 ## What the line means
 
 It is **the same cash flows, on the same dates, into that fund**. Every buy in

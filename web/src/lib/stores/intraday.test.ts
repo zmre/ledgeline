@@ -8,7 +8,7 @@ let posts: {url: string; body: unknown}[] = [];
 let reply: () => Response;
 
 const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), {status, headers: {"Content-Type": "application/json"}});
-const QUOTED = {quotes: [{symbol: "VTI", price: "301.25", time: 1_795_000_000, currency: "USD"}], skipped: [], rateLimited: false};
+const QUOTED = {quotes: [{symbol: "VTI", price: {mantissa: "30125", places: 2}, time: 1_795_000_000, currency: "USD"}], skipped: [], rateLimited: false};
 
 beforeEach(() => {
     intraday.reset();

@@ -14,7 +14,7 @@ import type {ISODate} from "#lib/domain/types.js";
 import {toggleSubtreeRoot} from "#lib/filters/treeSelect.js";
 import {TAB_ORDER, type HoldingsTab} from "#lib/holdings/params.js";
 import type {GainPeriod, HoldingsReport, HoldingsScope, HoldingsSeries, OtherHoldingsReport} from "#lib/holdings/types.js";
-import {anchorFor, gainSinceFor, isIntradayWindow, trendWindowFor} from "#lib/holdings/ui/gainPeriod.js";
+import {DEFAULT_GAIN_PERIOD, anchorFor, gainSinceFor, isIntradayWindow, trendWindowFor} from "#lib/holdings/ui/gainPeriod.js";
 import {filterParam, sameScope, toggledSelection} from "#lib/holdings/ui/selection.js";
 import type {HoldingsUrlState} from "#lib/holdings/ui/urlCodec.js";
 import {localToday} from "./filters.svelte";
@@ -39,9 +39,9 @@ export function trendQuery(scope: HoldingsScope): {
     return {asOf: scope.asOf, accounts: [...scope.accounts].join(","), mode: scope.mode, ...window};
 }
 
-/** Fresh-visit default: everything included, as of today, all-time gain, no holdings filter (recomputed per call, never remembered). */
+/** Fresh-visit default: everything included, as of today, the last 12 months, no holdings filter (recomputed per call, never remembered). */
 export function defaultScope(): HoldingsScope {
-    return {accounts: new Set<string>(), mode: "include", asOf: localToday(), gainPeriod: "all", holdings: new Set<string>()};
+    return {accounts: new Set<string>(), mode: "include", asOf: localToday(), gainPeriod: DEFAULT_GAIN_PERIOD, holdings: new Set<string>()};
 }
 
 let value = $state<HoldingsScope>(defaultScope());

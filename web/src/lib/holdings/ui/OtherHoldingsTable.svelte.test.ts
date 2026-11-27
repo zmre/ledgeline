@@ -80,6 +80,7 @@ const REPORT = decodeOtherHoldingsReport({
     // prints what the engine sent and never recomputes it.
     totals: {value: dec(19300000, 2), cost: dec(16800000, 2), change: dec(2500000, 2), changePct: 14.88},
     warnings: [],
+    liveAt: null,
 });
 
 const mount = (gainPeriod: "all" | "ytd" | "12mo" = "all") =>

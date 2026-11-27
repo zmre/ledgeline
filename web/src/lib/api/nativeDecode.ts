@@ -3354,40 +3354,34 @@ function decodeHoldingsPoint(raw: RawHoldingsPoint | undefined, context: string)
     });
 }
 
-// Plan 47's additions to the holdings wire. Both are OPTIONAL on the wire — an
-// engine from before plan 47 sends neither, and the page must keep working
-// against it (no anchor ⇒ the chart's own domain, no liveAt ⇒ saved prices) —
-// so absent and null decode alike. A value that IS present must still be the
-// right shape: a misread anchor would place the axis wrong without a word.
+// Plan 47's additions to the holdings wire. Both keys are ALWAYS present —
+// the engine sends `null` when there is nothing to report — and a missing key
+// is a shape error, not a quiet null: the golden sweep can only notice a
+// renamed key that decodes differently, and these are `null` in every golden.
+// A value that is present must be the right shape too: a misread anchor would
+// place the axis wrong without a word.
 
-/** `liveAt`: unix seconds of the newest intraday quote used, or null. */
-function decodeLiveAt(raw: unknown, context: string): number | null {
-    if (raw === undefined || raw === null) return null;
-    if (typeof raw !== "number" || !Number.isFinite(raw)) throw new ApiShapeError(`${context}: expected unix seconds or null`);
+/** A key that must be on the wire, even when its value is null. */
+function present(raw: unknown, context: string): unknown {
+    if (raw === undefined) throw new ApiShapeError(`${context}: missing`);
     return raw;
 }
 
-/**
- * A plan-47 decimal (an anchor bound, an intraday price) as a display number.
- * The contract names decimal strings ("1234.56"); the `{mantissa, places}`
- * Dec every other money field uses is accepted too, so the engine may pick
- * either without breaking the page. Also accepts a plain JSON number.
- */
-function decimalNumber(raw: unknown, context: string): number {
-    if (typeof raw === "number" && Number.isFinite(raw)) return raw;
-    if (typeof raw === "string") {
-        if (!/^-?\d+(\.\d+)?$/.test(raw.trim())) throw new ApiShapeError(`${context}: ${JSON.stringify(raw)} is not a decimal`);
-        return Number(raw);
-    }
-    return toNumber(decodeDec(raw as RawDec | undefined, context));
+/** `liveAt`: unix seconds of the newest intraday quote used, or null. */
+function decodeLiveAt(raw: unknown, context: string): number | null {
+    const value = present(raw, context);
+    if (value === null) return null;
+    if (typeof value !== "number" || !Number.isFinite(value)) throw new ApiShapeError(`${context}: expected unix seconds or null`);
+    return value;
 }
 
-/** `anchor`: the y-axis horizon's unpadded min/max, or null. */
+/** `anchor`: the y-axis horizon's unpadded min/max (wire Decs), or null. */
 function decodeAnchor(raw: unknown, context: string): HoldingsSeries["anchor"] {
-    if (raw === undefined || raw === null) return null;
-    if (typeof raw !== "object") throw new ApiShapeError(`${context}: expected {min, max} or null`);
-    const {min, max} = raw as {min?: unknown; max?: unknown};
-    return Object.freeze({min: decimalNumber(min, `${context} min`), max: decimalNumber(max, `${context} max`)});
+    const value = present(raw, context);
+    if (value === null) return null;
+    if (typeof value !== "object") throw new ApiShapeError(`${context}: expected {min, max} or null`);
+    const {min, max} = value as {min?: RawDec; max?: RawDec};
+    return Object.freeze({min: toNumber(decodeDec(min, `${context} min`)), max: toNumber(decodeDec(max, `${context} max`))});
 }
 
 export function decodeHoldingsSeries(raw: unknown): HoldingsSeries {
@@ -5491,9 +5485,10 @@ export function decodeIntradayResponse(raw: unknown): IntradayResponse {
     const quotes = (body.quotes as {symbol?: unknown; price?: unknown; time?: unknown; currency?: unknown}[]).map((quote, i) =>
         Object.freeze({
             symbol: str(quote?.symbol, `intraday quotes[${i}] symbol`),
-            price: decimalNumber(quote?.price, `intraday quotes[${i}] price`),
+            price: toNumber(decodeDec(quote?.price as RawDec | undefined, `intraday quotes[${i}] price`)),
             time: num(quote?.time, `intraday quotes[${i}] time`),
-            currency: str(quote?.currency, `intraday quotes[${i}] currency`),
+            // Yahoo does not always name one; the engine then trusts the quote (D11).
+            currency: quote?.currency === null ? null : str(quote?.currency, `intraday quotes[${i}] currency`),
         })
     );
     return Object.freeze({

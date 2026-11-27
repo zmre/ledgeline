@@ -962,6 +962,7 @@ describe("UNIT nativeDecode — HoldingsReport over the holdings golden", () => 
             holdings: [],
             accounts: [],
             totals: {marketValue: dec(10552625, 3), basis: null, gain: null, gainPct: null},
+            liveAt: null,
         });
         expect(report.totals.marketValue).toEqual({m: 10552625n, p: 3});
         expect(report.totals.basis).toBeNull();
@@ -1007,6 +1008,7 @@ describe("UNIT nativeDecode — OtherHoldingsReport (plans/14)", () => {
         accounts: ["assets:partners:acme", "assets:property:house", "assets:vehicles:van"],
         totals: {value: dec(17500000, 2), cost: dec(15000000, 2), change: dec(2500000, 2), changePct: 16.67},
         warnings: [{account: "assets:foreign", kind: "unpriced", message: "no market price for FOO"}],
+        liveAt: null,
     };
 
     it("decodes the committed golden: a commodity-booked home and a dollar-booked car", () => {
@@ -1141,9 +1143,9 @@ describe("UNIT nativeDecode — OtherHoldingsReport (plans/14)", () => {
     });
 
     it("throws ApiShapeError when any unconditional key is missing", () => {
-        const ok = {asOf: "2026-07-08", base: "$", holdings: [], accounts: [], totals: {value: dec(0, 0)}, warnings: []};
+        const ok = {asOf: "2026-07-08", base: "$", holdings: [], accounts: [], totals: {value: dec(0, 0)}, warnings: [], liveAt: null};
         expect(decodeOtherHoldingsReport(ok).holdings).toEqual([]);
-        for (const key of ["asOf", "base", "holdings", "accounts", "totals", "warnings"] as const) {
+        for (const key of ["asOf", "base", "holdings", "accounts", "totals", "warnings", "liveAt"] as const) {
             expect(() => decodeOtherHoldingsReport(without(ok, key)), `dropping ${key} was absorbed`).toThrow(ApiShapeError);
         }
     });
@@ -1173,6 +1175,8 @@ describe("UNIT nativeDecode — HoldingsSeries over the holdings-series golden",
             base: "$",
             points: [{date: "2026-05-31", bucket: "2026-05", label: "May 2026", marketValue: dec(10045300, 3), basis: null}],
             hasBasis: false,
+            anchor: null,
+            liveAt: null,
         });
         expect(series.points[0].basis).toBeNull();
         expect(series.hasBasis).toBe(false);

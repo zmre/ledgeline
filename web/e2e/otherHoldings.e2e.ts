@@ -55,13 +55,13 @@ test.beforeEach(async ({page}) => {
 
 /** Open /holdings and switch to the Other tab the way a user does. */
 async function openOther(page: Page): Promise<void> {
-    await page.goto("/holdings");
+    await page.goto("/holdings?gain=all");
     await page.getByRole("tab", {name: "Other"}).click();
     await expect(page.getByTestId("other-holdings-table")).toBeVisible();
 }
 
 test("other holdings: the tab strip defaults to Stocks and reports selection through aria-selected", async ({page}) => {
-    await page.goto("/holdings");
+    await page.goto("/holdings?gain=all");
 
     const stocks = page.getByRole("tab", {name: "Stocks"});
     const other = page.getByRole("tab", {name: "Other"});
@@ -155,7 +155,7 @@ test("other holdings: the value-over-time trend renders on this tab too", async 
 });
 
 test("other holdings: the tab round-trips through the query string", async ({page}) => {
-    await page.goto("/holdings");
+    await page.goto("/holdings?gain=all");
     // Stocks is the default, so a fresh visit carries no `tab` key at all.
     await expect(page).not.toHaveURL(/tab=/);
 
@@ -169,7 +169,7 @@ test("other holdings: the tab round-trips through the query string", async ({pag
 });
 
 test("other holdings: a direct ?tab=other link opens on the Other tab", async ({page}) => {
-    await page.goto("/holdings?tab=other");
+    await page.goto("/holdings?gain=all&tab=other");
 
     await expect(page.getByRole("tab", {name: "Other"})).toHaveAttribute("aria-selected", "true");
     await expect(page.getByTestId("other-holdings-table")).toBeVisible();
@@ -179,7 +179,7 @@ test("other holdings: a direct ?tab=other link opens on the Other tab", async ({
 test("other holdings: the scope and the tab survive the same link together", async ({page}) => {
     // One writer to this query string: the scope keys and the tab key must both
     // be honoured, and neither may erase the other.
-    await page.goto("/holdings?asof=2025-01-01&tab=other");
+    await page.goto("/holdings?gain=all&asof=2025-01-01&tab=other");
 
     await expect(page.getByRole("tab", {name: "Other"})).toHaveAttribute("aria-selected", "true");
     await expect(page.getByLabel("As of date")).toHaveValue("2025-01-01");
@@ -204,7 +204,7 @@ test("other holdings: the row cursor moves and drills into the journal", async (
     // Reached by URL rather than by clicking the tab: a clicked <button> keeps
     // focus, and Enter on a focused button ALSO activates it. Landing here with
     // focus on the body keeps this test about the keymap and nothing else.
-    await page.goto("/holdings?tab=other");
+    await page.goto("/holdings?gain=all&tab=other");
     await expect(page.getByTestId("other-holdings-table")).toBeVisible();
 
     // The table's own keymap layer, filed under "Holdings" rather than "Journal".
@@ -218,7 +218,7 @@ test("other holdings: the row cursor moves and drills into the journal", async (
 });
 
 test("other holdings: the digit keys select tabs, and the help sheet files them under Holdings", async ({page}) => {
-    await page.goto("/holdings");
+    await page.goto("/holdings?gain=all");
     // Wait for the strip to be live before typing at it. `goto` resolves on the
     // load event, but the keymap layer is registered during hydration, and a
     // digit pressed before that lands nowhere and is not retried — the

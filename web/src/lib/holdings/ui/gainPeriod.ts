@@ -76,7 +76,10 @@ interface PeriodFacts {
     intraday: boolean;
 }
 
-/** In display order, shortest window first. The default is "all" (see `defaultScope`). */
+/** The period a fresh visit opens on, and the one a URL without `gain=` means. */
+export const DEFAULT_GAIN_PERIOD: GainPeriod = "12mo";
+
+/** In display order, shortest window first. The default is `DEFAULT_GAIN_PERIOD`. */
 const PERIODS: Record<GainPeriod, PeriodFacts> = {
     "1wk": {label: "1 week", suffix: " (1wk)", note: "last 7 days", interval: "daily", since: (asOf) => addDays(asOf, -7), anchor: "1yr", intraday: true},
     "1mo": {label: "1 month", suffix: " (1mo)", note: "last month", interval: "daily", since: (asOf) => addMonths(asOf, -1), anchor: "1yr", intraday: true},

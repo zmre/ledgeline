@@ -8,11 +8,11 @@ describe("UNIT holdings scope store (module state, reset between tests)", () => 
         holdingsScope.replace(defaultScope());
     });
 
-    it("defaults to include-everything as of today, all-time gain (never a remembered date)", () => {
+    it("defaults to include-everything as of today, the last 12 months (never a remembered date)", () => {
         expect(holdingsScope.value.asOf).toBe(localToday());
         expect(holdingsScope.value.mode).toBe("include");
         expect(holdingsScope.value.accounts.size).toBe(0);
-        expect(holdingsScope.value.gainPeriod).toBe("all");
+        expect(holdingsScope.value.gainPeriod).toBe("12mo");
     });
 
     it("toggleAccount keeps the subtree-root invariant (same rules as the journal filters)", () => {

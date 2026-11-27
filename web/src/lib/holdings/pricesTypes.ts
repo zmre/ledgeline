@@ -112,7 +112,8 @@ export interface IntradayQuote {
     price: number;
     /** Unix seconds of the quote (the exchange's, delayed). */
     time: number;
-    currency: string;
+    /** null when Yahoo named none. */
+    currency: string | null;
 }
 
 /** `POST /api/prices/intraday`. */

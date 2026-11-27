@@ -4,7 +4,7 @@
 //
 // Scheme: `?asof=&acct=&mode=&gain=&hold=&tab=` (plans/10, plans/14, plan 47).
 // Absent params ALWAYS mean the fresh-visit defaults — asOf today, no accounts,
-// include mode, all-time gain, no holdings filter, Stocks tab — never a
+// include mode, the last 12 months, no holdings filter, Stocks tab — never a
 // remembered date, so `today` is threaded through both directions (injectable
 // for tests). Account names and `hold` keys (symbols, or account names on the
 // Other tab) are individually percent-encoded before the comma join so names
@@ -20,7 +20,7 @@
 import type {ISODate} from "#lib/domain/types.js";
 import {isTab, TAB_ORDER, type HoldingsTab} from "#lib/holdings/params.js";
 import type {GainPeriod, HoldingsScope} from "#lib/holdings/types.js";
-import {isGainPeriod} from "./gainPeriod";
+import {DEFAULT_GAIN_PERIOD, isGainPeriod} from "./gainPeriod";
 import {safeDecode} from "#lib/url/safeDecode.js";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -40,7 +40,7 @@ function scopeParams(scope: HoldingsScope, today: ISODate): URLSearchParams {
     if (scope.asOf !== today) params.set("asof", scope.asOf);
     if (scope.accounts.size > 0) params.set("acct", joinList(scope.accounts));
     if (scope.mode !== "include") params.set("mode", scope.mode);
-    if (scope.gainPeriod !== "all") params.set("gain", scope.gainPeriod);
+    if (scope.gainPeriod !== DEFAULT_GAIN_PERIOD) params.set("gain", scope.gainPeriod);
     if (scope.holdings.size > 0) params.set("hold", joinList(scope.holdings));
     return params;
 }
@@ -85,7 +85,7 @@ export function searchToScope(search: string, today: ISODate): HoldingsScope {
     const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
     const asof = params.get("asof");
     const gain = params.get("gain");
-    const gainPeriod: GainPeriod = isGainPeriod(gain) ? gain : "all";
+    const gainPeriod: GainPeriod = isGainPeriod(gain) ? gain : DEFAULT_GAIN_PERIOD;
     return {
         asOf: asof !== null && ISO_DATE.test(asof) ? asof : today,
         accounts: splitList(params.get("acct")),
