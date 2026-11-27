@@ -1132,6 +1132,7 @@ fn broker_holdings(journal: &Journal, as_of: &str) -> ledgeline_core::holdings::
         gain_since: None,
         value_in: None,
         selection: Default::default(),
+        return_income: Default::default(),
     };
     compute_holdings(
         &journal.transactions,

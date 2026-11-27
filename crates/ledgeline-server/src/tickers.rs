@@ -121,6 +121,7 @@ impl<'a> Tickers<'a> {
                     gain_since: None,
                     value_in: None,
                     selection: Default::default(),
+                    return_income: Default::default(),
                 };
                 valuation_base(
                     &journal.transactions,

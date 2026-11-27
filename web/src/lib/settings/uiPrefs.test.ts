@@ -23,7 +23,7 @@ import {
 describe("UNIT uiPrefs", () => {
     it("names every view setting, and never the connection", () => {
         expect([...UI_PREF_KEYS].sort()).toEqual(Object.keys(defaultUiPrefs()).sort());
-        expect(UI_PREF_KEYS).toHaveLength(33);
+        expect(UI_PREF_KEYS).toHaveLength(34);
         expect(UI_PREF_KEYS).not.toContain("serverUrl");
         expect(UI_PREF_KEYS).not.toContain("serverToken");
     });
@@ -70,6 +70,7 @@ describe("UNIT uiPrefs", () => {
             "settlementLookbackDays",
             "settlementToleranceBps",
             "settlementLeadDays",
+            "returnIncomeAccounts",
         ]);
         expect(isThemeId("tokyo-night-day")).toBe(true);
         expect(isThemeId("Nord")).toBe(false);

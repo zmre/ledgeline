@@ -58,7 +58,7 @@ pub use other::{
 pub use performance::{ReturnRange, return_anchor_range};
 pub use series::{HoldingsPoint, HoldingsSeries, holdings_series, holdings_series_and_flows};
 pub use types::{
-    Holding, HoldingPrice, HoldingsReport, HoldingsScope, HoldingsTotals, HoldingsWarning,
-    PriceSource, ScopeMode, WarningKind,
+    DEFAULT_RETURN_INCOME, Holding, HoldingPrice, HoldingsReport, HoldingsScope, HoldingsTotals,
+    HoldingsWarning, PriceSource, ReturnIncome, ScopeMode, WarningKind,
 };
 pub use window::{SeriesWindow, auto_interval, series_count, series_dates};

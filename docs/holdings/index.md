@@ -159,6 +159,25 @@ picks what is drawn. Press <kbd>v</kbd> to flip it.
 
 The choice is part of the URL (`?view=perf`). The Other tab has only Value.
 
+**Why Gain % and the end of the Performance line can differ.** They answer
+two different questions, and agree only when no money moved in or out during
+the period.
+
+- **Gain %** (the box above the chart) is *money-weighted*: the period's gain
+  divided by the value at the start plus everything you put in, less what you
+  took out, during the period. Money that arrived last week counts as if it had
+  been invested all period. It answers "what did my money earn me".
+- **Performance** is *time-weighted*: each step's return is measured against
+  the money invested in that step, and the steps are multiplied together. When
+  you added or withdrew money doesn't change it. It answers "how did my
+  investments do", and is the measure fund returns and the benchmark lines
+  use.
+
+So a large purchase just before a rise lifts Gain % more than Performance, and
+a sale just before a fall does the opposite. Gain % also covers only what you
+still hold on the as-of date, while Performance includes a holding you sold
+during the period for the time you held it.
+
 **The y-axis does not start at zero.** A seven-figure portfolio drawn from $0
 is a flat line along the top. Fitting the axis to the shown window alone has
 the opposite problem: a 0.4 % week fills the chart and looks like a crash. So the axis is fitted
@@ -197,12 +216,26 @@ large portfolio are not marked. The Other tab shows the same markers when money
 moves into or out of those accounts. Performance has no markers, because
 buying and selling do not move it.
 
-**Income your holdings earn is return.** A purchase paid for by an income
-account (a reinvested dividend, a staking reward) is not money you put in, so
-it raises Performance and gets no marker. A fee paid in shares or coins to an
-expense account is not money you took out, so it lowers Performance. Ledgeline
-goes by each account's type (`type: R` for income, `type: X` for expenses).
-When income pays for only part of a purchase, the rest counts as money in.
+**Income your holdings earn is return.** A purchase paid for by a dividend or
+a staking reward is not money you put in, so it raises Performance and gets no
+marker. This applies to income accounts (`type: R`) whose name contains one of
+the words set in **Settings → Prices → Income that counts as investment
+return**: `dividend` and `staking` unless you change them. Income on any other
+account, such as an RSU vest booked to `income:rsu` or salary paid in shares,
+is money arriving from outside, so it counts as money in, like a deposit. The
+settings page lists your income accounts under the two headings, and the list
+can be kept for one ledger only. When income pays for only part of a purchase,
+the rest counts as money in.
+
+A fee paid in shares or coins to an expense account (`type: X`) is not money
+you took out, so it lowers Performance.
+
+In `ledgeline.toml` the setting is a list:
+
+```toml
+[ui]
+returnIncomeAccounts = ["dividend", "distribution", "staking"]
+```
 
 **Cash dividends are not in Performance yet.** A dividend paid out as cash
 leaves your holdings without being counted, so Performance reads slightly low

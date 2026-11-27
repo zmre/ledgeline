@@ -397,7 +397,8 @@ fn prepare(
     // `series_query.symbols` read THIS route's `symbols` — the benchmark list
     // — so the holdings filter is swapped in from `holdings`.
     let series_query = series_query.with_symbols(symbols.holdings);
-    let (scope, window) = stocks_series_request(journal, series_query)?;
+    let (scope, window) =
+        stocks_series_request(journal, series_query, crate::ui_prefs::return_income(state))?;
     let (series, flows) = holdings_series_and_flows(
         &journal.transactions,
         &journal.prices,

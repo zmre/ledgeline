@@ -25,6 +25,7 @@ fn scope(as_of: &str) -> HoldingsScope {
         gain_since: None,
         value_in: None,
         selection: BTreeSet::new(),
+        return_income: Default::default(),
     }
 }
 

@@ -56,6 +56,7 @@ fn scope(as_of: &str, selection: &[&str]) -> HoldingsScope {
         gain_since: None,
         value_in: None,
         selection: selection.iter().map(|s| (*s).to_string()).collect(),
+        return_income: Default::default(),
     }
 }
 

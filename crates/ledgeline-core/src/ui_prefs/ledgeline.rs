@@ -51,6 +51,7 @@ pub const PINNABLE: &[&str] = &[
     "settlementLookbackDays",
     "settlementToleranceBps",
     "settlementLeadDays",
+    "returnIncomeAccounts",
 ];
 
 /// The automatic price keys, whose change wakes the price updater.
@@ -119,6 +120,15 @@ const SPECS: &[Spec] = &[
     // The two common keys, in the place the wire has always listed them.
     THEME,
     UI_SCALE,
+    // Plan 48 C6: which income accounts' credits are RETURN on the holdings
+    // they buy (a reinvested dividend, a staking reward) rather than new
+    // money in (an RSU vest). Account-name fragments, any case.
+    Spec {
+        key: "returnIncomeAccounts",
+        kind: Kind::Filters {
+            default: crate::holdings::DEFAULT_RETURN_INCOME,
+        },
+    },
     // Plan 41: the engine's background price updater (`auto_prices`). Off
     // until asked for — it makes network requests on the user's behalf.
     flag("autoPrices", false),

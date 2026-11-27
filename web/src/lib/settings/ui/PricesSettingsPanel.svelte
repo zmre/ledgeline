@@ -9,7 +9,9 @@
     // The help text matters more than the controls. The updater never chooses
     // a file for a journal's FIRST price, so with the setting on and no prices
     // file nothing at all happens — the text says how to start it.
-    import {AUTO_PRICES_WEEKS_RANGE} from "#lib/settings/uiPrefs.js";
+    import {splitIncomeAccounts} from "#lib/holdings/returnIncome.js";
+    import {AUTO_PRICES_WEEKS_RANGE, RETURN_INCOME_DEFAULT} from "#lib/settings/uiPrefs.js";
+    import {journal} from "#lib/stores/journal.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
 
     let pinBusy = $state(false);
@@ -25,6 +27,30 @@
     }
 
     const pinned = $derived(settings.isPinned("autoPrices"));
+
+    // Plan 48 C6: which income accounts count as investment return.
+    const filters = $derived(settings.returnIncomeAccounts);
+    const split = $derived(splitIncomeAccounts(journal.accountClasses, filters));
+    const isDefault = $derived(filters.length === RETURN_INCOME_DEFAULT.length && filters.every((f, i) => f === RETURN_INCOME_DEFAULT[i]));
+    let draft = $state("");
+    function addFilter(text: string): void {
+        const filter = text.trim();
+        if (filter !== "") settings.returnIncomeAccounts = [...filters, filter];
+        draft = "";
+    }
+    const removeFilter = (filter: string): void => {
+        settings.returnIncomeAccounts = filters.filter((f) => f !== filter);
+    };
+    const returnPinned = $derived(settings.isPinned("returnIncomeAccounts"));
+    let returnPinBusy = $state(false);
+    async function pinReturn(on: boolean): Promise<void> {
+        returnPinBusy = true;
+        try {
+            await settings.pinToLedger("returnIncomeAccounts", on);
+        } finally {
+            returnPinBusy = false;
+        }
+    }
 </script>
 
 <section class="flex max-w-3xl flex-col gap-4" data-testid="settings-prices">
@@ -94,4 +120,83 @@
             <p>This ledger has its own setting, kept in its <code>ledgeline.toml</code>.</p>
         {/if}
     </div>
+</section>
+
+<section class="mt-8 flex max-w-3xl flex-col gap-4" data-testid="settings-return-income">
+    <div class="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 class="text-base font-semibold">Income that counts as investment return</h2>
+        {#if settings.canPinToLedger}
+            <label class="flex cursor-pointer items-center gap-2 text-sm">
+                <input
+                    type="checkbox"
+                    class="checkbox checkbox-sm"
+                    checked={returnPinned}
+                    disabled={returnPinBusy}
+                    onchange={(e) => void pinReturn(e.currentTarget.checked)}
+                    data-testid="return-income-pin"
+                />
+                Use for this ledger only
+            </label>
+        {/if}
+    </div>
+
+    <p class="text-sm text-muted">
+        When income buys a holding, such as a reinvested dividend or a staking reward, Holdings counts it as a return on your investments, not as money you put
+        in. That only applies to income accounts whose name contains one of these words, in any case. Income on other accounts, like an RSU vest or pay in
+        shares, counts as new money.
+    </p>
+
+    <div class="flex flex-wrap items-center gap-2" data-testid="return-income-filters">
+        {#each filters as filter (filter)}
+            <span class="badge gap-1 badge-outline">
+                {filter}
+                <button type="button" class="cursor-pointer" aria-label="Remove {filter}" onclick={() => removeFilter(filter)}>✕</button>
+            </span>
+        {:else}
+            <span class="text-sm text-muted">None: all income counts as new money.</span>
+        {/each}
+        <form
+            class="flex items-center gap-2"
+            onsubmit={(e) => {
+                e.preventDefault();
+                addFilter(draft);
+            }}
+        >
+            <input type="text" class="input w-40 input-sm" placeholder="Add a word" bind:value={draft} maxlength="64" data-testid="return-income-add" />
+            <button type="submit" class="btn btn-sm" disabled={draft.trim() === ""}>Add</button>
+        </form>
+        {#if !isDefault}
+            <button type="button" class="btn btn-ghost btn-sm" onclick={() => (settings.returnIncomeAccounts = [...RETURN_INCOME_DEFAULT])}>Reset</button>
+        {/if}
+    </div>
+
+    {#if split.asReturn.length + split.asNewMoney.length > 0}
+        <div class="grid gap-4 text-sm sm:grid-cols-2">
+            <div data-testid="return-income-matched">
+                <h3 class="font-medium">Counted as return</h3>
+                <ul class="mt-1 font-mono text-xs">
+                    {#each split.asReturn as account (account)}
+                        <li>{account}</li>
+                    {:else}
+                        <li class="font-sans text-muted">No income account matches.</li>
+                    {/each}
+                </ul>
+            </div>
+            <div data-testid="return-income-unmatched">
+                <h3 class="font-medium">Counted as new money</h3>
+                <ul class="mt-1 font-mono text-xs">
+                    {#each split.asNewMoney as account (account)}
+                        <li class="flex items-center gap-2">
+                            {account}
+                            <button type="button" class="btn btn-ghost btn-xs" onclick={() => addFilter(account)} aria-label="Count {account} as return"
+                                >Add</button
+                            >
+                        </li>
+                    {:else}
+                        <li class="font-sans text-muted">None.</li>
+                    {/each}
+                </ul>
+            </div>
+        </div>
+    {/if}
 </section>

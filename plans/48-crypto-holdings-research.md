@@ -48,8 +48,14 @@ from its own branch). Notes from the build:
   `P … PEPE24478 …` unquoted, which hledger rejects.
 - **Holdings warnings are memory-only**: the `ticker-mismatch` warning appears
   once some fetch this session has answered the ticker.
-- **WP4 open question:** an RSU vest booked against `income:` now counts as
-  return, not new money, exactly like a dividend (C6 read literally).
+- **C6 refined (Patrick, 2026-11-27):** income is return only on income
+  accounts whose name matches the `returnIncomeAccounts` setting (default
+  `dividend`, `staking`; pinnable per ledger; Settings → Prices). An RSU vest
+  to `income:rsu` is new money again. Insights' Box 5 still uses the default
+  filters, not the setting.
+- **Gain % vs Performance:** the windowed Gain % tile is money-weighted
+  (simple Dietz over the period), the Performance line time-weighted; the tile
+  now says "money-weighted" and `docs/holdings/index.md` explains the gap.
 
 ## Decisions
 

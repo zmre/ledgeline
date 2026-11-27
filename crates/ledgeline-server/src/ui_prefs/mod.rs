@@ -122,6 +122,20 @@ pub(crate) fn auto_price_prefs(state: &AppState) -> AutoPricePrefs {
     }
 }
 
+/// The `returnIncomeAccounts` setting (plan 48 C6), effective for `state`'s
+/// current journal: which income accounts' credits are return on the
+/// holdings they buy. Reads only, like [`current`].
+pub(crate) fn return_income(state: &AppState) -> ledgeline_core::holdings::ReturnIncome {
+    current(state)
+        .prefs()
+        .get("returnIncomeAccounts")
+        .and_then(Json::as_array)
+        .map(|names| {
+            ledgeline_core::holdings::ReturnIncome::new(names.iter().filter_map(Json::as_str))
+        })
+        .unwrap_or_default()
+}
+
 /// Bank sync's four settings, effective for `state`'s current journal. In
 /// browser mode — the e2e and live-contract harnesses — these are the
 /// defaults, so auto-sync is off and nothing reaches the network unasked.

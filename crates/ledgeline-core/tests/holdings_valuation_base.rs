@@ -38,6 +38,7 @@ fn scope(value_in: Option<&str>) -> HoldingsScope {
         gain_since: None,
         value_in: value_in.map(|symbol| Commodity(symbol.to_string())),
         selection: Default::default(),
+        return_income: Default::default(),
     }
 }
 

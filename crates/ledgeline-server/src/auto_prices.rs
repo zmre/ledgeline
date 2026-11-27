@@ -655,6 +655,7 @@ fn journal_facts(state: &AppState, now: i64) -> Result<(String, JournalFacts), A
         gain_since: None,
         value_in: None,
         selection: Default::default(),
+        return_income: Default::default(),
     };
     let last_held = last_held_dates(&journal.transactions, &journal.accounts, &scope)?;
     let today = scope.as_of.clone();

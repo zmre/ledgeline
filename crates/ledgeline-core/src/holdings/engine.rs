@@ -52,7 +52,7 @@ use super::classify::{HoldingsClass, declared_holdings_classes, resolve_holdings
 use super::commodities::Currencies;
 use super::types::{
     Holding, HoldingPrice, HoldingsReport, HoldingsScope, HoldingsTotals, HoldingsWarning,
-    PriceSource, ScopeMode, WarningKind,
+    PriceSource, ReturnIncome, ScopeMode, WarningKind,
 };
 
 /// Rescale both operands to a common precision and return the mantissa pair
@@ -388,15 +388,14 @@ impl IncomeFunding {
         txn: &Transaction,
         inputs: &HoldingsInputs<'_>,
         base: &Commodity,
+        return_income: &ReturnIncome,
     ) -> Result<(), ReportError> {
         if !matches!(self, IncomeFunding::Unread) {
             return Ok(());
         }
         let mut credited = Dec::zero();
         for posting in &txn.postings {
-            if resolve_account_type(&posting.account.0, &inputs.declared)
-                != Some(AccountType::Revenue)
-            {
+            if !is_return_income(&posting.account.0, &inputs.declared, return_income) {
                 continue;
             }
             for amount in &posting.amounts {
@@ -434,7 +433,11 @@ impl IncomeFunding {
 /// Plan 48 C6: money a holding EARNS is return, not new money in, and a
 /// quantity a holding PAYS AWAY to an expense is a loss, not money taken out.
 /// Classified by account TYPE ([`resolve_account_type`]: the declared type, the
-/// name only as its inference fallback):
+/// name only as its inference fallback), and, for income, by NAME too: only an
+/// income account matching `return_income` ([`ReturnIncome`], the
+/// `returnIncomeAccounts` setting, `dividend`/`staking` by default) funds
+/// return. Income on any other account — an RSU vest to `income:rsu`, salary
+/// paid in shares — is money arriving from outside: a flow, like a deposit.
 ///
 /// - **Net arrival (`net > 0`)** — income-funded first in kind, then in money:
 ///   - the symbol's own quantity credited to revenue accounts (`assets +0.01
@@ -467,6 +470,7 @@ impl IncomeFunding {
 /// next). Only the FLOW changes, so a windowed gain (`value_end − value_start −
 /// flows`) and the Performance return now include the reward or dividend, the
 /// total-return reading benchmarks use, and an in-kind fee lowers both.
+#[allow(clippy::too_many_arguments)] // private; each is a distinct replay input
 fn symbol_flows(
     txn: &Transaction,
     entries: &[LotEntry],
@@ -475,6 +479,7 @@ fn symbol_flows(
     inputs: &HoldingsInputs<'_>,
     base: &Commodity,
     funding: &mut IncomeFunding,
+    return_income: &ReturnIncome,
 ) -> Result<Vec<Option<Dec>>, ReportError> {
     let mut flows = entries
         .iter()
@@ -490,7 +495,11 @@ fn symbol_flows(
     }
     // Revenue is credited (negative) for an arrival; expense debited
     // (positive) for a departure. Either way, oriented to `magnitude`'s sign.
-    let counter = typed_symbol_total(txn, &commodity.0, &inputs.declared, counter_type)?;
+    let counter = if counter_type == AccountType::Revenue {
+        return_income_symbol_total(txn, &commodity.0, &inputs.declared, return_income)?
+    } else {
+        typed_symbol_total(txn, &commodity.0, &inputs.declared, counter_type)?
+    };
     let in_kind = if counter_type == AccountType::Revenue {
         counter.neg()?
     } else {
@@ -516,7 +525,7 @@ fn symbol_flows(
     if counter_type == AccountType::Revenue {
         let left = valued.sub(exempt)?;
         if left.mantissa > 0 {
-            funding.read(txn, inputs, base)?;
+            funding.read(txn, inputs, base, return_income)?;
             match funding {
                 IncomeFunding::Unconvertible => return Ok(Vec::new()),
                 IncomeFunding::Left(income) => {
@@ -585,6 +594,39 @@ fn equity_share_total(
     declared: &BTreeMap<String, AccountType>,
 ) -> Result<Dec, ReportError> {
     typed_symbol_total(txn, symbol, declared, AccountType::Equity)
+}
+
+/// Whether `account` is an income account whose credits are RETURN: income
+/// by type, and matching a `return_income` filter by name.
+fn is_return_income(
+    account: &str,
+    declared: &BTreeMap<String, AccountType>,
+    return_income: &ReturnIncome,
+) -> bool {
+    resolve_account_type(account, declared) == Some(AccountType::Revenue)
+        && return_income.matches(account)
+}
+
+/// Signed total of `symbol` legs posted to RETURN income accounts in `txn`
+/// ([`is_return_income`]).
+fn return_income_symbol_total(
+    txn: &Transaction,
+    symbol: &str,
+    declared: &BTreeMap<String, AccountType>,
+    return_income: &ReturnIncome,
+) -> Result<Dec, ReportError> {
+    let mut total = Dec::zero();
+    for posting in &txn.postings {
+        if !is_return_income(&posting.account.0, declared, return_income) {
+            continue;
+        }
+        for amount in &posting.amounts {
+            if amount.commodity.0 == symbol {
+                total = total.add(amount.quantity)?;
+            }
+        }
+    }
+    Ok(total)
 }
 
 /// Signed total of `symbol` legs posted to accounts of type `ty` in `txn`.
@@ -1029,6 +1071,7 @@ fn replay_pools(
     window: FlowWindow<'_>,
     in_scope: &dyn Fn(&str) -> bool,
     selection: &BTreeSet<String>,
+    return_income: &ReturnIncome,
     sole_symbols: &BTreeMap<String, Option<String>>,
     mut flow_log: Option<&mut Vec<LoggedFlow>>,
 ) -> Result<Vec<PoolSnapshot>, ReportError> {
@@ -1215,8 +1258,16 @@ fn replay_pools(
             let before = pool.shares;
             let commodity = Commodity(symbol.clone());
             if in_window {
-                for flow in symbol_flows(txn, entries, net, &commodity, inputs, base, &mut funding)?
-                {
+                for flow in symbol_flows(
+                    txn,
+                    entries,
+                    net,
+                    &commodity,
+                    inputs,
+                    base,
+                    &mut funding,
+                    return_income,
+                )? {
                     if let Some(log) = flow_log.as_deref_mut() {
                         log.push(LoggedFlow {
                             date: txn.date.clone(),
@@ -1344,6 +1395,7 @@ fn replay_pools(
 /// Only the FINAL run records them: it replays the whole journal up to the last
 /// date with that date's sole-symbol map, which is exactly the replay
 /// [`holdings_flows`] runs, so the log is identical and never doubled.
+#[allow(clippy::too_many_arguments)] // private; each is a distinct replay input
 fn pool_snapshots(
     inputs: &HoldingsInputs<'_>,
     facts: &BTreeMap<String, SoleSymbolFacts>,
@@ -1351,6 +1403,7 @@ fn pool_snapshots(
     as_ofs: &[String],
     in_scope: &dyn Fn(&str) -> bool,
     selection: &BTreeSet<String>,
+    return_income: &ReturnIncome,
     flows: Option<(&str, &mut Vec<LoggedFlow>)>,
 ) -> Result<Vec<PoolSnapshot>, ReportError> {
     let mut snapshots: Vec<PoolSnapshot> = Vec::with_capacity(as_ofs.len());
@@ -1366,6 +1419,7 @@ fn pool_snapshots(
                 FlowWindow::None,
                 in_scope,
                 selection,
+                return_income,
                 &run_symbols,
                 None,
             )?);
@@ -1384,6 +1438,7 @@ fn pool_snapshots(
             window_start.map_or(FlowWindow::None, FlowWindow::Since),
             in_scope,
             selection,
+            return_income,
             &run_symbols,
             log,
         )?);
@@ -2056,6 +2111,7 @@ pub(crate) fn holdings_report_with(
         scope.gain_since.as_deref(),
         &predicate,
         &scope.selection,
+        &scope.return_income,
     )
 }
 
@@ -2117,6 +2173,7 @@ pub(crate) fn holdings_window_pair(
                 Some(start),
                 &predicate,
                 &scope.selection,
+                &scope.return_income,
             )?,
             report_at(
                 inputs,
@@ -2126,6 +2183,7 @@ pub(crate) fn holdings_window_pair(
                 Some(mid),
                 &predicate,
                 &scope.selection,
+                &scope.return_income,
             )?,
         ));
     }
@@ -2139,6 +2197,7 @@ pub(crate) fn holdings_window_pair(
         FlowWindow::Chained,
         &predicate,
         &scope.selection,
+        &scope.return_income,
         &sole,
         None,
     )?
@@ -2241,6 +2300,7 @@ pub(super) fn holdings_at_each_with_flows(
         as_ofs,
         &predicate,
         &scope.selection,
+        &scope.return_income,
         flows_after.map(|after| (after, &mut log)),
     )?;
     let flows = flows_after.map(|_| aggregate_flows(log)).transpose()?;
@@ -2453,6 +2513,7 @@ pub fn last_held_dates(
 /// One holdings snapshot at `as_of` from prebuilt inputs — [`compute_holdings`]
 /// minus the per-call setup, so the `gain_since` start snapshot can reuse it
 /// instead of rebuilding the whole world one level down.
+#[allow(clippy::too_many_arguments)] // private; each is a distinct replay input
 fn report_at(
     inputs: &HoldingsInputs<'_>,
     facts: &BTreeMap<String, SoleSymbolFacts>,
@@ -2461,6 +2522,7 @@ fn report_at(
     gain_since: Option<&str>,
     in_scope: &dyn Fn(&str) -> bool,
     selection: &BTreeSet<String>,
+    return_income: &ReturnIncome,
 ) -> Result<HoldingsReport, ReportError> {
     let sole = sole_symbols_at(facts, as_of);
     let snapshot = replay_pools(
@@ -2470,6 +2532,7 @@ fn report_at(
         gain_since.map_or(FlowWindow::None, FlowWindow::Since),
         in_scope,
         selection,
+        return_income,
         &sole,
         None,
     )?
@@ -2495,6 +2558,7 @@ fn report_at(
             None,
             in_scope,
             selection,
+            return_income,
         )?),
     };
     assemble_report(
@@ -6115,35 +6179,95 @@ mod return_flows_tests {
         )
     }
 
-    #[test]
-    fn classification_is_by_declared_type_not_by_name() {
-        // `rewards` infers nothing from its name; its declared `type: R` is
-        // what makes the reinvestment return.
-        let txns = [
+    /// [`flows_of`] with `return_income` as the setting.
+    fn flows_with(
+        txns: &[Transaction],
+        prices: &[PriceDirective],
+        accounts: &[AccountDeclaration],
+        return_income: ReturnIncome,
+    ) -> HoldingsFlows {
+        holdings_flows(
+            txns,
+            prices,
+            accounts,
+            &[],
+            &HoldingsScope {
+                return_income,
+                ..scope("2025-12-31", ScopeMode::Include, &[])
+            },
+            None,
+        )
+        .unwrap()
+    }
+
+    /// A $100 VTI reinvestment credited to `income`.
+    fn reinvested_into(income: &str) -> [Transaction; 2] {
+        [
             opening(),
             txn(
                 2,
                 "2025-02-01",
                 vec![
                     buy("assets:broker", "VTI", 1, 10_000, true),
-                    posting("rewards:vti", vec![usd(-10_000)], &[]),
+                    posting(income, vec![usd(-10_000)], &[]),
                 ],
                 &[],
             ),
-        ];
+        ]
+    }
+
+    const MONEY_IN: [(&str, i128); 2] = [("2025-01-10", 100_000), ("2025-02-01", 10_000)];
+
+    fn expect(flows: &HoldingsFlows, wanted: &[(&str, i128)]) {
+        let wanted: Vec<(&str, Dec)> = wanted.iter().map(|(d, c)| (*d, cents(*c))).collect();
+        assert_eq!(dollars(flows), wanted);
+    }
+
+    #[test]
+    fn income_is_return_only_when_typed_income_and_named_by_a_filter() {
         let prices = [pd("2025-01-01", "VTI", 10_000, "$")];
+        // `rewards` infers nothing from its name; its declared `type: R` and
+        // the `dividend` in its name are what make the reinvestment return.
         let declared = [account_decl("rewards", &[("type", "R")])];
-        assert_eq!(
-            dollars(&flows_of(&txns, &prices, &declared, &[])),
-            vec![("2025-01-10", cents(100_000))]
-        );
+        let txns = reinvested_into("rewards:dividend:vti");
+        expect(&flows_of(&txns, &prices, &declared, &[]), &MONEY_IN[..1]);
         // Undeclared, the same posting is a plain counter-leg: money in.
-        assert_eq!(
-            dollars(&flows_of(&txns, &prices, &[], &[])),
-            vec![
-                ("2025-01-10", cents(100_000)),
-                ("2025-02-01", cents(10_000))
-            ]
+        expect(&flows_of(&txns, &prices, &[], &[]), &MONEY_IN);
+        // Typed income but not named by a filter: still money in.
+        let txns = reinvested_into("rewards:vti");
+        expect(&flows_of(&txns, &prices, &declared, &[]), &MONEY_IN);
+    }
+
+    /// An RSU vest (or salary paid in shares) is compensation arriving from
+    /// outside the portfolio: a flow, not a gain, even though it is income.
+    #[test]
+    fn an_rsu_vest_to_income_is_new_money_not_return() {
+        let prices = [pd("2025-01-01", "VTI", 10_000, "$")];
+        let txns = reinvested_into("income:rsu");
+        expect(&flows_of(&txns, &prices, &[], &[]), &MONEY_IN);
+        let txns = reinvested_into("income:salary");
+        expect(&flows_of(&txns, &prices, &[], &[]), &MONEY_IN);
+    }
+
+    /// The setting replaces the default filters; none at all makes every
+    /// income-funded buy a flow; matching ignores case.
+    #[test]
+    fn the_return_income_setting_chooses_the_accounts() {
+        let prices = [pd("2025-01-01", "VTI", 10_000, "$")];
+        let txns = reinvested_into("income:Distributions:VTI");
+        expect(&flows_of(&txns, &prices, &[], &[]), &MONEY_IN);
+        expect(
+            &flows_with(&txns, &prices, &[], ReturnIncome::new(["distributions"])),
+            &MONEY_IN[..1],
+        );
+        let txns = reinvested_into("income:dividends");
+        expect(
+            &flows_with(&txns, &prices, &[], ReturnIncome::none()),
+            &MONEY_IN,
+        );
+        expect(
+            &flows_with(&txns, &prices, &[], ReturnIncome::new([" DIVIDEND "])),
+            &MONEY_IN[..1],
         );
     }
 

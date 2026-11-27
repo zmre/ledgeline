@@ -202,3 +202,56 @@ P 2026-11-22 ETH $1733.0000000001
     // 1000000.123456789 × 1733.0000000001, every digit kept.
     assert_eq!(dec(&eth["marketValue"]), "1733000213.9507153370123456789");
 }
+
+/// Plan 48 C6 as refined: income is return only on accounts the
+/// `returnIncomeAccounts` setting names (default `dividend`, `staking`). An
+/// RSU vest is new money by default; a ledger that lists `rsu` makes it
+/// return. A reinvested dividend is return either way.
+#[tokio::test]
+async fn the_return_income_setting_decides_whether_a_vest_is_gain() {
+    let journal = "\
+account assets:broker     ; type: A
+account assets:cash       ; type: C
+account income:rsu        ; type: R
+account income:dividends  ; type: R
+
+2025-01-05 buy
+    assets:broker    10 VTI @ $100.00
+    assets:cash
+
+2025-06-01 RSU vest
+    assets:broker    1 VTI @ $100.00
+    income:rsu
+
+2025-07-01 Dividend reinvested
+    assets:broker    1 VTI @ $100.00
+    income:dividends
+
+P 2025-12-31 VTI $100.00
+";
+    let gain = |toml: Option<&'static str>| async move {
+        let dir = TempDir::new().expect("temp dir");
+        std::fs::write(dir.path().join("main.journal"), journal).expect("journal");
+        if let Some(toml) = toml {
+            std::fs::write(dir.path().join("ledgeline.toml"), toml).expect("toml");
+        }
+        let state = AppState::from_journal_path(dir.path().join("main.journal"))
+            .expect("opens")
+            .with_app_dirs(AppDirs::under(dir.path().join("app")))
+            .with_price_source(Arc::new(Silent));
+        let report = get(&state, "/api/holdings?asOf=2025-12-31&gainSince=2025-03-01").await;
+        dec(&report["totals"]["gain"])
+    };
+    // Default: the dividend's $100 is return, the vest's $100 is money in.
+    assert_eq!(gain(None).await, "100");
+    // This ledger counts the vest as return too.
+    assert_eq!(
+        gain(Some(
+            "[ui]\nreturnIncomeAccounts = [\"dividend\", \"rsu\"]\n"
+        ))
+        .await,
+        "200"
+    );
+    // No filters: every income-funded buy is money in.
+    assert_eq!(gain(Some("[ui]\nreturnIncomeAccounts = []\n")).await, "0");
+}

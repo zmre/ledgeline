@@ -124,6 +124,7 @@ export const PINNABLE_UI_PREF_KEYS = [
     "settlementLookbackDays",
     "settlementToleranceBps",
     "settlementLeadDays",
+    "returnIncomeAccounts",
 ] as const;
 
 export type PinnableUiPrefKey = (typeof PINNABLE_UI_PREF_KEYS)[number];
@@ -216,6 +217,13 @@ export interface UiPrefs {
     settlementToleranceBps: number;
     /** Days a payment may precede its invoice, 0–60. Default 4. */
     settlementLeadDays: number;
+    /**
+     * Plan 48 C6: account-name fragments (any case) marking the income
+     * accounts whose credits are RETURN on the holdings they buy — a
+     * reinvested dividend, a staking reward. Income on any other account (an
+     * RSU vest) is new money in. Default `dividend`, `staking`.
+     */
+    returnIncomeAccounts: string[];
 }
 
 export type UiPrefKey = keyof UiPrefs;
@@ -254,6 +262,7 @@ export const UI_PREF_KEYS: readonly UiPrefKey[] = [
     "settlementLookbackDays",
     "settlementToleranceBps",
     "settlementLeadDays",
+    "returnIncomeAccounts",
 ];
 
 /** A partial update, as `PATCH /api/ui-prefs` takes it: `columns` may name only some members. */
@@ -319,6 +328,24 @@ export function wholeIn(value: unknown, range: readonly [number, number], fallba
     return Math.min(range[1], Math.max(range[0], Math.round(value)));
 }
 
+/** `returnIncomeAccounts`' default (`DEFAULT_RETURN_INCOME` in holdings/types.rs). */
+export const RETURN_INCOME_DEFAULT: readonly string[] = ["dividend", "staking"];
+
+/** The longest filter and the most filters the engine keeps (`Kind::Filters` in ui_prefs.rs). */
+const MAX_FILTER_CHARS = 64;
+const MAX_FILTERS = 32;
+
+/** A filter list as the engine keeps one: trimmed, non-blank, short, deduplicated, at most 32. */
+export function cleanFilters(value: unknown): string[] {
+    const picked = Array.isArray(value)
+        ? value
+              .filter((v): v is string => typeof v === "string")
+              .map((v) => v.trim())
+              .filter((v) => v !== "" && [...v].length <= MAX_FILTER_CHARS && !/\p{Cc}/u.test(v))
+        : [];
+    return [...new Set(picked)].slice(0, MAX_FILTERS);
+}
+
 export function cleanBenchmarks(value: unknown): string[] {
     const picked = Array.isArray(value) ? value.filter((v): v is string => typeof v === "string" && TICKER.test(v)) : [];
     return [...new Set(picked)];
@@ -360,6 +387,7 @@ export const defaultUiPrefs = (): UiPrefs => ({
     settlementLookbackDays: SETTLEMENT_LOOKBACK_DEFAULT,
     settlementToleranceBps: SETTLEMENT_TOLERANCE_DEFAULT,
     settlementLeadDays: SETTLEMENT_LEAD_DEFAULT,
+    returnIncomeAccounts: [...RETURN_INCOME_DEFAULT],
 });
 
 const flag = (value: unknown, fallback: boolean): boolean => (typeof value === "boolean" ? value : fallback);
@@ -419,6 +447,7 @@ export function cleanUiPrefs(parsed: Record<string, unknown>): UiPrefs {
         settlementLookbackDays: wholeIn(parsed.settlementLookbackDays, SETTLEMENT_LOOKBACK_RANGE, SETTLEMENT_LOOKBACK_DEFAULT),
         settlementToleranceBps: wholeIn(parsed.settlementToleranceBps, SETTLEMENT_TOLERANCE_RANGE, SETTLEMENT_TOLERANCE_DEFAULT),
         settlementLeadDays: wholeIn(parsed.settlementLeadDays, SETTLEMENT_LEAD_RANGE, SETTLEMENT_LEAD_DEFAULT),
+        returnIncomeAccounts: Array.isArray(parsed.returnIncomeAccounts) ? cleanFilters(parsed.returnIncomeAccounts) : [...base.returnIncomeAccounts],
     };
 }
 

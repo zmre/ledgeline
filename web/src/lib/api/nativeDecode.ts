@@ -65,6 +65,7 @@ import {
     RECOGNITION_ROWS_DEFAULT,
     SETTLEMENT_LOOKBACK_DEFAULT,
     SETTLEMENT_LEAD_DEFAULT,
+    RETURN_INCOME_DEFAULT,
     SETTLEMENT_TOLERANCE_DEFAULT,
     SYNC_KEEP_DAYS_DEFAULT,
     SYNC_SOURCE_DIR_DEFAULT,
@@ -5095,6 +5096,15 @@ export function decodeUiPrefsState(raw: unknown): UiPrefsState {
         settlementToleranceBps:
             prefs.settlementToleranceBps === undefined ? SETTLEMENT_TOLERANCE_DEFAULT : whole(prefs.settlementToleranceBps, "ui-prefs settlementToleranceBps"),
         settlementLeadDays: prefs.settlementLeadDays === undefined ? SETTLEMENT_LEAD_DEFAULT : whole(prefs.settlementLeadDays, "ui-prefs settlementLeadDays"),
+        // Plan 48 C6. Defaulted when ABSENT, like the keys above: an older
+        // engine must still load everyone's other settings.
+        returnIncomeAccounts:
+            prefs.returnIncomeAccounts === undefined
+                ? [...RETURN_INCOME_DEFAULT]
+                : (() => {
+                      if (!Array.isArray(prefs.returnIncomeAccounts)) throw new ApiShapeError("ui-prefs returnIncomeAccounts: expected an array");
+                      return decodeStrings(prefs.returnIncomeAccounts, "ui-prefs returnIncomeAccounts");
+                  })(),
     };
     if (!Array.isArray(body.issues)) throw new ApiShapeError("ui-prefs issues: expected an array");
     const issues = body.issues.map((rawIssue, i): UiPrefsIssue => {

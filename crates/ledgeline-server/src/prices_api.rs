@@ -428,6 +428,7 @@ pub(crate) fn symbols_to_price(
         gain_since: None,
         value_in: None,
         selection: Default::default(),
+        return_income: Default::default(),
     };
     let report = compute_holdings(
         &journal.transactions,

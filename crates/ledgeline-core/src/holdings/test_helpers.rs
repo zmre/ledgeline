@@ -158,6 +158,7 @@ pub fn scope(as_of: &str, mode: ScopeMode, accounts: &[&str]) -> HoldingsScope {
         gain_since: None,
         value_in: None,
         selection: Default::default(),
+        return_income: Default::default(),
     }
 }
 

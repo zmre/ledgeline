@@ -98,7 +98,9 @@ reduces what you hold.
 
 On the Performance chart that fee counts as a loss, not as money you took out,
 and its share of the cost basis goes with it. A staking reward booked against
-an income account counts as return, not as money you put in:
+an income account with `staking` in its name counts as return, not as money
+you put in. The words are a setting, Settings → Prices → Income that counts as
+investment return (see [Holdings](index.md#the-value-over-time-chart)):
 
 ```journal
 2026-04-01 Staking reward
