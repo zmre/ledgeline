@@ -8,13 +8,18 @@
      Invoices shows two exclusive ones: overdue in red, then open and not yet
      due; drafts are in neither (the link's tooltip says so).
 
+     Groups follow the main links under a heading of their own (plan 46:
+     Time · Dashboard, Entries, Track, Accounts). The `lamp` is pinned above
+     every link (time tracking's running light, T-light).
+
      Settings sits last, at the foot above the books (one link, pushed down;
      so it is also the last stop on Tab).
 
      Narrow windows (below `md`, a container query that follows the UI
      scale): the sidebar becomes a bar across the top, its sections in a
      row that wraps (Settings the last of them), the books' name and the
-     New button beside the app's. -->
+     New button beside the app's. A group's heading isn't shown there, so a
+     link may carry a `narrowLabel`. Printing leaves the sidebar out. -->
 <script lang="ts" module>
     /** One count beside a section ("2 overdue"). */
     export interface SidebarCount {
@@ -37,10 +42,20 @@
         counts?: SidebarCount[];
         /** The link's tooltip (every count in words). */
         title?: string;
+        /** Its name in the narrow top bar, where the group's heading isn't shown ("Time" for time's Dashboard). */
+        narrowLabel?: string;
+    }
+
+    /** A titled run of links after the main ones (plan 46: Time). */
+    export interface SidebarGroup {
+        id: string;
+        title: string;
+        links: SidebarLink[];
     }
 </script>
 
 <script lang="ts">
+    import type {Snippet} from "svelte";
     import type {BooksInfo} from "#lib/invoices.js";
     import NewMenu, {type NewChoice} from "./NewMenu.svelte";
 
@@ -49,12 +64,54 @@
         books,
         newChoices = [],
         settings = null,
-    }: {links: SidebarLink[]; books: BooksInfo | null; newChoices?: NewChoice[]; settings?: SidebarLink | null} = $props();
+        groups = [],
+        lamp,
+    }: {
+        links: SidebarLink[];
+        books: BooksInfo | null;
+        newChoices?: NewChoice[];
+        settings?: SidebarLink | null;
+        groups?: SidebarGroup[];
+        /** Pinned above the links on every screen: time tracking's lamp (plan 46 T-light). */
+        lamp?: Snippet;
+    } = $props();
 
     const booksName = $derived(books === null ? null : (books.title ?? "").trim() || books.journal || "Books");
 </script>
 
-<aside class="flex shrink-0 flex-col border-b border-base-300 bg-base-200 md:h-full md:w-56 md:border-r md:border-b-0" data-testid="sidebar">
+{#snippet item(link: SidebarLink)}
+    <li>
+        <!-- eslint-disable svelte/no-navigation-without-resolve -- the layout resolves every link -->
+        <a
+            href={link.href}
+            class={link.active ? "menu-active" : ""}
+            aria-current={link.active ? "page" : undefined}
+            title={link.title}
+            data-testid="sidebar-{link.id}"
+        >
+            {#if link.narrowLabel !== undefined}
+                <span class="md:hidden">{link.narrowLabel}</span><span class="hidden md:inline">{link.label}</span>
+            {:else}
+                <span>{link.label}</span>
+            {/if}
+            {#if (link.counts ?? []).length > 0}
+                <span class="ml-auto flex items-center gap-1.5">
+                    {#each link.counts ?? [] as count (count.id)}
+                        <!-- The words are for screen readers and the tooltip; a leading space Svelte would trim from markup. -->
+                        <span
+                            class={count.tone === "error" ? "badge badge-sm tabular-nums badge-error" : "text-xs text-base-content/60 tabular-nums"}
+                            title="{count.value} {count.label}"
+                            data-testid="sidebar-{link.id}-{count.id}">{count.value}<span class="sr-only">{` ${count.label}`}</span></span
+                        >
+                    {/each}
+                </span>
+            {/if}
+        </a>
+        <!-- eslint-enable svelte/no-navigation-without-resolve -->
+    </li>
+{/snippet}
+
+<aside class="flex shrink-0 flex-col border-b border-base-300 bg-base-200 md:h-full md:w-56 md:border-r md:border-b-0 print:hidden" data-testid="sidebar">
     <div class="flex flex-wrap items-center gap-x-3 gap-y-3 px-4 pt-3 pb-1 md:pt-4 md:pb-2">
         <span class="text-lg font-semibold tracking-tight whitespace-nowrap">Ledgeline Invoicer</span>
         {#if booksName !== null}
@@ -64,34 +121,17 @@
             <div class="ml-auto md:ml-0 md:w-full"><NewMenu choices={newChoices} /></div>
         {/if}
     </div>
+    {@render lamp?.()}
     <nav aria-label="Sections" class="md:flex md:min-h-0 md:flex-1 md:flex-col">
         <ul class="menu menu-horizontal w-full flex-wrap gap-0.5 px-2 py-1 md:menu-vertical md:flex-1 md:flex-nowrap md:py-2">
             {#each links as link (link.id)}
-                <li>
-                    <!-- eslint-disable svelte/no-navigation-without-resolve -- the layout resolves every link -->
-                    <a
-                        href={link.href}
-                        class={link.active ? "menu-active" : ""}
-                        aria-current={link.active ? "page" : undefined}
-                        title={link.title}
-                        data-testid="sidebar-{link.id}"
-                    >
-                        <span>{link.label}</span>
-                        {#if (link.counts ?? []).length > 0}
-                            <span class="ml-auto flex items-center gap-1.5">
-                                {#each link.counts ?? [] as count (count.id)}
-                                    <!-- The words are for screen readers and the tooltip; a leading space Svelte would trim from markup. -->
-                                    <span
-                                        class={count.tone === "error" ? "badge badge-sm tabular-nums badge-error" : "text-xs text-base-content/60 tabular-nums"}
-                                        title="{count.value} {count.label}"
-                                        data-testid="sidebar-{link.id}-{count.id}">{count.value}<span class="sr-only">{` ${count.label}`}</span></span
-                                    >
-                                {/each}
-                            </span>
-                        {/if}
-                    </a>
-                    <!-- eslint-enable svelte/no-navigation-without-resolve -->
-                </li>
+                {@render item(link)}
+            {/each}
+            {#each groups as group (group.id)}
+                <li class="hidden menu-title pt-3 md:block" data-testid="sidebar-group-{group.id}">{group.title}</li>
+                {#each group.links as link (link.id)}
+                    {@render item(link)}
+                {/each}
             {/each}
             {#if settings !== null}
                 <li class="md:mt-auto">

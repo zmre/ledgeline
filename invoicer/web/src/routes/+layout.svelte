@@ -1,7 +1,8 @@
 <script lang="ts">
     import "../app.css";
     import {asset} from "$app/paths";
-    import {onMount} from "svelte";
+    import {onMount, untrack} from "svelte";
+    import {goto} from "$app/navigation";
     import {resolve} from "$app/paths";
     import {page} from "$app/state";
     import ChordIndicator from "#ui/keys/ChordIndicator.svelte";
@@ -18,7 +19,13 @@
     import {INVOICER_KEY_GROUPS} from "#lib/keys/groups.js";
     import {uiPrefs} from "#lib/uiPrefs.svelte.js";
     import type {NewChoice} from "#lib/components/NewMenu.svelte";
-    import Sidebar, {type SidebarCount, type SidebarLink} from "#lib/components/Sidebar.svelte";
+    import Sidebar, {type SidebarCount, type SidebarGroup, type SidebarLink} from "#lib/components/Sidebar.svelte";
+    import {timeAppLayer} from "#lib/time/keys.js";
+    import {elapsedText} from "#lib/time/track/format.js";
+    import GuardDialog from "#lib/time/track/GuardDialog.svelte";
+    import TimeLamp from "#lib/time/track/TimeLamp.svelte";
+    import {TitlePrefix} from "#lib/time/track/titlePrefix.js";
+    import {tracker} from "#lib/time/track/tracker.svelte.js";
 
     let {children} = $props();
 
@@ -35,6 +42,10 @@
     // invoicer's own layers. `<svelte:window onkeydown>` below is its one
     // listener; pages and widgets register layers while they are mounted.
     registerKeys(appLayer());
+    // Time tracking's app-wide keys (plan 46 K): ⌥⌘digit / Ctrl+Shift+digit
+    // toggle a slot from any screen; an empty one opens Track's picker.
+    // eslint-disable-next-line svelte/no-navigation-without-resolve -- the path is resolve()d; only the query is added
+    registerKeys(timeAppLayer(tracker, {pick: (key) => void goto(`${resolve("/time/track")}?pick=${key}`)}));
     keymap.setGroupOrder(INVOICER_KEY_GROUPS);
 
     let books = $state<BooksInfo | null>(null);
@@ -104,6 +115,24 @@
         ];
     });
 
+    // Time tracking (plan 46 T1): its own run of links, under a heading.
+    const timeGroup = $derived.by((): SidebarGroup => {
+        const path = page.url.pathname;
+        const time = resolve("/time");
+        const under = (href: string): boolean => path === href || path.startsWith(`${href}/`);
+        const link = (id: string, href: string, label: string, narrowLabel: string, active: boolean): SidebarLink => ({id, href, label, narrowLabel, active});
+        return {
+            id: "time",
+            title: "Time",
+            links: [
+                link("time-dashboard", time, "Dashboard", "Time", path.replace(/\/$/, "") === time.replace(/\/$/, "")),
+                link("time-entries", `${time}/entries`, "Entries", "Time entries", under(`${time}/entries`)),
+                link("time-track", resolve("/time/track"), "Track", "Track", under(resolve("/time/track"))),
+                link("time-accounts", `${time}/accounts`, "Accounts", "Time accounts", under(`${time}/accounts`)),
+            ],
+        };
+    });
+
     // At the sidebar's foot (SETTINGS-PLAN §4).
     const settingsLink = $derived<SidebarLink>({
         id: "settings",
@@ -129,9 +158,43 @@
         void uiPrefs.load();
         // The cookie MBR's pages need before any is shown in a frame.
         ensureSession().catch((error: unknown) => console.warn("session:", error));
+        // The tracker's state (the lamp), its clock, and a re-read when the
+        // window comes back (a timer left running overnight: the guard).
+        void tracker.refresh();
+        const stopClock = tracker.startClock();
+        const onVisible = (): void => {
+            if (document.visibilityState === "visible") void tracker.refresh();
+        };
+        document.addEventListener("visibilitychange", onVisible);
         // Live reload: the pages re-fetch when a file changes on disk.
-        return listenForChanges({onChange: noteChange});
+        const stopListening = listenForChanges({onChange: noteChange});
+        return () => {
+            stopClock();
+            document.removeEventListener("visibilitychange", onVisible);
+            stopListening();
+        };
     });
+
+    // The time files are watched too: every change re-reads the tracker.
+    $effect(() => {
+        if (changes.seq === 0) return;
+        untrack(() => void tracker.refresh());
+    });
+
+    // The window title shows the running timer (T-light).
+    const titlePrefix = new TitlePrefix();
+    $effect(() => {
+        const running = tracker.state?.running ?? null;
+        titlePrefix.set(running === null ? null : elapsedText(tracker.elapsed));
+    });
+    $effect(() => () => titlePrefix.stop());
+
+    // The long-running guard (T-running), on whichever screen is open.
+    let guardBusy = $state(false);
+    function answerGuard(options: {at?: string; discard?: boolean}): void {
+        guardBusy = true;
+        void tracker.stop(options).finally(() => (guardBusy = false));
+    }
 
     // The books at the foot of the sidebar, again after every change.
     $effect(() => {
@@ -150,11 +213,24 @@
 <svelte:window onkeydown={keymap.handle} onblur={keymap.disarm} />
 
 <div class="flex h-screen flex-col bg-base-100 text-base-content md:flex-row">
-    <Sidebar {links} {books} {newChoices} settings={settingsLink} />
+    <Sidebar {links} {books} {newChoices} settings={settingsLink} groups={[timeGroup]}>
+        {#snippet lamp()}<TimeLamp {tracker} trackHref={resolve("/time/track")} />{/snippet}
+    </Sidebar>
     <main class="min-h-0 min-w-0 flex-1 overflow-y-auto p-3 sm:p-4 md:p-6">
         {@render children()}
     </main>
 </div>
+
+{#if tracker.guard !== null && tracker.state?.running}
+    <GuardDialog
+        guard={tracker.guard}
+        running={tracker.state.running}
+        busy={guardBusy}
+        onKeep={() => tracker.keepRunning()}
+        onStopAt={(at) => answerGuard({at})}
+        onDiscard={() => answerGuard({discard: true})}
+    />
+{/if}
 
 <KeyHelp
     note="Shortcuts are off while you're typing in a field, except Save (⌘/Ctrl+S), Settings (⌘/Ctrl+,), zoom and the bill table's Alt keys; Esc leaves the field."

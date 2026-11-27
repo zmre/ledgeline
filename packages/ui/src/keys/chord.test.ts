@@ -212,6 +212,20 @@ describe("UNIT Ctrl/Cmd digit chords read the physical key (plan 46 K)", () => {
         expect(chordToken(press("{", {ctrlKey: true, altKey: true, code: "Digit7"}))).toBe("ctrl+alt+{");
     });
 
+    it("reads the period key physically too: the stop chord (⌥⌘. and Ctrl+Shift+.)", () => {
+        const mac = chordToken(press("≥", {altKey: true, metaKey: true, code: "Period"}));
+        expect(mac).toBe("alt+meta+.");
+        expect(matchesKeys("meta+alt+.", mac)).toBe(true);
+        for (const key of [">", ":"]) {
+            const other = chordToken(press(key, {ctrlKey: true, shiftKey: true, code: "Period"}));
+            expect(other).toBe("ctrl+shift+.");
+            expect(matchesKeys("ctrl+shift+.", other)).toBe(true);
+        }
+        // A bare `.` (Track's stop) and Ctrl+. are untouched.
+        expect(chordToken(press(".", {code: "Period"}))).toBe(".");
+        expect(chordToken(press(".", {ctrlKey: true, code: "Period"}))).toBe("ctrl+.");
+    });
+
     it("leaves numpad digits alone", () => {
         expect(chordToken(press("End", {ctrlKey: true, shiftKey: true, code: "Numpad1"}))).toBe("ctrl+shift+End");
     });

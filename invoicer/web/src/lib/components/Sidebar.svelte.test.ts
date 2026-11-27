@@ -2,7 +2,7 @@
 // sections with their counts (each saying what it counts), and the open
 // books by name, with the basis as plain text.
 import {fireEvent, render, screen, within} from "@testing-library/svelte";
-import type {ComponentProps} from "svelte";
+import {createRawSnippet, type ComponentProps} from "svelte";
 import {describe, expect, it} from "vitest";
 import Sidebar from "./Sidebar.svelte";
 
@@ -143,5 +143,29 @@ describe("COMPONENT Sidebar", () => {
         expect(all[all.length - 1]).toBe(settings);
         expect(settings.getAttribute("href")).toBe("/app/settings");
         expect(settings.getAttribute("aria-current")).toBe("page");
+    });
+
+    it("puts a group's links under its heading, before Settings, and the lamp above them all (plan 46)", () => {
+        const groups = [
+            {
+                id: "time",
+                title: "Time",
+                links: [
+                    {id: "time-dashboard", href: "/app/time", label: "Dashboard", narrowLabel: "Time", active: false},
+                    {id: "time-track", href: "/app/time/track", label: "Track", active: true},
+                ],
+            },
+        ];
+        const lamp = createRawSnippet(() => ({render: () => '<div data-testid="lamp-probe">lamp</div>'}));
+        render(Sidebar, {links, books, groups, lamp, settings: {id: "settings", href: "/app/settings", label: "Settings", active: false}});
+        expect(screen.getByTestId("sidebar-group-time").textContent).toBe("Time");
+        const all = screen.getAllByRole("link").map((a) => a.dataset.testid);
+        expect(all).toEqual(["sidebar-invoices", "sidebar-customers", "sidebar-catalog", "sidebar-time-dashboard", "sidebar-time-track", "sidebar-settings"]);
+        expect(screen.getByTestId("sidebar-time-track").getAttribute("aria-current")).toBe("page");
+        // The narrow bar has no headings: the time dashboard says "Time" there.
+        expect(screen.getByTestId("sidebar-time-dashboard").textContent?.trim()).toBe("TimeDashboard");
+        const probe = screen.getByTestId("lamp-probe");
+        const nav = screen.getByRole("navigation", {name: "Sections"});
+        expect(probe.compareDocumentPosition(nav) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 });

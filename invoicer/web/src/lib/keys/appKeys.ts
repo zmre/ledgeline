@@ -6,6 +6,8 @@
 //
 // `g g` and `G` stay free for lists (first and last row), as in Ledgeline.
 // Settings is `g ,` (`g s` is Snippets) and Cmd/Ctrl+, as in a desktop app;
+// time tracking's are `g w` (its dashboard), `g r` (Track: `g t` is
+// Templates'), `g e` (Entries) and `g a` (Accounts);
 // the zoom keys are Ledgeline's (`#ui/keys/zoomBindings.ts`).
 //
 // Escape leaves a field (Y5): single-letter keys are off while typing, so
@@ -24,12 +26,16 @@ import {PRIORITY, type Layer} from "#ui/keys/types.js";
 import {zoomBindings} from "#ui/keys/zoomBindings.js";
 import {pageSearch} from "./pageSearch.svelte.js";
 
-type Section = "/" | "/invoices" | "/customers" | "/catalog" | "/snippets" | "/templates" | "/new" | "/settings";
+type Section = "/" | "/invoices" | "/customers" | "/catalog" | "/snippets" | "/templates" | "/new" | "/settings" | "/time" | "/time/track";
 
-/** Go to a page (with `search`, a query such as `?deposit=1`); already there, nothing. */
-function to(path: Section, search = ""): () => void {
+/**
+ * Go to a page (with `search`, a query such as `?deposit=1`); already there,
+ * nothing. `tail` extends the resolved path, for a page under a section
+ * whose route is built elsewhere (time's Entries and Accounts, plan 46).
+ */
+function to(path: Section, search = "", tail = ""): () => void {
     return () => {
-        const target = resolve(path);
+        const target = `${resolve(path)}${tail}`;
         if (page.url.pathname === target && page.url.search === search) return;
         // eslint-disable-next-line svelte/no-navigation-without-resolve -- the path is resolve()d; only the query is added
         void goto(`${target}${search}`);
@@ -63,6 +69,11 @@ export function appLayer(): Layer {
             {keys: "g s", label: "Go to Snippets", group: "Go to", run: to("/snippets")},
             {keys: "g t", label: "Go to Templates", group: "Go to", run: to("/templates")},
             {keys: "g ,", label: "Go to Settings", group: "Go to", run: to("/settings")},
+            // Time (plan 46 K). `g t` is Templates', so Track is `g r` (r for recording).
+            {keys: "g w", label: "Go to Time", group: "Go to", run: to("/time")},
+            {keys: "g r", label: "Go to Track", group: "Go to", run: to("/time/track")},
+            {keys: "g e", label: "Go to time Entries", group: "Go to", run: to("/time", "", "/entries")},
+            {keys: "g a", label: "Go to time Accounts", group: "Go to", run: to("/time", "", "/accounts")},
         ],
     };
 }
