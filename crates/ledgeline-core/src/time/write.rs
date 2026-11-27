@@ -13,8 +13,11 @@
 //!   exact quantity, tags and note, markers, comments), and the new text must
 //!   parse to exactly that shape, or nothing is returned.
 //! - **Writing rules.** Two or more spaces before an amount, never a tab, an
-//!   amount as `Nm` or `Nh` ([`TimeQty::written`]), never `mo`/`y`, tags only
-//!   on an entry's own line, account names checked ([`check_account`]).
+//!   amount as `Nm` or `Nh` ([`TimeQty::written`]), never `mo`/`y`, new tags
+//!   only on an entry's own line, account names checked ([`check_account`]).
+//! - **Continuation lines** (fact 4) belong to the line above: a tag found on
+//!   one is changed or removed where it is, an entry is removed with them,
+//!   and a new line never goes between an entry and them.
 //!
 //! Timedot edits: [`add_minutes`] (T6: onto the day's open line), [`insert_entry`],
 //! [`set_entry_tag`], [`set_note`], [`set_entry`], [`remove_entry`],
@@ -85,6 +88,7 @@ enum Item {
         account: String,
         since: u32,
     },
+    Continuation(String),
     Comment(String),
     Invalid(String),
 }
@@ -103,6 +107,7 @@ fn item_of(text: &str, file: &TimedotFile, line: usize) -> Option<Item> {
             account: marker.account.clone(),
             since: marker.since,
         },
+        LineKind::Continuation(more) => Item::Continuation(more.comment.clone()),
         LineKind::Comment => Item::Comment(content.trim().to_string()),
         LineKind::Invalid => Item::Invalid(content.to_string()),
     })
@@ -190,6 +195,50 @@ fn replace_line(text: &str, file: &TimedotFile, at: usize, with: Option<&str>) -
     match with {
         Some(content) => format!("{}{content}{}", &text[..line.start], &text[line.end..]),
         None => format!("{}{}", &text[..line.start], &text[line.next..]),
+    }
+}
+
+/// Rewrite several lines at once: each named line's content replaced
+/// (terminator kept), or the line removed with its terminator for `None`.
+fn rewrite_lines(
+    text: &str,
+    file: &TimedotFile,
+    edits: &std::collections::BTreeMap<usize, Option<String>>,
+) -> String {
+    let mut out = String::with_capacity(text.len() + 64);
+    let mut from = 0;
+    for (&at, with) in edits {
+        let line = &file.lines[at];
+        out.push_str(&text[from..line.start]);
+        match with {
+            Some(content) => {
+                out.push_str(content);
+                from = line.end;
+            }
+            None => from = line.next,
+        }
+    }
+    out.push_str(&text[from..]);
+    out
+}
+
+/// A continuation line `at` rewritten to hold `comment` (its indentation
+/// kept), or `None` (removed) when nothing is left.
+fn continuation_text(text: &str, file: &TimedotFile, at: usize, comment: &str) -> Option<String> {
+    let comment = comment.trim();
+    if comment.is_empty() {
+        return None;
+    }
+    let content = file.lines[at].content(text);
+    let indent = &content[..content.len() - content.trim_start().len()];
+    Some(format!("{indent}; {comment}"))
+}
+
+/// The comment of continuation line `at`.
+fn continued_comment(file: &TimedotFile, at: usize) -> &str {
+    match &file.lines[at].kind {
+        LineKind::Continuation(more) => more.comment.as_str(),
+        _ => "",
     }
 }
 
@@ -335,7 +384,7 @@ pub fn open_line(
         (start + 1..end).find(|&at| {
             file.entry(at).is_some_and(|entry| {
                 entry.account == account
-                    && !entry_is_settled(entry, style.tags)
+                    && !entry_is_settled(file, entry, style.tags)
                     && match entry.quantity {
                         Quantity::Empty | Quantity::Dots(_) => true,
                         Quantity::Number { .. } => entry.quantity.total().is_whole_minutes(),
@@ -346,10 +395,13 @@ pub fn open_line(
     })
 }
 
-fn entry_is_settled(entry: &Entry, tags: &TagNames) -> bool {
+/// Whether `entry` is billed, on a bill or written off: by its own tags
+/// (continuation lines included) or its day's.
+fn entry_is_settled(file: &TimedotFile, entry: &Entry, tags: &TagNames) -> bool {
+    let day = file.date_line(entry.day).map(|day| day.tags.as_slice());
     [TagRole::Invoice, TagRole::Bill, TagRole::Nobill]
         .into_iter()
-        .any(|role| tags.has(&entry.tags, role))
+        .any(|role| tags.has(&entry.tags, role) || day.is_some_and(|day| tags.has(day, role)))
 }
 
 /// The date line a new date block gets: `2026-11-26 Thu  ; person: pat`.
@@ -424,14 +476,17 @@ fn with_new_day(
     (new_text, vec![Change::Insert(line, items)])
 }
 
-/// Where a new entry goes in an existing day: after its last entry (before
-/// a trailing marker), else right after the date line.
+/// Where a new entry goes in an existing day: after its last entry and that
+/// entry's continuation lines (before a trailing marker), else after the
+/// date line and its continuation lines — never between a line and the
+/// comment lines that continue it.
 fn entry_slot(file: &TimedotFile, day: usize) -> usize {
     let (start, end) = day_span(file, day);
-    (start + 1..end)
+    let last = (start + 1..end)
         .rev()
         .find(|&at| matches!(file.lines[at].kind, LineKind::Entry(_)))
-        .map_or(start + 1, |last| last + 1)
+        .unwrap_or(start);
+    file.block_end(last) + 1
 }
 
 fn line_start(text: &str, file: &TimedotFile, at: usize) -> usize {
@@ -592,23 +647,24 @@ pub fn add_minutes(
         });
     }
     let comment = comment_of(entry);
-    let (new_text, change) = if new_minutes == 0 && comment.is_empty() {
-        (replace_line(text, &file, at, None), Change::Remove(at))
-    } else {
-        let quantity = TimeQty::from_minutes(new_minutes);
-        let line = rerender(text, &file, at, &quantity.written(), comment)
-            .ok_or_else(|| TimeError::NotFound("no entry".to_string()))?;
-        let item = Item::Entry {
-            account: entry.account.clone(),
-            parts: vec![(None, quantity)],
-            tags: sorted(entry.tags.clone()),
-            note: entry.note.clone(),
+    let (new_text, change) =
+        if new_minutes == 0 && comment.is_empty() && file.continuations(at).is_empty() {
+            (replace_line(text, &file, at, None), Change::Remove(at))
+        } else {
+            let quantity = TimeQty::from_minutes(new_minutes);
+            let line = rerender(text, &file, at, &quantity.written(), comment)
+                .ok_or_else(|| TimeError::NotFound("no entry".to_string()))?;
+            let item = Item::Entry {
+                account: entry.account.clone(),
+                parts: vec![(None, quantity)],
+                tags: sorted(entry.tags.clone()),
+                note: entry.note.clone(),
+            };
+            (
+                replace_line(text, &file, at, Some(&line)),
+                Change::Replace(at, item),
+            )
         };
-        (
-            replace_line(text, &file, at, Some(&line)),
-            Change::Replace(at, item),
-        )
-    };
     verify(text, &file, &new_text, &[change])?;
     Ok(Added {
         text: new_text,
@@ -620,9 +676,16 @@ pub fn add_minutes(
 /// for `None`), through [`with_tag`]: the note and other tags stay, the
 /// amount keeps its spelling, and the line is re-aligned.
 ///
+/// A tag already on one of the entry's continuation lines (fact 4) is
+/// changed there; a new one goes on the entry's own line. The entry ends with
+/// one `tag:` at most: setting changes the first and drops any others,
+/// removing takes off every one (a continuation line left empty goes).
+///
 /// # Errors
 /// [`TimeError::NotFound`] when the line isn't an entry;
-/// [`TimeError::Invalid`]; [`TimeError::Verify`].
+/// [`TimeError::Invalid`] for a bad tag, or for removing a tag the entry has
+/// from its day's date line (that would change every entry of the day);
+/// [`TimeError::Verify`].
 pub fn set_entry_tag(
     text: &str,
     line: usize,
@@ -639,11 +702,53 @@ pub fn set_entry_tag(
     let entry = file
         .entry(line)
         .ok_or_else(|| TimeError::NotFound(format!("line {} is not an entry", line + 1)))?;
-    let comment = with_tag(comment_of(entry), tag, value);
-    let comment = comment.as_str();
-    let amount = amount_text(text, &file, line);
-    let rendered = rerender(text, &file, line, amount, comment)
-        .ok_or_else(|| TimeError::NotFound("no entry".to_string()))?;
+    if value.is_none()
+        && let Some(day) = file.date_line(entry.day)
+        && day.tags.iter().any(|(name, _)| name == tag)
+    {
+        return Err(TimeError::Invalid(format!(
+            "`{tag}:` is on the date line (line {}), so it applies to the whole day; \
+             take it off there by hand",
+            file.lines[entry.day].number
+        )));
+    }
+    let has = |comment: &str| parse_tags(comment).iter().any(|(name, _)| name == tag);
+    let continued = file.continuations(line);
+    let on_line = has(comment_of(entry));
+    // The line the tag is set on: where it first is, else the entry's own.
+    let target = if on_line || value.is_none() {
+        line
+    } else {
+        continued
+            .iter()
+            .copied()
+            .find(|&at| has(continued_comment(&file, at)))
+            .unwrap_or(line)
+    };
+    let mut edits = std::collections::BTreeMap::new();
+    let mut changes = Vec::new();
+    let line_value = if target == line { value } else { None };
+    if target == line || on_line {
+        let comment = with_tag(comment_of(entry), tag, line_value);
+        let amount = amount_text(text, &file, line);
+        let rendered = rerender(text, &file, line, amount, &comment)
+            .ok_or_else(|| TimeError::NotFound("no entry".to_string()))?;
+        edits.insert(line, Some(rendered));
+    }
+    for &at in &continued {
+        let comment = continued_comment(&file, at);
+        if !has(comment) {
+            continue;
+        }
+        let set = if at == target { value } else { None };
+        let updated = with_tag(comment, tag, set);
+        let rewritten = continuation_text(text, &file, at, &updated);
+        changes.push(match &rewritten {
+            Some(_) => Change::Replace(at, Item::Continuation(updated.trim().to_string())),
+            None => Change::Remove(at),
+        });
+        edits.insert(at, rewritten);
+    }
     let mut tags: Vec<(String, String)> = entry
         .tags
         .iter()
@@ -653,18 +758,33 @@ pub fn set_entry_tag(
     if let Some(value) = value {
         tags.push((tag.to_string(), value.trim().to_string()));
     }
-    let item = Item::Entry {
-        account: entry.account.clone(),
-        parts: entry.quantity.parts(),
-        tags: sorted(tags),
-        note: entry.note.clone(),
-    };
-    let new_text = replace_line(text, &file, line, Some(&rendered));
-    verify(text, &file, &new_text, &[Change::Replace(line, item)])?;
+    changes.push(Change::Replace(
+        line,
+        Item::Entry {
+            account: entry.account.clone(),
+            parts: entry.quantity.parts(),
+            tags: sorted(tags),
+            note: entry.note.clone(),
+        },
+    ));
+    let new_text = rewrite_lines(text, &file, &edits);
+    verify(text, &file, &new_text, &changes)?;
     Ok(new_text)
 }
 
-/// Set the note of the entry at line index `line`; its tags stay.
+/// The tag segments of `comment`, as written.
+fn tag_segments(comment: &str) -> Vec<String> {
+    comment
+        .split(',')
+        .filter(|segment| crate::parse::tag_in_segment(segment).is_some())
+        .map(|segment| segment.trim().to_string())
+        .collect()
+}
+
+/// Set the note of the entry at line index `line`; its tags stay. The note
+/// goes on the entry's own line; free text on its continuation lines (fact
+/// 4) is part of the note it replaces, so it goes (their tags stay, and a
+/// line left empty is removed).
 ///
 /// # Errors
 /// As [`set_entry_tag`]; a note can't hold `;`, a line break, or a `word:`
@@ -675,33 +795,47 @@ pub fn set_note(text: &str, line: usize, note: &str) -> Result<String, TimeError
     let entry = file
         .entry(line)
         .ok_or_else(|| TimeError::NotFound(format!("line {} is not an entry", line + 1)))?;
-    let own_tags: Vec<String> = comment_of(entry)
-        .split(',')
-        .filter(|segment| crate::parse::tag_in_segment(segment).is_some())
-        .map(|segment| segment.trim().to_string())
-        .collect();
     let mut parts: Vec<String> = Vec::new();
     if !note.trim().is_empty() {
         parts.push(note.trim().to_string());
     }
-    parts.extend(own_tags);
+    parts.extend(tag_segments(comment_of(entry)));
     let comment = parts.join(", ");
     let amount = amount_text(text, &file, line);
     let rendered = rerender(text, &file, line, amount, &comment)
         .ok_or_else(|| TimeError::NotFound("no entry".to_string()))?;
-    let item = Item::Entry {
-        account: entry.account.clone(),
-        parts: entry.quantity.parts(),
-        tags: sorted(entry.tags.clone()),
-        note: note.trim().to_string(),
-    };
-    let new_text = replace_line(text, &file, line, Some(&rendered));
-    verify(text, &file, &new_text, &[Change::Replace(line, item)])?;
+    let mut edits = std::collections::BTreeMap::new();
+    edits.insert(line, Some(rendered));
+    let mut changes = vec![Change::Replace(
+        line,
+        Item::Entry {
+            account: entry.account.clone(),
+            parts: entry.quantity.parts(),
+            tags: sorted(entry.tags.clone()),
+            note: note.trim().to_string(),
+        },
+    )];
+    for at in file.continuations(line) {
+        let comment = continued_comment(&file, at);
+        let kept = tag_segments(comment).join(", ");
+        if kept == comment {
+            continue;
+        }
+        let rewritten = continuation_text(text, &file, at, &kept);
+        changes.push(match &rewritten {
+            Some(_) => Change::Replace(at, Item::Continuation(kept.clone())),
+            None => Change::Remove(at),
+        });
+        edits.insert(at, rewritten);
+    }
+    let new_text = rewrite_lines(text, &file, &edits);
+    verify(text, &file, &new_text, &changes)?;
     Ok(new_text)
 }
 
-/// Remove the entry at line index `line` (Entries → Delete); every other
-/// line is kept byte for byte.
+/// Remove the entry at line index `line` (Entries → Delete) with its
+/// continuation lines (fact 4: left behind, they would continue the line
+/// above, a `; invoice:` billing it); every other line is kept byte for byte.
 ///
 /// # Errors
 /// [`TimeError::NotFound`] when the line isn't an entry; [`TimeError::Verify`].
@@ -709,8 +843,13 @@ pub fn remove_entry(text: &str, line: usize) -> Result<String, TimeError> {
     let file = timedot::parse(text);
     file.entry(line)
         .ok_or_else(|| TimeError::NotFound(format!("line {} is not an entry", line + 1)))?;
-    let new_text = replace_line(text, &file, line, None);
-    verify(text, &file, &new_text, &[Change::Remove(line)])?;
+    let doomed: Vec<usize> = std::iter::once(line)
+        .chain(file.continuations(line))
+        .collect();
+    let edits = doomed.iter().map(|&at| (at, None)).collect();
+    let new_text = rewrite_lines(text, &file, &edits);
+    let changes: Vec<Change> = doomed.into_iter().map(Change::Remove).collect();
+    verify(text, &file, &new_text, &changes)?;
     Ok(new_text)
 }
 
@@ -1135,10 +1274,7 @@ pub fn remove_session(text: &str, index: usize) -> Result<String, TimeError> {
         .get(index)
         .ok_or_else(|| TimeError::NotFound(format!("no session {index}")))?;
     let mut doomed = vec![session.in_line];
-    doomed.extend(
-        (session.in_line + 1..file.lines.len())
-            .take_while(|&at| matches!(file.lines[at].kind, ClockLineKind::SessionComment(_))),
-    );
+    doomed.extend(&session.comment_lines);
     doomed.extend(session.out_line);
     doomed.sort_unstable();
     let mut new_text = String::with_capacity(text.len());
@@ -1179,18 +1315,10 @@ pub fn set_session_tag(
         .sessions
         .get(index)
         .ok_or_else(|| TimeError::NotFound(format!("no session {index}")))?;
-    let next_in = file
-        .sessions
-        .get(index + 1)
-        .map_or(file.lines.len(), |next| next.in_line);
-    let lines: Vec<usize> = (session.in_line..next_in.max(session.in_line + 1))
-        .filter(|&at| {
-            at == session.in_line
-                || Some(at) == session.out_line
-                || matches!(file.lines[at].kind, ClockLineKind::SessionComment(_))
-                    && session.out_line.is_none_or(|out| at < out)
-        })
-        .collect();
+    let mut lines: Vec<usize> = vec![session.in_line];
+    lines.extend(&session.comment_lines);
+    lines.extend(session.out_line);
+    lines.sort_unstable();
     let comment_on = |at: usize| -> (usize, String) {
         let line = &file.lines[at];
         let content = &text[line.start..line.end];
@@ -1465,6 +1593,136 @@ mod tests {
         let unchanged = add_minutes(FILE, "2026-11-26", "internal:sales", -5, &s).expect("noop");
         assert_eq!(unchanged.applied, 0);
         assert_eq!(unchanged.text, FILE);
+    }
+
+    /// A day whose billing lives on continuation lines (fact 4).
+    const CONTINUED: &str = concat!(
+        "2026-11-26 Thu\n",
+        "    ; person: pat\n",
+        "    clients:acme:tax-return          45m\n",
+        "    ; invoice: 108\n",
+        "    clients:acme:tax-return          20m  ; call with Fred\n",
+        "    ; follow-up, invoice: 109\n",
+        "    ; prep\n",
+        "    clients:acme:advisory             1h\n",
+    );
+
+    #[test]
+    fn a_line_billed_on_a_continuation_line_is_never_the_open_line() {
+        let (tags, words) = (TagNames::default(), Words::default());
+        let s = style(&tags, &words, Some("pat"));
+        // Both tax-return lines are billed (one only on a continuation
+        // line): new minutes make a new line, after the last entry's block.
+        assert_eq!(
+            open_line(
+                &timedot::parse(CONTINUED),
+                "2026-11-26",
+                "clients:acme:tax-return",
+                &s
+            ),
+            None
+        );
+        let added =
+            add_minutes(CONTINUED, "2026-11-26", "clients:acme:tax-return", 15, &s).expect("add");
+        assert!(added.text.starts_with(CONTINUED), "{}", added.text);
+        assert!(
+            added
+                .text
+                .ends_with("    clients:acme:tax-return          15m\n")
+        );
+        // A day billed on its date line's continuation line: settled too.
+        let day_billed = "2026-11-26\n    ; invoice: 7\n    a:b  1h\n";
+        assert_eq!(
+            open_line(&timedot::parse(day_billed), "2026-11-26", "a:b", &s),
+            None
+        );
+        // A new entry never goes between a line and its continuation lines.
+        let text = "2026-11-26\n    ; person: pat\n";
+        let added = add_minutes(text, "2026-11-26", "a:b", 30, &s).expect("add");
+        assert!(
+            added
+                .text
+                .starts_with("2026-11-26\n    ; person: pat\n    a:b  "),
+            "{}",
+            added.text
+        );
+        let file = timedot::parse(&added.text);
+        assert_eq!(file.date_line(0).expect("day").tags.len(), 1);
+        assert!(file.entry(2).expect("entry").tags.is_empty());
+    }
+
+    #[test]
+    fn tags_on_continuation_lines_are_changed_where_they_are() {
+        // Release: the tag comes off its continuation line, which goes when
+        // empty; nothing is added to the entry's own line.
+        let text = set_entry_tag(CONTINUED, 2, "invoice", None).expect("release");
+        assert_eq!(
+            text,
+            CONTINUED.replace("    ; invoice: 108\n", ""),
+            "{text}"
+        );
+        let text = set_entry_tag(CONTINUED, 4, "invoice", None).expect("release");
+        assert!(
+            text.contains("; call with Fred\n    ; follow-up\n    ; prep\n"),
+            "{text}"
+        );
+        assert!(!text.contains("invoice: 109"));
+        // Nobill swap on the same line.
+        let text = set_entry_tag(CONTINUED, 2, "invoice", Some("200")).expect("set");
+        assert!(text.contains("    clients:acme:tax-return          45m\n    ; invoice: 200\n"));
+        assert_eq!(text.matches("invoice: 200").count(), 1);
+        // A new tag goes on the entry's own line.
+        let text = set_entry_tag(CONTINUED, 2, "bill", Some("b-1")).expect("new");
+        assert!(
+            text.contains("45m  ; bill: b-1\n    ; invoice: 108\n"),
+            "{text}"
+        );
+        // A tag on both: set keeps the first, removing takes every one off.
+        let both = "2026-11-26\n    a:b  1h  ; invoice: 1\n    ; invoice: 2\n";
+        let set = set_entry_tag(both, 1, "invoice", Some("3")).expect("set");
+        assert_eq!(
+            set,
+            "2026-11-26\n    a:b                               1h  ; invoice: 3\n"
+        );
+        let removed = set_entry_tag(both, 1, "invoice", None).expect("remove");
+        assert!(!removed.contains("invoice"), "{removed}");
+        // A day-level tag can't be taken off one entry.
+        let day = "2026-11-26\n    ; invoice: 7\n    a:b  1h\n";
+        assert!(matches!(
+            set_entry_tag(day, 2, "invoice", None),
+            Err(TimeError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn notes_and_removal_honour_continuation_lines() {
+        let file = timedot::parse(CONTINUED);
+        assert_eq!(
+            file.entry(4).expect("call").note,
+            "call with Fred, follow-up, prep"
+        );
+        let text = set_note(CONTINUED, 4, "new note").expect("note");
+        assert!(
+            text.contains("20m  ; new note\n    ; invoice: 109\n    clients:acme:advisory"),
+            "{text}"
+        );
+        assert_eq!(
+            timedot::parse(&text).entry(4).expect("call").note,
+            "new note"
+        );
+        // Removing an entry takes its continuation lines: left behind, the
+        // `; invoice: 108` would bill the date line's whole day.
+        let text = remove_entry(CONTINUED, 2).expect("remove");
+        assert_eq!(
+            text,
+            CONTINUED.replace(
+                "    clients:acme:tax-return          45m\n    ; invoice: 108\n",
+                ""
+            )
+        );
+        // Tidy keeps them under their entries.
+        let tidied = tidy(CONTINUED).expect("tidy");
+        assert_eq!(tidied, CONTINUED);
     }
 
     #[test]

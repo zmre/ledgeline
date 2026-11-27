@@ -662,7 +662,9 @@ pub fn create(
                 refs.insert(EntryRef::of(entry));
             }
         }
-        for at in &refs {
+        // Last line first: removing a tag can remove the continuation
+        // line it was on, which would shift every later line of the file.
+        for at in refs.iter().rev() {
             super::entries::set_tag(files, at, &bill_tag, Some(&reference))?;
         }
         Ok(refs.len())
@@ -723,7 +725,9 @@ pub fn release_bill(books: &TimeBooks, reference: &str) -> Result<usize, TimeOpE
             .filter(|entry| entry.tag(names, TagRole::Bill) == Some(reference))
             .map(EntryRef::of)
             .collect();
-        for at in &refs {
+        // Last line first: removing a tag can remove the continuation
+        // line it was on, which would shift every later line of the file.
+        for at in refs.iter().rev() {
             super::entries::set_tag(files, at, names.name(TagRole::Bill), None)?;
         }
         Ok(refs.len())

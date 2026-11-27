@@ -5,6 +5,13 @@
 //!
 //! - **Blank** and **comment** lines (`#`, `;`, and `*` org headings before
 //!   the first date).
+//! - **Continuation lines** (plan 46 fact 4): an *indented* `;` line right
+//!   under a date line or an entry — with only other such lines between —
+//!   continues that line's comment, as hledger 1.52 reads it. Under a date
+//!   line its tags are the day's; under an entry they are the entry's own
+//!   (`; invoice: 108` there bills the entry). A blank line, an unindented
+//!   `;` line or any `#` line ends the run; an indented `;` line after that
+//!   is a plain comment hledger ignores.
 //! - **Date lines**: a date (`2026-11-26`, `2026/11/26` or `2026.11.26`),
 //!   optionally after org `*` stars, then a description up to `;` and a
 //!   comment whose tags apply to every entry of the day.
@@ -150,8 +157,11 @@ pub struct DateLine {
     pub description: String,
     /// The comment after `;`, trimmed, if any.
     pub comment: Option<String>,
-    /// Its tags, which apply to every entry of the day.
+    /// Its tags, which apply to every entry of the day: the date line's and
+    /// its continuation lines'.
     pub tags: Vec<(String, String)>,
+    /// The continuation lines' comments, in order.
+    pub continued: Vec<String>,
 }
 
 /// An entry line.
@@ -163,12 +173,16 @@ pub struct Entry {
     pub account: String,
     /// The amount.
     pub quantity: Quantity,
-    /// The comment after `;`, trimmed, if any.
+    /// The comment after `;` on the entry's own line, trimmed, if any.
     pub comment: Option<String>,
-    /// The comment's tags (the entry's own; the day's are on its date line).
+    /// The entry's own tags: its line's and its continuation lines' (the
+    /// day's are on its date line).
     pub tags: Vec<(String, String)>,
-    /// The comment's free text: everything that isn't a tag (T-vocab).
+    /// The comments' free text, everything that isn't a tag (T-vocab): the
+    /// line's, then each continuation line's, joined by `, `.
     pub note: String,
+    /// The continuation lines' comments, in order.
+    pub continued: Vec<String>,
     /// Byte offsets within the line's content: where the account starts
     /// (after indentation and org stars), where it ends, where the quantity
     /// starts and ends, and where the `;` is.
@@ -188,6 +202,16 @@ pub struct EntryLayout {
     pub comment_at: Option<usize>,
 }
 
+/// A continuation line: more of the comment of the date line or entry
+/// above it (fact 4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Continuation {
+    /// Index of the date line or entry it continues.
+    pub owner: usize,
+    /// The comment after `;`, trimmed.
+    pub comment: String,
+}
+
 /// A running marker (T7).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Marker {
@@ -204,9 +228,11 @@ pub struct Marker {
 pub enum LineKind {
     /// Empty or whitespace.
     Blank,
-    /// A comment hledger ignores (including an indented one under an entry,
-    /// which does not attach to it: fact 4).
+    /// A comment hledger ignores: a `#` line, an unindented `;` line, or an
+    /// indented `;` line that continues nothing (fact 4).
     Comment,
+    /// An indented `;` line continuing the comment above it (fact 4).
+    Continuation(Continuation),
     /// A date line.
     Date(DateLine),
     /// An entry.
@@ -324,6 +350,28 @@ impl TimedotFile {
             })
     }
 
+    /// The continuation lines of the date line or entry at `owner`, in order.
+    #[must_use]
+    pub fn continuations(&self, owner: usize) -> Vec<usize> {
+        self.lines
+            .iter()
+            .enumerate()
+            .skip(owner + 1)
+            .take_while(|(_, line)| {
+                matches!(line.kind, LineKind::Continuation(_) | LineKind::Marker(_))
+            })
+            .filter(|(_, line)| matches!(&line.kind, LineKind::Continuation(c) if c.owner == owner))
+            .map(|(at, _)| at)
+            .collect()
+    }
+
+    /// The last line of the date line or entry at `owner` with its
+    /// continuation lines (and markers among them).
+    #[must_use]
+    pub fn block_end(&self, owner: usize) -> usize {
+        self.continuations(owner).last().copied().unwrap_or(owner)
+    }
+
     /// Every running marker, with its line index.
     pub fn markers(&self) -> impl Iterator<Item = (usize, &Marker)> {
         self.lines
@@ -368,14 +416,28 @@ pub fn parse(text: &str) -> TimedotFile {
     let bom = text.len() - text_body.len();
     let mut file = TimedotFile::default();
     let mut day: Option<usize> = None;
+    // The date line or entry an indented `;` line would continue.
+    let mut chain: Option<usize> = None;
     for (n, (start, end, next)) in line_spans(text).into_iter().enumerate() {
         let number = u32::try_from(n + 1).unwrap_or(u32::MAX);
         let content_start = if n == 0 { start + bom } else { start };
         let content = &text[content_start.min(end)..end];
         let mut problems = Vec::new();
-        let kind = classify(content, day, &mut problems);
+        let kind = classify(content, day, chain, &mut problems);
+        let index = file.lines.len();
+        chain = match &kind {
+            LineKind::Date(_) | LineKind::Entry(_) => Some(index),
+            LineKind::Continuation(_) => chain,
+            // An indented marker is an indented `;` line: it continues the
+            // run (adding nothing: it is Ledgeline's own bookkeeping).
+            LineKind::Marker(_) if is_indented(content) => chain,
+            _ => None,
+        };
         if let LineKind::Date(_) = kind {
-            day = Some(file.lines.len());
+            day = Some(index);
+        }
+        if let LineKind::Continuation(more) = &kind {
+            attach(&mut file.lines[more.owner].kind, &more.comment);
         }
         file.findings.extend(
             problems
@@ -395,15 +457,57 @@ pub fn parse(text: &str) -> TimedotFile {
 
 type Problem = (Severity, FindingKind, String);
 
-fn classify(content: &str, day: Option<usize>, problems: &mut Vec<Problem>) -> LineKind {
+fn is_indented(content: &str) -> bool {
+    content.starts_with([' ', '\t'])
+}
+
+/// Add a continuation line's comment to the date line or entry it continues.
+fn attach(owner: &mut LineKind, comment: &str) {
+    let tags = parse_tags(comment);
+    match owner {
+        LineKind::Date(day) => {
+            day.tags.extend(tags);
+            day.continued.push(comment.to_string());
+        }
+        LineKind::Entry(entry) => {
+            entry.tags.extend(tags);
+            let note = crate::edit::free_text(comment).join(", ");
+            if !note.is_empty() {
+                if !entry.note.is_empty() {
+                    entry.note.push_str(", ");
+                }
+                entry.note.push_str(&note);
+            }
+            entry.continued.push(comment.to_string());
+        }
+        _ => {}
+    }
+}
+
+fn classify(
+    content: &str,
+    day: Option<usize>,
+    chain: Option<usize>,
+    problems: &mut Vec<Problem>,
+) -> LineKind {
     let trimmed = content.trim_start();
     if trimmed.is_empty() {
         return LineKind::Blank;
     }
-    if trimmed.starts_with(['#', ';']) {
-        return day
-            .and_then(|day| marker(trimmed, day))
-            .map_or(LineKind::Comment, LineKind::Marker);
+    if trimmed.starts_with('#') {
+        return LineKind::Comment;
+    }
+    if let Some(comment) = trimmed.strip_prefix(';') {
+        if let Some(marker) = day.and_then(|day| marker(trimmed, day)) {
+            return LineKind::Marker(marker);
+        }
+        return match chain {
+            Some(owner) if is_indented(content) => LineKind::Continuation(Continuation {
+                owner,
+                comment: comment.trim().to_string(),
+            }),
+            _ => LineKind::Comment,
+        };
     }
     let body = trimmed.trim_start_matches('*').trim_start();
     if let Some(date) = date_line(body) {
@@ -448,6 +552,7 @@ fn date_line(body: &str) -> Option<DateLine> {
         description: description.trim().to_string(),
         tags: comment.map(parse_tags).unwrap_or_default(),
         comment: comment.map(str::to_string),
+        continued: Vec::new(),
     })
 }
 
@@ -541,6 +646,7 @@ fn entry(
         comment: comment.map(str::to_string),
         tags,
         note,
+        continued: Vec::new(),
         layout: EntryLayout {
             account_start,
             account_end: raw_account_end,
@@ -786,6 +892,73 @@ clients:acme:a  1.5\n\
         assert_eq!(markers[0].1.account, "clients:acme:advisory");
         assert_eq!(markers[0].1.since, 14 * 3600 + 5 * 60 + 12);
         assert_eq!(file.days(), vec![(1, 8)]);
+    }
+
+    /// Fact 4, as hledger 1.52 printed each case (2026-11-26, /tmp/p46v and
+    /// /tmp/p46w): an indented `;` line continues the comment above it.
+    #[test]
+    fn continuation_lines_attach_as_hledger_reads_them() {
+        let text = concat!(
+            "2026-11-26 Thu\n",
+            "    ; person: sam\n",
+            "    acme:dev  1h  ; a: 1\n",
+            "    ; invoice: 108\n",
+            "\t; second line\n",
+            "    acme:ops  2h\n",
+            "    # invoice: 109\n",
+            "    ; nobill: dropped after a # line\n",
+            "    acme:qa  1h\n",
+            "; invoice: 110\n",
+            "    ; bill: dropped after an unindented line\n",
+            "    acme:x  1h\n",
+            "\n",
+            "    ; invoice: dropped after a blank line\n",
+            "2026-11-27 ; d: 1\n",
+            "  ; t2: 2\n",
+        );
+        let file = parse(text);
+        assert!(!file.has_errors(), "{:?}", file.findings);
+        let day = file.date_line(0).expect("day");
+        assert_eq!(day.tags, vec![("person".into(), "sam".into())]);
+        assert_eq!(day.continued, vec!["person: sam".to_string()]);
+        let dev = file.entry(2).expect("dev");
+        assert_eq!(
+            dev.tags,
+            vec![("a".into(), "1".into()), ("invoice".into(), "108".into())]
+        );
+        assert_eq!(dev.note, "second line");
+        assert_eq!(dev.comment.as_deref(), Some("a: 1"));
+        assert_eq!(file.continuations(2), vec![3, 4]);
+        assert_eq!(file.block_end(2), 4);
+        assert_eq!(file.continuations(0), vec![1]);
+        for (at, owner) in [(1, 0), (3, 2), (4, 2)] {
+            assert!(
+                matches!(&file.lines[at].kind, LineKind::Continuation(c) if c.owner == owner),
+                "line {at}"
+            );
+        }
+        for at in [6, 7, 9, 10, 13] {
+            assert_eq!(file.lines[at].kind, LineKind::Comment, "line {at}");
+        }
+        assert!(file.entry(5).expect("ops").tags.is_empty());
+        assert!(file.entry(8).expect("qa").tags.is_empty());
+        assert!(file.entry(11).expect("x").tags.is_empty());
+        let next = file.date_line(14).expect("next day");
+        assert_eq!(
+            next.tags,
+            vec![("d".into(), "1".into()), ("t2".into(), "2".into())]
+        );
+    }
+
+    #[test]
+    fn a_marker_in_a_run_adds_nothing_and_keeps_it_going() {
+        let text = "2026-11-27\n    acme:dev  1h\n    ; ● running acme:dev  since 09:00\n    ; invoice: 5\n";
+        let file = parse(text);
+        assert!(matches!(file.lines[2].kind, LineKind::Marker(_)));
+        let dev = file.entry(1).expect("dev");
+        assert_eq!(dev.tags, vec![("invoice".into(), "5".into())]);
+        assert_eq!(dev.note, "");
+        assert_eq!(file.continuations(1), vec![3]);
     }
 
     #[test]

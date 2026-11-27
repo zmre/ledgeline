@@ -1,10 +1,25 @@
 2026-09-14 * Kickoff  ; person: pat
     ; invoice: 99
+    ; agenda sent ahead
     (clients:acme:advisory)           1.50h
 
 2026-09-15 * Fieldwork
     ; person: sam
     (clients:globex:audit)           3.51h
+
+2026-09-21 * Mon
+    ; person: pat
+    (clients:acme:tax-return)              2.00  ; extension prep
+    ; invoice: 101
+    ; called the IRS
+    (clients:initech:discovery)            0.75
+    (clients:globex:audit)                 1.00
+    ; follow-up questions
+    ; on the trial balance
+
+2026-09-22 * Tue  ; person: pat
+    (clients:acme:advisory)            0.50
+    ; nobill: kickoff
 
 2026-09-29 * Late call  ; person: pat
     (clients:initech:discovery)           1.50h

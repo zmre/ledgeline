@@ -717,7 +717,9 @@ pub fn create(
     let customer = preview.customer.clone();
     let tagged = books.write(Some(book), |book, files| {
         let refs = refs_of(book, &preview.entries, &customer)?;
-        for at in &refs {
+        // Last line first: removing a tag can remove the continuation
+        // line it was on, which would shift every later line of the file.
+        for at in refs.iter().rev() {
             super::entries::set_tag(files, at, &invoice_tag, Some(&number))?;
         }
         Ok(refs.len())
@@ -868,7 +870,9 @@ pub fn release(
             .filter(|entry| entry.tag(names, TagRole::Invoice) == Some(number))
             .map(EntryRef::of)
             .collect();
-        for at in &refs {
+        // Last line first: removing a tag can remove the continuation
+        // line it was on, which would shift every later line of the file.
+        for at in refs.iter().rev() {
             super::entries::set_tag(files, at, names.name(TagRole::Invoice), None)?;
             if how == Release::Nobill {
                 super::entries::set_tag(

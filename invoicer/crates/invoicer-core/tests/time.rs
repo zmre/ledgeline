@@ -769,6 +769,70 @@ fn unbilled_suggests_periods_and_finds_orphans() {
     assert_eq!(people, ["riley", "sam"], "pat's own time is no payable");
 }
 
+/// Plan 46 fact 4: a line billed on an indented `; invoice:` line under it
+/// is billed — locked, not unbilled, never the line new minutes go onto.
+#[test]
+fn a_line_billed_on_a_continuation_line_is_billed_everywhere() {
+    let books = books();
+    let time = books.time();
+    let session = books.session();
+    let locks = Locks::of(session.index(), session.booked_numbers());
+    let acme_entries = |book: &ledgeline_core::time::model::TimeBook| {
+        report::unbilled(book, session.index(), &locks.known, TODAY)
+            .customers
+            .iter()
+            .find(|c| c.customer == "Acme Corp")
+            .map(|c| c.entries)
+            .expect("acme")
+    };
+    let before = acme_entries(&time.require().expect("book"));
+    let file = "time/pat/2026-11.timedot";
+    let billed_line = "    clients:acme:advisory             1h  ; call with Fred about the K-1\n";
+    let text = books.read(file);
+    assert!(text.contains(billed_line));
+    std::fs::write(
+        books.root.join(file),
+        text.replace(billed_line, &format!("{billed_line}    ; invoice: 101\n")),
+    )
+    .expect("write");
+    let book = time.require().expect("book");
+    assert_eq!(acme_entries(&book), before - 1, "no longer unbilled");
+    let listed = entries::list(
+        &book,
+        &EntryQuery {
+            from: Some(TODAY.into()),
+            to: Some(TODAY.into()),
+            person: Some("pat".into()),
+            ..EntryQuery::default()
+        },
+        &locks,
+    );
+    let advisory = listed
+        .entries
+        .iter()
+        .find(|e| e.account == "clients:acme:advisory")
+        .expect("advisory");
+    assert!(advisory.locked.is_some(), "101 is sent: {advisory:?}");
+    assert_eq!(advisory.note, "call with Fred about the K-1");
+    // Fifteen more minutes: a new line after the billed one's block.
+    track::adjust(
+        &time,
+        None,
+        Some("pat"),
+        "clients:acme:advisory",
+        15,
+        &at("2026-11-26T15:00:00"),
+    )
+    .expect("adjust");
+    let text = books.read(file);
+    assert!(
+        text.contains(&format!(
+            "{billed_line}    ; invoice: 101\n    internal:admin                   15m\n    clients:acme:advisory            15m\n"
+        )),
+        "{text}"
+    );
+}
+
 fn acme_november() -> BillRequest {
     BillRequest {
         customer: "Acme Corp".into(),

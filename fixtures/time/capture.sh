@@ -28,6 +28,9 @@ hledger -f "$R" bal --pivot person -O csv > expected/bal-pivot-person.csv
 # What went on invoice 101, in the time book and across books and time.
 hledger -f "$R" reg tag:invoice=101 -O csv > expected/reg-invoice-101.csv
 hledger -f with-time.journal reg tag:invoice=101 -O csv > expected/reg-invoice-101-with-books.csv
+# Every billed posting, whichever line its invoice: tag is on: the entry's,
+# a continuation line under it, or the day's (fact 4).
+hledger -f "$R" reg tag:invoice -O csv > expected/reg-invoiced.csv
 # Every transaction hledger makes of the time files.
 hledger -f "$R" print > expected/print.journal
 # The books alone, and with the time roll-up included: money balances match.

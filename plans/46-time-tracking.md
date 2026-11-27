@@ -140,9 +140,21 @@ design:
    commodity if one applies. **Duplicate account lines in a day are separate
    postings. Duplicate and unsorted dates are fine.**
 4. **Entry tags work:** `acme:dev  45m  ; invoice:108` matches
-   `tag:invoice=108`. Date-line tags match on every posting of that day. An
-   *indented* `; …` line under an entry is a comment and **is dropped**: it
-   does not attach to the entry.
+   `tag:invoice=108`. Date-line tags match on every posting of that day.
+   **An indented `;` line continues the comment of the line right above
+   it** (re-verified 2026-11-26 in `/tmp/p46v`, `/tmp/p46w`; the earlier
+   "dropped" was wrong). Under a date line it becomes a transaction comment
+   and its tags are day tags. Under an entry it becomes that entry's
+   posting comment and its tags count: `    acme:dev  1h` then
+   `    ; invoice: 108` matches `tag:invoice=108`. Several such lines
+   accumulate. The run ends at a blank line, an *unindented* `;` line or
+   *any* `#` line (indented or not): those are ignored, and so is every
+   indented `;` line after them until the next date line or entry. So a
+   line billed on a continuation line is billed: Ledgeline's parser,
+   readers (billing state, locks, unbilled, the open line, person, notes)
+   and writers all follow this (a tag found on a continuation line is
+   changed or removed there; an entry is deleted with its continuation
+   lines).
 5. **No directives in timedot files.** A `.journal` that includes them
    provides `account`, `alias`, `apply account`, `D`/`commodity`; all of
    these were verified to apply.
@@ -161,8 +173,10 @@ design:
    indentation; they're laid out by ordering and blank lines (F-accounts).
 9. **Timeclock** (1.50+ syntax):
    - `i DATE TIME ACCOUNT␣␣DESCRIPTION ;comment` and `o DATE TIME [ACCOUNT] ;comment`.
-   - Comments on the `i` line, on indented lines under it, and on the `o`
-     line all become **transaction** tags.
+   - Comments on the `i` line, on the `o` line, and on indented `;` lines
+     right under either all become **transaction** tags. As in timedot, a
+     blank line, an unindented comment or any `#` line ends the run (an
+     indented `# …` is ignored, not a comment of the session).
    - A bare `o` closes the most recent open session.
    - Two open sessions on **different** accounts are fine; the **same**
      account twice is an error in 1.52.
