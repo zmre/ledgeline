@@ -37,7 +37,7 @@ const engine = (url: string): unknown =>
             : period();
 
 const BS: ReportQuery = {tab: "bs", asOf: "2025-12-31"};
-const IS: ReportQuery = {tab: "is", from: "2026-01-01", to: "2026-12-31", interval: "total", depth: null};
+const IS: ReportQuery = {tab: "is", from: "2026-01-01", to: "2026-12-31", interval: "total", depth: null, budget: false};
 
 describe("UNIT reports store tags each report with the query it came from (FE-1)", () => {
     beforeEach(() => {
@@ -98,12 +98,12 @@ describe("UNIT sameReportQuery gates the export on an exact match", () => {
         // The export names the file and titles the sheet from the CURRENT
         // controls: `income-statement-2026-01-01-to-2026-12-31.xlsx` holding last
         // year's figures is exactly the failure this prevents.
-        expect(sameReportQuery(IS, {tab: "is", from: "2025-01-01", to: "2025-12-31", interval: "total", depth: null})).toBe(false);
+        expect(sameReportQuery(IS, {tab: "is", from: "2025-01-01", to: "2025-12-31", interval: "total", depth: null, budget: false})).toBe(false);
     });
 
     it("rejects the same P&L range at a different interval", () => {
         // A Total workbook and a monthly one are different documents.
-        expect(sameReportQuery(IS, {tab: "is", from: "2026-01-01", to: "2026-12-31", interval: "monthly", depth: null})).toBe(false);
+        expect(sameReportQuery(IS, {tab: "is", from: "2026-01-01", to: "2026-12-31", interval: "monthly", depth: null, budget: false})).toBe(false);
     });
 
     it("builds the bs query without a depth, whatever the shared field holds", () => {
@@ -135,6 +135,7 @@ describe("UNIT sameReportQuery gates the export on an exact match", () => {
             to: params.to,
             interval: "quarterly",
             depth: null,
+            budget: false,
         });
     });
 

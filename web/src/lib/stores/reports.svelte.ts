@@ -51,7 +51,8 @@ export type ReportQuery =
     | {tab: "bs"; asOf: string; from: string; interval: PeriodInterval}
     // `depth` null = unlimited, which the endpoint spells by omitting it
     // (plan 50 D8); a number clips each group's outline rows.
-    | {tab: "is"; from: string; to: string; interval: ReportInterval; depth: number | null}
+    // `budget`: the Budget column (plan 50 D12), so toggling it refetches.
+    | {tab: "is"; from: string; to: string; interval: ReportInterval; depth: number | null; budget: boolean}
     // From/To, not End + Periods (plans/24): only the range and its grain.
     | {tab: "cf"; from: string; to: string; interval: ReportInterval; depth: number}
     | {tab: "nw"; end: string; interval: ReportInterval; count: number; depth: number}
@@ -70,7 +71,7 @@ export function buildReportQuery(params: ReportParams): ReportQuery {
                 ? {tab: "bs", asOf: params.asOf, from: params.bsFrom, interval: params.interval}
                 : {tab: "bs", asOf: params.asOf};
         case "is":
-            return {tab: "is", from: params.from, to: params.to, interval: params.interval, depth: params.isDepth};
+            return {tab: "is", from: params.from, to: params.to, interval: params.interval, depth: params.isDepth, budget: params.isBudget};
         case "cf":
             return {tab: "cf", from: params.cfFrom, to: params.cfTo, interval: params.interval, depth: params.depth};
         case "nw":
@@ -134,6 +135,7 @@ async function fetchReport(api: LedgelineApi, query: ReportQuery): Promise<AnyRe
                     interval: query.interval,
                     compare: query.interval === "total" ? undefined : "none",
                     depth: query.depth ?? undefined,
+                    budget: query.budget,
                 })
             );
         case "cf":

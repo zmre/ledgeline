@@ -105,4 +105,11 @@
             {/if}
         {/key}
     {/if}
+    {#if config.budget}
+        <!-- Plan 50 D12: the P&L's italic Budget column, from the journal's `~` goals over From–To. -->
+        <label class="label cursor-pointer gap-2 pb-1.5 text-sm">
+            <input type="checkbox" class="checkbox checkbox-sm" bind:checked={params.isBudget} data-testid="is-budget-toggle" />
+            Budget
+        </label>
+    {/if}
 </FoldedControls>

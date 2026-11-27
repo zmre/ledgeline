@@ -84,7 +84,7 @@ pub use balance_sheet::{
 };
 pub use budget::{
     BudgetCell, BudgetGaps, BudgetOpts, BudgetReport, BudgetRow, GapRow, UNBUDGETED, budget_gaps,
-    budget_report,
+    budget_report, range_goals,
 };
 pub use budget_summary::{
     BarLabel, BudgetBar, BudgetHealth, BudgetLine, BudgetSection, BudgetSectionKind, BudgetSummary,
@@ -101,9 +101,9 @@ pub use flows::{
 };
 pub use income_statement::{
     Amounts, Columns, DateRange, IS_SECTION_TAG, IncomeStatementReport, IsGroup, IsOpts, IsRow,
-    IsSection, IsSectionKind, IsSubtotal, IsSubtotalKind, account_sections, account_sections_from,
-    compared_windows, income_statement, income_statement_columns, income_statement_grouped,
-    interval_windows, parse_is_section_tag, prices_any_on_statement,
+    IsSection, IsSectionKind, IsSubtotal, IsSubtotalKind, UnplacedBudget, account_sections,
+    account_sections_from, compared_windows, income_statement, income_statement_columns,
+    income_statement_grouped, interval_windows, parse_is_section_tag, prices_any_on_statement,
 };
 pub use insights::{
     ChangeKind, ChangeRow, CostOfLiving, InsightsOpts, InsightsPeriod, InsightsReport,

@@ -18,6 +18,7 @@ import {decodeIncomeStatementReport} from "#lib/api/nativeDecode.js";
 import type {AmountStyle} from "#lib/domain/types.js";
 import {keymap} from "#ui/keys/keymap.svelte.js";
 import {
+    BUDGETED_INCOME_STATEMENT,
     GROUPED_INCOME_STATEMENT,
     MULTI_STEP_INCOME_STATEMENT,
     OUTLINED_INCOME_STATEMENT,
@@ -164,6 +165,32 @@ describe("COMPONENT IncomeStatementView", () => {
             expect(label(heading)?.getAttribute("title")).toBe("expenses:travel:lodging");
             expect([...heading.querySelectorAll("td")].map((td) => td.textContent?.trim())).toEqual([""]);
             expect(rows[3].querySelector("td")?.textContent).toContain("200.00");
+        });
+
+        it("puts an italic Budget column after Amount, a Total row under a budgeted heading, and the D14 footnote", async () => {
+            const {container} = mount(decodeIncomeStatementReport(BUDGETED_INCOME_STATEMENT));
+            const opex = screen.getByTestId("is-section-opex");
+            expect([...opex.querySelectorAll("thead tr:last-child th")].map((th) => th.textContent?.trim()).slice(1)).toEqual(["Amount", "Budget"]);
+            disclosure("Travel").click();
+            await tick();
+
+            const travel = [...container.querySelectorAll('[data-account^="expenses:travel"]')];
+            expect(travel.map((el) => el.querySelector("th span")?.textContent?.trim())).toEqual([
+                "Flights",
+                "Lodging",
+                "Lodging (other)",
+                "Hotels",
+                "Total Lodging",
+            ]);
+            const budget = (el: Element) => el.querySelector("[data-column='budget']");
+            expect(budget(travel[0])?.textContent).toContain("500.00");
+            expect(budget(travel[0])?.classList.contains("italic")).toBe(true);
+            expect(travel[4].classList.contains("border-t")).toBe(true);
+            expect(budget(travel[4])?.textContent).toContain("300.00");
+            // The heading's cells stay blank, one per column.
+            expect([...travel[1].querySelectorAll("td")].map((td) => td.textContent?.trim())).toEqual([""]);
+            expect(screen.getByTestId("is-budget-footnotes").textContent).toContain("Budget for People spans groups: shown in section total only.");
+            expect(screen.getByTestId("is-net-income-budget").textContent).toContain("1,000.00");
         });
 
         it("keeps the rows clear of the sticky chrome the cursor scrolls them under", async () => {
@@ -500,8 +527,8 @@ describe("COMPONENT IncomeStatementView", () => {
                         ? {
                               ...section,
                               trailing: [
-                                  {kind: "grossProfit" as const, label: "Gross profit", total: section.total},
-                                  {kind: "operatingIncome" as const, label: "Operating income", total: section.total},
+                                  {kind: "grossProfit" as const, label: "Gross profit", total: section.total, budget: null},
+                                  {kind: "operatingIncome" as const, label: "Operating income", total: section.total, budget: null},
                               ],
                           }
                         : section

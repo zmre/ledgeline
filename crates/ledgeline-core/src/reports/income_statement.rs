@@ -8,12 +8,13 @@ use super::account_types::{AccountType, AccountTypes};
 use super::aggregate::{PostingFilter, account_totals, at_depth, roll_up};
 use super::balance_sheet::{Valuation, signed, valued_keeping_unpriced};
 use super::mixed_amount::MixedAmount;
-use super::outline::{OutlineKind, outline};
+use super::outline::{OutlineKind, OutlineNode, label_for, outline};
 use super::periods::{BucketSpan, Interval, add_days, days_between, range_buckets};
 use super::prices::{PriceDb, ValuationMeta, priced_count};
 use super::sections::build_section;
 use super::types::{ReportMeta, SectionedReport};
 use crate::model::{AccountDeclaration, Commodity, Journal, PriceDirective, Transaction};
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Revenues + expenses over `[from, to]` (both INCLUSIVE). Presentation matches
@@ -138,6 +139,13 @@ pub struct IsOpts<'a> {
     /// Each account's OWN declared `name:` tag (not inherited), the row labels
     /// of the outline (plan 50 D2). Empty: every label is a humanized segment.
     pub names: &'a BTreeMap<String, String>,
+    /// The Budget column (plan 50 D12–D15): each goal account's OWN goal over
+    /// `[from, to]`, as written in its `~` rules ([`super::budget::range_goals`]).
+    /// `None` leaves every `budget` figure `None` and
+    /// [`IncomeStatementReport::budgeted`] false; `Some` places each goal on
+    /// the outline (plan 50 D13). Goals on accounts this statement
+    /// doesn't show (an asset savings goal) are ignored.
+    pub budget: Option<&'a BTreeMap<String, MixedAmount>>,
 }
 
 /// An inclusive date range — the window a set of `prior` figures covers.
@@ -277,6 +285,10 @@ pub struct IsRow<A = Amounts> {
     /// never sum these rows; they sum the members directly, so nothing here is
     /// counted twice.
     pub amounts: A,
+    /// The goals placed on this row or beneath it (plan 50 D13), displayed
+    /// with the section's sign, over the report's whole `[from, to]`. `None`
+    /// when no goal sits here or the Budget column is off.
+    pub budget: Option<MixedAmount>,
 }
 
 /// One line of a box: an `isgroup:` name or a humanized path segment, plus the
@@ -295,6 +307,9 @@ pub struct IsGroup<A = Amounts> {
     /// Summed over the group's MEMBERS, not over `rows` (RPT-1/RPT-4) — the two
     /// coincide here, and the test that says so is what keeps them coinciding.
     pub total: A,
+    /// Every goal placed in this group, summed (plan 50 D13). `None` when there
+    /// is none or the Budget column is off.
+    pub budget: Option<MixedAmount>,
 }
 
 /// A subtotal ruled beneath the box it follows.
@@ -306,6 +321,9 @@ pub struct IsSubtotal<A = Amounts> {
     pub label: String,
     /// A running total of every box printed ABOVE it — never of anything below.
     pub total: A,
+    /// The same running total over the boxes' goals; `None` when no box above
+    /// has one or the Budget column is off.
+    pub budget: Option<MixedAmount>,
 }
 
 /// One box of the statement.
@@ -324,6 +342,22 @@ pub struct IsSection<A = Amounts> {
     /// floating in the section list so a subtotal can never outlive the box it
     /// follows — when a box is omitted, its subtotals fall to the previous one.
     pub trailing: Vec<IsSubtotal<A>>,
+    /// Every goal in this box, placed in a group or not. `None` when there is
+    /// none or the Budget column is off.
+    pub budget: Option<MixedAmount>,
+    /// Goals whose accounts are spread over several groups (plan 50 D14): no
+    /// single row's actual matches them, so they count only in
+    /// [`budget`](Self::budget), and the view footnotes them.
+    pub budget_unplaced: Vec<UnplacedBudget>,
+}
+
+/// A goal shown only in its section's total (plan 50 D14).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnplacedBudget {
+    /// The goal account's full path.
+    pub account: String,
+    /// Its D2 label, for the footnote.
+    pub label: String,
 }
 
 /// A grouped, valued income statement with an adaptive GAAP subtotal ladder.
@@ -350,6 +384,12 @@ pub struct IncomeStatementReport<A = Amounts> {
     pub sections: Vec<IsSection<A>>,
     /// `−sum(every classified account)`, in each window.
     pub net_income: A,
+    /// Whether the Budget column was asked for ([`IsOpts::budget`] is `Some`):
+    /// the switch that says every `budget` figure in the tree is meaningful.
+    pub budgeted: bool,
+    /// The goals' contribution to net income, `None` when no goal is on the
+    /// statement.
+    pub net_income_budget: Option<MixedAmount>,
     /// Whether the GAAP ladder materialised — see [`multi_step`].
     pub multi_step: bool,
     /// The deepest account (in `:`-segments) among the statement's members,
@@ -826,14 +866,15 @@ pub(super) fn section_resolver<'a>(
 /// total is zero by definition, dropping it cannot move the section total. Zero
 /// ROWS inside a non-empty group are kept — that is exactly how a line present
 /// in only one period shows its zero.
-fn build_groups<A>(
+fn build_groups<'g, A>(
     members: &BTreeSet<String>,
     declared: &BTreeMap<String, String>,
     windows: &Windows,
     flip: bool,
     opts: &IsOpts,
     shape: Shape<A>,
-) -> Result<Vec<IsGroup<A>>, ReportError> {
+    goals: &'g [Goal],
+) -> Result<(Vec<IsGroup<A>>, Vec<&'g Goal>), ReportError> {
     let mut buckets: BTreeMap<String, (GroupSource, BTreeSet<String>)> = BTreeMap::new();
     for (account, (name, source)) in section_groups(members, declared) {
         buckets
@@ -842,22 +883,173 @@ fn build_groups<A>(
             .1
             .insert(account);
     }
-    buckets
+    // D14: a goal lands in a group only when every member it covers is in
+    // that one group (and in this one box); otherwise only the box total has it.
+    let touches = |goal: &Goal, accounts: &BTreeSet<String>| !goal.members.is_disjoint(accounts);
+    let (placed, unplaced): (Vec<&Goal>, Vec<&Goal>) = goals.iter().partition(|goal| {
+        !goal.spans_sections
+            && buckets
+                .values()
+                .filter(|(_, accounts)| touches(goal, accounts))
+                .count()
+                == 1
+    });
+    let groups = buckets
         .into_iter()
+        // A group a goal touches is kept even at zero: its row is where the
+        // goal reads.
         .filter(|(_, (_, accounts))| {
             accounts
                 .iter()
                 .any(|account| !windows.amounts(account).is_zero())
+                || goals.iter().any(|goal| touches(goal, accounts))
         })
         .map(|(name, (source, accounts))| {
+            let mine: Vec<&Goal> = placed
+                .iter()
+                .copied()
+                .filter(|goal| touches(goal, &accounts))
+                .collect();
             Ok(IsGroup {
                 name,
                 source,
-                rows: group_rows(&accounts, windows, flip, opts, shape)?,
+                rows: group_rows(&accounts, windows, flip, opts, shape, &mine)?,
                 total: shape(windows.sum(&accounts)?.signed(flip)?)?,
+                budget: displayed(goal_sum(mine.iter().map(|goal| &goal.amount))?, flip)?,
             })
         })
-        .collect()
+        .collect::<Result<_, ReportError>>()?;
+    Ok((groups, unplaced))
+}
+
+/// One goal on this statement (plan 50 D13–D15): its account, its OWN goal
+/// over `[from, to]` on the display basis but in hledger's sign, and the
+/// statement members it covers (the account itself and every member beneath
+/// it, the accounts whose actuals `remap_account` would gather onto it).
+#[derive(Debug, Clone)]
+struct Goal {
+    account: String,
+    amount: MixedAmount,
+    members: BTreeSet<String>,
+    /// Its members sit in more than one box, so it is footnoted in the first.
+    spans_sections: bool,
+}
+
+/// `account` itself or a descendant of it.
+fn at_or_under(member: &str, account: &str) -> bool {
+    member
+        .strip_prefix(account)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(':'))
+}
+
+/// Every P&L goal in `budget`, by the box it reads in (the first box in ladder
+/// order holding one of its members). A goal with no member at or beneath it
+/// becomes a member itself, a zero-actual row, when it resolves to a box and
+/// no other goal sits beneath it (a parent goal aggregates its children's, so
+/// those children stand for it). Goals off the statement are dropped.
+fn statement_goals(
+    budget: &BTreeMap<String, MixedAmount>,
+    members: &mut BTreeMap<IsSectionKind, BTreeSet<String>>,
+    resolve_section: &impl Fn(&str) -> Option<IsSectionKind>,
+    mut value: impl FnMut(&MixedAmount) -> Result<MixedAmount, ReportError>,
+) -> Result<BTreeMap<IsSectionKind, Vec<Goal>>, ReportError> {
+    let covered = |members: &BTreeMap<IsSectionKind, BTreeSet<String>>, account: &str| {
+        members
+            .iter()
+            .flat_map(|(kind, set)| set.iter().map(move |member| (*kind, member)))
+            .filter(|(_, member)| at_or_under(member, account))
+            .map(|(kind, member)| (kind, member.clone()))
+            .collect::<Vec<_>>()
+    };
+    let bare: Vec<(IsSectionKind, &String)> = budget
+        .keys()
+        .filter(|account| covered(members, account).is_empty())
+        .filter(|account| {
+            !budget
+                .keys()
+                .any(|other| other != *account && at_or_under(other, account))
+        })
+        .filter_map(|account| resolve_section(account).map(|kind| (kind, account)))
+        .collect();
+    for (kind, account) in bare {
+        members.entry(kind).or_default().insert(account.clone());
+    }
+    let mut out: BTreeMap<IsSectionKind, Vec<Goal>> = BTreeMap::new();
+    for (account, amount) in budget {
+        let under = covered(members, account);
+        let kinds: BTreeSet<IsSectionKind> = under.iter().map(|(kind, _)| *kind).collect();
+        let Some(home) = LADDER
+            .iter()
+            .map(|rung| rung.kind)
+            .find(|kind| kinds.contains(kind))
+        else {
+            continue;
+        };
+        out.entry(home).or_default().push(Goal {
+            account: account.clone(),
+            amount: value(amount)?,
+            members: under.into_iter().map(|(_, member)| member).collect(),
+            spans_sections: kinds.len() > 1,
+        });
+    }
+    Ok(out)
+}
+
+/// The sum of `goals`, or `None` when there are none.
+fn goal_sum<'a>(
+    goals: impl IntoIterator<Item = &'a MixedAmount>,
+) -> Result<Option<MixedAmount>, ReportError> {
+    goals
+        .into_iter()
+        .try_fold(None, |acc: Option<MixedAmount>, goal| {
+            Ok(Some(acc.unwrap_or_default().ma_add(goal)?))
+        })
+}
+
+/// A goal sum with its section's displayed sign.
+fn displayed(goal: Option<MixedAmount>, flip: bool) -> Result<Option<MixedAmount>, ReportError> {
+    goal.map(|ma| signed(&ma, flip)).transpose()
+}
+
+/// Where one goal reads in a group's outline (plan 50 D13): the row whose
+/// members are exactly the goal's, else, when the goal covers the whole
+/// group, the group Total (`None`), else the smallest row containing it (the
+/// goal's account was folded by depth or collapsed by D1), else the group
+/// Total. `(other)` rows stand for a heading's own postings and are never a
+/// goal's row.
+fn place_goal(
+    nodes: &[OutlineNode],
+    group: &BTreeSet<String>,
+    goal: &BTreeSet<String>,
+) -> Option<usize> {
+    let candidates = || {
+        nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.kind != OutlineKind::Other)
+    };
+    let contains = |node: &OutlineNode| goal.iter().all(|member| node.members.contains(member));
+    candidates()
+        .find(|(_, node)| node.members.len() == goal.len() && contains(node))
+        .map(|(index, _)| index)
+        .or_else(|| {
+            (goal != group)
+                .then(|| {
+                    candidates()
+                        .filter(|(_, node)| contains(node))
+                        .min_by_key(|(_, node)| (node.members.len(), Reverse(node.level)))
+                        .map(|(index, _)| index)
+                })
+                .flatten()
+        })
+}
+
+/// The index just past row `index`'s descendants.
+fn subtree_end(nodes: &[OutlineNode], index: usize) -> usize {
+    nodes[index + 1..]
+        .iter()
+        .position(|node| node.level <= nodes[index].level)
+        .map_or(nodes.len(), |offset| index + 1 + offset)
 }
 
 /// One group's rows: the readable outline of its members (plan 50 D1–D5,
@@ -871,26 +1063,71 @@ fn build_groups<A>(
 /// shows, so an ancestor shared with another group never borrows its figures;
 /// and totals are summed over members, never over these rows, so nothing here
 /// can move a number.
+///
+/// `goals` are the goals that read in this group. Each is placed by
+/// [`place_goal`]; a row's `budget` is every goal placed on it or beneath it.
+/// A goal placed on a heading adds a `Total <label>` row right after the
+/// heading's children (the D4 exception), carrying the heading's figure.
 fn group_rows<A>(
     accounts: &BTreeSet<String>,
     windows: &Windows,
     flip: bool,
     opts: &IsOpts,
     shape: Shape<A>,
+    goals: &[&Goal],
 ) -> Result<Vec<IsRow<A>>, ReportError> {
-    outline(accounts, opts.depth, opts.names)
-        .into_iter()
-        .map(|node| {
-            Ok(IsRow {
-                amounts: shape(windows.sum_of(&node.members)?.signed(flip)?)?,
-                depth: node.account.split(':').count(),
-                kind: node.kind,
-                label: node.label,
-                level: node.level,
-                account: node.account,
-            })
+    let nodes = outline(accounts, opts.depth, opts.names);
+    let placed: Vec<(usize, &MixedAmount)> = goals
+        .iter()
+        .filter_map(|goal| place_goal(&nodes, accounts, &goal.members).map(|at| (at, &goal.amount)))
+        .collect();
+    let ends: Vec<usize> = (0..nodes.len()).map(|i| subtree_end(&nodes, i)).collect();
+    let budget_at = |index: usize| {
+        displayed(
+            goal_sum(
+                placed
+                    .iter()
+                    .filter(|(at, _)| (index..ends[index]).contains(at))
+                    .map(|(_, amount)| *amount),
+            )?,
+            flip,
+        )
+    };
+    let row = |node: &OutlineNode, kind: OutlineKind, label: String, index: usize| {
+        Ok::<_, ReportError>(IsRow {
+            amounts: shape(windows.sum_of(&node.members)?.signed(flip)?)?,
+            depth: node.account.split(':').count(),
+            kind,
+            label,
+            level: node.level,
+            account: node.account.clone(),
+            budget: budget_at(index)?,
         })
-        .collect()
+    };
+    let totals: BTreeSet<usize> = placed
+        .iter()
+        .map(|(at, _)| *at)
+        .filter(|at| nodes[*at].kind == OutlineKind::Heading)
+        .collect();
+    let mut out = Vec::with_capacity(nodes.len() + totals.len());
+    for at in 0..=nodes.len() {
+        // The Total rows closing just before row `at`, innermost first.
+        let mut closing: Vec<usize> = totals.iter().copied().filter(|h| ends[*h] == at).collect();
+        closing.sort_by_key(|h| Reverse(nodes[*h].level));
+        for heading in closing {
+            let node = &nodes[heading];
+            out.push(row(
+                node,
+                OutlineKind::Total,
+                format!("Total {}", node.label),
+                heading,
+            )?);
+        }
+        if let Some(node) = nodes.get(at) {
+            out.push(row(node, node.kind, node.label.clone(), at)?);
+        }
+    }
+    Ok(out)
 }
 
 /// A grouped, market-valued income statement whose GAAP subtotal ladder appears
@@ -1084,6 +1321,14 @@ pub(crate) fn income_statement_windows(
     })
 }
 
+/// One rendered box before the ladder titles it.
+struct SectionBox<A> {
+    lines: Vec<IsGroup<A>>,
+    total: A,
+    budget: Option<MixedAmount>,
+    unplaced: Vec<UnplacedBudget>,
+}
+
 /// The statement over `windows`, every figure handed out through `shape`. The
 /// caller fills in which windows those were (`prior` or `buckets`).
 #[allow(clippy::too_many_arguments)]
@@ -1163,6 +1408,19 @@ fn statement_from<A>(
             members.entry(kind).or_default().insert(account.clone());
         }
     }
+    // Goals are valued like the Total column's span: at `to`, through the
+    // current window's price table.
+    let mut goals = match opts.budget {
+        Some(budget) => statement_goals(budget, &mut members, &resolve_section, |goal| {
+            match (opts.value, target.as_ref(), prices.first()) {
+                (Valuation::Market, Some(base), Some(db)) => {
+                    valued_keeping_unpriced(goal, base, db, opts.to, &mut meta)
+                }
+                _ => Ok(goal.clone()),
+            }
+        })?,
+        None => BTreeMap::new(),
+    };
     let max_depth = members
         .values()
         .flatten()
@@ -1173,15 +1431,44 @@ fn statement_from<A>(
     // Pass 1: which boxes exist and what they hold. `multi_step` — and with it
     // every title and the Operating income guard — depends on the answer, so it
     // cannot be decided while emitting.
-    let mut boxes: BTreeMap<IsSectionKind, (Vec<IsGroup<A>>, A)> = BTreeMap::new();
+    let mut boxes: BTreeMap<IsSectionKind, SectionBox<A>> = BTreeMap::new();
     let mut contributions: BTreeMap<IsSectionKind, Figures> = BTreeMap::new();
+    // Each box's goals, in hledger's sign: what it adds to the budget ladder.
+    let mut goal_sums: BTreeMap<IsSectionKind, MixedAmount> = BTreeMap::new();
     for rung in &LADDER {
         let section_members = members.remove(&rung.kind).unwrap_or_default();
+        let section_goals = goals.remove(&rung.kind).unwrap_or_default();
         let sum = windows.sum(&section_members)?;
         contributions.insert(rung.kind, sum.ma_neg()?);
-        let lines = build_groups(&section_members, groups, &windows, rung.flip, opts, shape)?;
+        let (lines, unplaced) = build_groups(
+            &section_members,
+            groups,
+            &windows,
+            rung.flip,
+            opts,
+            shape,
+            &section_goals,
+        )?;
+        let goal = goal_sum(section_goals.iter().map(|goal| &goal.amount))?;
+        if let Some(goal) = &goal {
+            goal_sums.insert(rung.kind, goal.clone());
+        }
         if !lines.is_empty() {
-            boxes.insert(rung.kind, (lines, shape(sum.signed(rung.flip)?)?));
+            boxes.insert(
+                rung.kind,
+                SectionBox {
+                    lines,
+                    total: shape(sum.signed(rung.flip)?)?,
+                    budget: displayed(goal, rung.flip)?,
+                    unplaced: unplaced
+                        .iter()
+                        .map(|goal| UnplacedBudget {
+                            account: goal.account.clone(),
+                            label: label_for(&goal.account, opts.names),
+                        })
+                        .collect(),
+                },
+            );
         }
     }
     // Taken from the boxes that RENDER, not from raw membership. The plan words
@@ -1199,15 +1486,21 @@ fn statement_from<A>(
     // is a prefix of.
     let mut rendered: Vec<IsSection<A>> = Vec::with_capacity(present.len());
     let mut running = Figures::zero(windows.totals.len());
+    let mut running_budget: Option<MixedAmount> = None;
     for rung in &LADDER {
         running = running.ma_add(&contributions[&rung.kind])?;
-        if let Some((lines, total)) = boxes.remove(&rung.kind) {
+        if let Some(goal) = goal_sums.get(&rung.kind) {
+            running_budget = Some(running_budget.unwrap_or_default().ma_add(&goal.ma_neg()?)?);
+        }
+        if let Some(section) = boxes.remove(&rung.kind) {
             rendered.push(IsSection {
                 kind: rung.kind,
                 title: rung.title(multi_step).to_string(),
-                groups: lines,
-                total,
+                groups: section.lines,
+                total: section.total,
                 trailing: Vec::new(),
+                budget: section.budget,
+                budget_unplaced: section.unplaced,
             });
         }
         // A subtotal attaches to the last box PRINTED, which is this rung's when
@@ -1223,6 +1516,7 @@ fn statement_from<A>(
                 kind: *kind,
                 label: (*label).to_string(),
                 total: shape(running.clone())?,
+                budget: running_budget.clone(),
             });
         }
     }
@@ -1240,6 +1534,8 @@ fn statement_from<A>(
         },
         sections: rendered,
         net_income: shape(running)?,
+        budgeted: opts.budget.is_some(),
+        net_income_budget: running_budget,
         multi_step,
         max_depth,
         meta: ReportMeta {
@@ -1526,6 +1822,31 @@ mod tests {
         names: &[(&str, &str)],
         depth: Option<usize>,
     ) -> IncomeStatementReport {
+        opex_report(postings, groups, names, depth, None)
+    }
+
+    /// [`opex_groups`] with the Budget column on: `goals` are each account's
+    /// own goal, in cents.
+    fn budgeted(
+        postings: &[(&str, i128)],
+        groups: &[(&str, &str)],
+        depth: Option<usize>,
+        goals: &[(&str, i128)],
+    ) -> IncomeStatementReport {
+        let goals: BTreeMap<String, MixedAmount> = goals
+            .iter()
+            .map(|(account, cents)| ((*account).to_string(), usd_ma(*cents)))
+            .collect();
+        opex_report(postings, groups, &[], depth, Some(&goals))
+    }
+
+    fn opex_report(
+        postings: &[(&str, i128)],
+        groups: &[(&str, &str)],
+        names: &[(&str, &str)],
+        depth: Option<usize>,
+        budget: Option<&BTreeMap<String, MixedAmount>>,
+    ) -> IncomeStatementReport {
         let txns = postings
             .iter()
             .zip(1..)
@@ -1558,6 +1879,7 @@ mod tests {
                 compare: false,
                 depth,
                 names: &names,
+                budget,
             },
             &BTreeMap::new(),
             &BTreeMap::new(),
@@ -1790,5 +2112,309 @@ mod tests {
             .map(|(_, label, ..)| label)
             .collect::<Vec<_>>();
         assert_eq!(labels, ["Flights", "Accommodation", "Hotels", "Rentals"]);
+    }
+
+    // --- plan 50 WP5: the Budget column --------------------------------------
+
+    /// `(kind, label, level, actual cents, budget cents)` of one group's rows.
+    fn budget_rows(
+        report: &IncomeStatementReport,
+        group: &str,
+    ) -> Vec<(OutlineKind, String, usize, MixedAmount, Option<MixedAmount>)> {
+        the_group(report, group)
+            .rows
+            .iter()
+            .map(|row| {
+                (
+                    row.kind,
+                    row.label.clone(),
+                    row.level,
+                    row.amounts.current.clone(),
+                    row.budget.clone(),
+                )
+            })
+            .collect()
+    }
+
+    fn the_group<'r>(report: &'r IncomeStatementReport, group: &str) -> &'r IsGroup {
+        report
+            .sections
+            .iter()
+            .flat_map(|section| &section.groups)
+            .find(|g| g.name == group)
+            .unwrap_or_else(|| panic!("group {group}"))
+    }
+
+    fn brow(
+        kind: OutlineKind,
+        label: &str,
+        level: usize,
+        cents: i128,
+        budget: Option<i128>,
+    ) -> (OutlineKind, String, usize, MixedAmount, Option<MixedAmount>) {
+        (
+            kind,
+            label.to_string(),
+            level,
+            usd_ma(cents),
+            budget.map(usd_ma),
+        )
+    }
+
+    const TRAVEL: [(&str, i128); 3] = [
+        ("expenses:travel:airfare", 10_000),
+        ("expenses:travel:lodging:hotels", 20_000),
+        ("expenses:travel:lodging:rentals", 5_000),
+    ];
+
+    const TRAVEL_GROUP: [(&str, &str); 1] = [("expenses:travel", "Travel")];
+
+    #[test]
+    fn budget_off_leaves_every_budget_empty() {
+        let report = opex_groups(&TRAVEL, &TRAVEL_GROUP, &[], None);
+        assert!(!report.budgeted);
+        assert_eq!(report.net_income_budget, None);
+        let group = the_group(&report, "Travel");
+        assert_eq!(group.budget, None);
+        assert!(group.rows.iter().all(|row| row.budget.is_none()));
+        assert!(report.sections.iter().all(|s| s.budget.is_none()));
+    }
+
+    #[test]
+    fn budget_goal_on_a_leaf_reads_on_its_row() {
+        use OutlineKind::{Account, Heading};
+        let report = budgeted(
+            &TRAVEL,
+            &TRAVEL_GROUP,
+            None,
+            &[("expenses:travel:airfare", 15_000)],
+        );
+        assert!(report.budgeted);
+        assert_eq!(
+            budget_rows(&report, "Travel"),
+            vec![
+                brow(Account, "Airfare", 0, 10_000, Some(15_000)),
+                brow(Heading, "Lodging", 0, 25_000, None),
+                brow(Account, "Hotels", 1, 20_000, None),
+                brow(Account, "Rentals", 1, 5_000, None),
+            ]
+        );
+        assert_eq!(the_group(&report, "Travel").budget, Some(usd_ma(15_000)));
+        assert_eq!(report.sections[0].budget, Some(usd_ma(15_000)));
+        assert!(report.sections[0].budget_unplaced.is_empty());
+        // An expense goal reduces the budgeted net income.
+        assert_eq!(report.net_income_budget, Some(usd_ma(-15_000)));
+    }
+
+    #[test]
+    fn budget_goal_on_a_heading_adds_its_total_row() {
+        use OutlineKind::{Account, Heading, Total};
+        let report = budgeted(
+            &TRAVEL,
+            &TRAVEL_GROUP,
+            None,
+            &[
+                ("expenses:travel:lodging", 30_000),
+                ("expenses:travel:lodging:hotels", 18_000),
+            ],
+        );
+        assert_eq!(
+            budget_rows(&report, "Travel"),
+            vec![
+                brow(Account, "Airfare", 0, 10_000, None),
+                brow(Heading, "Lodging", 0, 25_000, Some(48_000)),
+                brow(Account, "Hotels", 1, 20_000, Some(18_000)),
+                brow(Account, "Rentals", 1, 5_000, None),
+                // The heading's subtree actual beside its goal, plus the
+                // child goal beneath it, as hledger's parent goals aggregate.
+                brow(Total, "Total Lodging", 0, 25_000, Some(48_000)),
+            ]
+        );
+        assert_eq!(the_group(&report, "Travel").budget, Some(usd_ma(48_000)));
+    }
+
+    #[test]
+    fn budget_nested_heading_totals_close_innermost_first() {
+        use OutlineKind::{Account, Heading, Total};
+        let report = budgeted(
+            &[
+                ("expenses:travel:lodging:hotels:city", 1_000),
+                ("expenses:travel:lodging:hotels:resort", 2_000),
+                ("expenses:travel:lodging:rentals", 3_000),
+                ("expenses:travel:airfare", 4_000),
+            ],
+            &TRAVEL_GROUP,
+            None,
+            &[
+                ("expenses:travel:lodging", 7_000),
+                ("expenses:travel:lodging:hotels", 2_500),
+            ],
+        );
+        assert_eq!(
+            budget_rows(&report, "Travel"),
+            vec![
+                brow(Account, "Airfare", 0, 4_000, None),
+                brow(Heading, "Lodging", 0, 6_000, Some(9_500)),
+                brow(Heading, "Hotels", 1, 3_000, Some(2_500)),
+                brow(Account, "City", 2, 1_000, None),
+                brow(Account, "Resort", 2, 2_000, None),
+                brow(Total, "Total Hotels", 1, 3_000, Some(2_500)),
+                brow(Account, "Rentals", 1, 3_000, None),
+                brow(Total, "Total Lodging", 0, 6_000, Some(9_500)),
+            ]
+        );
+    }
+
+    #[test]
+    fn budget_goal_on_the_whole_group_reads_on_its_total() {
+        let report = budgeted(&TRAVEL, &TRAVEL_GROUP, None, &[("expenses:travel", 40_000)]);
+        let group = the_group(&report, "Travel");
+        assert_eq!(group.budget, Some(usd_ma(40_000)));
+        assert!(group.rows.iter().all(|row| row.budget.is_none()));
+        assert!(group.rows.iter().all(|row| row.kind != OutlineKind::Total));
+    }
+
+    #[test]
+    fn budget_goal_folded_by_depth_reads_on_the_shown_ancestor() {
+        use OutlineKind::Account;
+        let report = budgeted(
+            &TRAVEL,
+            &TRAVEL_GROUP,
+            Some(3),
+            &[("expenses:travel:lodging:hotels", 18_000)],
+        );
+        assert_eq!(
+            budget_rows(&report, "Travel"),
+            vec![
+                brow(Account, "Airfare", 0, 10_000, None),
+                brow(Account, "Lodging", 0, 25_000, Some(18_000)),
+            ]
+        );
+    }
+
+    #[test]
+    fn budget_goal_collapsed_by_a_lone_chain_reads_on_its_leaf() {
+        use OutlineKind::Account;
+        // `lodging` holds one member, so D1 collapses it into Hotels.
+        let report = budgeted(
+            &[
+                ("expenses:travel:airfare", 10_000),
+                ("expenses:travel:lodging:hotels", 20_000),
+            ],
+            &TRAVEL_GROUP,
+            None,
+            &[("expenses:travel:lodging", 22_000)],
+        );
+        assert_eq!(
+            budget_rows(&report, "Travel"),
+            vec![
+                brow(Account, "Airfare", 0, 10_000, None),
+                brow(Account, "Hotels", 0, 20_000, Some(22_000)),
+            ]
+        );
+    }
+
+    #[test]
+    fn budget_goal_spanning_groups_reads_only_in_the_section_total() {
+        let report = budgeted(
+            &[
+                ("expenses:people-costs:payroll-processing-fees", 1_000),
+                ("expenses:people-costs:wages", 50_000),
+                ("expenses:professional-fees:legal", 3_000),
+            ],
+            &[
+                (
+                    "expenses:people-costs:payroll-processing-fees",
+                    "Professional Services",
+                ),
+                ("expenses:professional-fees", "Professional Services"),
+                ("expenses:people-costs:wages", "People"),
+            ],
+            None,
+            &[
+                ("expenses:people-costs", 60_000),
+                ("expenses:professional-fees:legal", 2_000),
+            ],
+        );
+        let section = &report.sections[0];
+        assert_eq!(section.budget, Some(usd_ma(62_000)));
+        assert_eq!(
+            section.budget_unplaced,
+            vec![UnplacedBudget {
+                account: "expenses:people-costs".to_string(),
+                label: "People Costs".to_string(),
+            }]
+        );
+        assert_eq!(the_group(&report, "People").budget, None);
+        assert_eq!(
+            the_group(&report, "Professional Services").budget,
+            Some(usd_ma(2_000))
+        );
+        assert!(
+            section
+                .groups
+                .iter()
+                .flat_map(|g| &g.rows)
+                .all(
+                    |row| row.account == "expenses:professional-fees:legal" || row.budget.is_none()
+                )
+        );
+    }
+
+    #[test]
+    fn budget_parent_goal_measures_its_childrens_actuals() {
+        use OutlineKind::{Account, Heading, Total};
+        // `remap_account` semantics: `food` has no postings of its own, so its
+        // goal is measured against everything beneath it, beside the child
+        // goal `groceries` keeps for itself. Actuals never move.
+        let report = budgeted(
+            &[
+                ("expenses:food:dining", 5_000),
+                ("expenses:food:groceries", 10_000),
+                ("expenses:travel:airfare", 7_000),
+            ],
+            &[("expenses:food", "Living"), ("expenses:travel", "Living")],
+            None,
+            &[
+                ("expenses:food", 40_000),
+                ("expenses:food:groceries", 12_000),
+            ],
+        );
+        assert_eq!(
+            budget_rows(&report, "Living"),
+            vec![
+                brow(Heading, "Food", 0, 15_000, Some(52_000)),
+                brow(Account, "Dining", 1, 5_000, None),
+                brow(Account, "Groceries", 1, 10_000, Some(12_000)),
+                brow(Total, "Total Food", 0, 15_000, Some(52_000)),
+                brow(Account, "Airfare", 0, 7_000, None),
+            ]
+        );
+        let group = the_group(&report, "Living");
+        assert_eq!(group.total.current, usd_ma(22_000), "actuals don't move");
+        assert_eq!(group.budget, Some(usd_ma(52_000)));
+    }
+
+    #[test]
+    fn budget_goal_without_actuals_gets_a_zero_row() {
+        use OutlineKind::Account;
+        let report = budgeted(
+            &[("expenses:travel:airfare", 10_000)],
+            &[("expenses:travel", "Travel")],
+            None,
+            &[
+                ("expenses:travel:lodging", 9_000),
+                ("assets:savings", 5_000),
+            ],
+        );
+        assert_eq!(
+            budget_rows(&report, "Travel"),
+            vec![
+                brow(Account, "Airfare", 0, 10_000, None),
+                brow(Account, "Lodging", 0, 0, Some(9_000)),
+            ]
+        );
+        // The asset goal isn't on the P&L at all.
+        assert_eq!(report.net_income_budget, Some(usd_ma(-9_000)));
     }
 }

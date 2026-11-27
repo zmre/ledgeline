@@ -14,12 +14,13 @@ import {dec, type MixedAmount} from "#lib/domain/money.js";
 import {fmt} from "#lib/format/amounts.js";
 import type {IncomeStatementReport, IsSection} from "#lib/reports/types.js";
 import {
+    BUDGETED_INCOME_STATEMENT,
     GROUPED_INCOME_STATEMENT,
     MULTI_STEP_INCOME_STATEMENT,
     OUTLINED_INCOME_STATEMENT,
     UNCOMPARED_INCOME_STATEMENT,
 } from "#lib/testing/incomeStatementFixture.js";
-import {amountsPct, fmtPct, isCursorRows, isDisplayModel, isGroupKey, isSummary, pctChange, sectionDisplayRows} from "./incomeStatementRows";
+import {amountsPct, budgetFootnote, fmtPct, isCursorRows, isDisplayModel, isGroupKey, isSummary, pctChange, sectionDisplayRows} from "./incomeStatementRows";
 
 const REPORT = decodeIncomeStatementReport(GROUPED_INCOME_STATEMENT);
 const MULTI = decodeIncomeStatementReport(MULTI_STEP_INCOME_STATEMENT);
@@ -162,9 +163,11 @@ describe("UNIT reports/ui/incomeStatementRows — sectionDisplayRows", () => {
         const rowless: IsSection = {
             kind: "other",
             title: "Other income & expense",
-            groups: [{name: "Rounding", source: "computed", rows: [], total: {current: new Map()}}],
+            groups: [{name: "Rounding", source: "computed", rows: [], total: {current: new Map()}, budget: null}],
             total: {current: new Map()},
             trailing: [],
+            budget: null,
+            budgetUnplaced: [],
         };
         const [row] = rowsOf(rowless, ALL);
 
@@ -173,7 +176,7 @@ describe("UNIT reports/ui/incomeStatementRows — sectionDisplayRows", () => {
     });
 
     it("renders a section with no groups as an empty list, not a throw", () => {
-        const empty: IsSection = {kind: "tax", title: "Income taxes", groups: [], total: {current: new Map()}, trailing: []};
+        const empty: IsSection = {kind: "tax", title: "Income taxes", groups: [], total: {current: new Map()}, trailing: [], budget: null, budgetUnplaced: []};
         expect(rowsOf(empty, ALL)).toEqual([]);
     });
 });
@@ -360,7 +363,8 @@ describe("UNIT reports/ui/incomeStatementRows — isSummary", () => {
         // already in a box footer and every intermediate figure is already a rung
         // of the ladder, so repeating them was the duplicate-totals complaint
         // this redesign exists to fix, one panel further down.
-        expect(Object.keys(summary).sort()).toEqual(["netIncome", "netPct"]);
+        // `netBudget` is the Budget column's bottom line (plan 50), not a restatement.
+        expect(Object.keys(summary).sort()).toEqual(["netBudget", "netIncome", "netPct"]);
     });
 
     it("takes net income's change against its OWN prior figure", () => {
@@ -470,5 +474,53 @@ describe("UNIT reports/ui/incomeStatementRows — interval mode", () => {
         // month ends and the range's end, so the sum of the months IS the
         // whole-range figure: $5,383.52.
         expect(fmt("$", model.summary.netIncome.current.get("$") ?? dec(0, 0), new Map())).toBe(fmt("$", dec(538352, 2), new Map()));
+    });
+});
+
+describe("UNIT reports/ui/incomeStatementRows — the Budget column (plan 50)", () => {
+    const budgeted = decodeIncomeStatementReport(BUDGETED_INCOME_STATEMENT);
+    const cents = (ma: MixedAmount | null | undefined): bigint | null => ma?.get("$")?.m ?? null;
+
+    it("is off, with no figures or footnotes, on a report that did not ask for it", () => {
+        const model = isDisplayModel(REPORT, ALL);
+        expect(model.budgeted).toBe(false);
+        expect(isCursorRows(model).every((row) => row.budget === null)).toBe(true);
+        expect(model.boxes.every((box) => box.totalBudget === null && box.footnotes.length === 0)).toBe(true);
+        expect(model.summary.netBudget).toBeNull();
+    });
+
+    it("carries each row's goal, a ruled `total` row for a budgeted heading, and no figure on the heading", () => {
+        const model = isDisplayModel(budgeted, only(isGroupKey("opex", "Travel")));
+        expect(model.budgeted).toBe(true);
+        const opex = model.boxes[1];
+        const travel = opex.rows.slice(opex.rows.findIndex((row) => row.label === "Travel"));
+        expect(travel.slice(0, 6).map((row) => [row.kind, row.label, cents(row.budget)])).toEqual([
+            ["group", "Travel", 80000n],
+            ["account", "Flights", 50000n],
+            // A heading prints nothing (D4); its Total row carries the goal.
+            ["heading", "Lodging", null],
+            ["account", "Lodging (other)", null],
+            ["account", "Hotels", null],
+            ["total", "Total Lodging", 30000n],
+        ]);
+        const total = travel[5];
+        expect(total.indent).toBe(1);
+        expect(total.amounts?.current.get("$")).toEqual({m: 24360n, p: 2});
+        expect(total.account).toBe("expenses:travel:lodging");
+        // Three rows share the heading's account; their keys do not.
+        const keys = isCursorRows(model).map((row) => row.key);
+        expect(new Set(keys).size).toBe(keys.length);
+    });
+
+    it("totals the box and the bottom line, and footnotes a goal that spans groups", () => {
+        const model = isDisplayModel(budgeted, NONE);
+        expect(cents(model.boxes[1].totalBudget)).toBe(100000n);
+        expect(model.boxes[0].totalBudget).toBeNull();
+        expect(model.boxes[1].footnotes).toEqual(["Budget for People spans groups: shown in section total only."]);
+        expect(model.boxes[0].footnotes).toEqual([]);
+        expect(cents(model.summary.netBudget)).toBe(-100000n);
+        expect(budgetFootnote({account: "expenses:people-costs", label: "People Costs"})).toBe(
+            "Budget for People Costs spans groups: shown in section total only."
+        );
     });
 });

@@ -52,6 +52,7 @@ describe("UNIT reports/ui/params", () => {
                 depth: 3,
                 // The P&L's own depth: unlimited until someone slides it (plan 50 D8).
                 isDepth: null,
+                isBudget: false,
                 empty: false,
                 insStart: "2024-07-01",
                 insEnd: "2026-06-30",
@@ -168,6 +169,19 @@ describe("UNIT reports/ui/params", () => {
             expect(searchToParams("tab=is&depth=deep", DFLT).isDepth).toBeNull();
             // Another tab's depth never becomes the P&L's.
             expect(searchToParams("tab=cf&depth=2", DFLT).isDepth).toBeNull();
+        });
+
+        it("round-trips the P&L's Budget column as budget=1, and only on the P&L (plan 50 D12)", () => {
+            const parsed = searchToParams("tab=is&from=2025-01-01&to=2025-06-30&budget=1", DFLT);
+            expect(parsed.isBudget).toBe(true);
+            expect(paramsToSearch(parsed)).toBe("tab=is&from=2025-01-01&to=2025-06-30&interval=total&budget=1");
+            // Off writes nothing, so every older P&L link is unchanged.
+            expect(paramsToSearch({...parsed, isBudget: false})).toBe("tab=is&from=2025-01-01&to=2025-06-30&interval=total");
+            expect(searchToParams("tab=is&budget=yes", DFLT).isBudget).toBe(false);
+            // No other tab offers it, reads it or writes it.
+            expect(searchToParams("tab=cf&budget=1", DFLT).isBudget).toBe(false);
+            expect(paramsToSearch({...DFLT, tab: "cf", isBudget: true})).not.toContain("budget");
+            expect(TAB_ORDER.filter((tab) => TAB_CONTROLS[tab].budget)).toEqual(["is"]);
         });
 
         it("shows a depth slider on the period tabs and the P&L, not on the balance sheet", () => {
@@ -436,6 +450,7 @@ describe("UNIT reports/ui/params — the folded controls' summary", () => {
         ["bs", {interval: "monthly", bsFrom: "2025-08-01", asOf: "2026-07-08"}, "2025-08-01 – 2026-07-08 · Monthly"],
         ["is", {interval: "total", from: "2026-01-01", to: "2026-07-08"}, "2026-01-01 – 2026-07-08 · Total · all depths"],
         ["is", {interval: "total", from: "2026-01-01", to: "2026-07-08", isDepth: 2, depth: 5}, "2026-01-01 – 2026-07-08 · Total · depth 2"],
+        ["is", {interval: "monthly", from: "2026-01-01", to: "2026-07-08", isBudget: true}, "2026-01-01 – 2026-07-08 · Monthly · all depths · budget"],
         ["cf", {interval: "monthly", cfFrom: "2025-08-01", cfTo: "2026-07-08", depth: 2}, "2025-08-01 – 2026-07-08 · Monthly · depth 2"],
         ["nw", {interval: "yearly", count: 5, end: "2026-07-08", depth: 3}, "5 × yearly to 2026-07-08 · depth 3"],
         ["insights", {}, ""],

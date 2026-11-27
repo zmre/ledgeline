@@ -336,6 +336,7 @@ fn marker(kind: OutlineKind) -> &'static str {
         OutlineKind::Heading => "#",
         OutlineKind::Account => "-",
         OutlineKind::Other => "~",
+        OutlineKind::Total => "=",
     }
 }
 

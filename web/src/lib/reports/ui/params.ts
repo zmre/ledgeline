@@ -107,6 +107,8 @@ export interface ReportParams {
      * by the period reports, while a P&L opens on every account.
      */
     isDepth: number | null;
+    /** The P&L's Budget column (plan 50 D12): on writes `budget=1`, off writes nothing. */
+    isBudget: boolean;
     /** Accounts: whether declared and known accounts with nothing in any column are rows too. */
     empty: boolean;
     /** Insights: inclusive comparison-span start (split at its midpoint by the engine). */
@@ -130,12 +132,14 @@ export interface ControlsConfig {
     intervals: readonly ReportInterval[];
     count: boolean;
     depth: boolean;
+    /** The P&L's Budget checkbox (plan 50 D12): an italic Budget column beside Total. */
+    budget: boolean;
 }
 
 export const TAB_CONTROLS: Record<ReportTab, ControlsConfig> = {
     // Insights owns its own period control (PeriodControl), so the shared
     // ReportControls bar shows nothing for it.
-    insights: {asOf: false, asOfFrom: false, range: false, end: false, intervals: [], count: false, depth: false},
+    insights: {asOf: false, asOfFrom: false, range: false, end: false, intervals: [], count: false, depth: false, budget: false},
     // No depth on the balance sheet: groups ARE the reading and the accounts
     // inside one are a drill-down, so a clamp had almost nothing left to move —
     // and what it did move it moved wrongly, hiding accounts with no control on
@@ -147,7 +151,7 @@ export const TAB_CONTROLS: Record<ReportTab, ControlsConfig> = {
     // one day, exactly as before. Monthly, Quarterly or Yearly turn it into one
     // column per period end from a From date, the last column at As of: the
     // P&L's range-and-grain parameterisation (plans/24), anchored on As of.
-    bs: {asOf: true, asOfFrom: true, range: false, end: false, intervals: ALL_INTERVALS, count: false, depth: false},
+    bs: {asOf: true, asOfFrom: true, range: false, end: false, intervals: ALL_INTERVALS, count: false, depth: false, budget: false},
     // The income statement's depth slider is back (plan 50 D8, re-opening plans/13
     // D5): its rows are a readable outline now, so lowering the depth visibly
     // folds leaves into their ancestor rows and raising it brings them back. It
@@ -155,16 +159,16 @@ export const TAB_CONTROLS: Record<ReportTab, ControlsConfig> = {
     // The range stays — a P&L is a report ABOUT a period, and that is the one
     // thing it cannot infer. The Interval is Total (one column, compared with
     // the prior window) or one column per bucket plus a Total (plans/24).
-    is: {asOf: false, asOfFrom: false, range: true, end: false, intervals: ALL_INTERVALS, count: false, depth: true},
+    is: {asOf: false, asOfFrom: false, range: true, end: false, intervals: ALL_INTERVALS, count: false, depth: true, budget: true},
     // Cash flow is a report about a period too (plans/24): From/To replaced
     // End + Periods, so the range is named rather than counted backwards.
-    cf: {asOf: false, asOfFrom: false, range: true, end: false, intervals: ALL_INTERVALS, count: false, depth: true},
-    nw: {asOf: false, asOfFrom: false, range: false, end: true, intervals: PERIODIC_INTERVALS, count: true, depth: true},
+    cf: {asOf: false, asOfFrom: false, range: true, end: false, intervals: ALL_INTERVALS, count: false, depth: true, budget: false},
+    nw: {asOf: false, asOfFrom: false, range: false, end: true, intervals: PERIODIC_INTERVALS, count: true, depth: true, budget: false},
     // Every account per period (2026-10-28): a report about a period, like
     // cash flow, whose window it shares.
-    accounts: {asOf: false, asOfFrom: false, range: true, end: false, intervals: ALL_INTERVALS, count: false, depth: true},
+    accounts: {asOf: false, asOfFrom: false, range: true, end: false, intervals: ALL_INTERVALS, count: false, depth: true, budget: false},
     // Subscriptions scan a fixed trailing window, so they expose no controls.
-    subs: {asOf: false, asOfFrom: false, range: false, end: false, intervals: [], count: false, depth: false},
+    subs: {asOf: false, asOfFrom: false, range: false, end: false, intervals: [], count: false, depth: false, budget: false},
 };
 
 /**
@@ -185,6 +189,7 @@ export function controlsSummary(p: ReportParams): string {
     } else if (config.end) parts.push(`to ${p.end}`);
     // Plan 50: the P&L names its own depth.
     if (config.depth) parts.push(p.tab === "is" ? (p.isDepth === null ? "all depths" : `depth ${p.isDepth}`) : `depth ${p.depth}`);
+    if (config.budget && p.isBudget) parts.push("budget");
     return parts.join(" · ");
 }
 
@@ -306,6 +311,7 @@ export function defaultReportParams(now: ISODate = today()): ReportParams {
         // separate decision from removing a control from two tabs.
         depth: 3,
         isDepth: null,
+        isBudget: false,
         empty: false,
         insStart: ins.start,
         insEnd: ins.end,
@@ -443,6 +449,7 @@ export function paramsToSearch(p: ReportParams): string {
     if (c.depth && p.tab === "is") {
         if (p.isDepth !== null) q.set("depth", String(p.isDepth));
     } else if (c.depth) q.set("depth", String(p.depth));
+    if (c.budget && p.isBudget) q.set("budget", "1");
     if (p.tab === "accounts") q.set("empty", p.empty ? "1" : "0");
     return q.toString();
 }
@@ -522,6 +529,7 @@ export function searchToParams(search: string, dflt: ReportParams): ReportParams
         // Plan 50: on the P&L, `depth` is the P&L's own.
         depth: tab === "is" ? dflt.depth : clampedInt(q.get("depth"), 1, 99, dflt.depth),
         isDepth: tab === "is" ? isDepthParam(q) : dflt.isDepth,
+        isBudget: tab === "is" ? q.get("budget") === "1" : dflt.isBudget,
         empty: tab === "accounts" ? q.get("empty") === "1" : dflt.empty,
         insStart: parseDate(q.get("istart"), dflt.insStart),
         insEnd: parseDate(q.get("iend"), dflt.insEnd),

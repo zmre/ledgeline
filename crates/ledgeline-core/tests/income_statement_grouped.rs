@@ -70,6 +70,7 @@ fn report_at(
                 compare,
                 depth,
                 names: &declared_groups(journal, "name"),
+                budget: None,
             },
             &declared_types(&account_decls(journal)),
             &account_sections(journal),

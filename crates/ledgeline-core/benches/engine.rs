@@ -1050,6 +1050,7 @@ fn full_scan_run(fx: &Fixture, scenario: &Scenario) -> usize {
             compare: false,
             depth: None,
             names: &std::collections::BTreeMap::new(),
+            budget: None,
         },
         window.interval,
         &declared,

@@ -37,6 +37,7 @@ fn opts(from: &'static str, to: &'static str, value: Valuation) -> IsOpts<'stati
         compare: false,
         depth: None,
         names: &NO_NAMES,
+        budget: None,
     }
 }
 

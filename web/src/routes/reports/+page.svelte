@@ -320,7 +320,7 @@
                 // follows the screen, and unlimited is the P&L's plain reading.
                 return {
                     title: "Income Statement",
-                    params: `${params.from} to ${params.to}, ${grain}${params.isDepth === null ? "" : `, depth ${params.isDepth}`}`,
+                    params: `${params.from} to ${params.to}, ${grain}${params.isDepth === null ? "" : `, depth ${params.isDepth}`}${params.isBudget ? ", with budget" : ""}`,
                     filename: `income-statement-${params.from}-to-${params.to}-${params.interval}.xlsx`,
                 };
             case "cf":

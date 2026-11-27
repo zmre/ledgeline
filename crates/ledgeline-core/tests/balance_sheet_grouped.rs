@@ -96,6 +96,7 @@ fn outline_of(group: &BsGroup) -> Vec<String> {
                 OutlineKind::Heading => "#",
                 OutlineKind::Account => "-",
                 OutlineKind::Other => "~",
+                OutlineKind::Total => "=",
             };
             format!("{}{marker} {}", "  ".repeat(row.level), row.label)
         })

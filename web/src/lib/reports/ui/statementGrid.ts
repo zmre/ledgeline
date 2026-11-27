@@ -25,11 +25,11 @@ export const TOTAL_REM = 9;
  * The width the whole stack is held to: every block in it is then the same
  * width, so with fixed layout and the same colgroup their columns coincide.
  */
-export function statementMinWidth(periods: number, total: boolean, compare = false): string {
+export function statementMinWidth(periods: number, total: boolean, compare = false, budget = false): string {
     const label = compare ? COMPARE_LABEL_REM : LABEL_REM;
-    const figures = compare
-        ? periods * COMPARE_PERIOD_REM + (total ? TOTAL_REM : 0) + DELTA_REM + DELTA_PCT_REM
-        : periods * PERIOD_REM + (total ? TOTAL_REM : 0);
+    const figures =
+        (compare ? periods * COMPARE_PERIOD_REM + (total ? TOTAL_REM : 0) + DELTA_REM + DELTA_PCT_REM : periods * PERIOD_REM + (total ? TOTAL_REM : 0)) +
+        (budget ? TOTAL_REM : 0);
     return `calc(var(${NARROW_LABEL_VAR}, ${label}rem) + ${figures}rem)`;
 }
 

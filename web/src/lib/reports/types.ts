@@ -86,8 +86,11 @@ export type GroupSource = "tag" | "type" | "commodity" | "segment" | "computed";
  * - `heading`: a grouping row; print the label, no amount.
  * - `account`: an account, or a depth-clipped ancestor standing for its subtree.
  * - `other`: a heading account's own postings, labelled "<label> (other)".
+ * - `total`: "Total <heading>", closing a heading's children. Only the P&L
+ *   sends one, and only for a budgeted heading with the Budget column on
+ *   (plan 50 D4 exception): it carries the heading's subtree and its goal.
  */
-export type OutlineKind = "heading" | "account" | "other";
+export type OutlineKind = "heading" | "account" | "other" | "total";
 
 export interface OutlineFields {
     kind: OutlineKind;
@@ -392,6 +395,18 @@ export interface IsRow extends OutlineFields {
     /** Number of `:`-separated segments in `account`. */
     depth: number;
     amounts: Amounts;
+    /**
+     * The Budget column (plan 50 D13): the goals placed on this row or beneath
+     * it over the whole `[from, to]`, display-signed. Null when no goal sits
+     * here, and always null when `IncomeStatementReport.budgeted` is false.
+     */
+    budget: MixedAmount | null;
+}
+
+/** A goal shown only in its section's total, because its accounts span groups (plan 50 D14). */
+export interface UnplacedBudget {
+    account: string;
+    label: string;
 }
 
 /** One named line within a section, with its own subtotal. */
@@ -402,6 +417,8 @@ export interface IsGroup {
     rows: IsRow[];
     /** Summed over MEMBERS, never over displayed rows, so collapsing a group cannot change it. */
     total: Amounts;
+    /** Every goal placed in this group, or null (see `IsRow.budget`). */
+    budget: MixedAmount | null;
 }
 
 /**
@@ -413,6 +430,8 @@ export interface IsSubtotal {
     kind: IsSubtotalKind;
     label: string;
     total: Amounts;
+    /** The same running total over the boxes' goals, or null. */
+    budget: MixedAmount | null;
 }
 
 /**
@@ -431,6 +450,10 @@ export interface IsSection {
     total: Amounts;
     /** Ladder lines printed below this box. Usually empty; never null. */
     trailing: IsSubtotal[];
+    /** Every goal in this box, placed in a group or not, or null. */
+    budget: MixedAmount | null;
+    /** Goals counted only in `budget` because their accounts span groups (plan 50 D14). Empty without the Budget column. */
+    budgetUnplaced: UnplacedBudget[];
 }
 
 /** The grouped, valued income statement: ladder-ordered boxes and a bottom line. */
@@ -461,6 +484,10 @@ export interface IncomeStatementReport {
     sections: IsSection[];
     /** The bottom line, display-signed (positive = a profit). */
     netIncome: Amounts;
+    /** Whether the Budget column was asked for (`budget=1`): the wire's `netIncomeBudget` key is present. */
+    budgeted: boolean;
+    /** The goals' net income, or null (no goal on the statement, or no Budget column). */
+    netIncomeBudget: MixedAmount | null;
     /**
      * Whether any member resolved to a section other than revenue/opex — i.e.
      * whether the journal asked for the GAAP ladder at all.

@@ -11,6 +11,7 @@ import type {Holding, HoldingsReport} from "#lib/holdings/types.js";
 import type {BudgetBar, BudgetReport, CashFlowStatement, CfLine, PeriodReport, SectionedReport} from "#lib/reports/types.js";
 import {CLASSIFIED_BALANCE_SHEET, GROUPED_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "#lib/testing/balanceSheetFixture.js";
 import {
+    BUDGETED_INCOME_STATEMENT,
     GROUPED_INCOME_STATEMENT,
     MULTI_STEP_INCOME_STATEMENT,
     OUTLINED_INCOME_STATEMENT,
@@ -667,6 +668,33 @@ describe("UNIT export/xlsx", () => {
             expect(ws.getCell(at + 4, 1).note).toBe("expenses:travel:lodging:hotels");
             // The group row still carries the group total.
             expect(ws.getCell(at, 2).value).toBe(656.4);
+        });
+
+        it("adds an italic Budget column after Amount, a ruled Total row and the D14 footnote (plan 50)", async () => {
+            const ws = await readBack(await build(decodeIncomeStatementReport(BUDGETED_INCOME_STATEMENT)), "Income Statement");
+            expect([1, 2, 3, 4].map((col) => ws.getCell(4, col).value)).toEqual(["Account", "Amount ($)", "Budget ($)", "Other commodities"]);
+            expect(ws.getCell(4, 3).font?.italic).toBe(true);
+
+            const at = column(ws, 1, 60).indexOf("Travel") + 1;
+            expect(column(ws, at, 6)).toEqual(["Travel", "Flights", "Lodging", "Lodging (other)", "Hotels", "Total Lodging"]);
+            expect(column(ws, at, 6, 3)).toEqual([800, 500, null, null, null, 300]);
+            expect(ws.getCell(at + 1, 3).font?.italic).toBe(true);
+            // The Total row: the heading's subtree beside its goal, ruled and bold.
+            const total = at + 5;
+            expect(ws.getCell(total, 2).value).toBe(243.6);
+            expect(ws.getCell(total, 1).font?.bold).toBe(true);
+            expect(ws.getCell(total, 1).border?.top?.style).toBe("thin");
+            expect(ws.getCell(total, 1).note).toBe("expenses:travel:lodging");
+
+            const labels = column(ws, 1, 60);
+            const sectionTotal = labels.indexOf("Total Expenses") + 1;
+            expect(ws.getCell(sectionTotal, 3).value).toBe(1000);
+            expect(ws.getCell(sectionTotal + 1, 1).value).toBe("Budget for People spans groups: shown in section total only.");
+            expect(ws.getCell(sectionTotal + 1, 1).font?.italic).toBe(true);
+            const net = labels.indexOf("Net income (revenue − expenses)") + 1;
+            expect(ws.getCell(net, 3).value).toBe(-1000);
+            // Revenue has no goal: its total's Budget cell stays empty.
+            expect(ws.getCell(labels.indexOf("Total Revenue") + 1, 3).value).toBeNull();
         });
 
         it("writes every group EXPANDED, whatever is collapsed on screen", async () => {

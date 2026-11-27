@@ -233,7 +233,7 @@ fn the_pivot_is_each_column_read_side_by_side() {
                     for row in &group.rows {
                         let under = |account: &str| match row.kind {
                             OutlineKind::Other => account == row.account,
-                            OutlineKind::Heading | OutlineKind::Account => {
+                            OutlineKind::Heading | OutlineKind::Account | OutlineKind::Total => {
                                 account == row.account
                                     || account
                                         .strip_prefix(row.account.as_str())

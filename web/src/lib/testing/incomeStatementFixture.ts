@@ -81,7 +81,7 @@ const both = (current: string, prior: string) => ({current: usd(current), prior:
  * One plan 50 outline row: `{kind, label, level, account, depth, amounts}`.
  * `depth` is the account's own segment count, as the engine sends it.
  */
-const row = (kind: "heading" | "account" | "other", label: string, level: number, account: string, amounts: unknown) => ({
+const row = (kind: "heading" | "account" | "other" | "total", label: string, level: number, account: string, amounts: unknown) => ({
     kind,
     label,
     level,
@@ -445,5 +445,44 @@ export const OUTLINED_INCOME_STATEMENT: unknown = (() => {
             ...section,
             groups: section.groups.map((group) => (group.name === "Travel" ? {...group, rows: travel} : group)),
         })),
+    };
+})();
+
+/**
+ * OUTLINED_INCOME_STATEMENT with the Budget column on (plan 50 WP5, `budget=1`):
+ * every row, group, section, subtotal and the net carry a `budget` key, `null`
+ * where no goal sits. Synthetic goals: Flights $500.00, Lodging $300.00 (a
+ * heading, so a `total` row closes its children), and a $200.00 goal on
+ * `expenses:people` that spans groups and is footnoted under Expenses
+ * (D14), counted only in its total: $1,000.00. Revenue has no goal.
+ */
+export const BUDGETED_INCOME_STATEMENT: unknown = (() => {
+    type Raw = Record<string, unknown>;
+    const base = OUTLINED_INCOME_STATEMENT as {sections: (Raw & {kind: string; trailing: Raw[]; groups: (Raw & {name: string; rows: Raw[]})[]})[]};
+    const goals: Record<string, unknown> = {
+        Flights: usd("50000"),
+        Lodging: usd("30000"),
+    };
+    const travel = (rows: Raw[]): Raw[] => [
+        ...rows.map((r) => ({...r, budget: goals[r.label as string] ?? null})),
+        {...row("total", "Total Lodging", 0, "expenses:travel:lodging", {current: usd("24360")}), budget: usd("30000")},
+    ];
+    return {
+        ...base,
+        netIncomeBudget: usd("-100000"),
+        sections: base.sections.map((section) => {
+            const opex = section.kind === "opex";
+            return {
+                ...section,
+                budget: opex ? usd("100000") : null,
+                budgetUnplaced: opex ? [{account: "expenses:people", label: "People"}] : [],
+                trailing: section.trailing.map((subtotal) => ({...subtotal, budget: null})),
+                groups: section.groups.map((group) =>
+                    group.name === "Travel"
+                        ? {...group, budget: usd("80000"), rows: travel(group.rows)}
+                        : {...group, budget: null, rows: group.rows.map((r) => ({...r, budget: null}))}
+                ),
+            };
+        }),
     };
 })();

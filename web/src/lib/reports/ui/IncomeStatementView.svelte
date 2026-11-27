@@ -33,12 +33,19 @@
      ladder lines' figures sat under no heading at all. Each ladder line also
      carries the period headings (and the Actual/Projected band) itself.
 
+     The Budget column (plan 50 D12–D14), when the controls ask for it: one
+     italic figure per line, the goals over the whole From–To, immediately
+     after the Total (Total mode: after Amount, before Prior). A budgeted
+     heading gains a ruled `Total <heading>` row; a goal spread over several
+     groups is footnoted under its box and counted only in the box total.
+
      Keyboard: j/k walk every VISIBLE row — group headings included, so `j` does
      something on first load rather than nothing — and Enter either opens the
      disclosure (on a group) or drills into the journal (on an account). -->
 <script lang="ts">
     import HScroll from "#ui/components/HScroll.svelte";
     import type {AmountStyle} from "#lib/domain/types.js";
+    import type {MixedAmount} from "#lib/domain/money.js";
     import {openJournal} from "#lib/journal/openJournal.js";
     import {registerKeys} from "#ui/keys/keymap.svelte.js";
     import {PRIORITY} from "#ui/keys/types.js";
@@ -208,11 +215,13 @@
     /** How many figure cells a line has — for the empty-box row's colspan. */
     /** Plan 34: comparing a projection with actuals (interval mode only). */
     const versus = $derived(compareFrom !== null && buckets !== null);
-    const figureColumns = $derived(buckets !== null ? buckets.length + (versus ? 2 : 1) : comparing ? 3 : 1);
+    const figureColumns = $derived((buckets !== null ? buckets.length + (versus ? 2 : 1) : comparing ? 3 : 1) + (model.budgeted && !versus ? 1 : 0));
     const split = $derived(compareFrom ?? 0);
     const edgeAt = $derived(versus ? compareFrom : projectedFrom);
     const band = $derived(versus ? compareLabel : null);
-    const trailing = $derived(versus ? 2 : 1);
+    /** Plan 50 D12: the Budget column. Never beside a projection comparison, which asks for none. */
+    const budgeted = $derived(model.budgeted && !versus);
+    const trailing = $derived((versus ? 2 : 1) + (budgeted ? 1 : 0));
 
     const valuationLabel = $derived(
         report.value === "market" ? `Market value${report.base === null ? "" : ` in ${report.base}`}` : report.value === "cost" ? "At cost" : "Unvalued"
@@ -239,7 +248,14 @@
      table's auto layout: each box is its own `<table>`, so without fixed numeric
      columns the amounts would land in a different place in every box and the
      ruled subtotals between them would line up with nothing. -->
-{#snippet figures(amounts: Amounts, pct: number | null, emphasis: string)}
+<!-- The Budget cell: italic, beside the Total. Empty where no goal sits. -->
+{#snippet budgetCell(budget: MixedAmount | null, emphasis: string)}
+    <td class="w-32 {buckets !== null ? 'min-w-32' : ''} text-right align-top font-mono whitespace-nowrap text-muted italic tabular-nums" data-column="budget">
+        {#if budget !== null}{@render amount(cell(budget), emphasis)}{/if}
+    </td>
+{/snippet}
+
+{#snippet figures(amounts: Amounts, pct: number | null, emphasis: string, budget: MixedAmount | null = null)}
     {#if buckets !== null}
         {#each amounts.values ?? [] as value, i (i)}
             <td class="w-28 min-w-28 {projectedEdge(i, edgeAt)} text-right align-top font-mono whitespace-nowrap tabular-nums"
@@ -252,9 +268,11 @@
             <td class="w-32 min-w-32 text-right align-top font-mono whitespace-nowrap tabular-nums" data-column="total">
                 {@render amount(cell(amounts.current), emphasis)}
             </td>
+            {#if budgeted}{@render budgetCell(budget, emphasis)}{/if}
         {/if}
     {:else}
         <td class="w-32 text-right align-top font-mono whitespace-nowrap tabular-nums">{@render amount(cell(amounts.current), emphasis)}</td>
+        {#if budgeted}{@render budgetCell(budget, emphasis)}{/if}
         {#if comparing}
             <td class="w-32 text-right align-top font-mono whitespace-nowrap text-muted tabular-nums">{@render amount(cell(amounts.prior), "")}</td>
             <td class="w-20 text-right align-top font-mono whitespace-nowrap text-muted tabular-nums" data-column="pct">{fmtPct(pct)}</td>
@@ -270,15 +288,15 @@
         {#each buckets as bucket, i (bucket.key)}
             <td class="w-28 min-w-28 {projectedEdge(i, edgeAt)}"></td>
         {/each}
-        <td colspan={versus ? 2 : 1}></td>
+        <td colspan={(versus ? 2 : 1) + (budgeted ? 1 : 0)}></td>
     {:else}
-        <td colspan={comparing ? 3 : 1}></td>
+        <td colspan={(comparing ? 3 : 1) + (budgeted ? 1 : 0)}></td>
     {/if}
 {/snippet}
 
 <!-- The column headings for those figures, in the same order. -->
 {#snippet template()}
-    {#if buckets !== null}<FigureColgroup periods={buckets.length} total={!versus} compare={versus} />{/if}
+    {#if buckets !== null}<FigureColgroup periods={buckets.length} total={!versus} compare={versus} budget={budgeted} />{/if}
 {/snippet}
 
 {#snippet figureHeads()}
@@ -292,9 +310,11 @@
             <CompareHeadCells />
         {:else}
             <th class="w-32 min-w-32 text-right font-normal">Total</th>
+            {#if budgeted}<th class="w-32 min-w-32 text-right font-normal italic">Budget</th>{/if}
         {/if}
     {:else}
         <th class="w-32 text-right font-normal">Amount</th>
+        {#if budgeted}<th class="w-32 text-right font-normal italic">Budget</th>{/if}
         {#if comparing}
             <th class="w-32 text-right font-normal">Prior</th>
             <th class="w-20 text-right font-normal">% change</th>
@@ -342,7 +362,7 @@
     <HScroll enabled={grid} class="ll-sticky-col @container" testid="is-scroller">
         <div
             class={grid ? "flex flex-col gap-4" : "contents"}
-            style:min-width={buckets !== null ? statementMinWidth(buckets.length, !versus, versus) : undefined}
+            style:min-width={buckets !== null ? statementMinWidth(buckets.length, !versus, versus, budgeted) : undefined}
         >
             {#each model.boxes as box (box.kind)}
                 {#if flows !== null && box.kind === "revenue"}
@@ -380,7 +400,9 @@
                             <tbody>
                                 {#each box.rows as row (row.key)}
                                     <tr
-                                        class="scroll-mt-10 {cursor.key === row.key ? 'bg-primary/25' : ''} {row.kind === 'group' ? 'font-medium' : ''}"
+                                        class="scroll-mt-10 {cursor.key === row.key ? 'bg-primary/25' : ''} {row.kind === 'group'
+                                            ? 'font-medium'
+                                            : ''} {row.kind === 'total' ? 'border-t border-base-content/20' : ''}"
                                         aria-current={cursor.key === row.key ? "true" : undefined}
                                         data-is-row={row.key}
                                         data-account={row.account ?? undefined}
@@ -414,7 +436,11 @@
                                          indents its own rows the same way (1rem per level). The label is the
                                          engine's outline label; the full path is on hover (plan 50 D6). -->
                                                 <span
-                                                    class="whitespace-nowrap {row.kind === 'heading' ? '' : 'text-muted'}"
+                                                    class="whitespace-nowrap {row.kind === 'heading'
+                                                        ? ''
+                                                        : row.kind === 'total'
+                                                          ? 'font-medium'
+                                                          : 'text-muted'}"
                                                     style="padding-left: {row.indent}rem"
                                                     title={row.account}>{row.label}</span
                                                 >
@@ -423,7 +449,12 @@
                                         {#if row.amounts === null}
                                             {@render blankFigures()}
                                         {:else}
-                                            {@render figures(row.amounts, row.pct, row.kind === "group" ? "font-medium" : "text-muted")}
+                                            {@render figures(
+                                                row.amounts,
+                                                row.pct,
+                                                row.kind === "group" || row.kind === "total" ? "font-medium" : "text-muted",
+                                                row.budget
+                                            )}
                                         {/if}
                                     </tr>
                                 {/each}
@@ -437,11 +468,17 @@
                             <tfoot>
                                 <tr class="border-t-2 border-base-content/20 bg-base-200 text-sm font-bold text-base-content">
                                     <th class="{label} font-bold">Total {box.title}</th>
-                                    {@render figures(box.total, box.totalPct, "font-bold")}
+                                    {@render figures(box.total, box.totalPct, "font-bold", box.totalBudget)}
                                 </tr>
                             </tfoot>
                         </table>
                     </div>
+                    {#if budgeted && box.footnotes.length > 0}
+                        <!-- Plan 50 D14: a goal spread over several groups matches no one row. -->
+                        <ul class="border-t border-base-content/10 px-4 py-2 text-xs text-muted italic" data-testid="is-budget-footnotes">
+                            {#each box.footnotes as note (note)}<li>{note}</li>{/each}
+                        </ul>
+                    {/if}
                 </section>
 
                 <!-- The ladder. Between the boxes, ruled top and bottom, and outside every
@@ -468,7 +505,7 @@
                             <tbody>
                                 <tr>
                                     <th class="{label} text-sm font-semibold">{subtotal.label}</th>
-                                    {@render figures(subtotal.amounts, subtotal.pct, "font-semibold")}
+                                    {@render figures(subtotal.amounts, subtotal.pct, "font-semibold", subtotal.budget)}
                                 </tr>
                             </tbody>
                         </table>
@@ -511,7 +548,7 @@
                                     Net income
                                     <span class="ml-1 text-xs font-normal tracking-normal text-muted normal-case">(revenue − expenses)</span>
                                 </th>
-                                {@render figures(summary.netIncome, null, "font-semibold")}
+                                {@render figures(summary.netIncome, null, "font-semibold", summary.netBudget)}
                             </tr>
                         </tbody>
                     </table>
@@ -536,6 +573,11 @@
                         <span class="text-right font-mono text-xl font-semibold tabular-nums">
                             {@render amount(cell(summary.netIncome.current), "")}
                         </span>
+                        {#if budgeted}
+                            <span class="text-right font-mono text-muted italic tabular-nums" data-testid="is-net-income-budget" title="Budget">
+                                {#if summary.netBudget !== null}{@render amount(cell(summary.netBudget), "")}{:else}<span class="sr-only">No budget</span>{/if}
+                            </span>
+                        {/if}
                         {#if comparing}
                             <span class="text-right font-mono text-muted tabular-nums" data-testid="is-net-income-prior">
                                 {@render amount(cell(summary.netIncome.prior), "")}

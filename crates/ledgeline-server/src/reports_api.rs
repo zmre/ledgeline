@@ -53,7 +53,7 @@ use ledgeline_core::reports::{
     compared_windows, declared_groups, declared_types, detect_subscriptions, gap_totals,
     income_statement, income_statement_columns, income_statement_flows, income_statement_grouped,
     insights, interval_windows, net_worth, pivot_balance_sheets, prices_any_on_sheet,
-    prices_any_on_sheets, prices_any_on_statement, range_buckets,
+    prices_any_on_sheets, prices_any_on_statement, range_buckets, range_goals,
 };
 use ledgeline_core::reports::{
     BillingCustomers, Bridge, BridgeCustomers, COVERAGE_MIN_DEFAULT, CustomerMove, CustomerRow,
@@ -285,6 +285,7 @@ fn outline_kind(kind: OutlineKind) -> &'static str {
         OutlineKind::Heading => "heading",
         OutlineKind::Account => "account",
         OutlineKind::Other => "other",
+        OutlineKind::Total => "total",
     }
 }
 
@@ -659,6 +660,17 @@ struct WireIsRow {
     account: String,
     depth: usize,
     amounts: WireAmounts,
+    /// Present only with `budget=1`: see [`wire_budget`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    budget: Option<Option<WireMixed>>,
+}
+
+/// A Budget-column figure (plan 50 D13): ABSENT when the column is off, so
+/// those bytes don't move, and `null` when the column is on but no goal sits
+/// here. The same absent-vs-null split as `prior`/`buckets`: the report's
+/// `netIncomeBudget` key is the switch.
+fn wire_budget(budgeted: bool, budget: Option<&MixedAmount>) -> Option<Option<WireMixed>> {
+    budgeted.then(|| budget.map(wire_mixed))
 }
 
 impl<A> From<&IsRow<A>> for WireIsRow
@@ -673,6 +685,19 @@ where
             account: row.account.clone(),
             depth: row.depth,
             amounts: WireAmounts::from(&row.amounts),
+            budget: None,
+        }
+    }
+}
+
+impl WireIsRow {
+    fn new<A>(row: &IsRow<A>, budgeted: bool) -> Self
+    where
+        for<'a> WireAmounts: From<&'a A>,
+    {
+        Self {
+            budget: wire_budget(budgeted, row.budget.as_ref()),
+            ..Self::from(row)
         }
     }
 }
@@ -686,19 +711,26 @@ struct WireIsGroup {
     /// three [`GroupSource`] spellings cannot occur here.
     source: &'static str,
     total: WireAmounts,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    budget: Option<Option<WireMixed>>,
     rows: Vec<WireIsRow>,
 }
 
-impl<A> From<&IsGroup<A>> for WireIsGroup
-where
-    for<'a> WireAmounts: From<&'a A>,
-{
-    fn from(group: &IsGroup<A>) -> Self {
+impl WireIsGroup {
+    fn new<A>(group: &IsGroup<A>, budgeted: bool) -> Self
+    where
+        for<'a> WireAmounts: From<&'a A>,
+    {
         Self {
             name: group.name.clone(),
             source: group_source(group.source),
             total: WireAmounts::from(&group.total),
-            rows: group.rows.iter().map(WireIsRow::from).collect(),
+            budget: wire_budget(budgeted, group.budget.as_ref()),
+            rows: group
+                .rows
+                .iter()
+                .map(|row| WireIsRow::new(row, budgeted))
+                .collect(),
         }
     }
 }
@@ -720,13 +752,15 @@ struct WireIsSubtotal {
     kind: &'static str,
     label: String,
     total: WireAmounts,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    budget: Option<Option<WireMixed>>,
 }
 
-impl<A> From<&IsSubtotal<A>> for WireIsSubtotal
-where
-    for<'a> WireAmounts: From<&'a A>,
-{
-    fn from(subtotal: &IsSubtotal<A>) -> Self {
+impl WireIsSubtotal {
+    fn new<A>(subtotal: &IsSubtotal<A>, budgeted: bool) -> Self
+    where
+        for<'a> WireAmounts: From<&'a A>,
+    {
         Self {
             kind: match subtotal.kind {
                 IsSubtotalKind::GrossProfit => "grossProfit",
@@ -736,6 +770,7 @@ where
             },
             label: subtotal.label.clone(),
             total: WireAmounts::from(&subtotal.total),
+            budget: wire_budget(budgeted, subtotal.budget.as_ref()),
         }
     }
 }
@@ -751,13 +786,27 @@ struct WireIsSection {
     total: WireAmounts,
     /// Subtotals printed AFTER this box; `[]` for most of them.
     trailing: Vec<WireIsSubtotal>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    budget: Option<Option<WireMixed>>,
+    /// Present only with `budget=1`: goals spread over several groups, shown
+    /// in this box's total only (plan 50 D14).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    budget_unplaced: Option<Vec<WireUnplacedBudget>>,
 }
 
-impl<A> From<&IsSection<A>> for WireIsSection
-where
-    for<'a> WireAmounts: From<&'a A>,
-{
-    fn from(section: &IsSection<A>) -> Self {
+/// A D14 footnote entry.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireUnplacedBudget {
+    account: String,
+    label: String,
+}
+
+impl WireIsSection {
+    fn new<A>(section: &IsSection<A>, budgeted: bool) -> Self
+    where
+        for<'a> WireAmounts: From<&'a A>,
+    {
         Self {
             kind: match section.kind {
                 IsSectionKind::Revenue => "revenue",
@@ -769,9 +818,28 @@ where
                 IsSectionKind::Other => "other",
             },
             title: section.title.clone(),
-            groups: section.groups.iter().map(WireIsGroup::from).collect(),
+            groups: section
+                .groups
+                .iter()
+                .map(|group| WireIsGroup::new(group, budgeted))
+                .collect(),
             total: WireAmounts::from(&section.total),
-            trailing: section.trailing.iter().map(WireIsSubtotal::from).collect(),
+            trailing: section
+                .trailing
+                .iter()
+                .map(|subtotal| WireIsSubtotal::new(subtotal, budgeted))
+                .collect(),
+            budget: wire_budget(budgeted, section.budget.as_ref()),
+            budget_unplaced: budgeted.then(|| {
+                section
+                    .budget_unplaced
+                    .iter()
+                    .map(|goal| WireUnplacedBudget {
+                        account: goal.account.clone(),
+                        label: goal.label.clone(),
+                    })
+                    .collect()
+            }),
         }
     }
 }
@@ -812,6 +880,11 @@ pub(crate) struct WireIncomeStatementReport {
     /// Non-empty sections only, in ladder order.
     sections: Vec<WireIsSection>,
     net_income: WireAmounts,
+    /// The Budget column's switch (plan 50 D12): ABSENT without `budget=1`;
+    /// with it, the goals' net income or `null`, and every row, group,
+    /// section and subtotal then carries a `budget` key too.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    net_income_budget: Option<Option<WireMixed>>,
     /// Always present, because the unpriced banner keys off it on every request.
     meta: WireReportMeta,
 }
@@ -832,8 +905,13 @@ impl WireIncomeStatementReport {
             value,
             multi_step: report.multi_step,
             max_depth: report.max_depth,
-            sections: report.sections.iter().map(WireIsSection::from).collect(),
+            sections: report
+                .sections
+                .iter()
+                .map(|section| WireIsSection::new(section, report.budgeted))
+                .collect(),
             net_income: WireAmounts::from(&report.net_income),
+            net_income_budget: wire_budget(report.budgeted, report.net_income_budget.as_ref()),
             meta: WireReportMeta::from(&report.meta),
         }
     }
@@ -3311,6 +3389,9 @@ pub(crate) struct IncomeStatementGroupedQuery {
     /// Clip each group's rows to this many account segments (plan 50 D8),
     /// `hledger is --depth N`. Absent = unlimited; `0` = no rows (totals only).
     depth: Option<usize>,
+    /// `1` adds the Budget column (plan 50 D12): every row and total gains a
+    /// `budget` figure from the journal's `~` goals over `[from, to]`.
+    budget: Option<String>,
 }
 
 /// `?from=&to=&valueIn=` for the income statement's flow graphs.
@@ -3834,6 +3915,15 @@ pub(crate) async fn incomestatement_grouped(
     }
     let raw_value_in = query.value_in;
     let depth = query.depth;
+    let with_budget = match query.budget.as_deref() {
+        None | Some("0") => false,
+        Some("1") => true,
+        Some(other) => {
+            return Err(AppError::BadRequest(format!(
+                "budget={other}: expected 1 or 0"
+            )));
+        }
+    };
 
     compute(move || {
         let journal = &snapshot.journal;
@@ -3871,6 +3961,10 @@ pub(crate) async fn incomestatement_grouped(
                 )
             },
         )?;
+        // The Budget column covers the Total column's span (plan 50 D12/D15).
+        let goals = with_budget
+            .then(|| range_goals(&journal.periodic_transactions, &from, &to))
+            .transpose()?;
         let opts = IsOpts {
             from: &from,
             to: &to,
@@ -3879,6 +3973,7 @@ pub(crate) async fn incomestatement_grouped(
             compare,
             depth,
             names: &names,
+            budget: goals.as_ref(),
         };
         Ok(match grain {
             None => WireIncomeStatementReport::new(

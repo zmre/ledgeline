@@ -2416,6 +2416,9 @@ mod tests {
                     OutlineKind::Other => {
                         format!("{indent}~ {} {}", row.label, amount(&row.amount))
                     }
+                    OutlineKind::Total => {
+                        format!("{indent}= {} {}", row.label, amount(&row.amount))
+                    }
                 }
             })
             .collect()

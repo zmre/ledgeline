@@ -48,6 +48,10 @@ pub enum OutlineKind {
     Account,
     /// A heading account's own postings, listed as its first child.
     Other,
+    /// `Total <heading>`, closing a heading's children. The outline builder
+    /// never emits it: the P&L adds one only for a budgeted heading (plan 50
+    /// D4 exception), so every statement's rows share this one vocabulary.
+    Total,
 }
 
 /// One row of an outline, in display order.
@@ -276,7 +280,9 @@ fn relabel(ctx: &Ctx<'_>, trees: Vec<Tree>) -> Vec<Tree> {
 fn flatten(ctx: &Ctx<'_>, trees: Vec<Tree>, level: usize, out: &mut Vec<OutlineNode>) {
     trees.into_iter().for_each(|tree| {
         let members = match tree.kind {
-            OutlineKind::Heading | OutlineKind::Account => ctx.members_under(&tree.account),
+            OutlineKind::Heading | OutlineKind::Account | OutlineKind::Total => {
+                ctx.members_under(&tree.account)
+            }
             OutlineKind::Other => ctx
                 .shown
                 .get(tree.account.as_str())
@@ -331,6 +337,7 @@ mod tests {
                     OutlineKind::Heading => "#",
                     OutlineKind::Account => "-",
                     OutlineKind::Other => "~",
+                    OutlineKind::Total => "=",
                 };
                 format!("{}{marker} {}", "  ".repeat(n.level), n.label)
             })

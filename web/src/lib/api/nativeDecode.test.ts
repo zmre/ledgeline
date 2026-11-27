@@ -1,7 +1,13 @@
 import {readFileSync} from "node:fs";
 import {describe, expect, it} from "vitest";
 import {CLASSIFIED_BALANCE_SHEET, GROUPED_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "#lib/testing/balanceSheetFixture.js";
-import {GROUPED_INCOME_STATEMENT, MULTI_STEP_INCOME_STATEMENT, UNCOMPARED_INCOME_STATEMENT} from "#lib/testing/incomeStatementFixture.js";
+import {
+    BUDGETED_INCOME_STATEMENT,
+    GROUPED_INCOME_STATEMENT,
+    MULTI_STEP_INCOME_STATEMENT,
+    OUTLINED_INCOME_STATEMENT,
+    UNCOMPARED_INCOME_STATEMENT,
+} from "#lib/testing/incomeStatementFixture.js";
 import {ApiShapeError} from "./client";
 import {periodsOf} from "#lib/reports/test-helpers.js";
 import {
@@ -199,7 +205,7 @@ describe("UNIT nativeDecode — BalanceSheetReport (grouped)", () => {
             Object.assign(raw.sections[0].groups[0].rows[0], patch);
             return raw;
         };
-        expect(() => decodeBalanceSheetReport(broken({kind: "total"}))).toThrow(/kind/);
+        expect(() => decodeBalanceSheetReport(broken({kind: "subtotal"}))).toThrow(/kind/);
         expect(() => decodeBalanceSheetReport(broken({level: undefined}))).toThrow(/level/);
         expect(() => decodeBalanceSheetReport(broken({amount: undefined}))).toThrow(/amount/);
     });
@@ -3276,5 +3282,60 @@ describe("UNIT nativeDecode — the budget editor's reference strip", () => {
 
     it("refuses a body with no periods array", () => {
         expect(() => decodeAccountReference({account: "a", interval: "monthly"})).toThrow(ApiShapeError);
+    });
+});
+
+// Plan 50 WP5: the Budget column. `netIncomeBudget` is the switch, the way
+// `prior` and `buckets` are: present (a figure or null) exactly with
+// `budget=1`, and then every figure's `budget` key must be there too.
+describe("UNIT nativeDecode — IncomeStatementReport Budget column (plan 50)", () => {
+    type Raw = {sections: {groups: {rows: Record<string, unknown>[]}[]; budgetUnplaced?: unknown}[]} & Record<string, unknown>;
+    const raw = (): Raw => structuredClone(BUDGETED_INCOME_STATEMENT) as Raw;
+
+    it("leaves every budget null and the switch off without the column", () => {
+        const plain = decodeIncomeStatementReport(OUTLINED_INCOME_STATEMENT);
+        expect(plain.budgeted).toBe(false);
+        expect(plain.netIncomeBudget).toBeNull();
+        const opex = plain.sections[1];
+        expect(opex.budget).toBeNull();
+        expect(opex.budgetUnplaced).toEqual([]);
+        expect(opex.groups.every((g) => g.budget === null && g.rows.every((r) => r.budget === null))).toBe(true);
+    });
+
+    it("decodes the goals, the `total` row and the D14 footnote list", () => {
+        const report = decodeIncomeStatementReport(BUDGETED_INCOME_STATEMENT);
+        expect(report.budgeted).toBe(true);
+        expect(report.netIncomeBudget?.get("$")).toEqual({m: -100000n, p: 2});
+        const opex = report.sections[1];
+        expect(opex.budget?.get("$")).toEqual({m: 100000n, p: 2});
+        expect(opex.budgetUnplaced).toEqual([{account: "expenses:people", label: "People"}]);
+        expect(report.sections[0].budget).toBeNull();
+        const travel = opex.groups.find((g) => g.name === "Travel");
+        expect(travel?.budget?.get("$")).toEqual({m: 80000n, p: 2});
+        expect(travel?.rows.map((r) => [r.kind, r.label, r.budget?.get("$")?.m ?? null])).toEqual([
+            ["account", "Flights", 50000n],
+            ["heading", "Lodging", 30000n],
+            ["other", "Lodging (other)", null],
+            ["account", "Hotels", null],
+            ["total", "Total Lodging", 30000n],
+        ]);
+    });
+
+    it("throws when the column is on but a figure has no budget key", () => {
+        const body = raw();
+        delete body.sections[1].groups[0].rows[0].budget;
+        expect(() => decodeIncomeStatementReport(body)).toThrow(/budget: missing/);
+    });
+
+    it("throws when the column is on but a section has no footnote list", () => {
+        const body = raw();
+        delete body.sections[0].budgetUnplaced;
+        expect(() => decodeIncomeStatementReport(body)).toThrow(/budgetUnplaced: expected an array/);
+    });
+
+    it("throws on a budget figure sent without the column", () => {
+        const body = raw();
+        delete body.netIncomeBudget;
+        expect(() => decodeIncomeStatementReport(body)).toThrow(/no Budget column/);
     });
 });

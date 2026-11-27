@@ -454,6 +454,72 @@ fn accumulate_into(dst: &mut MixedAmount, src: &MixedAmount) -> Result<(), Repor
     Ok(())
 }
 
+/// Every firing of the `selected` goal rules inside the inclusive span
+/// `[start, end]`: `(date, rule)`, rule by rule, each rule's dates ascending.
+/// The one occurrence walk behind both [`budget_report`]'s goal buckets and
+/// [`range_goals`].
+fn goal_firings<'r>(
+    selected: &[&'r PeriodicTransaction],
+    start: &str,
+    end: &str,
+) -> Result<Vec<(String, &'r PeriodicTransaction)>, ReportError> {
+    selected
+        .iter()
+        .map(|rule| {
+            Ok(occurrences(start, end, &rule.period)?
+                .into_iter()
+                .map(|date| (date, *rule))
+                .collect::<Vec<_>>())
+        })
+        .collect::<Result<Vec<_>, ReportError>>()
+        .map(|firings| firings.into_iter().flatten().collect())
+}
+
+/// Add one firing of `rule` into `goals`: each posting's amounts on its
+/// account, clipped to `depth` segments.
+fn accumulate_goal(
+    goals: &mut BTreeMap<String, MixedAmount>,
+    rule: &PeriodicTransaction,
+    depth: usize,
+) -> Result<(), ReportError> {
+    for posting in &rule.postings {
+        let entry = goals
+            .entry(clip(&posting.account.0, depth).to_string())
+            .or_default();
+        for amount in &posting.amounts {
+            entry.accumulate(&amount.commodity, amount.quantity)?;
+        }
+    }
+    Ok(())
+}
+
+/// Each goal account's OWN goal over the inclusive span `[from, to]`, summed
+/// over every firing of every rule (recognition rules excluded, as in
+/// [`budget_report`]): what one `hledger bal --budget -b FROM -e TO+1` column
+/// would budget, before parents aggregate their children. Accounts whose goal
+/// nets to zero are kept, so a budgeted account still reads as budgeted.
+///
+/// The P&L's Budget column (plan 50 D15) is built from this, so the goals and
+/// the periodic-rule semantics are exactly the Budget page's.
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow or bad period math.
+pub fn range_goals(
+    rules: &[PeriodicTransaction],
+    from: &str,
+    to: &str,
+) -> Result<BTreeMap<String, MixedAmount>, ReportError> {
+    let rules = crate::accrual::without_recognition_rules(rules);
+    let selected: Vec<&PeriodicTransaction> = rules.iter().collect();
+    goal_firings(&selected, from, to)?.into_iter().try_fold(
+        BTreeMap::new(),
+        |mut goals, (_, rule)| {
+            accumulate_goal(&mut goals, rule, usize::MAX)?;
+            Ok(goals)
+        },
+    )
+}
+
 /// Compute the budget report for `txns`/`rules` under `opts`.
 ///
 /// # Errors
@@ -580,19 +646,11 @@ pub fn budget_report(
         .collect();
     let mut goal_own: Vec<BTreeMap<String, MixedAmount>> =
         (0..buckets.len()).map(|_| BTreeMap::new()).collect();
-    for rule in &selected {
-        for date in occurrences(&report_start, opts.end, &rule.period)? {
-            let Some(&index) = bucket_index.get(bucket_key(&date, opts.interval).as_str()) else {
-                continue;
-            };
-            for posting in &rule.postings {
-                let name = clip(&posting.account.0, opts.depth).to_string();
-                let entry = goal_own[index].entry(name).or_default();
-                for amount in &posting.amounts {
-                    entry.accumulate(&amount.commodity, amount.quantity)?;
-                }
-            }
-        }
+    for (date, rule) in goal_firings(&selected, &report_start, opts.end)? {
+        let Some(&index) = bucket_index.get(bucket_key(&date, opts.interval).as_str()) else {
+            continue;
+        };
+        accumulate_goal(&mut goal_own[index], rule, opts.depth)?;
     }
     let goal_incl: Vec<BTreeMap<String, MixedAmount>> =
         goal_own.iter().map(roll_up).collect::<Result<_, _>>()?;
@@ -1229,6 +1287,49 @@ mod tests {
         let food = row(&report, "expenses:food");
         assert_eq!(food.cells[0].goal, Some(usd_ma(40_000)));
         assert_eq!(food.cells[1].goal, Some(usd_ma(40_000)));
+    }
+
+    /// `range_goals` over a span is the sum of `budget_report`'s monthly goal
+    /// cells over the same span: one occurrence walk, two shapes (plan 50 D15).
+    /// It keeps each account's OWN goal; parents aggregate only in the report.
+    #[test]
+    fn range_goals_sum_the_budget_reports_own_goals() {
+        let rules = vec![
+            rule(
+                PeriodExpr::Weekly,
+                "",
+                vec![goal_posting("expenses:food", 100)],
+            ),
+            rule(
+                PeriodExpr::Monthly,
+                "",
+                vec![
+                    goal_posting("expenses:food:groceries", 50),
+                    goal_posting("income:salary", -3000),
+                ],
+            ),
+        ];
+        let goals = range_goals(&rules, "2026-01-01", "2026-02-28").unwrap();
+        assert_eq!(
+            goals,
+            BTreeMap::from([
+                ("expenses:food".to_string(), usd_ma(80_000)),
+                ("expenses:food:groceries".to_string(), usd_ma(10_000)),
+                ("income:salary".to_string(), usd_ma(-600_000)),
+            ])
+        );
+        let report = budget_report(&[], &rules, &opts("2026-02-28", 2, None)).unwrap();
+        let summed = |account: &str| {
+            row(&report, account)
+                .cells
+                .iter()
+                .filter_map(|cell| cell.goal.clone())
+                .try_fold(MixedAmount::new(), |acc, goal| acc.ma_add(&goal))
+                .unwrap()
+        };
+        assert_eq!(summed("expenses:food:groceries"), usd_ma(10_000));
+        // The report's parent row is inclusive: its own goal plus the child's.
+        assert_eq!(summed("expenses:food"), usd_ma(90_000));
     }
 
     // -----------------------------------------------------------------------

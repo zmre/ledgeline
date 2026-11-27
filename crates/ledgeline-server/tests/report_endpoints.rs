@@ -3473,3 +3473,112 @@ async fn saas_counts_customers_from_billings_on_clearing_books() {
     // Receivables resolve, so runway uses the adjusted basis.
     assert_eq!(body["current"]["runwayBasis"], "adjusted");
 }
+
+/// Plan 50 WP5: `budget=1` adds the Budget column. Without it no `budget` key
+/// appears anywhere (the bytes of every other request stand); with it every
+/// row, group, section, subtotal and the net carry `budget` (`null` where no
+/// goal sits), sections carry `budgetUnplaced`, and a budgeted heading gains
+/// a `total` row. Goals cover the whole `[from, to]`, in Total and interval
+/// mode alike, and a comparison doesn't change them.
+#[tokio::test]
+async fn incomestatement_grouped_budget_column() {
+    let text = "\
+account expenses:travel  ; isgroup: Travel
+account expenses:people-costs:payroll-fees  ; isgroup: Services
+account expenses:fees  ; isgroup: Services
+
+~ monthly
+    (expenses:travel:lodging)   $300
+    (expenses:people-costs)     $100
+    (revenues:sales)          $-1000
+    (assets:savings)            $50
+
+2026-01-10 trip
+    expenses:travel:airfare          $100
+    expenses:travel:lodging:hotels   $200
+    expenses:travel:lodging:rentals   $50
+    assets:bank
+
+2026-02-10 payroll
+    expenses:people-costs:payroll-fees  $10
+    expenses:people-costs:wages        $900
+    expenses:fees:legal                 $30
+    revenues:sales                   $-2500
+    assets:bank
+";
+    let journal = parse_journal(text, "budget-column.journal").expect("parses");
+    let base = "/api/reports/incomestatement/grouped?from=2026-01-01&to=2026-02-28&value=cost";
+
+    let plain = body_ok(&journal, base).await;
+    let serialized = plain.to_string();
+    assert!(!serialized.contains("\"budget\""), "{serialized}");
+    assert!(!serialized.contains("budgetUnplaced"));
+    assert!(plain.get("netIncomeBudget").is_none());
+    assert_eq!(
+        body_ok(&journal, &format!("{base}&budget=0")).await,
+        plain,
+        "budget=0 is the plain statement"
+    );
+
+    let usd = |dollars: i128| -> Canon { BTreeMap::from([("$".to_string(), canon(dollars, 0))]) };
+    for query in ["", "&compare=none", "&interval=monthly&compare=none"] {
+        let body = body_ok(&journal, &format!("{base}&budget=1{query}")).await;
+        // Two months of goals: $2000 revenue, $600 lodging, $200 people costs.
+        assert_eq!(wire_ma(&body["netIncomeBudget"]), usd(1200), "{query}");
+        let revenue = section(&body, "Revenue");
+        assert_eq!(wire_ma(&revenue["budget"]), usd(2000));
+        let expenses = section(&body, "Expenses");
+        assert_eq!(wire_ma(&expenses["budget"]), usd(800));
+        assert_eq!(
+            expenses["budgetUnplaced"],
+            serde_json::json!([{"account": "expenses:people-costs", "label": "People Costs"}]),
+            "people costs spans Services and the untagged People Costs line"
+        );
+        let travel = expenses["groups"]
+            .as_array()
+            .expect("groups")
+            .iter()
+            .find(|group| group["name"] == "Travel")
+            .expect("Travel group");
+        assert_eq!(wire_ma(&travel["budget"]), usd(600));
+        let rows: Vec<(&str, &str, bool)> = travel["rows"]
+            .as_array()
+            .expect("rows")
+            .iter()
+            .map(|row| {
+                (
+                    row["kind"].as_str().expect("kind"),
+                    row["label"].as_str().expect("label"),
+                    row["budget"].is_null(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("account", "Airfare", true),
+                ("heading", "Lodging", false),
+                ("account", "Hotels", true),
+                ("account", "Rentals", true),
+                ("total", "Total Lodging", false),
+            ],
+            "{query}"
+        );
+        let total = &travel["rows"][4];
+        assert_eq!(wire_ma(&total["budget"]), usd(600));
+        assert_eq!(wire_ma(&total["amounts"]["current"]), usd(250));
+        for group in expenses["groups"].as_array().expect("groups") {
+            assert!(group.get("budget").is_some(), "every group carries the key");
+        }
+        assert!(
+            revenue["budgetUnplaced"]
+                .as_array()
+                .expect("list")
+                .is_empty()
+        );
+    }
+
+    let (status, message) = get_error(&journal, &format!("{base}&budget=yes")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(message.contains("budget=yes"), "{message}");
+}
