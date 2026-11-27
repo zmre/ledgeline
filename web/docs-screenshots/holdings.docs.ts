@@ -32,3 +32,16 @@ test("other holdings", async ({page}) => {
     await expect(page.getByTestId("other-holdings-table")).toBeVisible();
     await shot(page, SECTION, "other");
 });
+
+test.describe("crypto", () => {
+    test.use({journal: "crypto"});
+
+    // Plan 48: coins on the Stocks tab, every one tagged `type: crypto`, the
+    // pie divided by asset class.
+    test("crypto holdings", async ({page}) => {
+        await page.goto("/holdings");
+        await expect(page.getByTestId("holdings-table")).toBeVisible();
+        await expect(page.getByTestId("shares-BTC")).toHaveText("0.0499");
+        await shot(page, SECTION, "crypto");
+    });
+});

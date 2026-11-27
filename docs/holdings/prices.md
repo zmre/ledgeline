@@ -62,19 +62,21 @@ commodity 1.0000 BRKB   ; yahoo: BRK-B
 commodity 1.0000 VTSAX  ; yahoo: VTSAX
 ```
 
-| Tag present | Looked up as         |
-|-------------|----------------------|
-| `yahoo: X`  | `X`                  |
-| absent      | the commodity symbol |
+| Tags on the commodity                      | Looked up as                                     |
+|--------------------------------------------|--------------------------------------------------|
+| `yahoo: X`                                 | `X`, whatever else is tagged                     |
+| `type: crypto` or `assetclass: crypto`     | the coin's pair in your base currency: `BTC-USD`, `BTC-EUR` |
+| neither                                    | the commodity symbol                             |
 
 The tag goes on the `commodity` directive line itself — not on an indented line
 under it — and lives happily beside any other tag you keep there. Anything Yahoo
 Finance quotes works: stocks, ETFs, mutual funds by their NAV, and index symbols
 like `^GSPC`.
 
-Coins need the tag. On Yahoo Finance `BTC`, `ETH` and `USDC` are other
-securities (`BTC` is a Grayscale ETF), so tag `commodity BTC ; yahoo: BTC-USD`.
-See [Crypto](crypto.md).
+A coin needs `type: crypto` (or a `yahoo:` tag naming its pair). On Yahoo
+Finance `BTC`, `ETH` and `USDC` are other securities (`BTC` is a Grayscale
+ETF), so an untagged `BTC` is priced as that ETF, and the summary and the
+Holdings page say so. See [Crypto](crypto.md).
 
 ### What a press actually does
 
@@ -83,11 +85,22 @@ See [Crypto](crypto.md).
   pressing the button repeatedly does not grow the file.
 - **Reports per symbol, fails as a whole for nothing.** A ticker Yahoo has no
   quote for, or a request that fails outright, is listed by name in the summary;
-  every other symbol is still written.
-- **Writes in your journal's own style.** The fetched quote is rounded to the
-  precision your journal already uses for the base commodity, so an update reads
-  as `P 2026-08-31 AAPL $315.23` rather than the ten-digit float Yahoo answers
-  with.
+  every other symbol is still written. Each written price names what Yahoo
+  priced ("Bitcoin USD"), so a ticker that points at the wrong instrument is
+  visible.
+- **Checks what it priced.** A commodity tagged `type: crypto` whose ticker
+  Yahoo answers with something that is not a coin (an ETF, a stock) is *not
+  recorded*, and the summary says what came back. A well-known coin symbol
+  with no tags (`BTC`, `ETH`, `SOL`, …) priced as something that is not a coin
+  is recorded, because you may hold that ETF, and the summary and the Holdings
+  page warn about it.
+- **Writes in your journal's own style.** The fetched quote is written in the
+  style your journal already uses for the base commodity, rounded to six
+  significant digits but never to fewer decimals than that style has. An
+  update reads as `P 2026-08-31 AAPL $315.23` rather than the ten-digit float
+  Yahoo answers with, while a price under a dollar keeps the digits that
+  matter: `$0.0412` for a penny stock, `$0.99874` for a stablecoin. A price is
+  never written with more than ten decimals, hledger's own limit.
 - **Keeps the file in date order.** Each new line goes straight after the
   last `P` line dated on or before it, so same-day prices stay together; a
   price older than every other goes before the first, and a file with no `P`
@@ -109,7 +122,8 @@ and Ledgeline keeps the prices current for you while it is open:
 - **Shortly after it starts**, and then **about once an hour**, it checks your
   journal for stocks missing the **latest closing price** — today's once US
   markets have closed (after 21:30 UTC on a weekday), otherwise the previous
-  weekday's.
+  weekday's. A coin's latest close is yesterday's (midnight UTC) on every day
+  of the week; see [Crypto](crypto.md).
 - **It fills in weekly history.** For each of the last *N* Monday-to-Sunday
   weeks (6 by default, 0 to 52), a stock with no `P` line anywhere in that week
   gets the week's Friday close — or the week's last trading day, when the

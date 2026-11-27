@@ -33,7 +33,20 @@
         label: string;
         value: string;
         valueClass: string;
+        /** A short qualifier under the value, with a longer explanation on hover/focus. */
+        note?: {text: string; tip: string};
     }
+
+    // A windowed Gain % is money-weighted (gain over the start value plus net
+    // money in), the Performance line time-weighted: they differ whenever
+    // money moved during the period, so the tile says which it is. The
+    // all-time figure is gain over cost and needs no such note.
+    const MONEY_WEIGHTED = {
+        text: "money-weighted",
+        tip:
+            "Gain over the value at the start plus the money you put in during the period. " +
+            "The Performance chart is time-weighted, so the two differ when you bought or sold during the period.",
+    };
     const stats: Stat[] = $derived([
         {label: "Market value", value: format(totals.marketValue), valueClass: ""},
         {label: "Cost basis", value: totals.basis === null ? EM_DASH : format(totals.basis), valueClass: ""},
@@ -50,6 +63,7 @@
             label: gainPctLabel,
             value: formatGainPct(totals.gainPct),
             valueClass: signClass(totals.gainPct),
+            ...(gainPeriod === "all" ? {} : {note: MONEY_WEIGHTED}),
         },
     ]);
     /** One size for every tile, fitted to the longest value, so the four read as a set. */
@@ -77,6 +91,13 @@
                 <div class="stat-value leading-tight [overflow-wrap:anywhere] whitespace-normal {stat.valueClass}" style:font-size={valueSize}>
                     {stat.value}
                 </div>
+                {#if stat.note}
+                    <div class="stat-desc">
+                        <span class="tooltip tooltip-bottom" data-tip={stat.note.tip}>
+                            <button type="button" class="cursor-help" data-testid="gain-pct-note">{stat.note.text}</button>
+                        </span>
+                    </div>
+                {/if}
             </div>
         {/each}
     </div>

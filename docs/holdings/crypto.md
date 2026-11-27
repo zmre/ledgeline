@@ -12,44 +12,61 @@ your journal, an account that holds one shows up on **Holdings → Stocks**, and
 its price comes from Yahoo Finance. Charts, gains, the allocation pie and
 Performance all work, provided you set up each coin as described below.
 
-> [!WARNING]
-> **Always give a coin a `yahoo:` tag.** Without one, Ledgeline looks the
-> commodity up under its own symbol, and on Yahoo Finance `BTC`, `ETH`, `SOL`,
-> `XRP` and `USDC` are *not* the coins. `BTC` is the Grayscale Bitcoin Mini
-> Trust ETF, at about $27 a share. Update prices would write that price for your
-> bitcoin and give no warning.
+![Holdings → Stocks with bitcoin, ether, two stablecoins and two tokens](images/crypto.png)
 
 ## Setting up a coin
 
-Declare each coin once, with its Yahoo ticker and `type: crypto`:
+Declare each coin once, with `type: crypto`:
 
 ```journal
-commodity 1.00000000 BTC   ; type: crypto, yahoo: BTC-USD
-commodity 1.000000 ETH     ; type: crypto, yahoo: ETH-USD
-commodity 1.000000 SOL     ; type: crypto, yahoo: SOL-USD
-commodity 1.00 USDC        ; type: crypto, yahoo: USDC-USD
+commodity 1.00000000 BTC   ; type: crypto
+commodity 1.000000 ETH     ; type: crypto
+commodity 1.000000 SOL     ; type: crypto
+commodity 1.00 USDC        ; type: crypto
 ```
 
-- **`yahoo:`** is the Yahoo Finance ticker. Coins are quoted as a pair, for example
-  `BTC-USD`. Use the pair in your journal's base currency: `BTC-USD` for a
-  dollar ledger, `BTC-EUR` for a euro one. Ledgeline writes the fetched number
-  in your base currency and does not convert it, so `BTC-EUR` in a dollar
-  ledger would record euros as dollars.
-- **`type: crypto`** puts the coin in the **Crypto** slice when the pie is
-  divided by asset class or security type (see
-  [Allocation by category](allocation.md)).
-- **The number format** (`1.00000000`) sets how many decimals the coin's
-  quantities show. Eight places is a satoshi.
+- **`type: crypto`** tells Ledgeline the commodity is a coin. It is looked up
+  on Yahoo Finance as the coin's pair in your journal's base currency: `BTC`
+  becomes `BTC-USD` in a dollar ledger and `BTC-EUR` in a euro one, so the
+  price is Yahoo's own euro price, not a dollar price converted. It also puts
+  the coin in the **Crypto** slice of the pie in every view: asset class,
+  sector, industry, security type, category and risk (see
+  [Allocation by category](allocation.md)). `assetclass: crypto` does the same.
+- **The number format** (`1.00000000`) is how many decimals you write. The
+  Shares column shows each quantity as written, up to eight decimals (a
+  satoshi), with trailing zeros dropped. Ledgeline, like hledger, reads at
+  most ten decimals, so an ether quantity written to eighteen places (wei) is
+  kept to ten.
+
+A `$` ledger is taken to be in US dollars. A base currency without a single
+ISO code (`¥`) gets no pair; Update prices then looks the coin up under its own
+symbol and says so. Give such a coin a `yahoo:` tag naming its pair.
+
+> [!NOTE]
+> **Untagged coins are priced as whatever Yahoo calls that symbol.** On Yahoo
+> Finance `BTC`, `ETH` and `XRP` are ETFs and `USDC` is a stock. An untagged
+> `commodity BTC` is priced as the Grayscale Bitcoin Mini Trust ETF, about $27
+> a share, because you might hold that ETF. When a well-known coin symbol is
+> priced as something that is not a coin, Update prices and the Holdings page
+> say what it was priced as and how to fix it.
+
+### Tokens Yahoo lists under another ticker
 
 Some tokens share a symbol with another token. Yahoo then adds a number to the
-ticker, for example `UNI7083-USD` for Uniswap or `PEPE24478-USD` for Pepe. Search for the token on
-finance.yahoo.com and copy the ticker exactly as shown. hledger needs a symbol with digits in
-it quoted, so it is simpler to keep a plain symbol and put the full ticker in the
-tag:
+ticker, for example `UNI7083-USD` for Uniswap or `PEPE24478-USD` for Pepe, and
+`UNI-USD` finds nothing. Search for the token on finance.yahoo.com and copy the
+ticker exactly as shown into a `yahoo:` tag. hledger needs a symbol with digits
+in it quoted, so it is simpler to keep a plain symbol and put the full ticker in
+the tag:
 
 ```journal
 commodity 1.00 UNI   ; type: crypto, yahoo: UNI7083-USD
 ```
+
+A `yahoo:` tag always wins. Each price Update prices writes names what Yahoo
+priced ("Uniswap USD"), so a ticker that points at a different token shows up.
+If a coin-tagged commodity's ticker turns out to be a stock or an ETF, its
+price is not recorded at all, and the summary says what Yahoo answered.
 
 ## The accounts
 
@@ -79,6 +96,21 @@ A move between two of your own wallets changes nothing on Holdings: Ledgeline
 pools each coin across every account in scope. A network fee paid in the coin
 reduces what you hold.
 
+On the Performance chart that fee counts as a loss, not as money you took out,
+and its share of the cost basis goes with it. A staking reward booked against
+an income account with `staking` in its name counts as return, not as money
+you put in. The words are a setting, Settings → Prices → Income that counts as
+investment return (see [Holdings](index.md#the-value-over-time-chart)):
+
+```journal
+2026-04-01 Staking reward
+    assets:crypto:coinbase      0.01 ETH @ $3,000.00
+    income:staking
+```
+
+The reward's `@` value still joins the cost basis, so the holding's all-time
+gain (value minus cost) leaves the reward out. A gain over a period counts it.
+
 ## Stablecoins
 
 USDT, USDC and similar coins are priced like any other coin, so a depeg shows up.
@@ -86,7 +118,7 @@ They count as **Crypto** in the pie. To count one as cash instead, add
 `assetclass: cash`:
 
 ```journal
-commodity 1.00 USDC   ; type: crypto, assetclass: cash, yahoo: USDC-USD
+commodity 1.00 USDC   ; type: crypto, assetclass: cash
 ```
 
 The account stays on the Stocks tab either way. It holds a commodity, not your
@@ -96,25 +128,22 @@ base currency.
 
 - **Update prices** and automatic updates fetch daily closes for coins like any
   other holding. Yahoo dates a coin's daily close at midnight UTC.
-- **Weekends.** Automatic updates follow the stock-market calendar, so they do
-  not fill in Saturday and Sunday closes. On the 1 week chart the weekend is
-  drawn flat at Friday's price. The [delayed quote](index.md#the-value-over-time-chart)
-  for today still applies on any day.
-- **Small prices are rounded today.** A fetched price is rounded to your base
-  currency's decimals. For a stablecoin that barely matters: USDT at $0.99874
-  is written as `$1.00`. A token worth less than half a cent is written as
-  `$0.00`, which values the holding at nothing, so fetched prices are not
-  usable for such tokens yet. hledger itself keeps every decimal you write, so
-  a price you enter by hand is exact:
-
-  ```journal
-  P 2026-11-26 PEPE $0.00000358
-  ```
-
-  Fetching still adds its rounded price for any date that has no price in the
-  prices file, and the prices file is read after your own lines, so its
-  `$0.00` would win. Until this is fixed, keep sub-cent tokens out of a
-  ledger you update prices for, or delete the fetched lines for them.
+- **Every day is a trading day.** Automatic updates give a coin yesterday's
+  close (midnight UTC) every day of the week, weekends included, and the
+  weekly history takes each week's Sunday close rather than Friday's. A coin
+  counts as one when it is tagged `type: crypto` or `assetclass: crypto`, or
+  when Yahoo said so the last time Ledgeline fetched it. The
+  [delayed quote](index.md#the-value-over-time-chart) for today applies on any
+  day too.
+- **A missing day takes the day before.** Yahoo occasionally has no close for
+  a coin's day. Nothing is written for it, and valuation uses the previous
+  close.
+- **Small prices keep their digits.** A fetched price is written with six
+  significant digits, and never fewer decimals than your base currency uses:
+  USDT is `$0.99874`, a token worth a fraction of a cent is `$0.00000358`, and
+  bitcoin is `$61656.01`. hledger reads at most ten decimals, so nothing
+  smaller than that is written. How dollar amounts display elsewhere does not
+  change.
 
 ## Not supported
 
@@ -124,16 +153,3 @@ base currency.
   wash-sale rules or tax reports.
 - **DeFi positions, NFTs and staking pools** beyond what you book as
   ordinary transactions.
-
-## What is planned
-
-[Plan 48](https://github.com/zmre/ledgeline/blob/main/plans/48-crypto-holdings-research.md)
-covers the gaps above:
-
-- a coin tagged `type: crypto` is looked up as `SYMBOL-<base currency>` with no
-  `yahoo:` tag needed;
-- a warning when a well-known coin symbol is priced as something that is not a coin;
-- small prices kept to their significant digits;
-- weekend closes for coins;
-- staking rewards and reinvested income counted as return rather than as new
-  money in.

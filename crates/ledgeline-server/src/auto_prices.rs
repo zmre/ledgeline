@@ -77,6 +77,11 @@
 //! stops it repeating), and the fetch itself is exchange-aware — a candle for
 //! a session that has not closed is dropped by `yahoo::parse_chart_closes`, so
 //! an intraday price is never recorded as a close.
+//!
+//! A coin (plan 48 C9: tagged `type: crypto`, or reported `CRYPTOCURRENCY`
+//! by its last fetch) trades every day, and Yahoo closes its candles at
+//! midnight UTC, so its target is yesterday UTC on any day of the week
+//! ([`latest_coin_close`]) and each backfilled week is priced at its Sunday.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -94,10 +99,12 @@ use tokio::time::Instant;
 
 use crate::AppState;
 use crate::error::AppError;
+use crate::intraday::QuoteCache;
 use crate::prices_api::{self, FetchOutcome, Outcome, WirePriceSymbol};
 use crate::reports_api::{compute, unix_now};
+use crate::tickers::{self, Tickers};
 use crate::ui_prefs::{self, AutoPricePrefs};
-use crate::yahoo::{FetchedPrice, MarketQuote, YahooError};
+use crate::yahoo::{ChartReply, FetchedPrice, YahooError};
 
 /// How long after start-up the first check runs. Launch is busy — the journal
 /// parse, the first page's reports — and a price check is never urgent enough
@@ -152,6 +159,10 @@ pub(crate) struct HeldSymbol {
     /// day it was sold out of. It needs a price dated D only when D is on or
     /// before this — see the module docs.
     pub(crate) last_held: String,
+    /// A coin, which trades every day (plan 48 C9): tagged as one, or Yahoo
+    /// said so last time ([`tickers::is_coin`]). Its latest close is
+    /// [`latest_coin_close`], not the stock-market one.
+    pub(crate) coin: bool,
 }
 
 /// What the planner needs to know about the journal.
@@ -182,6 +193,9 @@ impl Week {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Want {
     pub(crate) held: HeldSymbol,
+    /// The latest completed close for this symbol: the stock-market one, or
+    /// a coin's.
+    pub(crate) close: String,
     /// It was held on or after the latest completed close, and has no price
     /// on or after it.
     pub(crate) latest: bool,
@@ -234,12 +248,14 @@ pub(crate) enum AutoPlan {
 pub(crate) struct FetchPlan {
     /// The file new lines go into, in date order.
     pub(crate) target: String,
-    /// The latest completed close, by [`latest_completed_close`].
+    /// The latest completed stock-market close, by [`latest_completed_close`].
+    /// A coin's is its [`Want::close`].
     pub(crate) close: String,
     /// The setting's week count, for the memo.
     pub(crate) weeks: u32,
     /// The first date each request asks for: the oldest backfill week's
-    /// Monday, less a week of slack.
+    /// Monday, less a week of slack (the earliest of the stocks' and the
+    /// coins').
     pub(crate) from: String,
     pub(crate) wants: Vec<Want>,
 }
@@ -264,12 +280,21 @@ pub(crate) fn plan_auto(
         return AutoPlan::NoPricesFile;
     };
     let close = latest_completed_close(now);
+    let coin_close = latest_coin_close(now);
     let weeks = backfill_weeks(&close, prefs.weeks);
+    let coin_weeks = backfill_weeks(&coin_close, prefs.weeks);
     let wants: Vec<Want> = facts
         .symbols
         .iter()
-        .filter(|held| !memo.contains(&MemoKey::new(&held.symbol.symbol, &close, prefs.weeks)))
-        .filter_map(|held| want_for(held, &close, &weeks))
+        .filter_map(|held| {
+            let (close, weeks) = if held.coin {
+                (&coin_close, &coin_weeks)
+            } else {
+                (&close, &weeks)
+            };
+            let asked = memo.contains(&MemoKey::new(&held.symbol.symbol, close, prefs.weeks));
+            (!asked).then(|| want_for(held, close, weeks)).flatten()
+        })
         .collect();
     if wants.is_empty() {
         return AutoPlan::UpToDate;
@@ -279,9 +304,14 @@ pub(crate) fn plan_auto(
     if let Some(until) = backoff_until.filter(|until| now < *until) {
         return AutoPlan::BackingOff { until };
     }
+    let from = wants
+        .iter()
+        .map(|want| fetch_from(&want.close, prefs.weeks))
+        .min()
+        .unwrap_or_else(|| fetch_from(&close, prefs.weeks));
     AutoPlan::Fetch(FetchPlan {
         target,
-        from: fetch_from(&close, prefs.weeks),
+        from,
         close,
         weeks: prefs.weeks,
         wants,
@@ -300,6 +330,14 @@ pub(crate) fn latest_completed_close(now: i64) -> String {
     } else {
         weekday_on_or_before(&iso_from_days(day - 1))
     }
+}
+
+/// A coin's latest completed close at `now`: yesterday, UTC, on any day of the
+/// week (plan 48 C9). Yahoo's crypto feed closes each candle at midnight UTC,
+/// so today's is still forming until then — and, like a stock's, it is
+/// dropped by `yahoo::parse_chart_closes` until its session ends.
+pub(crate) fn latest_coin_close(now: i64) -> String {
+    iso_from_days(now.div_euclid(SECONDS_PER_DAY) - 1)
 }
 
 /// The Monday of `date`'s week, as a day number.
@@ -350,6 +388,7 @@ fn want_for(held: &HeldSymbol, close: &str, weeks: &[Week]) -> Option<Want> {
         .collect();
     (latest || !weeks.is_empty()).then(|| Want {
         held: held.clone(),
+        close: close.to_string(),
         latest,
         weeks,
     })
@@ -357,7 +396,8 @@ fn want_for(held: &HeldSymbol, close: &str, weeks: &[Week]) -> Option<Want> {
 
 /// Out of one symbol's fetched closes (ascending), the ones to record: the
 /// newest, when the latest close was wanted and the journal does not already
-/// price that date, and the last close in each wanted week. Ascending, one per
+/// price that date, and the last close in each wanted week — a stock's Friday
+/// (or the last trading day before it), a coin's Sunday. Ascending, one per
 /// date.
 pub(crate) fn pick_prices(want: &Want, closes: &[FetchedPrice]) -> Vec<FetchedPrice> {
     let latest = closes
@@ -615,21 +655,29 @@ fn journal_facts(state: &AppState, now: i64) -> Result<(String, JournalFacts), A
         gain_since: None,
         value_in: None,
         selection: Default::default(),
+        return_income: Default::default(),
     };
     let last_held = last_held_dates(&journal.transactions, &journal.accounts, &scope)?;
+    let today = scope.as_of.clone();
     Ok((
         journal.source_name.clone(),
         JournalFacts {
             editable: state.editing_enabled(),
             target,
-            symbols: held_symbols(journal, last_held),
+            symbols: held_symbols(journal, &today, last_held, state.quotes()),
         },
     ))
 }
 
 /// Each security ever held, with its Yahoo ticker and the dates it is priced
 /// on, in one pass over the prices.
-fn held_symbols(journal: &Journal, last_held: BTreeMap<String, String>) -> Vec<HeldSymbol> {
+fn held_symbols(
+    journal: &Journal,
+    today: &str,
+    last_held: BTreeMap<String, String>,
+    quotes: &QuoteCache,
+) -> Vec<HeldSymbol> {
+    let tickers = Tickers::for_journal(journal, today);
     let mut priced_on: HashMap<&str, BTreeSet<String>> =
         journal
             .prices
@@ -645,13 +693,17 @@ fn held_symbols(journal: &Journal, last_held: BTreeMap<String, String>) -> Vec<H
             });
     last_held
         .into_iter()
-        .map(|(symbol, last_held)| HeldSymbol {
-            priced_on: priced_on.remove(symbol.as_str()).unwrap_or_default(),
-            symbol: WirePriceSymbol {
-                yahoo_ticker: prices_api::yahoo_ticker(&journal.commodity_tags, &symbol),
-                symbol,
-            },
-            last_held,
+        .map(|(symbol, last_held)| {
+            let resolved = tickers.resolve(&symbol);
+            HeldSymbol {
+                priced_on: priced_on.remove(symbol.as_str()).unwrap_or_default(),
+                coin: tickers::is_coin(
+                    &resolved,
+                    quotes.instrument(&resolved.yahoo_ticker).as_ref(),
+                ),
+                symbol: resolved,
+                last_held,
+            }
         })
         .collect()
 }
@@ -695,7 +747,7 @@ impl Pacer {
 
 /// What Yahoo said about one symbol's history, and the market quote that came
 /// with it.
-type Answer = Result<(Vec<FetchedPrice>, Option<MarketQuote>), YahooError>;
+type Answer = Result<ChartReply<Vec<FetchedPrice>>, YahooError>;
 
 /// Run `fetch` for each of `items`, [`FETCH_CONCURRENCY`] at a time with
 /// request starts [`REQUEST_GAP`] apart, stopping at the first rate limit:
@@ -771,15 +823,17 @@ async fn fetch_all(state: &AppState, plan: &FetchPlan, now: i64) -> Fetched {
             // Never sent, or the rate limit itself: neither is about the symbol.
             None | Some(Err(YahooError::RateLimited(_))) => {}
             Some(Err(_)) => fetched.failed += 1,
-            Some(Ok((closes, quote))) => {
-                if let Some(quote) = quote {
-                    state
-                        .quotes()
-                        .record(&want.held.symbol.yahoo_ticker, Some(quote), now);
-                }
+            Some(Ok(reply)) => {
+                state.quotes().record_reply(
+                    &want.held.symbol,
+                    reply.quote,
+                    reply.instrument.clone(),
+                    now,
+                );
+                let closes = reply.data;
                 fetched.asked.push(MemoKey::new(
                     &want.held.symbol.symbol,
-                    &plan.close,
+                    &want.close,
                     plan.weeks,
                 ));
                 let picked = pick_prices(&want, &closes);
@@ -787,6 +841,7 @@ async fn fetch_all(state: &AppState, plan: &FetchPlan, now: i64) -> Fetched {
                     fetched.outcomes.push(FetchOutcome {
                         symbol: want.held.symbol.clone(),
                         result: Ok(picked),
+                        instrument: reply.instrument,
                     });
                 }
             }
@@ -870,12 +925,18 @@ mod tests {
     /// A symbol priced on `priced_on`, last held on `last_held`.
     fn held(symbol: &str, priced_on: &[&str], last_held: &str) -> HeldSymbol {
         HeldSymbol {
-            symbol: WirePriceSymbol {
-                symbol: symbol.to_string(),
-                yahoo_ticker: symbol.to_string(),
-            },
+            symbol: WirePriceSymbol::plain(symbol),
             priced_on: priced_on.iter().map(|d| (*d).to_string()).collect(),
             last_held: last_held.to_string(),
+            coin: false,
+        }
+    }
+
+    /// [`held`], for a coin.
+    fn coin(symbol: &str, priced_on: &[&str], last_held: &str) -> HeldSymbol {
+        HeldSymbol {
+            coin: true,
+            ..held(symbol, priced_on, last_held)
         }
     }
 
@@ -944,6 +1005,99 @@ mod tests {
             latest_completed_close(at("2026-11-16", 22, 0)),
             "2026-11-16"
         );
+    }
+
+    /// A coin's latest close is yesterday UTC, weekend or not (plan 48 C9).
+    #[test]
+    fn a_coins_latest_close_is_yesterday_every_day() {
+        assert_eq!(latest_coin_close(at("2026-11-14", 12, 0)), "2026-11-13");
+        assert_eq!(latest_coin_close(at("2026-11-15", 0, 1)), "2026-11-14");
+        assert_eq!(latest_coin_close(at("2026-11-16", 9, 0)), "2026-11-15");
+        assert_eq!(latest_coin_close(at("2026-11-13", 23, 59)), "2026-11-12");
+    }
+
+    /// One plan, a stock and a coin, on a Saturday, a Sunday and a Monday:
+    /// the stock waits for Friday's close all weekend; the coin wants
+    /// yesterday's, Saturday's and Sunday's included.
+    #[test]
+    fn a_coin_wants_weekend_closes_beside_a_stock_that_wants_friday() {
+        let prefs = AutoPricePrefs {
+            enabled: true,
+            weeks: 1,
+        };
+        // Both still held on Monday 11-16.
+        let symbols = vec![
+            held("VTI", &["2026-11-13"], "2026-11-16"),
+            coin("BTC", &["2026-11-13"], "2026-11-16"),
+        ];
+        let plan_at =
+            |now| match plan_auto(now, &facts(symbols.clone()), prefs, &HashSet::new(), None) {
+                AutoPlan::Fetch(fetch) => fetch,
+                other => panic!("expected a fetch, got {other:?}"),
+            };
+
+        // Saturday: VTI has Friday's close; BTC wants Friday's too, which it
+        // has, so only last week's backfill is missing for both.
+        let saturday = plan_at(at("2026-11-14", 12, 0));
+        let btc = saturday
+            .wants
+            .iter()
+            .find(|w| w.held.symbol.symbol == "BTC")
+            .unwrap();
+        assert_eq!(btc.close, "2026-11-13");
+        assert!(!btc.latest);
+
+        // Sunday: BTC wants Saturday's close; VTI still Friday's (had).
+        let sunday = plan_at(at("2026-11-15", 12, 0));
+        let btc = sunday
+            .wants
+            .iter()
+            .find(|w| w.held.symbol.symbol == "BTC")
+            .unwrap();
+        assert_eq!(btc.close, "2026-11-14");
+        assert!(btc.latest);
+        let vti = sunday
+            .wants
+            .iter()
+            .find(|w| w.held.symbol.symbol == "VTI")
+            .unwrap();
+        assert_eq!(vti.close, "2026-11-13");
+        assert!(!vti.latest);
+
+        // Monday morning: BTC wants Sunday's; VTI's target is still Friday.
+        let monday = plan_at(at("2026-11-16", 9, 0));
+        let btc = monday
+            .wants
+            .iter()
+            .find(|w| w.held.symbol.symbol == "BTC")
+            .unwrap();
+        assert_eq!(btc.close, "2026-11-15");
+        assert!(btc.latest);
+        // Sunday's close belongs to the coin's own week (Mon 11-09), so its
+        // backfill is the week before that.
+        assert_eq!(btc.weeks[0].monday, "2026-11-02");
+        assert_eq!(monday.from, "2026-10-26", "the earlier of the two windows");
+    }
+
+    /// A coin's weekly backfill records the week's Sunday close.
+    #[test]
+    fn a_coins_week_is_priced_at_its_sunday_close() {
+        let want = Want {
+            held: coin("BTC", &[], OPEN),
+            close: "2026-11-15".to_string(),
+            latest: false,
+            weeks: vec![Week {
+                monday: "2026-11-02".to_string(),
+                sunday: "2026-11-08".to_string(),
+            }],
+        };
+        let closes = vec![
+            price("2026-11-06", "6"),
+            price("2026-11-07", "7"),
+            price("2026-11-08", "8"),
+            price("2026-11-09", "9"),
+        ];
+        assert_eq!(pick_prices(&want, &closes), vec![price("2026-11-08", "8")]);
     }
 
     // --- the weeks -------------------------------------------------------
@@ -1236,6 +1390,7 @@ mod tests {
     fn picks_the_newest_close_and_each_weeks_last_trading_day() {
         let want = Want {
             held: held("AAPL", &[], OPEN),
+            close: "2026-11-13".to_string(),
             latest: true,
             weeks: vec![
                 Week {
@@ -1272,6 +1427,7 @@ mod tests {
     fn picks_nothing_already_priced_or_absent() {
         let want = Want {
             held: held("AAPL", &["2026-11-12"], OPEN),
+            close: "2026-11-13".to_string(),
             latest: true,
             weeks: vec![Week {
                 monday: "2026-11-02".to_string(),

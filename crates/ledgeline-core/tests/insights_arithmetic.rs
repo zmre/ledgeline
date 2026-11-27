@@ -287,6 +287,7 @@ fn holdings_and_net_worth_agree_on_the_cost_priced_gld_lot() {
         gain_since: None,
         value_in: None,
         selection: Default::default(),
+        return_income: Default::default(),
     };
 
     // The set every Insights box now uses: inferred first so an explicit price

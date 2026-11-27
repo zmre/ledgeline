@@ -222,6 +222,9 @@ pub enum Kind {
     /// value is untrusted (it may come from `ledgeline.toml`), so the sync
     /// engine resolves it inside the journal's folder again before writing.
     RelDir { default: &'static str },
+    /// A list of short text filters (`returnIncomeAccounts`: account-name
+    /// fragments), deduplicated, in order. An empty list is a value: "none".
+    Filters { default: &'static [&'static str] },
 }
 
 /// One preference. `key` is the wire name; a dotted key (`columns.date`) is a
@@ -407,7 +410,22 @@ pub enum PrefValue {
     Whole(i64),
     FileId(Option<String>),
     Tickers(Vec<String>),
+    Filters(Vec<String>),
     Names(Vec<String>),
+}
+
+/// The most entries a [`Kind::Filters`] list keeps, and the longest entry.
+const MAX_FILTERS: usize = 32;
+const MAX_FILTER_CHARS: usize = 64;
+
+/// A filter as [`Kind::Filters`] keeps it: trimmed, non-empty, short, with no
+/// control characters.
+fn clean_filter(text: &str) -> Option<&str> {
+    let trimmed = text.trim();
+    (!trimmed.is_empty()
+        && trimmed.chars().count() <= MAX_FILTER_CHARS
+        && !trimmed.chars().any(char::is_control))
+    .then_some(trimmed)
 }
 
 /// A complete or partial set of values, by [`Spec::key`].
@@ -422,6 +440,9 @@ impl Kind {
             Self::FileId => PrefValue::FileId(None),
             Self::RelDir { default } => PrefValue::Text(default.to_string()),
             Self::Tickers => PrefValue::Tickers(Vec::new()),
+            Self::Filters { default } => {
+                PrefValue::Filters(default.iter().map(ToString::to_string).collect())
+            }
             Self::Names { .. } => PrefValue::Names(Vec::new()),
         }
     }
@@ -476,6 +497,26 @@ impl Kind {
                 };
                 let kept = kept.into_iter().take(MAX_BENCHMARKS).collect();
                 Ok((PrefValue::Tickers(kept), note))
+            }
+            Self::Filters { .. } => {
+                let entries = value.as_array().ok_or("must be a list of names")?;
+                let kept = dedupe(
+                    entries
+                        .iter()
+                        .filter_map(toml_edit::Value::as_str)
+                        .filter_map(clean_filter),
+                );
+                let note = if kept.len() > MAX_FILTERS {
+                    Some("has too many entries; only the first 32 are used")
+                } else if kept.len() < entries.len() {
+                    Some("has entries that are blank, too long or repeated; they are ignored")
+                } else {
+                    None
+                };
+                Ok((
+                    PrefValue::Filters(kept.into_iter().take(MAX_FILTERS).collect()),
+                    note,
+                ))
             }
             Self::Names { max } => {
                 let entries = value.as_array().ok_or("must be a list of names")?;
@@ -539,6 +580,19 @@ impl Kind {
                     return Err("has too many entries");
                 }
                 Ok(PrefValue::Tickers(kept))
+            }
+            Self::Filters { .. } => {
+                let entries = value.as_array().ok_or("must be a list of names")?;
+                let names = entries
+                    .iter()
+                    .map(|entry| entry.as_str().and_then(clean_filter))
+                    .collect::<Option<Vec<&str>>>()
+                    .ok_or("must be a list of short, non-blank names")?;
+                let kept = dedupe(names.into_iter());
+                if kept.len() > MAX_FILTERS {
+                    return Err("has too many entries");
+                }
+                Ok(PrefValue::Filters(kept))
             }
             Self::Names { max } => {
                 let entries = value.as_array().ok_or("must be a list of names")?;
@@ -642,7 +696,9 @@ impl PrefValue {
             Self::Text(text) => Json::String(text.clone()),
             Self::Whole(number) => Json::from(*number),
             Self::FileId(id) => id.clone().map_or(Json::Null, Json::String),
-            Self::Tickers(symbols) | Self::Names(symbols) => Json::from(symbols.clone()),
+            Self::Tickers(symbols) | Self::Filters(symbols) | Self::Names(symbols) => {
+                Json::from(symbols.clone())
+            }
         }
     }
 
@@ -654,7 +710,7 @@ impl PrefValue {
             // TOML has no null: none is the empty string, which reads back as
             // none ([`check_file_id`]) and still overrides a global value.
             Self::FileId(id) => toml_edit::Value::from(id.as_deref().unwrap_or_default()),
-            Self::Tickers(symbols) | Self::Names(symbols) => {
+            Self::Tickers(symbols) | Self::Filters(symbols) | Self::Names(symbols) => {
                 toml_edit::Value::Array(symbols.iter().map(String::as_str).collect())
             }
         }
@@ -2147,6 +2203,7 @@ mod tests {
                 "settlementLookbackDays": 180,
                 "settlementToleranceBps": 300,
                 "settlementLeadDays": 4,
+                "returnIncomeAccounts": ["dividend", "staking"],
             })
         );
     }
@@ -2324,6 +2381,36 @@ mod tests {
         assert_eq!(prefs["autoPricesWeeks"], 0);
         assert!(Patch::from_json(S, &json!({"autoPricesWeeks": 53})).is_err());
         assert!(Patch::from_json(S, &json!({"autoPrices": "yes"})).is_err());
+    }
+
+    /// `returnIncomeAccounts` (plan 48 C6): a list that defaults to
+    /// `dividend`/`staking`, may be emptied, is read leniently from a file
+    /// (blank and repeated entries dropped, with a note) and strictly from a
+    /// PATCH.
+    #[test]
+    fn the_return_income_filters_default_layer_and_clean() {
+        let (prefs, issues) = effective("", "");
+        assert!(issues.is_empty(), "{issues:?}");
+        assert_eq!(
+            prefs["returnIncomeAccounts"],
+            json!(["dividend", "staking"])
+        );
+        let (prefs, issues) = effective("[ui]\nreturnIncomeAccounts = []\n", "");
+        assert!(issues.is_empty(), "{issues:?}");
+        assert_eq!(prefs["returnIncomeAccounts"], json!([]));
+        let (prefs, issues) = effective(
+            "",
+            "returnIncomeAccounts = [\" dividend \", \"\", \"dividend\", \"rsu\"]\n",
+        );
+        assert_eq!(prefs["returnIncomeAccounts"], json!(["dividend", "rsu"]));
+        assert_eq!(
+            issues.len(),
+            1,
+            "the dropped entries are reported: {issues:?}"
+        );
+        assert!(Patch::from_json(S, &json!({"returnIncomeAccounts": ["rsu"]})).is_ok());
+        assert!(Patch::from_json(S, &json!({"returnIncomeAccounts": [""]})).is_err());
+        assert!(Patch::from_json(S, &json!({"returnIncomeAccounts": "rsu"})).is_err());
     }
 
     #[test]

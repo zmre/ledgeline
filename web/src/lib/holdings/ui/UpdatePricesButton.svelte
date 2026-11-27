@@ -37,6 +37,7 @@
         duplicate: "already up to date",
         "not-found": "no quote found",
         "fetch-error": "fetch failed",
+        refused: "not recorded",
     };
 
     /**
@@ -99,9 +100,10 @@
 {#if lastResults !== null}
     {@const updated = lastResults.filter((r) => r.outcome === "updated").length}
     {@const duplicate = lastResults.filter((r) => r.outcome === "duplicate").length}
-    {@const missing = lastResults.filter((r) => r.outcome === "not-found" || r.outcome === "fetch-error").length}
+    {@const missing = lastResults.filter((r) => r.outcome === "not-found" || r.outcome === "fetch-error" || r.outcome === "refused").length}
+    {@const warned = lastResults.filter((r) => r.warning !== null)}
     <div class="toast toast-end z-30" data-testid="update-prices-results">
-        <div class="alert flex flex-col items-start alert-success">
+        <div class="alert flex flex-col items-start {warned.length > 0 ? 'alert-warning' : 'alert-success'}">
             <div class="flex w-full items-center justify-between gap-4">
                 <span>
                     {updated} price{updated === 1 ? "" : "s"} updated{duplicate > 0 ? `, ${duplicate} already current` : ""}{missing > 0
@@ -110,6 +112,13 @@
                 </span>
                 <button type="button" class="btn btn-sm" onclick={() => (lastResults = null)}>Dismiss</button>
             </div>
+            {#if warned.length > 0}
+                <ul class="list-inside list-disc text-xs" data-testid="update-prices-warnings">
+                    {#each warned as result (result.symbol + (result.date ?? ""))}
+                        <li>{result.warning}</li>
+                    {/each}
+                </ul>
+            {/if}
             {#if missing > 0}
                 <ul class="list-inside list-disc text-xs opacity-80">
                     {#each lastResults.filter((r) => r.outcome !== "updated" && r.outcome !== "duplicate") as result (result.symbol)}
@@ -120,7 +129,11 @@
             {#if updated > 0}
                 <ul class="list-inside list-disc text-xs opacity-80">
                     {#each lastResults.filter((r) => r.outcome === "updated") as result (result.symbol)}
-                        <li>{result.symbol}: {result.price !== null ? format(result.price) : ""} as of {result.date}</li>
+                        <li>
+                            {result.symbol}: {result.price !== null ? format(result.price) : ""} as of {result.date}{result.name !== null
+                                ? ` (${result.name})`
+                                : ""}
+                        </li>
                     {/each}
                 </ul>
             {/if}

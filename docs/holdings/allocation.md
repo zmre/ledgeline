@@ -62,7 +62,7 @@ Yahoo's data for that view is ignored. The other views still come from Yahoo.
 commodity 1.0000 VTSAX     ; category: Large Blend, risk: Average
 commodity 1.0000 FXAIX     ; sector: Diversified
 commodity 1.0000 CREF      ; assetclass: real estate, type: annuity
-commodity 1.0000 BTC       ; type: crypto, yahoo: BTC-USD
+commodity 1.00000000 BTC   ; type: crypto
 commodity 1.0000 PRIVFUND  ; assetclass: private equity, sector: Healthcare, industry: Biotech, type: fund, category: Venture, risk: High
 ```
 
@@ -81,6 +81,13 @@ A `type:` tag also sets the asset class when nothing else does: `type: stock` is
 Equity, `type: bond` is Bonds, `type: moneymarket` is Cash and `type: crypto` is
 Crypto. A `type: fund` implies nothing, because a fund can hold anything.
 Setting up coins is covered in [Crypto](crypto.md).
+
+A coin has no sector, industry, category or risk rating, so a coin is
+**Crypto** in each of those views too, unless you tag them. Ledgeline knows a
+coin is a coin from its `type: crypto` or `assetclass: crypto` tag, or, for a
+coin with only a `yahoo:` tag, from what Yahoo said the last time Ledgeline
+fetched its price. That works even when Yahoo's classification service is
+unavailable, which it often is.
 
 An `assetclass:` tag also reshapes the Sector view. `assetclass: bonds` on a
 security puts its whole value in a "Bonds" slice there, whatever sector Yahoo

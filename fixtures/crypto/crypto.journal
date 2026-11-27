@@ -1,0 +1,54 @@
+; Plan 48: a crypto portfolio for tests, docs screenshots and manual smoke
+; checks. Every coin is tagged `type: crypto`, so each is looked up on Yahoo
+; as its dollar pair (BTC-USD, ETH-USD, …) with no `yahoo:` tag, except the
+; two tokens Yahoo lists under a numbered ticker. Prices live in prices.journal,
+; some dated on weekends: coins trade every day.
+
+account assets:crypto:coinbase   ; type: A
+account assets:crypto:cold       ; type: A
+account assets:bank:checking     ; type: C
+account income:staking           ; type: R
+account expenses:fees:crypto     ; type: X
+account equity:opening           ; type: E
+
+commodity $1,000.00
+commodity 1.00000000 BTC              ; type: crypto
+commodity 1.000000000000000000 ETH    ; type: crypto
+commodity 1.00 USDT                   ; type: crypto
+commodity 1.00 USDC                   ; type: crypto, assetclass: cash
+commodity 1.00 UNI                    ; type: crypto, yahoo: UNI7083-USD
+commodity 1. "PEPE24478"              ; type: crypto, yahoo: PEPE24478-USD
+
+include prices.journal
+
+2026-01-02 Opening balance
+    assets:bank:checking          $20,000.00
+    equity:opening
+
+2026-03-02 Buy bitcoin
+    assets:crypto:coinbase      0.05000000 BTC @ $61,200.00
+    expenses:fees:crypto             $15.00
+    assets:bank:checking
+
+2026-03-09 Move to cold storage
+    assets:crypto:cold          0.04990000 BTC
+    expenses:fees:crypto        0.00010000 BTC
+    assets:crypto:coinbase     -0.05000000 BTC
+
+2026-03-14 Buy ether
+    assets:crypto:coinbase      1.250000000000000000 ETH @ $2,400.00
+    assets:bank:checking
+
+2026-04-01 Staking reward
+    assets:crypto:coinbase      0.010000000000000000 ETH @ $2,500.00
+    income:staking
+
+2026-04-04 Buy stablecoins
+    assets:crypto:coinbase      1,000.00 USDT @ $1.00
+    assets:crypto:coinbase        500.00 USDC @ $1.00
+    assets:bank:checking
+
+2026-05-10 Buy tokens
+    assets:crypto:coinbase         40.00 UNI @ $6.25
+    assets:crypto:coinbase      25000000 "PEPE24478" @ $0.000004
+    assets:bank:checking

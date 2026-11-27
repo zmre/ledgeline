@@ -26,6 +26,7 @@ import type {PieDimension} from "#lib/holdings/profileTypes.js";
 import {
     applyPatch,
     cleanBenchmarks,
+    cleanFilters,
     cleanUiPrefs,
     AUTO_PRICES_WEEKS_DEFAULT,
     AUTO_PRICES_WEEKS_RANGE,
@@ -637,6 +638,18 @@ export const settings = {
     set autoPrices(on: boolean) {
         state.autoPrices = on;
         save({autoPrices: on}, true);
+    },
+    /**
+     * Plan 48 C6: which income accounts' credits are return on the holdings
+     * they buy, as account-name fragments. An empty list is allowed: no
+     * income is return, every income-funded buy is new money.
+     */
+    get returnIncomeAccounts(): readonly string[] {
+        return state.returnIncomeAccounts;
+    },
+    set returnIncomeAccounts(filters: readonly string[]) {
+        state.returnIncomeAccounts = cleanFilters(filters);
+        save({returnIncomeAccounts: [...state.returnIncomeAccounts]});
     },
     /** How many past weeks the updater backfills, clamped to 0–52 (0 = the latest close only). */
     get autoPricesWeeks(): number {

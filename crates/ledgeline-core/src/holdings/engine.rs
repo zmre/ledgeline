@@ -52,7 +52,7 @@ use super::classify::{HoldingsClass, declared_holdings_classes, resolve_holdings
 use super::commodities::Currencies;
 use super::types::{
     Holding, HoldingPrice, HoldingsReport, HoldingsScope, HoldingsTotals, HoldingsWarning,
-    PriceSource, ScopeMode, WarningKind,
+    PriceSource, ReturnIncome, ScopeMode, WarningKind,
 };
 
 /// Rescale both operands to a common precision and return the mantissa pair
@@ -366,6 +366,187 @@ fn leg_flow(
     }
 }
 
+/// The money one transaction credits to revenue accounts that has not yet been
+/// matched to a security's arrival — see [`symbol_flows`]. Read lazily, because
+/// most transactions never need it.
+enum IncomeFunding {
+    /// Not read yet.
+    Unread,
+    /// Credited income left to match, in the base commodity (`≥ 0`).
+    Left(Dec),
+    /// A revenue leg had no rate to the base, so the income cannot be sized.
+    Unconvertible,
+}
+
+impl IncomeFunding {
+    /// Read the income on first use: the money (currency, or base-commodity)
+    /// amounts on revenue accounts, valued in `base` on the transaction's date
+    /// and negated, so income EARNED is positive. A net debit to income (a
+    /// reversal) funds nothing.
+    fn read(
+        &mut self,
+        txn: &Transaction,
+        inputs: &HoldingsInputs<'_>,
+        base: &Commodity,
+        return_income: &ReturnIncome,
+    ) -> Result<(), ReportError> {
+        if !matches!(self, IncomeFunding::Unread) {
+            return Ok(());
+        }
+        let mut credited = Dec::zero();
+        for posting in &txn.postings {
+            if !is_return_income(&posting.account.0, &inputs.declared, return_income) {
+                continue;
+            }
+            for amount in &posting.amounts {
+                if amount.commodity != *base && !inputs.currencies.is_currency(&amount.commodity.0)
+                {
+                    continue; // a security credited in kind: counted by quantity instead
+                }
+                let value = if amount.commodity == *base {
+                    amount.quantity
+                } else {
+                    match inputs.db.lookup_in(&amount.commodity, base, &txn.date) {
+                        Some(rate) => mul_raw(amount.quantity, rate.quantity)?,
+                        None => {
+                            *self = IncomeFunding::Unconvertible;
+                            return Ok(());
+                        }
+                    }
+                };
+                credited = credited.sub(value)?;
+            }
+        }
+        *self = IncomeFunding::Left(if credited.mantissa > 0 {
+            credited
+        } else {
+            Dec::zero()
+        });
+        Ok(())
+    }
+}
+
+/// The flows one symbol's in-window legs in `txn` contribute, one entry per
+/// leg (`None` = a leg that could not be valued) plus, when part of the
+/// movement is RETURN or LOSS rather than money, one negating adjustment.
+///
+/// Plan 48 C6: money a holding EARNS is return, not new money in, and a
+/// quantity a holding PAYS AWAY to an expense is a loss, not money taken out.
+/// Classified by account TYPE ([`resolve_account_type`]: the declared type, the
+/// name only as its inference fallback), and, for income, by NAME too: only an
+/// income account matching `return_income` ([`ReturnIncome`], the
+/// `returnIncomeAccounts` setting, `dividend`/`staking` by default) funds
+/// return. Income on any other account — an RSU vest to `income:rsu`, salary
+/// paid in shares — is money arriving from outside: a flow, like a deposit.
+///
+/// - **Net arrival (`net > 0`)** — income-funded first in kind, then in money:
+///   - the symbol's own quantity credited to revenue accounts (`assets +0.01
+///     ETH / income:staking -0.01 ETH`, an RSU vest booked in shares) is
+///     exempt pro rata to the net, capped at it;
+///   - money credited to revenue accounts (`assets 0.5 VTI @ $200 /
+///     income:dividends -$100`, a staking reward at fair value) exempts that
+///     much of what is left, capped at it. One income leg funding several
+///     symbols is matched to them in symbol order until used up; income
+///     credited beyond the arrivals (a cash dividend booked beside a
+///     reinvestment) exempts nothing more. A revenue leg with no rate to the
+///     base exempts the whole arrival: the journal says income paid for it
+///     and the split cannot be sized. Mixed funding (part income, part cash)
+///     leaves exactly the cash part as the flow.
+/// - **Net departure (`net < 0`)** — the symbol's own quantity debited to
+///   expense accounts (`expenses:fees 0.0001 BTC`, a fee taken in shares) is
+///   exempt pro rata, capped at the net. Money legs on expense accounts are
+///   NOT: a cash commission beside a trade is outside the flow on a buy
+///   already (only the shares' cost is), and counting it on sells alone would
+///   treat the two sides differently.
+/// - Income on a departure (a gain booked to `income:gains` on a sale) and an
+///   expense on an arrival change nothing; nor does an EQUITY counter-leg
+///   (an opening balance or an ACATS transfer is money arriving from outside
+///   the scope, as before).
+///
+/// What this does to the numbers: the leg still adds its quantity, and with a
+/// cost annotation its cost to the basis, exactly as before — so the all-time
+/// gain (`value − basis`) is unchanged, and a staking reward at fair value is
+/// still basis (the tax view: income now, gain only on what the coin does
+/// next). Only the FLOW changes, so a windowed gain (`value_end − value_start −
+/// flows`) and the Performance return now include the reward or dividend, the
+/// total-return reading benchmarks use, and an in-kind fee lowers both.
+#[allow(clippy::too_many_arguments)] // private; each is a distinct replay input
+fn symbol_flows(
+    txn: &Transaction,
+    entries: &[LotEntry],
+    net: Dec,
+    commodity: &Commodity,
+    inputs: &HoldingsInputs<'_>,
+    base: &Commodity,
+    funding: &mut IncomeFunding,
+    return_income: &ReturnIncome,
+) -> Result<Vec<Option<Dec>>, ReportError> {
+    let mut flows = entries
+        .iter()
+        .map(|entry| leg_flow(entry, commodity, &inputs.db, base, &txn.date))
+        .collect::<Result<Vec<_>, _>>()?;
+    let (counter_type, magnitude) = match net.mantissa.signum() {
+        1 => (AccountType::Revenue, net),
+        -1 => (AccountType::Expense, net.neg()?),
+        _ => return Ok(flows), // a costed round trip: real money both ways
+    };
+    if !touches_income_or_expense(txn, &inputs.declared) {
+        return Ok(flows);
+    }
+    // Revenue is credited (negative) for an arrival; expense debited
+    // (positive) for a departure. Either way, oriented to `magnitude`'s sign.
+    let counter = if counter_type == AccountType::Revenue {
+        return_income_symbol_total(txn, &commodity.0, &inputs.declared, return_income)?
+    } else {
+        typed_symbol_total(txn, &commodity.0, &inputs.declared, counter_type)?
+    };
+    let in_kind = if counter_type == AccountType::Revenue {
+        counter.neg()?
+    } else {
+        counter
+    };
+    let in_kind = if in_kind.mantissa <= 0 {
+        Dec::zero()
+    } else if in_kind.sub(magnitude)?.mantissa >= 0 {
+        return Ok(Vec::new()); // all of it in kind: no flow, not even unvalued
+    } else {
+        in_kind
+    };
+    let mut valued = Dec::zero();
+    for flow in flows.iter().flatten() {
+        valued = valued.add(*flow)?;
+    }
+    // `valued × in_kind / magnitude`, keeping `valued`'s sign and precision.
+    let mut exempt = if in_kind.is_zero() {
+        Dec::zero()
+    } else {
+        reduce_basis(valued, in_kind, magnitude)?
+    };
+    if counter_type == AccountType::Revenue {
+        let left = valued.sub(exempt)?;
+        if left.mantissa > 0 {
+            funding.read(txn, inputs, base, return_income)?;
+            match funding {
+                IncomeFunding::Unconvertible => return Ok(Vec::new()),
+                IncomeFunding::Left(income) => {
+                    let take = if income.sub(left)?.mantissa >= 0 {
+                        left
+                    } else {
+                        *income
+                    };
+                    *income = income.sub(take)?;
+                    exempt = exempt.add(take)?;
+                }
+                IncomeFunding::Unread => {} // unreachable: just read
+            }
+        }
+    }
+    if !exempt.is_zero() {
+        flows.push(Some(exempt.neg()?));
+    }
+    Ok(flows)
+}
+
 /// True when `symbol` is the ONLY commodity whose quantity moves in `txn` — no
 /// cash consideration, no second security. A split re-labels one security's
 /// share count; nothing else changes hands.
@@ -412,9 +593,52 @@ fn equity_share_total(
     symbol: &str,
     declared: &BTreeMap<String, AccountType>,
 ) -> Result<Dec, ReportError> {
+    typed_symbol_total(txn, symbol, declared, AccountType::Equity)
+}
+
+/// Whether `account` is an income account whose credits are RETURN: income
+/// by type, and matching a `return_income` filter by name.
+fn is_return_income(
+    account: &str,
+    declared: &BTreeMap<String, AccountType>,
+    return_income: &ReturnIncome,
+) -> bool {
+    resolve_account_type(account, declared) == Some(AccountType::Revenue)
+        && return_income.matches(account)
+}
+
+/// Signed total of `symbol` legs posted to RETURN income accounts in `txn`
+/// ([`is_return_income`]).
+fn return_income_symbol_total(
+    txn: &Transaction,
+    symbol: &str,
+    declared: &BTreeMap<String, AccountType>,
+    return_income: &ReturnIncome,
+) -> Result<Dec, ReportError> {
     let mut total = Dec::zero();
     for posting in &txn.postings {
-        if resolve_account_type(&posting.account.0, declared) != Some(AccountType::Equity) {
+        if !is_return_income(&posting.account.0, declared, return_income) {
+            continue;
+        }
+        for amount in &posting.amounts {
+            if amount.commodity.0 == symbol {
+                total = total.add(amount.quantity)?;
+            }
+        }
+    }
+    Ok(total)
+}
+
+/// Signed total of `symbol` legs posted to accounts of type `ty` in `txn`.
+fn typed_symbol_total(
+    txn: &Transaction,
+    symbol: &str,
+    declared: &BTreeMap<String, AccountType>,
+    ty: AccountType,
+) -> Result<Dec, ReportError> {
+    let mut total = Dec::zero();
+    for posting in &txn.postings {
+        if resolve_account_type(&posting.account.0, declared) != Some(ty) {
             continue;
         }
         for amount in &posting.amounts {
@@ -847,6 +1071,7 @@ fn replay_pools(
     window: FlowWindow<'_>,
     in_scope: &dyn Fn(&str) -> bool,
     selection: &BTreeSet<String>,
+    return_income: &ReturnIncome,
     sole_symbols: &BTreeMap<String, Option<String>>,
     mut flow_log: Option<&mut Vec<LoggedFlow>>,
 ) -> Result<Vec<PoolSnapshot>, ReportError> {
@@ -899,6 +1124,8 @@ fn replay_pools(
         // plus any return-of-capital basis reductions.
         let mut by_symbol: BTreeMap<String, Vec<LotEntry>> = BTreeMap::new();
         let mut basis_returns: BTreeMap<String, Dec> = BTreeMap::new();
+        // This transaction's income money, read on first use (see `symbol_flows`).
+        let mut funding = IncomeFunding::Unread;
         for posting in &txn.postings {
             // Skip out-of-scope accounts and non-holding (equity/income/expense)
             // legs: the latter are a share movement's funding/disposal counter-
@@ -1009,13 +1236,38 @@ fn replay_pools(
                 }
                 continue;
             }
+            // A move that leaks: bare legs only, more leaving than arriving (a
+            // wallet move paying its network fee in the coin, or part of a move
+            // landing out of scope). The arriving legs are the SAME units as the
+            // leaving ones, so process just the net as one disposal: the basis
+            // falls pro rata, as for any sale. Leg by leg, the arriving bare leg
+            // read as a cost-less acquisition and tainted the whole pool.
+            let leaked;
+            let entries: &[LotEntry] = if net.mantissa < 0
+                && entries.iter().any(|entry| entry.qty.mantissa > 0)
+                && entries.iter().all(|entry| entry.cost.is_none())
+            {
+                leaked = LotEntry {
+                    qty: net,
+                    cost: None,
+                };
+                std::slice::from_ref(&leaked)
+            } else {
+                entries
+            };
             let before = pool.shares;
             let commodity = Commodity(symbol.clone());
-            for entry in entries {
-                let leg_before = pool.shares;
-                let leg_after = leg_before.add(entry.qty)?;
-                if in_window {
-                    let flow = leg_flow(entry, &commodity, db, base, &txn.date)?;
+            if in_window {
+                for flow in symbol_flows(
+                    txn,
+                    entries,
+                    net,
+                    &commodity,
+                    inputs,
+                    base,
+                    &mut funding,
+                    return_income,
+                )? {
                     if let Some(log) = flow_log.as_deref_mut() {
                         log.push(LoggedFlow {
                             date: txn.date.clone(),
@@ -1027,6 +1279,10 @@ fn replay_pools(
                         _ => None, // an unvaluable in-window leg: gain unknowable
                     };
                 }
+            }
+            for entry in entries {
+                let leg_before = pool.shares;
+                let leg_after = leg_before.add(entry.qty)?;
                 if entry.qty.mantissa > 0 {
                     if leg_before.mantissa <= 0 {
                         // (re)opening the position resets its basis date
@@ -1139,6 +1395,7 @@ fn replay_pools(
 /// Only the FINAL run records them: it replays the whole journal up to the last
 /// date with that date's sole-symbol map, which is exactly the replay
 /// [`holdings_flows`] runs, so the log is identical and never doubled.
+#[allow(clippy::too_many_arguments)] // private; each is a distinct replay input
 fn pool_snapshots(
     inputs: &HoldingsInputs<'_>,
     facts: &BTreeMap<String, SoleSymbolFacts>,
@@ -1146,6 +1403,7 @@ fn pool_snapshots(
     as_ofs: &[String],
     in_scope: &dyn Fn(&str) -> bool,
     selection: &BTreeSet<String>,
+    return_income: &ReturnIncome,
     flows: Option<(&str, &mut Vec<LoggedFlow>)>,
 ) -> Result<Vec<PoolSnapshot>, ReportError> {
     let mut snapshots: Vec<PoolSnapshot> = Vec::with_capacity(as_ofs.len());
@@ -1161,6 +1419,7 @@ fn pool_snapshots(
                 FlowWindow::None,
                 in_scope,
                 selection,
+                return_income,
                 &run_symbols,
                 None,
             )?);
@@ -1179,6 +1438,7 @@ fn pool_snapshots(
             window_start.map_or(FlowWindow::None, FlowWindow::Since),
             in_scope,
             selection,
+            return_income,
             &run_symbols,
             log,
         )?);
@@ -1851,6 +2111,7 @@ pub(crate) fn holdings_report_with(
         scope.gain_since.as_deref(),
         &predicate,
         &scope.selection,
+        &scope.return_income,
     )
 }
 
@@ -1912,6 +2173,7 @@ pub(crate) fn holdings_window_pair(
                 Some(start),
                 &predicate,
                 &scope.selection,
+                &scope.return_income,
             )?,
             report_at(
                 inputs,
@@ -1921,6 +2183,7 @@ pub(crate) fn holdings_window_pair(
                 Some(mid),
                 &predicate,
                 &scope.selection,
+                &scope.return_income,
             )?,
         ));
     }
@@ -1934,6 +2197,7 @@ pub(crate) fn holdings_window_pair(
         FlowWindow::Chained,
         &predicate,
         &scope.selection,
+        &scope.return_income,
         &sole,
         None,
     )?
@@ -2036,6 +2300,7 @@ pub(super) fn holdings_at_each_with_flows(
         as_ofs,
         &predicate,
         &scope.selection,
+        &scope.return_income,
         flows_after.map(|after| (after, &mut log)),
     )?;
     let flows = flows_after.map(|_| aggregate_flows(log)).transpose()?;
@@ -2248,6 +2513,7 @@ pub fn last_held_dates(
 /// One holdings snapshot at `as_of` from prebuilt inputs — [`compute_holdings`]
 /// minus the per-call setup, so the `gain_since` start snapshot can reuse it
 /// instead of rebuilding the whole world one level down.
+#[allow(clippy::too_many_arguments)] // private; each is a distinct replay input
 fn report_at(
     inputs: &HoldingsInputs<'_>,
     facts: &BTreeMap<String, SoleSymbolFacts>,
@@ -2256,6 +2522,7 @@ fn report_at(
     gain_since: Option<&str>,
     in_scope: &dyn Fn(&str) -> bool,
     selection: &BTreeSet<String>,
+    return_income: &ReturnIncome,
 ) -> Result<HoldingsReport, ReportError> {
     let sole = sole_symbols_at(facts, as_of);
     let snapshot = replay_pools(
@@ -2265,6 +2532,7 @@ fn report_at(
         gain_since.map_or(FlowWindow::None, FlowWindow::Since),
         in_scope,
         selection,
+        return_income,
         &sole,
         None,
     )?
@@ -2290,6 +2558,7 @@ fn report_at(
             None,
             in_scope,
             selection,
+            return_income,
         )?),
     };
     assemble_report(
@@ -5855,5 +6124,362 @@ mod flows_tests {
     /// A cost-less share posting into any account, for the income/equity case.
     fn buy_no_cost_in(account: &str, symbol: &str, qty: i128) -> crate::model::Posting {
         posting(account, vec![amt(symbol, qty, 0)], &[])
+    }
+}
+
+/// Plan 48 WP4 (C6): the edges of "income-funded buys and in-kind fees are not
+/// flows" — see [`symbol_flows`]. The headline cases (dividend, staking, coin
+/// and share fees, benchmarks, Other tab) live in `tests/holdings_performance.rs`.
+#[cfg(test)]
+mod return_flows_tests {
+    use super::*;
+    use crate::holdings::test_helpers::{
+        account_decl, amt, buy, pd, posting, scope, scope_since, txn, usd, with_cost,
+    };
+
+    fn flows_of(
+        txns: &[Transaction],
+        prices: &[PriceDirective],
+        accounts: &[AccountDeclaration],
+        accounts_in_scope: &[&str],
+    ) -> HoldingsFlows {
+        holdings_flows(
+            txns,
+            prices,
+            accounts,
+            &[],
+            &scope("2025-12-31", ScopeMode::Include, accounts_in_scope),
+            None,
+        )
+        .unwrap()
+    }
+
+    fn dollars(flows: &HoldingsFlows) -> Vec<(&str, Dec)> {
+        flows
+            .flows
+            .iter()
+            .map(|flow| (flow.date.as_str(), flow.amount))
+            .collect()
+    }
+
+    fn cents(value: i128) -> Dec {
+        Dec::new(value, 2)
+    }
+
+    /// A $1,000 VTI position from cash, so later events have a pool to join.
+    fn opening() -> Transaction {
+        txn(
+            1,
+            "2025-01-10",
+            vec![
+                buy("assets:broker", "VTI", 10, 10_000, true),
+                posting("assets:cash", vec![usd(-100_000)], &[]),
+            ],
+            &[],
+        )
+    }
+
+    /// [`flows_of`] with `return_income` as the setting.
+    fn flows_with(
+        txns: &[Transaction],
+        prices: &[PriceDirective],
+        accounts: &[AccountDeclaration],
+        return_income: ReturnIncome,
+    ) -> HoldingsFlows {
+        holdings_flows(
+            txns,
+            prices,
+            accounts,
+            &[],
+            &HoldingsScope {
+                return_income,
+                ..scope("2025-12-31", ScopeMode::Include, &[])
+            },
+            None,
+        )
+        .unwrap()
+    }
+
+    /// A $100 VTI reinvestment credited to `income`.
+    fn reinvested_into(income: &str) -> [Transaction; 2] {
+        [
+            opening(),
+            txn(
+                2,
+                "2025-02-01",
+                vec![
+                    buy("assets:broker", "VTI", 1, 10_000, true),
+                    posting(income, vec![usd(-10_000)], &[]),
+                ],
+                &[],
+            ),
+        ]
+    }
+
+    const MONEY_IN: [(&str, i128); 2] = [("2025-01-10", 100_000), ("2025-02-01", 10_000)];
+
+    fn expect(flows: &HoldingsFlows, wanted: &[(&str, i128)]) {
+        let wanted: Vec<(&str, Dec)> = wanted.iter().map(|(d, c)| (*d, cents(*c))).collect();
+        assert_eq!(dollars(flows), wanted);
+    }
+
+    #[test]
+    fn income_is_return_only_when_typed_income_and_named_by_a_filter() {
+        let prices = [pd("2025-01-01", "VTI", 10_000, "$")];
+        // `rewards` infers nothing from its name; its declared `type: R` and
+        // the `dividend` in its name are what make the reinvestment return.
+        let declared = [account_decl("rewards", &[("type", "R")])];
+        let txns = reinvested_into("rewards:dividend:vti");
+        expect(&flows_of(&txns, &prices, &declared, &[]), &MONEY_IN[..1]);
+        // Undeclared, the same posting is a plain counter-leg: money in.
+        expect(&flows_of(&txns, &prices, &[], &[]), &MONEY_IN);
+        // Typed income but not named by a filter: still money in.
+        let txns = reinvested_into("rewards:vti");
+        expect(&flows_of(&txns, &prices, &declared, &[]), &MONEY_IN);
+    }
+
+    /// An RSU vest (or salary paid in shares) is compensation arriving from
+    /// outside the portfolio: a flow, not a gain, even though it is income.
+    #[test]
+    fn an_rsu_vest_to_income_is_new_money_not_return() {
+        let prices = [pd("2025-01-01", "VTI", 10_000, "$")];
+        let txns = reinvested_into("income:rsu");
+        expect(&flows_of(&txns, &prices, &[], &[]), &MONEY_IN);
+        let txns = reinvested_into("income:salary");
+        expect(&flows_of(&txns, &prices, &[], &[]), &MONEY_IN);
+    }
+
+    /// The setting replaces the default filters; none at all makes every
+    /// income-funded buy a flow; matching ignores case.
+    #[test]
+    fn the_return_income_setting_chooses_the_accounts() {
+        let prices = [pd("2025-01-01", "VTI", 10_000, "$")];
+        let txns = reinvested_into("income:Distributions:VTI");
+        expect(&flows_of(&txns, &prices, &[], &[]), &MONEY_IN);
+        expect(
+            &flows_with(&txns, &prices, &[], ReturnIncome::new(["distributions"])),
+            &MONEY_IN[..1],
+        );
+        let txns = reinvested_into("income:dividends");
+        expect(
+            &flows_with(&txns, &prices, &[], ReturnIncome::none()),
+            &MONEY_IN,
+        );
+        expect(
+            &flows_with(&txns, &prices, &[], ReturnIncome::new([" DIVIDEND "])),
+            &MONEY_IN[..1],
+        );
+    }
+
+    #[test]
+    fn income_in_another_currency_is_converted_and_unconvertible_income_exempts_all() {
+        // €50 of dividend at $1.10 = $55 of a $100 reinvestment; the other $45
+        // came from cash.
+        let txns = [
+            opening(),
+            txn(
+                2,
+                "2025-02-01",
+                vec![
+                    buy("assets:broker", "VTI", 1, 10_000, true),
+                    posting("income:dividends", vec![amt("€", -5_000, 2)], &[]),
+                    posting("assets:cash", vec![usd(-4_500)], &[]),
+                    posting("equity:conversion", vec![amt("€", 5_000, 2)], &[]),
+                    posting("equity:conversion", vec![usd(-5_500)], &[]),
+                ],
+                &[],
+            ),
+            // £ has no rate to $: the income cannot be sized, and the journal
+            // says income paid, so the whole arrival is return.
+            txn(
+                3,
+                "2025-03-01",
+                vec![
+                    buy("assets:broker", "VTI", 1, 10_000, true),
+                    posting("income:dividends", vec![amt("£", -8_000, 2)], &[]),
+                ],
+                &[],
+            ),
+        ];
+        let prices = [
+            pd("2025-01-01", "VTI", 10_000, "$"),
+            pd("2025-01-01", "€", 110, "$"),
+        ];
+        assert_eq!(
+            dollars(&flows_of(&txns, &prices, &[], &[])),
+            vec![("2025-01-10", cents(100_000)), ("2025-02-01", cents(4_500))]
+        );
+    }
+
+    #[test]
+    fn one_income_leg_is_shared_across_symbols_and_never_exempts_more_than_arrived() {
+        // $150 of income funds a $100 VTI and a $100 BND buy, matched in
+        // symbol order: BND takes $100, VTI the remaining $50, so $50 of VTI
+        // came from cash.
+        let txns = [
+            opening(),
+            txn(
+                2,
+                "2025-02-01",
+                vec![
+                    buy("assets:broker", "VTI", 1, 10_000, true),
+                    buy("assets:broker", "BND", 1, 10_000, true),
+                    posting("income:dividends", vec![usd(-15_000)], &[]),
+                    posting("assets:cash", vec![usd(-5_000)], &[]),
+                ],
+                &[],
+            ),
+            // $500 dividend, $100 of it reinvested, $400 to cash: no flow,
+            // and the excess income exempts nothing else.
+            txn(
+                3,
+                "2025-03-01",
+                vec![
+                    buy("assets:broker", "VTI", 1, 10_000, true),
+                    posting("income:dividends", vec![usd(-50_000)], &[]),
+                    posting("assets:cash", vec![usd(40_000)], &[]),
+                ],
+                &[],
+            ),
+        ];
+        let prices = [
+            pd("2025-01-01", "VTI", 10_000, "$"),
+            pd("2025-01-01", "BND", 10_000, "$"),
+        ];
+        assert_eq!(
+            dollars(&flows_of(&txns, &prices, &[], &[])),
+            vec![("2025-01-10", cents(100_000)), ("2025-02-01", cents(5_000))]
+        );
+    }
+
+    #[test]
+    fn a_gain_booked_to_income_on_a_sale_changes_nothing() {
+        // Income beside a DEPARTURE is not funding anything: the sale is the
+        // same −$1,000 it always was.
+        let txns = [
+            opening(),
+            txn(
+                2,
+                "2025-02-01",
+                vec![
+                    posting(
+                        "assets:broker",
+                        vec![with_cost(amt("VTI", -10, 0), 10_000, true, "$")],
+                        &[],
+                    ),
+                    posting("assets:cash", vec![usd(120_000)], &[]),
+                    posting("income:gains", vec![usd(-20_000)], &[]),
+                ],
+                &[],
+            ),
+        ];
+        let prices = [pd("2025-01-01", "VTI", 10_000, "$")];
+        assert_eq!(
+            dollars(&flows_of(&txns, &prices, &[], &[])),
+            vec![
+                ("2025-01-10", cents(100_000)),
+                ("2025-02-01", cents(-100_000))
+            ]
+        );
+    }
+
+    #[test]
+    fn an_in_kind_reward_needs_no_price_and_counts_nothing_unvalued() {
+        // 0.01 ETH credited in kind by `income:staking`, never priced: there is
+        // nothing to value, because none of it is a flow.
+        let txns = [txn(
+            1,
+            "2025-02-01",
+            vec![
+                posting("assets:crypto", vec![amt("ETH", 1, 2)], &[]),
+                posting("income:staking", vec![amt("ETH", -1, 2)], &[]),
+            ],
+            &[],
+        )];
+        let flows = flows_of(&txns, &[], &[], &[]);
+        assert!(flows.flows.is_empty(), "{flows:?}");
+        assert_eq!(flows.unvalued, 0);
+    }
+
+    #[test]
+    fn a_move_that_leaks_out_of_scope_is_a_withdrawal_and_keeps_its_basis_known() {
+        // 10 VTI leave `assets:broker`; 8 arrive in `assets:broker2` (in
+        // scope) and 2 in `assets:outside` (not). Nothing went to an expense,
+        // so the 2 are a $200 withdrawal, and they take 20 % of the basis.
+        let txns = [
+            opening(),
+            txn(
+                2,
+                "2025-02-01",
+                vec![
+                    posting("assets:broker2", vec![amt("VTI", 8, 0)], &[]),
+                    posting("assets:outside", vec![amt("VTI", 2, 0)], &[]),
+                    posting("assets:broker", vec![amt("VTI", -10, 0)], &[]),
+                    // Not a split: cash moves too.
+                    posting("assets:cash", vec![usd(-100)], &[]),
+                    posting("assets:outside", vec![usd(100)], &[]),
+                ],
+                &[],
+            ),
+        ];
+        let prices = [pd("2025-01-01", "VTI", 10_000, "$")];
+        let in_scope = ["assets:broker", "assets:broker2", "assets:cash"];
+        assert_eq!(
+            dollars(&flows_of(&txns, &prices, &[], &in_scope)),
+            vec![
+                ("2025-01-10", cents(100_000)),
+                ("2025-02-01", cents(-20_000))
+            ]
+        );
+        let report = compute_holdings(
+            &txns,
+            &prices,
+            &[],
+            &[],
+            &scope("2025-12-31", ScopeMode::Include, &in_scope),
+        )
+        .unwrap();
+        let vti = &report.holdings[0];
+        assert_eq!(vti.shares, Dec::new(8, 0));
+        assert_eq!(vti.basis, Some(cents(80_000)));
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    }
+
+    #[test]
+    fn a_windowed_gain_includes_a_reinvested_dividend() {
+        // The windowed gain subtracts exactly the logged flows, so the $100
+        // reinvestment is gain inside the window.
+        let txns = [
+            opening(),
+            txn(
+                2,
+                "2025-02-01",
+                vec![
+                    buy("assets:broker", "VTI", 1, 10_000, true),
+                    posting("income:dividends", vec![usd(-10_000)], &[]),
+                ],
+                &[],
+            ),
+        ];
+        let prices = [pd("2025-01-01", "VTI", 10_000, "$")];
+        let report = compute_holdings(
+            &txns,
+            &prices,
+            &[],
+            &[],
+            &scope_since("2025-12-31", ScopeMode::Include, &[], "2025-01-31"),
+        )
+        .unwrap();
+        assert_eq!(report.holdings[0].gain, Some(cents(10_000)));
+        // All-time, value − basis: the reinvested $100 is basis.
+        let all_time = compute_holdings(
+            &txns,
+            &prices,
+            &[],
+            &[],
+            &scope("2025-12-31", ScopeMode::Include, &[]),
+        )
+        .unwrap();
+        assert_eq!(all_time.holdings[0].gain, Some(cents(0)));
     }
 }

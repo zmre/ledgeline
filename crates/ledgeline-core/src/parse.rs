@@ -1206,7 +1206,16 @@ fn parse_commodity_directive(
     // without a style; a full spec (`commodity $1,000.00`) yields both.
     match parse_commodity_style_spec(spec) {
         Ok((commodity, style)) => Ok((commodity, Some(style), tags)),
-        Err(_) => Ok((Commodity(spec.to_string()), None, tags)),
+        // A symbol alone, quoted or not (`commodity "PEPE24478"`).
+        Err(_) => Ok((
+            Commodity(
+                split_quoted_commodity(spec)
+                    .filter(|(_, rest)| rest.trim().is_empty())
+                    .map_or_else(|| spec.to_string(), |(name, _)| name),
+            ),
+            None,
+            tags,
+        )),
     }
 }
 
@@ -4229,6 +4238,41 @@ fn split_commodity_spec(spec: &str) -> Result<(String, String, CommoditySide, bo
         .chars()
         .next()
         .ok_or_else(|| ParseError::MalformedAmount(spec.to_string()))?;
+    // A double-quoted symbol (`commodity 1. "PEPE24478"`, `commodity "AB 1" 1.00`),
+    // as an amount may carry one: hledger requires the quotes around a symbol
+    // with digits or spaces in it, and they are delimiters, not part of the
+    // name. Without this the whole spec became the commodity's NAME, so the
+    // directive's tags and style landed on a commodity nothing ever posts.
+    if first == '"' {
+        let (commodity, rest) = split_quoted_commodity(spec)
+            .ok_or_else(|| ParseError::MalformedAmount(spec.to_string()))?;
+        let number = rest.trim().to_string();
+        if number.is_empty() {
+            return Err(ParseError::MalformedAmount(spec.to_string()));
+        }
+        return Ok((
+            commodity,
+            number,
+            CommoditySide::Left,
+            rest.starts_with(char::is_whitespace),
+        ));
+    }
+    if let Some(open) = spec.strip_suffix('"').and_then(|inner| inner.rfind('"')) {
+        let (commodity, _) = split_quoted_commodity(&spec[open..])
+            .filter(|(_, rest)| rest.is_empty())
+            .ok_or_else(|| ParseError::MalformedAmount(spec.to_string()))?;
+        let prefix = &spec[..open];
+        let number = prefix.trim().to_string();
+        if number.is_empty() {
+            return Err(ParseError::MalformedAmount(spec.to_string()));
+        }
+        return Ok((
+            commodity,
+            number,
+            CommoditySide::Right,
+            prefix.ends_with(char::is_whitespace),
+        ));
+    }
     if is_commodity_char(first) {
         let end = spec
             .char_indices()
@@ -4599,6 +4643,35 @@ mod tests {
             }))
         );
         assert_eq!(style.precision, 2);
+    }
+
+    /// A quoted symbol is a symbol, on either side or alone, and keeps the
+    /// directive's tags (plan 48: `"PEPE24478"`'s `yahoo:` tag was lost).
+    #[test]
+    fn commodity_directive_quoted_symbol() {
+        let (commodity, style, tags) =
+            parse_commodity_directive(r#"commodity 1. "PEPE24478"  ; yahoo: PEPE24478-USD"#)
+                .unwrap();
+        assert_eq!(commodity, Commodity("PEPE24478".to_string()));
+        let style = style.expect("a style");
+        assert_eq!(style.side, CommoditySide::Right);
+        assert!(style.spaced);
+        assert_eq!(
+            tags,
+            vec![("yahoo".to_string(), "PEPE24478-USD".to_string())]
+        );
+
+        let (left, style, _) = parse_commodity_directive(r#"commodity "AB 1"1.00"#).unwrap();
+        assert_eq!(left, Commodity("AB 1".to_string()));
+        let style = style.expect("a style");
+        assert_eq!(
+            (style.side, style.spaced, style.precision),
+            (CommoditySide::Left, false, 2)
+        );
+
+        let (alone, style, _) = parse_commodity_directive(r#"commodity "UNI7083""#).unwrap();
+        assert_eq!(alone, Commodity("UNI7083".to_string()));
+        assert!(style.is_none());
     }
 
     #[test]

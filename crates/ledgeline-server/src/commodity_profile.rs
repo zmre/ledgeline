@@ -182,13 +182,29 @@ pub(crate) fn resolve(tags: &[(String, String)], yahoo: Option<&YahooProfile>) -
         ),
     };
 
+    // A coin has no sector, industry, Morningstar category or risk rating,
+    // and Yahoo gives it none (plan 48 C7). Rather than leave it Unclassified
+    // in four of the six views, it is Crypto in each of them it has nothing
+    // for. A tag, or anything Yahoo did say, still wins.
+    let coin = security_type
+        .first()
+        .or(asset_class.first())
+        .is_some_and(|entry| entry.label == CRYPTO);
+    let or_crypto = |weights: Vec<Weight>| {
+        if coin && weights.is_empty() {
+            single(CRYPTO.to_string())
+        } else {
+            weights
+        }
+    };
+
     Breakdown {
+        sector: or_crypto(sector),
+        industry: or_crypto(industry),
+        category: or_crypto(category),
+        risk: or_crypto(risk),
         asset_class,
-        sector,
-        industry,
         security_type,
-        category,
-        risk,
     }
 }
 
@@ -544,6 +560,43 @@ mod tests {
         assert_eq!(labels(&resolved.asset_class), vec![("Equity", 1.0)]);
         let crypto = resolve(&tags(&[("type", "crypto")]), None);
         assert_eq!(labels(&crypto.asset_class), vec![("Crypto", 1.0)]);
+    }
+
+    /// Plan 48 C7: a coin is Crypto in every view nothing else answers, so
+    /// the pie never shows it as Unclassified.
+    #[test]
+    fn a_coin_is_crypto_in_every_view_nothing_else_answers() {
+        let fetched = crate::yahoo_profile::YahooProfile {
+            quote_type: Some("CRYPTOCURRENCY".to_string()),
+            ..Default::default()
+        };
+        for coin in [
+            resolve(&[], Some(&fetched)),
+            resolve(&tags(&[("type", "crypto")]), None),
+            resolve(&tags(&[("assetclass", "crypto")]), None),
+        ] {
+            for dimension in [
+                &coin.asset_class,
+                &coin.sector,
+                &coin.industry,
+                &coin.category,
+                &coin.risk,
+            ] {
+                assert_eq!(labels(dimension), vec![("Crypto", 1.0)]);
+            }
+        }
+        // A tag still wins its own view, and a stablecoin counted as cash
+        // keeps Cash as its sector.
+        let tagged = resolve(&tags(&[("type", "crypto"), ("category", "Layer 1")]), None);
+        assert_eq!(labels(&tagged.category), vec![("Layer 1", 1.0)]);
+        let stable = resolve(&tags(&[("type", "crypto"), ("assetclass", "cash")]), None);
+        assert_eq!(labels(&stable.sector), vec![("Cash", 1.0)]);
+        // A stock is untouched.
+        assert!(
+            resolve(&tags(&[("type", "stock")]), None)
+                .category
+                .is_empty()
+        );
     }
 
     #[test]

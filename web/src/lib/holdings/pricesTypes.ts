@@ -84,7 +84,11 @@ export interface CreatedPricesFile {
 }
 
 /** What happened to one symbol during an update — the structured equivalent of what the bash scripts printed per symbol. */
-export type PriceOutcome = "updated" | "duplicate" | "not-found" | "fetch-error";
+/**
+ * `refused` (plan 48): Yahoo answered a coin-tagged commodity's ticker with
+ * something that is not a coin, so nothing was written; `warning` says why.
+ */
+export type PriceOutcome = "updated" | "duplicate" | "not-found" | "fetch-error" | "refused";
 
 export interface PriceResult {
     symbol: string;
@@ -94,6 +98,14 @@ export interface PriceResult {
     date: string | null;
     /** Present for `updated` and `duplicate`. */
     price: Dec | null;
+    /** What Yahoo says it priced ("Bitcoin USD"), when it says. */
+    name: string | null;
+    /**
+     * Something to tell the user about this symbol (plan 48): priced as
+     * something other than the coin its symbol suggests, refused for that
+     * reason, or its ticker could not be chosen as asked.
+     */
+    warning: string | null;
 }
 
 /** `POST /api/prices/update`. */

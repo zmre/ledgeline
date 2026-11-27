@@ -208,6 +208,37 @@ describe("COMPONENT UpdatePricesButton", () => {
         expect(calls).toContain("GET /api/prices/status");
     });
 
+    it("names what a coin was priced as, and says why a refused one was not recorded (plan 48)", async () => {
+        const response = {
+            file: UPDATED_RESPONSE.file,
+            results: [
+                {
+                    symbol: "ETH",
+                    yahooTicker: "ETH",
+                    outcome: "updated",
+                    date: "2026-11-26",
+                    price: {mantissa: "1610", places: 2},
+                    name: "Grayscale Ethereum Mini Trust ETF",
+                    warning:
+                        "ETH priced as Grayscale Ethereum Mini Trust ETF (NYSEArca). If you hold the coin, add type: crypto or yahoo: ETH-USD to commodity ETH.",
+                },
+                {symbol: "BTC", yahooTicker: "BTC", outcome: "refused", warning: "BTC is tagged as a coin, but Yahoo's BTC is an ETF, not a coin."},
+            ],
+        };
+        await stub({"/api/prices/status": STATUS_ONE_SYMBOL, "/api/prices/update": response});
+        await pricesStore.reloadStatus(FAKE_ENGINE);
+        render(UpdatePricesButton, {format});
+
+        await fireEvent.click(screen.getByTestId("update-prices"));
+        await vi.waitFor(() => expect(screen.getByTestId("update-prices-warnings")).toBeTruthy());
+        const warnings = screen.getByTestId("update-prices-warnings").textContent ?? "";
+        expect(warnings).toContain("ETH priced as Grayscale Ethereum Mini Trust ETF");
+        expect(warnings).toContain("BTC is tagged as a coin");
+        const results = screen.getByTestId("update-prices-results").textContent ?? "";
+        expect(results).toContain("BTC: not recorded");
+        expect(results).toContain("(Grayscale Ethereum Mini Trust ETF)");
+    });
+
     it("shows an error toast, not a crash, when the update fails", async () => {
         await stub({"/api/prices/status": STATUS_ONE_SYMBOL, "/api/prices/update": new Response("boom", {status: 500})});
         await pricesStore.reloadStatus(FAKE_ENGINE);

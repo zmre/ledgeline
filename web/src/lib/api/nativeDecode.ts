@@ -65,6 +65,7 @@ import {
     RECOGNITION_ROWS_DEFAULT,
     SETTLEMENT_LOOKBACK_DEFAULT,
     SETTLEMENT_LEAD_DEFAULT,
+    RETURN_INCOME_DEFAULT,
     SETTLEMENT_TOLERANCE_DEFAULT,
     SYNC_KEEP_DAYS_DEFAULT,
     SYNC_SOURCE_DIR_DEFAULT,
@@ -3210,7 +3211,7 @@ function decodeWarning(raw: RawWarning | undefined, context: string): HoldingsWa
     if (raw === undefined || typeof raw.symbol !== "string" || typeof raw.message !== "string") {
         throw new ApiShapeError(`${context}: missing symbol/message`);
     }
-    if (raw.kind !== "missing-basis" && raw.kind !== "negative-shares" && raw.kind !== "unpriced") {
+    if (raw.kind !== "missing-basis" && raw.kind !== "negative-shares" && raw.kind !== "unpriced" && raw.kind !== "ticker-mismatch") {
         throw new ApiShapeError(`${context}: unknown warning kind ${JSON.stringify(raw.kind)}`);
     }
     return Object.freeze({symbol: raw.symbol, kind: raw.kind, message: raw.message});
@@ -5095,6 +5096,15 @@ export function decodeUiPrefsState(raw: unknown): UiPrefsState {
         settlementToleranceBps:
             prefs.settlementToleranceBps === undefined ? SETTLEMENT_TOLERANCE_DEFAULT : whole(prefs.settlementToleranceBps, "ui-prefs settlementToleranceBps"),
         settlementLeadDays: prefs.settlementLeadDays === undefined ? SETTLEMENT_LEAD_DEFAULT : whole(prefs.settlementLeadDays, "ui-prefs settlementLeadDays"),
+        // Plan 48 C6. Defaulted when ABSENT, like the keys above: an older
+        // engine must still load everyone's other settings.
+        returnIncomeAccounts:
+            prefs.returnIncomeAccounts === undefined
+                ? [...RETURN_INCOME_DEFAULT]
+                : (() => {
+                      if (!Array.isArray(prefs.returnIncomeAccounts)) throw new ApiShapeError("ui-prefs returnIncomeAccounts: expected an array");
+                      return decodeStrings(prefs.returnIncomeAccounts, "ui-prefs returnIncomeAccounts");
+                  })(),
     };
     if (!Array.isArray(body.issues)) throw new ApiShapeError("ui-prefs issues: expected an array");
     const issues = body.issues.map((rawIssue, i): UiPrefsIssue => {
@@ -5404,6 +5414,8 @@ interface RawPriceResult {
     outcome?: string;
     date?: string;
     price?: RawDec;
+    name?: string;
+    warning?: string;
 }
 
 interface RawPricesUpdateResponse {
@@ -5411,7 +5423,7 @@ interface RawPricesUpdateResponse {
     results?: RawPriceResult[];
 }
 
-const PRICE_OUTCOMES: PriceOutcome[] = ["updated", "duplicate", "not-found", "fetch-error"];
+const PRICE_OUTCOMES: PriceOutcome[] = ["updated", "duplicate", "not-found", "fetch-error", "refused"];
 
 function priceOutcome(value: unknown, context: string): PriceOutcome {
     if (typeof value === "string" && (PRICE_OUTCOMES as string[]).includes(value)) return value as PriceOutcome;
@@ -5491,6 +5503,8 @@ function decodePriceResult(raw: RawPriceResult, context: string): PriceResult {
         outcome: priceOutcome(raw.outcome, `${context} outcome`),
         date: optStr(raw.date, `${context} date`),
         price: decodeOptDec(raw.price, `${context} price`),
+        name: optStr(raw.name, `${context} name`),
+        warning: optStr(raw.warning, `${context} warning`),
     });
 }
 

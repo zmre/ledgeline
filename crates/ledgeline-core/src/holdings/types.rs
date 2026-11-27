@@ -59,6 +59,63 @@ pub struct HoldingsScope {
     /// is still chosen from the whole account scope, so a filtered total is
     /// always a part of the unfiltered one, in the same commodity.
     pub selection: BTreeSet<String>,
+    /// Which income accounts' credits are RETURN rather than new money when
+    /// they fund an acquisition (plan 48 C6): a reinvested dividend, a
+    /// staking reward. Income on any other account — an RSU vest to
+    /// `income:rsu`, salary paid in shares — is money arriving from outside,
+    /// a flow like a deposit. See [`ReturnIncome`].
+    pub return_income: ReturnIncome,
+}
+
+/// The account-name filters that mark an income account's credits as RETURN
+/// on the holdings they buy (plan 48 C6, refined 2026-11-27): an account is
+/// one when it is income-typed AND its full name contains any filter,
+/// case-insensitively. Default [`DEFAULT_RETURN_INCOME`].
+///
+/// By name, not type alone, because type alone cannot tell a dividend from an
+/// RSU vest or a paycheck paid in shares, and counting those as return makes
+/// a vest read as a huge gain. The filters are a setting
+/// (`returnIncomeAccounts`), so a journal that books dividends as
+/// `income:distributions` can say so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReturnIncome(Vec<String>);
+
+/// [`ReturnIncome`]'s default filters.
+pub const DEFAULT_RETURN_INCOME: &[&str] = &["dividend", "staking"];
+
+impl ReturnIncome {
+    /// Filters from `patterns`: trimmed, lowercased, blanks dropped.
+    pub fn new<S: AsRef<str>>(patterns: impl IntoIterator<Item = S>) -> Self {
+        Self(
+            patterns
+                .into_iter()
+                .map(|pattern| pattern.as_ref().trim().to_lowercase())
+                .filter(|pattern| !pattern.is_empty())
+                .collect(),
+        )
+    }
+
+    /// No account's income is return: every income-funded buy is a flow.
+    #[must_use]
+    pub fn none() -> Self {
+        Self(Vec::new())
+    }
+
+    /// Whether `account`'s name matches a filter. The caller checks the type.
+    #[must_use]
+    pub fn matches(&self, account: &str) -> bool {
+        if self.0.is_empty() {
+            return false;
+        }
+        let name = account.to_lowercase();
+        self.0.iter().any(|pattern| name.contains(pattern.as_str()))
+    }
+}
+
+impl Default for ReturnIncome {
+    fn default() -> Self {
+        Self::new(DEFAULT_RETURN_INCOME)
+    }
 }
 
 impl HoldingsScope {

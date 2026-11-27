@@ -67,7 +67,8 @@ use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use axum::response::Response;
 use futures::stream::{self, StreamExt};
-use ledgeline_core::edit::render_amount;
+use ledgeline_core::decimal::MAX_PARSE_PLACES;
+use ledgeline_core::edit::{render_amount, render_commodity};
 use ledgeline_core::holdings::{HoldingsScope, ScopeMode, compute_holdings};
 use ledgeline_core::model::{Amount, Commodity, Journal};
 use ledgeline_core::vault::{Revision, VaultError, VaultPath};
@@ -84,7 +85,8 @@ use crate::error::{AppError, editing_disabled};
 use crate::location::JournalLocation;
 use crate::reports_api::{WireDec, compute, today_utc};
 use crate::security::no_store_json as no_store;
-use crate::yahoo::{FetchedPrice, YahooError};
+use crate::tickers::{Tickers, Verdict, judge};
+use crate::yahoo::{FetchedPrice, Instrument, YahooError};
 
 /// The file a first price update is offered a home in, and the `include` line
 /// written for it.
@@ -104,22 +106,23 @@ const MAX_ID_BYTES: usize = 1024;
 /// See [`MAX_ID_BYTES`].
 const MAX_ID_COMPONENTS: usize = 9;
 
-/// A ceiling on a freshly-fetched quote's own precision, applied BEFORE
-/// [`infer_style`] ever sees it.
+/// How many significant digits a fetched price keeps (plan 48 C8).
 ///
 /// Yahoo's chart JSON encodes a close as an `f64`, and printing one back out
 /// (`FetchedPrice` is built from it in `yahoo.rs`) routinely yields something
 /// like `366.8500061035` for what is, to every human involved, `366.85` — a
-/// binary-float artifact, not ten meaningful digits. Without this cap, a
-/// COMMODITY WITH NO ESTABLISHED STYLE YET (nothing else in the journal prices
-/// it) would carry that noise straight into `infer_style`'s fallback
-/// `default_style(commodity, places)`, whose `precision` is exactly the
-/// `places` it was handed — six is generous for anything Yahoo prices
-/// (mutual-fund NAVs included) while discarding the float tail. The SECOND,
-/// tighter round in [`apply_update`] — to the quote commodity's actual
-/// established style, when the journal has one — is what turns this into the
-/// clean two-decimal price a person would write.
-const MAX_FETCHED_QUOTE_PLACES: u32 = 6;
+/// binary-float artifact, not ten meaningful digits. Six significant digits
+/// discard that tail while keeping what a price actually says: a stablecoin's
+/// `0.99874`, a penny stock's `0.0412`, a meme token's `0.00000358`. Rounding
+/// to the base currency's own two decimals instead — what this did before —
+/// wrote USDT as `$1.00` and a sub-cent token as `$0.00`, valuing the holding
+/// at nothing. See [`fetched_quantity`].
+const SIGNIFICANT_DIGITS: u32 = 6;
+
+/// The most fractional digits a fetched price is written with: hledger's own
+/// parse limit ([`MAX_PARSE_PLACES`]), so the journal never holds a digit
+/// hledger would round away on reading it back.
+const MAX_FETCHED_QUOTE_PLACES: u32 = MAX_PARSE_PLACES;
 
 // ===========================================================================
 // Wire types
@@ -154,15 +157,43 @@ pub(crate) struct WirePricesStatus {
     auto: WireAutoStatus,
 }
 
-/// One symbol that will be priced.
+/// One symbol that will be priced, resolved by [`crate::tickers::Tickers`].
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WirePriceSymbol {
     /// The hledger commodity symbol.
     pub(crate) symbol: String,
     /// The ticker it will be looked up as on Yahoo Finance: the commodity's
-    /// `yahoo:` tag, else the symbol itself.
+    /// `yahoo:` tag; else, for a commodity tagged as a coin, the base
+    /// currency's pair (`BTC-USD`); else the symbol itself.
     pub(crate) yahoo_ticker: String,
+    /// Tagged `type: crypto` / `assetclass: crypto`.
+    #[serde(skip)]
+    pub(crate) crypto: bool,
+    /// The ticker came from a `yahoo:` tag.
+    #[serde(skip)]
+    pub(crate) explicit: bool,
+    /// The coin's pair in the base currency (`BTC-USD`), for advice.
+    #[serde(skip)]
+    pub(crate) coin_pair: String,
+    /// Why the ticker is not what the user might expect, when it is not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) note: Option<String>,
+}
+
+#[cfg(test)]
+impl WirePriceSymbol {
+    /// An untagged stock looked up as itself.
+    pub(crate) fn plain(symbol: &str) -> Self {
+        Self {
+            symbol: symbol.to_string(),
+            yahoo_ticker: symbol.to_string(),
+            crypto: false,
+            explicit: false,
+            coin_pair: format!("{symbol}-USD"),
+            note: None,
+        }
+    }
 }
 
 /// One candidate (or, in the update response, the actual) target file.
@@ -227,6 +258,15 @@ pub(crate) struct WirePriceResult {
     /// The fetched price, present for `updated` and `duplicate`.
     #[serde(skip_serializing_if = "Option::is_none")]
     price: Option<WireDec>,
+    /// What Yahoo says it priced (`Bitcoin USD`), when it says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    /// Something the user should know about this symbol's price: it was
+    /// priced as something that is not the coin its symbol suggests, it was
+    /// refused for that reason, or its ticker could not be chosen as asked
+    /// ([`crate::tickers::judge`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) warning: Option<String>,
 }
 
 /// What happened to one symbol.
@@ -241,6 +281,10 @@ pub(crate) enum Outcome {
     NotFound,
     /// The request to Yahoo Finance itself failed (network, decode, shape).
     FetchError,
+    /// Yahoo answered with an instrument that is not what the commodity is
+    /// tagged as — a coin-tagged commodity answered by an ETF — so nothing
+    /// was written (plan 48 C4). `warning` says what and how to fix it.
+    Refused,
 }
 
 // ===========================================================================
@@ -296,15 +340,19 @@ pub(crate) async fn update(
                 let result = source
                     .latest_close_and_quote(&symbol.yahoo_ticker, &as_of)
                     .await
-                    .map(|(latest, quote)| {
+                    .map(|reply| {
                         // The reply's market quote refreshes the intraday
-                        // cache for free (plan 47 D11). Memory only.
-                        if let Some(quote) = quote {
-                            quotes.record(&symbol.yahoo_ticker, Some(quote), now_seconds());
-                        }
-                        latest.into_iter().collect()
+                        // cache for free (plan 47 D11), unless the guard
+                        // refuses what it priced. Memory only.
+                        quotes.record_reply(
+                            &symbol,
+                            reply.quote,
+                            reply.instrument.clone(),
+                            now_seconds(),
+                        );
+                        (reply.data.into_iter().collect(), reply.instrument)
                     });
-                FetchOutcome { symbol, result }
+                FetchOutcome::from_reply(symbol, result)
             }
         })
         .buffer_unordered(FETCH_CONCURRENCY)
@@ -380,6 +428,7 @@ pub(crate) fn symbols_to_price(
         gain_since: None,
         value_in: None,
         selection: Default::default(),
+        return_income: Default::default(),
     };
     let report = compute_holdings(
         &journal.transactions,
@@ -389,32 +438,13 @@ pub(crate) fn symbols_to_price(
         &scope,
     )?;
     let quote = Commodity(report.base.clone());
+    let tickers = Tickers::with_base(journal, &report.base);
     let symbols = report
         .holdings
         .iter()
-        .map(|holding| WirePriceSymbol {
-            yahoo_ticker: yahoo_ticker(&journal.commodity_tags, &holding.symbol),
-            symbol: holding.symbol.clone(),
-        })
+        .map(|holding| tickers.resolve(&holding.symbol))
         .collect();
     Ok((symbols, quote))
-}
-
-/// The Yahoo ticker for `symbol`: its commodity `yahoo:` tag, else the symbol
-/// itself. Mirrors `holdings::engine`'s own `commodity_name_map` (built for the
-/// `name:` tag) — the same shape, a different tag key. `profiles_api` looks
-/// commodities up on Yahoo under the same mapping, so a ticker is resolved one
-/// way everywhere.
-pub(crate) fn yahoo_ticker(
-    commodity_tags: &[(Commodity, Vec<(String, String)>)],
-    symbol: &str,
-) -> String {
-    commodity_tags
-        .iter()
-        .find(|(commodity, _)| commodity.0 == symbol)
-        .and_then(|(_, tags)| tags.iter().find(|(key, _)| key == "yahoo"))
-        .map(|(_, value)| value.clone())
-        .unwrap_or_else(|| symbol.to_string())
 }
 
 /// How many `P` directives each source file holds, keyed by resolved path.
@@ -740,6 +770,30 @@ pub(crate) fn plan_update(state: &AppState, id: &str) -> Result<UpdatePlan, AppE
 pub(crate) struct FetchOutcome {
     pub(crate) symbol: WirePriceSymbol,
     pub(crate) result: Result<Vec<FetchedPrice>, YahooError>,
+    /// What the reply said the instrument is, for the guard in
+    /// [`apply_update`].
+    pub(crate) instrument: Option<Instrument>,
+}
+
+impl FetchOutcome {
+    /// A fetch's closes and instrument, or its error.
+    pub(crate) fn from_reply(
+        symbol: WirePriceSymbol,
+        reply: Result<(Vec<FetchedPrice>, Option<Instrument>), YahooError>,
+    ) -> Self {
+        match reply {
+            Ok((closes, instrument)) => Self {
+                symbol,
+                result: Ok(closes),
+                instrument,
+            },
+            Err(error) => Self {
+                symbol,
+                result: Err(error),
+                instrument: None,
+            },
+        }
+    }
 }
 
 /// Phase 3: fold the fetched quotes into `plan`'s file and write it (if
@@ -761,7 +815,12 @@ pub(crate) fn apply_update(
     // Keyed `(date, symbol)` for the append order.
     let mut new_lines: Vec<((String, String), String)> = Vec::new();
 
-    for FetchOutcome { symbol, result } in fetched {
+    for FetchOutcome {
+        symbol,
+        result,
+        instrument,
+    } in fetched
+    {
         let prices = match result {
             Err(_error) => {
                 results.push(no_price(symbol, Outcome::FetchError));
@@ -773,19 +832,36 @@ pub(crate) fn apply_update(
             }
             Ok(prices) => prices,
         };
+        // The guard (plan 48 C4): a coin-tagged commodity answered by
+        // something that is not a coin is never written; a well-known coin
+        // symbol priced as something else is written, and said so.
+        let name = instrument
+            .as_ref()
+            .and_then(|instrument| instrument.name.clone());
+        let warning = match judge(&symbol, instrument.as_ref()) {
+            Verdict::Refuse(message) => {
+                results.push(WirePriceResult {
+                    name,
+                    warning: Some(message),
+                    ..no_price(symbol, Outcome::Refused)
+                });
+                continue;
+            }
+            Verdict::Warn(message) => Some(message),
+            Verdict::Accept => symbol.note.clone(),
+        };
         for price in prices {
-            // See `MAX_FETCHED_QUOTE_PLACES`: bound the raw quote BEFORE it
-            // can influence a fallback style, then round again to whatever
-            // precision the journal actually established for this commodity
-            // (a no-op when that is already <= the bound).
+            // The journal's own style for the base commodity (two decimals
+            // for a `$` ledger, when it established none), and the fetched
+            // price to its significant digits, never fewer decimals than
+            // that style ([`fetched_quantity`]).
             //
             // Rounded ABOVE the duplicate branch, not inside the write branch:
             // both outcomes report `price` on the wire, and a `duplicate`
             // echoing the raw `f64` tail while an `updated` echoed `228.00`
             // would be two different answers to one question.
-            let bounded = round_to_places(price.quantity, MAX_FETCHED_QUOTE_PLACES);
-            let style = infer_style(journal, &plan.quote, bounded.places);
-            let quantity = round_to_places(bounded, style.precision);
+            let style = infer_style(journal, &plan.quote, DEFAULT_QUOTE_PLACES);
+            let quantity = fetched_quantity(price.quantity, style.precision);
             let outcome = if line_exists(&plan.text, &price.date, &symbol.symbol) {
                 Outcome::Duplicate
             } else {
@@ -795,10 +871,12 @@ pub(crate) fn apply_update(
                     style,
                     cost: None,
                 };
+                // Quoted when it must be (`"PEPE24478"`): hledger rejects a
+                // bare symbol with a digit in it.
                 let line = format!(
                     "P {} {} {}",
                     price.date,
-                    symbol.symbol,
+                    render_commodity(&symbol.symbol),
                     render_amount(&amount)
                 );
                 new_lines.push(((price.date.clone(), symbol.symbol.clone()), line));
@@ -810,6 +888,8 @@ pub(crate) fn apply_update(
                 outcome,
                 date: Some(price.date),
                 price: Some(WireDec::from(quantity)),
+                name: name.clone(),
+                warning: warning.clone(),
             });
         }
     }
@@ -872,12 +952,58 @@ pub(crate) fn apply_update(
 /// A symbol's result when it brought back no close at all.
 fn no_price(symbol: WirePriceSymbol, outcome: Outcome) -> WirePriceResult {
     WirePriceResult {
+        warning: symbol.note,
         symbol: symbol.symbol,
         yahoo_ticker: symbol.yahoo_ticker,
         outcome,
         date: None,
         price: None,
+        name: None,
     }
+}
+
+/// The decimals a fetched price gets in a journal that never wrote its base
+/// commodity with any: a currency's usual two.
+const DEFAULT_QUOTE_PLACES: u32 = 2;
+
+/// A fetched price as written: [`SIGNIFICANT_DIGITS`] significant digits
+/// (half-even), at most [`MAX_FETCHED_QUOTE_PLACES`] decimals, trailing zeros
+/// dropped — but never fewer decimals than `floor`, the base currency's own
+/// precision, so `$61,656.01` stays two-decimal and `$228` reads `$228.00`.
+///
+/// Only the `P` line's number changes: how the base currency DISPLAYS comes
+/// from posting amounts (`journal_meta::report_styles`), never from prices, so
+/// a `$0.00000358` price does not make every dollar amount eight-decimal.
+fn fetched_quantity(raw: Dec, floor: u32) -> Dec {
+    let bounded = round_to_places(raw, MAX_FETCHED_QUOTE_PLACES);
+    let places = significant_places(bounded)
+        .min(MAX_FETCHED_QUOTE_PLACES)
+        .max(floor);
+    let trimmed = round_to_places(bounded, places).normalized();
+    if trimmed.places < floor {
+        trimmed.rounded(floor).unwrap_or(trimmed)
+    } else {
+        trimmed
+    }
+}
+
+/// The fractional digits `value` needs to show [`SIGNIFICANT_DIGITS`]
+/// significant digits: none past them for `61656.01`, six past the leading
+/// zeros for `0.00000358`. Zero needs none.
+fn significant_places(value: Dec) -> u32 {
+    let digits = value
+        .mantissa
+        .unsigned_abs()
+        .checked_ilog10()
+        .map_or(0, |log| log + 1);
+    if digits == 0 {
+        return 0;
+    }
+    // `digits - places` is how many digits sit left of the point (zero or
+    // less for a value under one).
+    let integer_digits = i64::from(digits) - i64::from(value.places);
+    let wanted = i64::from(SIGNIFICANT_DIGITS) - integer_digits;
+    u32::try_from(wanted.max(0)).unwrap_or(u32::MAX)
 }
 
 /// Round `value` to exactly `places` fractional digits, half-even. A no-op
@@ -1173,30 +1299,6 @@ mod tests {
     }
 
     #[test]
-    fn yahoo_ticker_falls_back_to_the_symbol_with_no_tag() {
-        let tags = vec![];
-        assert_eq!(yahoo_ticker(&tags, "AAPL"), "AAPL");
-    }
-
-    #[test]
-    fn yahoo_ticker_reads_the_commoditys_yahoo_tag() {
-        let tags = vec![(
-            CoreCommodity("BRK'B".to_string()),
-            vec![("yahoo".to_string(), "BRK-B".to_string())],
-        )];
-        assert_eq!(yahoo_ticker(&tags, "BRK'B"), "BRK-B");
-    }
-
-    #[test]
-    fn yahoo_ticker_ignores_other_tags_on_the_same_commodity() {
-        let tags = vec![(
-            CoreCommodity("VTI".to_string()),
-            vec![("name".to_string(), "Vanguard Total Market".to_string())],
-        )];
-        assert_eq!(yahoo_ticker(&tags, "VTI"), "VTI");
-    }
-
-    #[test]
     fn price_counts_tallies_per_source_file() {
         let prices = vec![
             price_directive("2026-01-01", "AAPL", "/j/a.journal"),
@@ -1223,6 +1325,63 @@ mod tests {
         assert_eq!(tally.get(FsPath::new("/j/a.journal")), Some(&2));
         assert_eq!(tally.get(FsPath::new("/j/b.journal")), Some(&1));
         assert_eq!(tally.get(FsPath::new("/j/c.journal")), None);
+    }
+
+    fn fetched(text: &str, floor: u32) -> String {
+        let quantity = fetched_quantity(Dec::parse(text, '.').unwrap(), floor);
+        ledgeline_core::edit::render_amount(&Amount {
+            commodity: CoreCommodity("$".to_string()),
+            quantity,
+            style: ledgeline_core::model::AmountStyle {
+                precision: floor,
+                ..default_dollar_style()
+            },
+            cost: None,
+        })
+    }
+
+    fn default_dollar_style() -> ledgeline_core::model::AmountStyle {
+        crate::edit_api::infer_style(
+            &ledgeline_core::parse::parse_journal("", "t").unwrap(),
+            &CoreCommodity("$".to_string()),
+            2,
+        )
+    }
+
+    /// Plan 48 WP2's cases: a fetched price keeps six significant digits,
+    /// never fewer decimals than the base currency's own.
+    #[test]
+    fn a_fetched_price_keeps_its_significant_digits() {
+        assert_eq!(fetched("0.99874", 2), "$0.99874", "a stablecoin");
+        assert_eq!(fetched("0.9987040162086487", 2), "$0.998704");
+        assert_eq!(fetched("0.00000358", 2), "$0.00000358", "a meme token");
+        assert_eq!(fetched("61656.01", 2), "$61656.01", "bitcoin");
+        assert_eq!(fetched("0.0412", 2), "$0.0412", "a penny stock");
+        assert_eq!(fetched("366.8500061035", 2), "$366.85", "float noise");
+        assert_eq!(
+            fetched("228", 2),
+            "$228.00",
+            "padded to the base's decimals"
+        );
+        assert_eq!(fetched("228.1", 2), "$228.10");
+        assert_eq!(fetched("1234.5678", 4), "$1234.5678", "a four-decimal base");
+    }
+
+    /// hledger reads at most ten decimals; a price is never written with more.
+    #[test]
+    fn a_fetched_price_never_has_more_decimals_than_hledger_reads() {
+        assert_eq!(fetched("0.000000003581234", 2), "$0.0000000036");
+        assert_eq!(fetched("0.00000000000001", 2), "$0.00");
+    }
+
+    #[test]
+    fn significant_places_counts_past_the_leading_zeros() {
+        assert_eq!(significant_places(Dec::new(6_165_601, 2)), 1);
+        assert_eq!(significant_places(Dec::new(99_874, 5)), 6);
+        assert_eq!(significant_places(Dec::new(358, 8)), 11);
+        assert_eq!(significant_places(Dec::new(1_234_567, 0)), 0);
+        assert_eq!(significant_places(Dec::new(0, 4)), 0);
+        assert_eq!(significant_places(Dec::new(-412, 4)), 7);
     }
 
     #[test]

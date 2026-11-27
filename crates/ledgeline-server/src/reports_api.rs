@@ -28,9 +28,9 @@ use ledgeline_core::holdings::{
     AnchorHorizon, Holding, HoldingPrice, HoldingsPoint, HoldingsReport, HoldingsScope,
     HoldingsSeries, HoldingsTotals, HoldingsWarning, OtherHolding, OtherHoldingsReport,
     OtherHoldingsTotals, OtherHoldingsWarning, OtherInputs, OtherWarningKind, PriceSource,
-    ReturnRange, ScopeMode, SeriesWindow, ValueRange, WarningKind, anchor_range, anchor_window,
-    auto_interval, compute_holdings, first_holding_date, holdings_series, last_held_dates,
-    other_holdings, prices_any_held, return_anchor_range, series_count,
+    ReturnIncome, ReturnRange, ScopeMode, SeriesWindow, ValueRange, WarningKind, anchor_range,
+    anchor_window, auto_interval, compute_holdings, first_holding_date, holdings_series,
+    last_held_dates, other_holdings, prices_any_held, return_anchor_range, series_count,
 };
 use ledgeline_core::model::{Commodity, Journal, PriceDirective};
 use ledgeline_core::reports::periods;
@@ -2210,7 +2210,9 @@ impl From<&Holding> for WireHolding {
 }
 
 /// A scope-local warning → `{symbol, kind, message}` (`kind` kebab-case, matching
-/// the TS union: `"missing-basis"` | `"negative-shares"` | `"unpriced"`).
+/// the TS union: `"missing-basis"` | `"negative-shares"` | `"unpriced"` |
+/// `"ticker-mismatch"`, the last one added by [`ticker_warnings`], not the
+/// engine).
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WireWarning {
@@ -2231,6 +2233,37 @@ impl From<&HoldingsWarning> for WireWarning {
             message: warning.message.clone(),
         }
     }
+}
+
+/// Plan 48 C4's Holdings half: one `ticker-mismatch` warning per row whose
+/// ticker the last chart reply this process saw judged wrong — a coin-tagged
+/// commodity answered by an ETF (refused, so the row keeps its older price),
+/// or an untagged `BTC` priced as the Grayscale ETF. Memory only, like the
+/// instrument it reads ([`crate::intraday::QuoteCache::instrument`]): nothing
+/// is said about a ticker no fetch has answered since launch.
+fn ticker_warnings(
+    quotes: &crate::intraday::QuoteCache,
+    journal: &Journal,
+    report: &HoldingsReport,
+) -> Vec<WireWarning> {
+    let tickers = crate::tickers::Tickers::with_base(journal, &report.base);
+    report
+        .holdings
+        .iter()
+        .filter_map(|holding| {
+            let symbol = tickers.resolve(&holding.symbol);
+            let instrument = quotes.instrument(&symbol.yahoo_ticker);
+            match crate::tickers::judge(&symbol, instrument.as_ref()) {
+                crate::tickers::Verdict::Accept => None,
+                crate::tickers::Verdict::Warn(message)
+                | crate::tickers::Verdict::Refuse(message) => Some(WireWarning {
+                    symbol: holding.symbol.clone(),
+                    kind: "ticker-mismatch",
+                    message,
+                }),
+            }
+        })
+        .collect()
 }
 
 /// Portfolio totals: `marketValue` always present; `basis`/`gain`/`gainPct`
@@ -3038,6 +3071,7 @@ fn resolve_grouped_value_in(
 /// The scope shared by a tab's report and series endpoints: the same account
 /// selection, date and valuation commodity, validated the same way — with the
 /// `valueIn` admission test measured over `tab`'s own rows.
+#[allow(clippy::too_many_arguments)] // each is one query parameter or setting
 pub(crate) fn holdings_scope(
     journal: &Journal,
     tab: HoldingsTab,
@@ -3046,6 +3080,7 @@ pub(crate) fn holdings_scope(
     as_of: Option<String>,
     gain_since: Option<String>,
     value_in: Option<&str>,
+    return_income: ReturnIncome,
 ) -> Result<HoldingsScope, AppError> {
     let scope = HoldingsScope {
         accounts: parse_accounts(accounts),
@@ -3054,6 +3089,7 @@ pub(crate) fn holdings_scope(
         gain_since: parse_opt_date("gainSince", gain_since)?,
         value_in: None,
         selection: BTreeSet::new(),
+        return_income,
     };
     Ok(HoldingsScope {
         value_in: resolve_value_in(journal, &scope, tab, value_in)?,
@@ -4504,6 +4540,7 @@ pub(crate) async fn holdings(
     State(state): State<AppState>,
     Query(query): Query<HoldingsQuery>,
 ) -> Result<Json<WireHoldingsReport>, AppError> {
+    let return_income = crate::ui_prefs::return_income(&state);
     let snapshot = state.snapshot();
     let quotes = state.quotes_arc();
     compute(move || {
@@ -4520,6 +4557,7 @@ pub(crate) async fn holdings(
                 query.as_of,
                 query.gain_since,
                 query.value_in.as_deref(),
+                return_income,
             )?,
             query.symbols.as_deref(),
         );
@@ -4541,10 +4579,10 @@ pub(crate) async fn holdings(
                     .map(|holding| holding.symbol.as_str()),
             )
         });
-        Ok(WireHoldingsReport {
-            live_at,
-            ..WireHoldingsReport::from(&report)
-        })
+        let mut wire = WireHoldingsReport::from(&report);
+        wire.warnings
+            .extend(ticker_warnings(&quotes, journal, &report));
+        Ok(WireHoldingsReport { live_at, ..wire })
     })
     .await
 }
@@ -4557,13 +4595,14 @@ pub(crate) async fn holdings_series_report(
     State(state): State<AppState>,
     Query(query): Query<HoldingsSeriesQuery>,
 ) -> Result<Json<WireHoldingsSeries>, AppError> {
+    let return_income = crate::ui_prefs::return_income(&state);
     let snapshot = state.snapshot();
     let quotes = state.quotes_arc();
     compute(move || {
         let journal = &snapshot.journal;
         let want_live = parse_live(query.live.as_deref())?;
         let anchor = parse_anchor(query.anchor.as_deref())?;
-        let (scope, window) = stocks_series_request(journal, query)?;
+        let (scope, window) = stocks_series_request(journal, query, return_income)?;
         let live = want_live
             .then(|| Live::new(&quotes, journal, &scope.as_of))
             .flatten();
@@ -4614,6 +4653,7 @@ pub(crate) async fn holdings_series_report(
 pub(crate) fn stocks_series_request(
     journal: &Journal,
     query: HoldingsSeriesQuery,
+    return_income: ReturnIncome,
 ) -> Result<(HoldingsScope, SeriesWindow), AppError> {
     let scope = with_selection(
         holdings_scope(
@@ -4625,6 +4665,7 @@ pub(crate) fn stocks_series_request(
             // The trend tracks market value/basis only — no per-point gain window.
             None,
             query.value_in.as_deref(),
+            return_income,
         )?,
         query.symbols.as_deref(),
     );
@@ -4656,6 +4697,7 @@ pub(crate) async fn other_holdings_report(
     State(state): State<AppState>,
     Query(query): Query<HoldingsQuery>,
 ) -> Result<Json<WireOtherHoldingsReport>, AppError> {
+    let return_income = crate::ui_prefs::return_income(&state);
     let snapshot = state.snapshot();
     let quotes = state.quotes_arc();
     compute(move || {
@@ -4670,6 +4712,7 @@ pub(crate) async fn other_holdings_report(
                 query.as_of,
                 query.gain_since,
                 query.value_in.as_deref(),
+                return_income,
             )?,
             query.rows.as_deref(),
         );
@@ -4706,6 +4749,7 @@ pub(crate) async fn other_holdings_series_report(
     State(state): State<AppState>,
     Query(query): Query<HoldingsSeriesQuery>,
 ) -> Result<Json<WireHoldingsSeries>, AppError> {
+    let return_income = crate::ui_prefs::return_income(&state);
     let snapshot = state.snapshot();
     let quotes = state.quotes_arc();
     compute(move || {
@@ -4722,6 +4766,7 @@ pub(crate) async fn other_holdings_series_report(
                 // The trend tracks value/cost only — no per-point change window.
                 None,
                 query.value_in.as_deref(),
+                return_income,
             )?,
             query.rows.as_deref(),
         );

@@ -4828,18 +4828,24 @@ fn render_assertion(assertion: &BalanceAssertion) -> String {
 /// A symbol hledger can only read quoted (one with a space, a digit or an
 /// operator character, such as `"ACME Index Fund"`) is written quoted; the
 /// parser keeps the name without its quotes.
+/// A commodity symbol as a journal must write it: bare when every character
+/// may appear in a bare symbol, else double-quoted (`"PEPE24478"`, `"AB 1"`) —
+/// hledger rejects a bare symbol with a digit or space in it.
+#[must_use]
+pub fn render_commodity(symbol: &str) -> std::borrow::Cow<'_, str> {
+    if symbol.chars().all(crate::parse::is_commodity_char) {
+        std::borrow::Cow::Borrowed(symbol)
+    } else {
+        std::borrow::Cow::Owned(format!("\"{symbol}\""))
+    }
+}
+
 fn render_priced(commodity: &Commodity, quantity: Dec, style: &AmountStyle) -> String {
     let number = render_dec(quantity, style.decimal_mark.unwrap_or('.'));
     if commodity.0.is_empty() {
         return number;
     }
-    let quoted;
-    let symbol = if commodity.0.chars().all(crate::parse::is_commodity_char) {
-        &commodity.0
-    } else {
-        quoted = format!("\"{}\"", commodity.0);
-        &quoted
-    };
+    let symbol = render_commodity(&commodity.0);
     match (style.side, style.spaced) {
         (CommoditySide::Left, false) => format!("{symbol}{number}"),
         (CommoditySide::Left, true) => format!("{symbol} {number}"),

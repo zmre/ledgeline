@@ -31,6 +31,32 @@ already works is documented in `docs/holdings/crypto.md` (shipped with plan
   The collision guard and the rounding fix go first, because they are
   correctness bugs that can already hit any user who holds crypto.
 
+## Build status (2026-11-27)
+
+Built on branch `2026-11-26-crypto-and-perf`, one commit per WP (WP4 merged
+from its own branch). Notes from the build:
+
+- **quoteSummary for `BTC-USD` is still unverified**: the crumb endpoint
+  answered "Too Many Requests" again. C7's fallback (the chart reply's
+  `instrumentType`, remembered per ticker) makes the answer moot.
+- **Ten decimals, not twelve.** hledger (and `Dec::parse`, `MAX_PARSE_PLACES`)
+  reads at most ten fractional digits, so fetched prices cap at ten and an
+  18-place ETH quantity is read to ten. Valuation at 10 × 10 places is exact.
+- **Two pre-existing bugs fixed in WP6:** a quoted symbol in a `commodity`
+  directive (`commodity 1. "PEPE24478"`) was parsed as a commodity literally
+  named `1. "PEPE24478"`, losing its tags and style; and Update prices wrote
+  `P … PEPE24478 …` unquoted, which hledger rejects.
+- **Holdings warnings are memory-only**: the `ticker-mismatch` warning appears
+  once some fetch this session has answered the ticker.
+- **C6 refined (Patrick, 2026-11-27):** income is return only on income
+  accounts whose name matches the `returnIncomeAccounts` setting (default
+  `dividend`, `staking`; pinnable per ledger; Settings → Prices). An RSU vest
+  to `income:rsu` is new money again. Insights' Box 5 still uses the default
+  filters, not the setting.
+- **Gain % vs Performance:** the windowed Gain % tile is money-weighted
+  (simple Dietz over the period), the Performance line time-weighted; the tile
+  now says "money-weighted" and `docs/holdings/index.md` explains the gap.
+
 ## Decisions
 
 Patrick answered the open questions on 2026-11-26. These override anything
@@ -274,13 +300,17 @@ Keep it as the fallback if Yahoo drops crypto.
   Tax lots are out of scope.
 - **Fees in the coin.** The hledger tutorial says fees are usually simply
   expensed (`expenses:fees  0.0001 BTC`), or capitalised by disposing and
-  re-acquiring at basis. **Open:** how Ledgeline's average-cost pool treats a
-  coin leaving to an expense account with no `@`. It reduces quantity, but
-  whether it registers as a sale at zero or as an outflow is not verified.
+  re-acquiring at basis. ~~Open: how Ledgeline's average-cost pool treats a
+  coin leaving to an expense account with no `@`.~~ **Resolved by WP4:** a
+  sale at zero. The quantity and its pro-rata share of the basis leave; it is
+  not a flow, so it lowers Performance. (Before WP4 the wallet-move spelling
+  also tainted the basis: the arriving bare leg read as a cost-less buy.)
 - **Staking rewards.** Usually income at fair value on receipt
-  (`assets:crypto  0.01 ETH @ $3000` / `income:staking`). **Open:** whether
-  Ledgeline counts that as money in (a flow) or as gain. For windowed gains it
-  should arguably be gain, but the journal says otherwise.
+  (`assets:crypto  0.01 ETH @ $3000` / `income:staking`). ~~Open: whether
+  Ledgeline counts that as money in (a flow) or as gain.~~ **Resolved by
+  WP4 (C6):** gain. It is not a flow, so it raises Performance and a windowed
+  gain; the `@` fair value is still basis, so the all-time gain (value −
+  basis) leaves it out, as the tax view does.
 - **Transfers between wallets and exchanges** are just two asset postings of the
   same commodity. Ledgeline pools per commodity across accounts in scope, so
   nothing special is needed.

@@ -36,6 +36,7 @@ fn all_accounts_scope() -> HoldingsScope {
         gain_since: None,
         value_in: None,
         selection: Default::default(),
+        return_income: Default::default(),
     }
 }
 
@@ -258,6 +259,7 @@ fn scoping_to_a_single_stock_account_isolates_it() {
         gain_since: None,
         value_in: None,
         selection: Default::default(),
+        return_income: Default::default(),
     };
     let report = compute_holdings(
         &journal.transactions,
@@ -288,6 +290,7 @@ fn windowed_report() -> HoldingsReport {
         gain_since: Some("2026-01-01".to_string()),
         value_in: None,
         selection: Default::default(),
+        return_income: Default::default(),
     };
     compute_holdings(
         &journal.transactions,
@@ -396,6 +399,7 @@ fn holding_name(text: &str, symbol: &str) -> String {
         gain_since: None,
         value_in: None,
         selection: Default::default(),
+        return_income: Default::default(),
     };
     let report = compute_holdings(
         &journal.transactions,

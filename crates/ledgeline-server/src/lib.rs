@@ -81,6 +81,7 @@ mod rules_api;
 mod sidecar;
 mod stage;
 mod sync;
+mod tickers;
 mod ui_prefs;
 mod ui_prefs_api;
 mod workbook_sandbox;
@@ -214,7 +215,7 @@ pub use workbook_sandbox::{WorkerAllocator, run_worker_if_requested, set_worker_
 // signature) is re-exported so the integration tests can build a fake and hand
 // it to `AppState::with_price_source` — the only way `/api/prices/update` is
 // tested without a live network call.
-pub use yahoo::{FetchedPrice, MarketQuote, PriceFeed, YahooError};
+pub use yahoo::{ChartReply, FetchedPrice, Instrument, MarketQuote, PriceFeed, YahooError};
 // Same arrangement for the Holdings pie's classification source: a fake
 // `ProfileFeed` handed to `AppState::with_profile_source` is how
 // `/api/holdings/profiles` is tested with no network.
