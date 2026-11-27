@@ -16,6 +16,9 @@
     // pattern, through ONE writer — see holdings/ui/urlCodec.ts. Display styles
     // for the base commodity come from the engine's journal metadata (reportStyles).
     //
+    // Plan 47 A1: the Stocks chart also switches between Value and Performance
+    // (`?view=perf`, the same one writer); see holdings/ui/StocksTrend.svelte.
+    //
     // Plan 47: the scope also carries a HOLDINGS filter (`?hold=`), set from the
     // scope bar's dropdown or by clicking a row, a wedge or a gainer. It narrows
     // the chart and the stat tiles only; the table, pie and gainers/losers keep
@@ -25,7 +28,7 @@
     import {onMount, untrack} from "svelte";
     import AsyncSection from "#ui/components/AsyncSection.svelte";
     import ErrorToast from "#ui/components/ErrorToast.svelte";
-    import {formatAmount, type Dec} from "#lib/domain/money.js";
+    import {formatAmount, toNumber, type Dec} from "#lib/domain/money.js";
     import {exportHoldingsXlsx} from "#lib/export/xlsx.js";
     import {styleOf} from "#lib/format/amounts.js";
     import GainersLosers from "#lib/holdings/ui/GainersLosers.svelte";
@@ -180,6 +183,13 @@
     // the engine's own totals over just those holdings, never a sum taken here.
     const filtered = $derived(holdingsData.filtered);
     const filteredShown = $derived(filtered === null ? null : partitionShortPositions(filtered.holdings).shown);
+    // The Value chart's colour is the Gain tile's sign (plan 47 A1a) — the same
+    // report the tiles read, so chart and tile can never disagree. Null (an
+    // unknown gain) lets the chart fall back to value first-vs-last.
+    const chartGain = $derived.by(() => {
+        const gain = (filtered ?? report)?.totals.gain ?? null;
+        return gain === null ? null : toNumber(gain);
+    });
 
     // The Holdings dropdown's options: the tab's own report rows, for the same
     // reason the account list is per tab — a symbol is no filter for a house.
@@ -258,6 +268,7 @@
                                         formatValue={formatTrendValue}
                                         formatAxis={formatTrendAxis}
                                         {liveHint}
+                                        gain={chartGain}
                                     />
                                 {/if}
                             </div>

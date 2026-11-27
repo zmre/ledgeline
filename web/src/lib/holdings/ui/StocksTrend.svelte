@@ -1,5 +1,16 @@
-<!-- The Stocks tab's value-over-time chart: HoldingsTrend plus the benchmark
-     overlay.
+<!-- The Stocks tab's value-over-time chart: HoldingsTrend plus the Value /
+     Performance switch and the benchmark overlay.
+
+     The switch (plan 47 A1b) is a two-button segmented control in the chart's
+     heading row, each button tabbable and `aria-pressed`, and `v` flips it. It
+     writes `holdingsChartView`, which the page's one URL writer mirrors as
+     `?view=perf`. Both views come from the same series, so switching fetches
+     nothing.
+
+     Compare is Performance-only (A1d): benchmarks are cumulative returns, so
+     they are drawn only beside the portfolio's own return. In Value mode no
+     overlay is drawn and nothing is fetched, and pressing Compare switches to
+     Performance and opens the picker.
 
      Progressive by construction. The portfolio line is drawn from `trend`,
      which the page already has; the benchmark request goes out only once it is
@@ -16,8 +27,12 @@
      a scope change can never be drawn against the wrong dates. -->
 <script lang="ts">
     import {untrack} from "svelte";
+    import {registerKeys} from "#ui/keys/keymap.svelte.js";
+    import {PRIORITY} from "#ui/keys/types.js";
+    import type {ChartView} from "#lib/holdings/params.js";
     import type {HoldingsScope, HoldingsSeries} from "#lib/holdings/types.js";
     import {benchmarkCatalog, benchmarkLines, catalogOrder} from "#lib/stores/benchmarks.svelte.js";
+    import {holdingsChartView} from "#lib/stores/holdings.svelte.js";
     import {settings} from "#lib/stores/settings.svelte.js";
     import BenchmarkPicker from "./BenchmarkPicker.svelte";
     import HoldingsTrend from "./HoldingsTrend.svelte";
@@ -30,6 +45,7 @@
         formatValue,
         formatAxis,
         liveHint = null,
+        gain = null,
     }: {
         trend: HoldingsSeries;
         /** The scope `trend` was fetched for. */
@@ -39,7 +55,33 @@
         formatAxis?: (n: number) => string;
         /** HoldingsTrend's `liveHint`. */
         liveHint?: string | null;
+        /** HoldingsTrend's `gain`: the stat tiles' period gain, which colours the Value line. */
+        gain?: number | null;
     } = $props();
+
+    const view = $derived(holdingsChartView.value);
+    const perf = $derived(view === "perf");
+    const setView = (next: ChartView): void => {
+        holdingsChartView.value = next;
+    };
+
+    registerKeys({
+        id: "holdings-chart-view",
+        priority: PRIORITY.page,
+        bindings: [
+            {
+                keys: "v",
+                label: "Chart value or performance",
+                group: "Holdings",
+                run: () => setView(holdingsChartView.value === "perf" ? "value" : "perf"),
+            },
+        ],
+    });
+
+    const VIEWS: readonly {view: ChartView; label: string; title: string}[] = [
+        {view: "value", label: "Value", title: "Market value over time; ▲/▼ mark net buying and selling (v)"},
+        {view: "perf", label: "Performance", title: "Return since the first point; buying and selling do not move it (v)"},
+    ];
 
     // The engine owns the catalog; until it arrives nothing is requested, and a
     // persisted symbol it no longer lists is simply not asked for (the server
@@ -58,28 +100,49 @@
         const current = scope;
         const base = trend;
         const symbols = picked;
-        if (url === null) return;
+        // Value mode draws no benchmark, so it asks Yahoo for none.
+        if (url === null || !perf) return;
         untrack(() => benchmarkLines.sync(url, current, base, symbols));
     });
 
     const overlays = $derived(
-        benchmarkOverlays(trend, picked, (symbol) => {
-            const state = benchmarkLines.entries.get(symbol);
-            return state?.status === "ready" ? state.line : null;
-        })
+        !perf
+            ? []
+            : benchmarkOverlays(trend, picked, (symbol) => {
+                  const state = benchmarkLines.entries.get(symbol);
+                  return state?.status === "ready" ? state.line : null;
+              })
     );
 </script>
 
-<HoldingsTrend {trend} period={scope.gainPeriod} {formatValue} {formatAxis} {overlays} {liveHint}>
+<HoldingsTrend {trend} period={scope.gainPeriod} {formatValue} {formatAxis} {overlays} {liveHint} {view} {gain}>
     {#snippet controls()}
-        <BenchmarkPicker
-            {catalog}
-            {picked}
-            states={benchmarkLines.entries}
-            onToggle={(symbol, on) => settings.toggleBenchmark(symbol, on)}
-            onRetry={(symbol) => {
-                if (serverUrl !== null) benchmarkLines.retry(serverUrl, scope, trend, symbol);
-            }}
-        />
+        <div class="flex items-center gap-2">
+            <div class="join" role="group" aria-label="Chart shows" data-testid="chart-view">
+                {#each VIEWS as v (v.view)}
+                    <button
+                        type="button"
+                        class="btn join-item btn-xs {view === v.view ? 'btn-neutral' : 'btn-ghost'}"
+                        aria-pressed={view === v.view}
+                        title={v.title}
+                        onclick={() => setView(v.view)}
+                        data-testid="chart-view-{v.view}"
+                    >
+                        {v.label}
+                    </button>
+                {/each}
+            </div>
+            <BenchmarkPicker
+                active={perf}
+                onActivate={() => setView("perf")}
+                {catalog}
+                {picked}
+                states={benchmarkLines.entries}
+                onToggle={(symbol, on) => settings.toggleBenchmark(symbol, on)}
+                onRetry={(symbol) => {
+                    if (serverUrl !== null) benchmarkLines.retry(serverUrl, scope, trend, symbol);
+                }}
+            />
+        </div>
     {/snippet}
 </HoldingsTrend>

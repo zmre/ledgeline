@@ -16,7 +16,7 @@ const line = (symbol: string, error: string | null = null) => ({
     symbol,
     label: symbol,
     slot: 0,
-    points: [{date: "2026-09-28", value: error === null ? 1 : null}],
+    points: [{date: "2026-09-28", value: error === null ? 1 : null, returnPct: error === null ? 0 : null}],
     stale: false,
     error,
 });

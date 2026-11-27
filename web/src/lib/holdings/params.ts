@@ -31,3 +31,18 @@ export const TAB_LABELS: Record<HoldingsTab, string> = {
 
 /** Narrow an arbitrary query value to a tab id — an unknown one is not a tab. */
 export const isTab = (v: string): v is HoldingsTab => (TAB_ORDER as string[]).includes(v);
+
+/**
+ * What the Stocks chart plots (plan 47 A1b): market VALUE (the default), or
+ * PERFORMANCE — cumulative time-weighted return since the window's first
+ * point. `?view=perf`, omitted for `value`, and written by the same one codec
+ * as the tab, for the same reason. Not in `HoldingsScope` either: one series
+ * response carries both, so switching refetches nothing.
+ */
+export type ChartView = "value" | "perf";
+
+/** Value is the default: the chart Holdings has always opened on. */
+export const DEFAULT_CHART_VIEW: ChartView = "value";
+
+/** Narrow an arbitrary query value to a chart view — anything else is not one. */
+export const isChartView = (v: string): v is ChartView => v === "value" || v === "perf";

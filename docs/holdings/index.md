@@ -24,7 +24,7 @@ This section has five pages:
 - [The holdings and valuation tags](tags.md): moving an account between tabs, rolling several accounts into one holding, and separating cost from value;
 - [Prices](prices.md): where valuations come from and the Update prices button;
 - [Allocation by category](allocation.md): the Divide by menu on the Stocks pie;
-- [Comparing against a benchmark](benchmarks.md): the index-fund lines on the Value over time chart.
+- [Comparing against a benchmark](benchmarks.md): the index-fund lines on the Performance chart.
 
 Design notes and the reasoning behind each decision live in
 [`plans/10-stock-holdings.md`](https://github.com/zmre/ledgeline/blob/main/plans/10-stock-holdings.md) and
@@ -143,6 +143,21 @@ point is the value at the end of its week. The period is part of the page URL
 
 ### The value-over-time chart
 
+**Value or Performance.** On the Stocks tab a switch in the chart's heading
+picks what is drawn. Press <kbd>v</kbd> to flip it.
+
+- **Value** (the default) is the market value of what you hold at each point.
+  Buying and selling move it: selling $60k of a fund drops the line by $60k
+  whether the fund went up or down.
+- **Performance** is your return since the chart's first point, in percent. It
+  starts at 0 % and buying and selling do not move it. Each step is measured
+  as gain over the money that was invested during that step, with money moved
+  in or out counted as arriving halfway through (the Modified Dietz method),
+  and the steps are multiplied together (a time-weighted return). Use it to
+  ask "how did my investments do", and Value to ask "how much do I have".
+
+The choice is part of the URL (`?view=perf`). The Other tab has only Value.
+
 **The y-axis does not start at zero.** A seven-figure portfolio drawn from $0
 is a flat line along the top. Fitting the axis to the shown window alone has
 the opposite problem: a 0.4 % week fills the chart and looks like a crash. So the axis is fitted
@@ -159,10 +174,32 @@ below and 10 % above, never below zero. Leading zeroes are ignored. A history th
 balance jumps from $0 to the full amount on day one, and that $0 would otherwise
 drag the axis down to the floor.
 
-**Colour says which way the period went.** The line and the shading under it
-are green when the last point is above the first, red when it is below, and the
-plain text colour when nothing changed, which is common on the Other tab.
-Benchmark lines stay dashed and unshaded.
+Performance uses the same horizons and the same padding, measured from the
+chart's first point, but it can go below zero, so it has no floor. A thin line
+marks 0 %.
+
+**Colour says whether the period made money.** On Value the line and the
+shading under it follow the **Gain** figure above the chart: green when the
+gain over the period is positive, red when it is negative, the plain text
+colour when it is zero. A sale that leaves less value at the end does not turn
+a gaining period red. When the gain is unknown (a holding with no cost basis,
+for example), the colour falls back to comparing the last point with the
+first. The Other tab always compares last with first, because its Change
+column is value-based. On Performance the colour is the sign of the last
+point. Benchmark lines stay dashed and unshaded.
+
+**Markers for buying and selling.** On Value, a point where you put in or took
+out a noticeable amount gets a small ▲ (net bought) or ▼ (net sold), and its
+tooltip says how much: "Net bought $12,000.00". Noticeable means at least 5 %
+of the y-axis span, so reinvested dividends and a regular contribution to a
+large portfolio are not marked. The Other tab shows the same markers when money
+moves into or out of those accounts. Performance has no markers, because
+buying and selling do not move it.
+
+**Cash dividends.** A dividend paid out as cash leaves your holdings without
+being counted as money taken out, so Performance reads slightly low for a
+holding that pays cash dividends. The benchmark lines assume dividends are
+reinvested. Over a year the gap is roughly the holding's dividend yield.
 
 **Narrowing the chart to some holdings.** The **Holdings** menu beside the
 account chooser picks which holdings the chart and the summary figures above it
@@ -176,9 +213,9 @@ cover. Press <kbd>F</kbd> to open it and type to search. You can also click:
 
 Clicking the same thing again clears it. The table, pie and gainers and losers keep
 every row, with the picked ones highlighted, so you can keep clicking. Compare
-still works: the index-fund line is seeded from the picked holdings' own money
-in and out. On the Other tab the menu lists that tab's rows. The pick is part
-of the URL (`?hold=VTI,AAPL`).
+still works: Performance is then the picked holdings' own return. On the Other
+tab the menu lists that tab's rows. The pick is part of the URL
+(`?hold=VTI,AAPL`).
 
 **Today's prices on short periods.** On **1 week** and **1 month**, with the
 as-of date set to today, the page fetches one delayed quote per holding and uses it everywhere: table,

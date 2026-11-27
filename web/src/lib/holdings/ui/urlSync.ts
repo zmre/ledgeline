@@ -10,7 +10,7 @@
 import {browser} from "$app/env";
 import {afterNavigate} from "$app/navigation";
 import {localToday} from "#lib/stores/filters.svelte.js";
-import {holdingsScope, holdingsTab, subscribeHoldingsUrlState} from "#lib/stores/holdings.svelte.js";
+import {holdingsChartView, holdingsScope, holdingsTab, subscribeHoldingsUrlState} from "#lib/stores/holdings.svelte.js";
 import {startSearchSync} from "#lib/url/searchSync.js";
 import {searchToState, stateToSearch} from "./urlCodec";
 
@@ -48,12 +48,14 @@ export function startHoldingsUrlSync(): () => void {
         // Idempotence via the codec, not field-by-field: when the store already
         // serializes to what the URL parses to, skip the writes entirely — no
         // replaced scope object, no re-fired subscription, no mirror debounce.
-        if (stateToSearch(restored, today) === stateToSearch({scope: holdingsScope.value, tab: holdingsTab.value}, today)) return;
+        if (stateToSearch(restored, today) === stateToSearch({scope: holdingsScope.value, tab: holdingsTab.value, view: holdingsChartView.value}, today))
+            return;
         // Tab FIRST: switching tab clears the holdings filter (it names rows
         // of one tab only), so setting it after the scope would erase the
         // `hold=` the URL just restored.
         holdingsTab.value = restored.tab;
         holdingsScope.replace(restored.scope);
+        holdingsChartView.value = restored.view;
     };
 
     restore();

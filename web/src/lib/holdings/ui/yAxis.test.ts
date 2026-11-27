@@ -1,5 +1,5 @@
 import {describe, expect, it} from "vitest";
-import {paddedDomain, trendOf} from "./yAxis";
+import {gainTrend, paddedDomain, paddedReturnDomain, returnTrend, trendOf} from "./yAxis";
 
 describe("UNIT holdings yAxis — the anchored, padded domain (plan 47 D1–D3)", () => {
     it("pads the anchor's range 10 % above and 20 % below", () => {
@@ -60,5 +60,72 @@ describe("UNIT holdings yAxis — the period's direction (plan 47 D4)", () => {
     it("is flat with fewer than two values", () => {
         expect(trendOf([])).toBe("flat");
         expect(trendOf([null, 5, null])).toBe("flat");
+    });
+});
+
+describe("UNIT holdings yAxis — the Performance domain (plan 47 A1c)", () => {
+    const close = (domain: [number, number] | null, expected: [number, number]): void => {
+        expect(domain).not.toBeNull();
+        expect(domain?.[0]).toBeCloseTo(expected[0], 10);
+        expect(domain?.[1]).toBeCloseTo(expected[1], 10);
+    };
+
+    it("pads the return anchor's range 10 % above and 20 % below", () => {
+        // A year that ran −10 %..+30 % around a quiet +1 % window.
+        close(paddedReturnDomain({min: -0.1, max: 0.3}, [[0, 0.01]]), [-0.18, 0.34]);
+    });
+
+    it("never floors at zero: returns go negative", () => {
+        close(paddedReturnDomain({min: 0.05, max: 0.25}, [[0, 0.1]]), [-0.05, 0.275]);
+        close(paddedReturnDomain(null, [[0, -0.2, -0.1]]), [-0.24, 0.02]);
+    });
+
+    it("lets the shown line and every benchmark widen the anchor", () => {
+        close(
+            paddedReturnDomain({min: 0, max: 0.1}, [
+                [0, 0.05],
+                [0, 0.2],
+                [-0.1, 0],
+            ]),
+            [-0.16, 0.23]
+        );
+    });
+
+    it("keeps a leading 0 % — it is the first point, not an account opening", () => {
+        close(paddedReturnDomain(null, [[0, 0.1]]), [-0.02, 0.11]);
+    });
+
+    it("draws a window where nothing moved against a fixed span, so the 0 % line still shows", () => {
+        close(paddedReturnDomain(null, [[0, 0, 0]]), [-0.02, 0.01]);
+        close(paddedReturnDomain({min: 0.1, max: 0.1}, []), [0.08, 0.11]);
+    });
+
+    it("answers null only when there is no return at all", () => {
+        expect(paddedReturnDomain(null, [[null, null]])).toBeNull();
+        expect(paddedReturnDomain({min: Number.NaN, max: 1}, [])).toBeNull();
+    });
+});
+
+describe("UNIT holdings yAxis — the Value colour follows the gain (plan 47 A1a)", () => {
+    it("is the gain's sign, whatever the value did", () => {
+        // $60k sold out of a fund that rose: value down, gain up — green.
+        expect(gainTrend(12_000, [100_000, 52_000])).toBe("up");
+        expect(gainTrend(-500, [100_000, 160_000])).toBe("down");
+        expect(gainTrend(0, [100_000, 160_000])).toBe("flat");
+    });
+
+    it("falls back to value first-vs-last when the gain is unknown", () => {
+        expect(gainTrend(null, [100_000, 52_000])).toBe("down");
+        expect(gainTrend(null, [100_000, 120_000])).toBe("up");
+        expect(gainTrend(Number.NaN, [100_000, 120_000])).toBe("up");
+    });
+});
+
+describe("UNIT holdings yAxis — the Performance colour (plan 47 A1b)", () => {
+    it("is the sign of the last return", () => {
+        expect(returnTrend([0, -0.1, 0.02])).toBe("up");
+        expect(returnTrend([0, 0.3, -0.01, null])).toBe("down");
+        expect(returnTrend([0, 0.2, 0])).toBe("flat");
+        expect(returnTrend([null, null])).toBe("flat");
     });
 });

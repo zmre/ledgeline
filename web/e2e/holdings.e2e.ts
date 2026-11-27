@@ -168,6 +168,38 @@ test("holdings: the period drives the chart's window and survives the URL", asyn
 });
 
 /**
+ * Plan 47 A1: Value / Performance, and Compare being Performance-only.
+ * Nothing is ticked, so no benchmark (and no Yahoo request) is involved.
+ */
+test("holdings: the chart switches between Value and Performance, and Compare opens on Performance", async ({page}) => {
+    await page.goto("/holdings?gain=all");
+    const value = page.getByTestId("chart-view-value");
+    const perf = page.getByTestId("chart-view-perf");
+    await expect(page.locator("h3", {hasText: "Value over time"})).toBeVisible();
+    await expect(value).toHaveAttribute("aria-pressed", "true");
+    await expect(page).not.toHaveURL(/view=/);
+
+    await perf.click();
+    await expect(page.locator("h3", {hasText: "Performance"})).toBeVisible();
+    await expect(perf).toHaveAttribute("aria-pressed", "true");
+    await expect(page).toHaveURL(/view=perf/);
+
+    // A reload restores the view; `v` flips it back, and the default leaves the URL.
+    await page.reload();
+    await expect(perf).toHaveAttribute("aria-pressed", "true");
+    await page.locator("body").press("v");
+    await expect(value).toHaveAttribute("aria-pressed", "true");
+    await expect(page).not.toHaveURL(/view=/);
+
+    // Compare from Value switches to Performance and opens the picker.
+    await page.getByTestId("benchmark-compare").click();
+    await expect(perf).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("benchmark-picker")).toHaveAttribute("open", "");
+    await expect(page.getByText("total return since the chart's first point")).toBeVisible();
+    await expect(page).toHaveURL(/view=perf/);
+});
+
+/**
  * The "Update prices" button, rendered — and deliberately NOT pressed.
  *
  * What this covers is the one thing the component tests cannot: that

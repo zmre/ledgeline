@@ -12,7 +12,7 @@ import {LedgelineApi} from "#lib/api/native.js";
 import {decodeHoldingsReport, decodeHoldingsSeries, decodeOtherHoldingsReport} from "#lib/api/nativeDecode.js";
 import type {ISODate} from "#lib/domain/types.js";
 import {toggleSubtreeRoot} from "#lib/filters/treeSelect.js";
-import {TAB_ORDER, type HoldingsTab} from "#lib/holdings/params.js";
+import {DEFAULT_CHART_VIEW, TAB_ORDER, type ChartView, type HoldingsTab} from "#lib/holdings/params.js";
 import type {GainPeriod, HoldingsReport, HoldingsScope, HoldingsSeries, OtherHoldingsReport} from "#lib/holdings/types.js";
 import {DEFAULT_GAIN_PERIOD, anchorFor, gainSinceFor, isIntradayWindow, trendWindowFor} from "#lib/holdings/ui/gainPeriod.js";
 import {filterParam, sameScope, toggledSelection} from "#lib/holdings/ui/selection.js";
@@ -79,6 +79,24 @@ export const holdingsTab = {
 };
 
 /**
+ * What the Stocks chart plots (plan 47 A1b). Module state beside the tab, and
+ * for the same reasons: the URL sync observes it, and it is not part of the
+ * scope (both lines come in one series response, so switching fetches
+ * nothing). Switching tab keeps it — the Other chart has no Performance view
+ * and ignores it, and coming back to Stocks finds the chart as it was left.
+ */
+let chartView = $state<ChartView>(DEFAULT_CHART_VIEW);
+
+export const holdingsChartView = {
+    get value(): ChartView {
+        return chartView;
+    },
+    set value(next: ChartView) {
+        chartView = next;
+    },
+};
+
+/**
  * The scope as `forTab`'s report should be fetched for it: the holdings filter
  * belongs to the tab on screen, so the other tab's report is asked for with
  * none. Applied inside each resource's `load`, so every caller (the page, the
@@ -93,7 +111,7 @@ const lastForTab: Partial<Record<HoldingsTab, HoldingsScope>> = {};
 
 /**
  * Observe everything the holdings screen mirrors into the query string —
- * scope AND tab — outside component context (used by the holdings URL sync,
+ * scope, tab and chart view — outside component context (used by the holdings URL sync,
  * which is plain TS and cannot declare rune effects itself). The callback fires
  * once immediately, then after every change. Returns an unsubscribe — same
  * contract as subscribeFilters.
@@ -105,7 +123,7 @@ const lastForTab: Partial<Record<HoldingsTab, HoldingsScope>> = {};
 export function subscribeHoldingsUrlState(cb: (s: HoldingsUrlState) => void): () => void {
     return $effect.root(() => {
         $effect(() => {
-            cb({scope: value, tab});
+            cb({scope: value, tab, view: chartView});
         });
     });
 }
