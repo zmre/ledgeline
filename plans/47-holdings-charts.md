@@ -81,3 +81,31 @@ The filter and the intraday flag live in the URL like the rest of the scope
    category wedges, gainers/losers, Other rows), stat-tile fetch.
 5. **Intraday UI** — refresh call, `live=1` reloads, heading note.
 6. Docs (`docs/` holdings page), `just test-integration` (API shape changed).
+
+## Amendment A1 — value vs performance (2026-11-26)
+
+Patrick, exploring the first cut: a mutual-fund chart showed red, $50k down,
+beside a green +12 % Gain tile. The chart's colour compared VALUE (first point
+vs last), so selling $60k read as a loss; the Gain tile is flow-adjusted. Selling
+999 of 1,000 shares would look like a crash.
+
+| #   | Decision                                                                                                                                                                                                   |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A1a | The Value chart's colour follows the period's GAIN (the stat tiles' `totals.gain`, filtered when a filter is set), not value first-vs-last. Unknown gain (null) falls back to value first-vs-last. Other tab unchanged: its Change is value-based by design (plans/14). |
+| A1b | Stocks chart gets a **Value / Performance** switch (`?view=perf`, default Value). Performance = cumulative time-weighted return (%) since the window's first point: Modified Dietz per bucket (`r = (V1 − V0 − F) / (V0 + F/2)`, flows assumed mid-bucket), chain-linked, 0 % at the first point. Buying and selling do not move it. Colour = sign of the last point. |
+| A1c | Performance y-axis follows D1/D3: the engine computes the return index over the anchor horizon, REBASED to the window's first point, and reports its min/max (`returnAnchor`); the shown points and the benchmark lines join it; padding 10 %/20 % of the range, no 0 floor (returns go negative); a 0 % hairline. |
+| A1d | Compare is Performance-only. Benchmarks are drawn as their own cumulative total return (dividends reinvested) since the first point — directly comparable to A1b. Clicking Compare in Value mode switches to Performance and opens the picker. The old "same money into a fund" value line is dropped from the chart. |
+| A1e | Value mode marks noticeable buying/selling: a bucket whose net flow is ≥ 5 % of the y-axis span gets a small ▲ (net bought) / ▼ (net sold) marker on the line and a tooltip line "Net bought $12,000" / "Net sold $48,200". Smaller flows (dividend reinvestment, a monthly contribution on a big portfolio) are not marked. |
+| A1f | Known limit: a CASH dividend leaves the holdings' value without a flow, so Performance slightly understates a cash-dividend payer against a total-return benchmark. Documented, not solved. |
+
+### Wire changes
+
+- Series points (`/api/holdings/series`, `/api/holdings/other/series`) gain
+  `flow: WireDec` — net money INTO the scoped holdings during the bucket ending
+  at the point (buys at cost paid, sells at proceeds, transfers in/out of scope);
+  `0` on the first point — and `returnPct: number | null` — cumulative TWR since
+  the first point as a fraction (0.123 = +12.3 %), null before anything is held.
+- Series gains `returnAnchor: {min: number, max: number} | null` (fractions,
+  rebased per A1c) whenever `anchor=` is sent.
+- `/api/holdings/benchmarks` line points gain `returnPct: number | null`: the
+  benchmark's cumulative total return since the first point.
