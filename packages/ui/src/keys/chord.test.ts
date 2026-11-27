@@ -4,7 +4,7 @@
 // bug and it fails silently — hence the tests.
 
 import {describe, expect, it} from "vitest";
-import {canonical, chordToken, formatKeys, isAltLetter, MODIFIER_JOINER, isPrefixOf, matchesKeys, steps} from "./chord";
+import {canonical, chordToken, formatKeys, IS_MAC, isAltLetter, MODIFIER_JOINER, isPrefixOf, matchesKeys, steps} from "./chord";
 
 function press(key: string, mods: Partial<{ctrlKey: boolean; altKey: boolean; metaKey: boolean; shiftKey: boolean; code: string}> = {}) {
     return {key, ctrlKey: false, altKey: false, metaKey: false, shiftKey: false, ...mods};
@@ -142,5 +142,144 @@ describe("UNIT Alt+Shift+letter (the invoicer's bill-grid row keys)", () => {
         const [step] = formatKeys("alt+S");
         expect(step.text.split(MODIFIER_JOINER).slice(1)).toEqual(["Shift", "S"]);
         expect(formatKeys("G")).toEqual([{text: "G"}]);
+    });
+});
+
+// Plan 46 (K, T9): the slot keys are ⌥⌘digit on macOS and Ctrl+Shift+digit
+// elsewhere. Neither modifier set leaves the digit in `event.key` — Option
+// and Shift both pick another character, and which one depends on the
+// layout — so these chords are read from the physical key. Each row is a
+// real press: the character that layout's `event.key` carries, and `code`.
+describe("UNIT Ctrl/Cmd digit chords read the physical key (plan 46 K)", () => {
+    const macOptionCmd: [layout: string, key: string, code: string, digit: string][] = [
+        ["US", "¡", "Digit1", "1"],
+        ["US", "™", "Digit2", "2"],
+        ["US", "º", "Digit0", "0"],
+        // Some WebKit builds report the plain digit while Cmd is held.
+        ["US (Cmd keeps the digit)", "1", "Digit1", "1"],
+        ["German", "¡", "Digit1", "1"],
+        // German Option+7 is `|`: ASCII, so the old non-ASCII fallback missed it.
+        ["German", "|", "Digit7", "7"],
+        ["German", "≠", "Digit0", "0"],
+        ["Polish Pro", "¡", "Digit1", "1"],
+        ["Polish Pro", "º", "Digit0", "0"],
+    ];
+    it.each(macOptionCmd)("macOS ⌥⌘ on %s (%s, %s) is alt+meta+digit", (_layout, key, code, digit) => {
+        const token = chordToken(press(key, {altKey: true, metaKey: true, code}));
+        expect(token).toBe(`alt+meta+${digit}`);
+        expect(matchesKeys(`meta+alt+${digit}`, token)).toBe(true);
+    });
+
+    const ctrlShift: [layout: string, key: string, code: string, digit: string][] = [
+        ["US", "!", "Digit1", "1"],
+        ["US", "&", "Digit7", "7"],
+        ["US", ")", "Digit0", "0"],
+        ["German", "!", "Digit1", "1"],
+        ["German", "/", "Digit7", "7"],
+        ["German", "=", "Digit0", "0"],
+        // Non-ASCII: the old fallback read the digit but dropped the Shift.
+        ["German", "§", "Digit3", "3"],
+        ["Polish programmer", "!", "Digit1", "1"],
+        ["Polish programmer", ")", "Digit0", "0"],
+        // AZERTY's top row types digits WITH Shift: already right, still right.
+        ["French AZERTY", "1", "Digit1", "1"],
+    ];
+    it.each(ctrlShift)("Linux/Windows Ctrl+Shift on %s (%s, %s) is ctrl+shift+digit", (_layout, key, code, digit) => {
+        const token = chordToken(press(key, {ctrlKey: true, shiftKey: true, code}));
+        expect(token).toBe(`ctrl+shift+${digit}`);
+        expect(matchesKeys(`ctrl+shift+${digit}`, token)).toBe(true);
+        // …and never the plain Ctrl+digit binding (browser tab switching).
+        expect(matchesKeys(`ctrl+${digit}`, token)).toBe(false);
+    });
+
+    it("keeps shift+ on a written Ctrl/Cmd digit, and drops it elsewhere as before", () => {
+        expect(canonical("ctrl+shift+1")).toBe("ctrl+shift+1");
+        expect(canonical("shift+ctrl+1")).toBe("ctrl+shift+1");
+        expect(canonical("meta+alt+1")).toBe("alt+meta+1");
+        expect(canonical("mod+shift+1", true)).toBe("meta+shift+1");
+        expect(canonical("mod+shift+1", false)).toBe("ctrl+shift+1");
+        expect(canonical("shift+1")).toBe("1");
+        expect(canonical("shift+?")).toBe("?");
+    });
+
+    it("does not let ⌥⌘1 and Ctrl+Shift+1 answer each other's binding", () => {
+        expect(matchesKeys("ctrl+shift+1", chordToken(press("¡", {altKey: true, metaKey: true, code: "Digit1"})))).toBe(false);
+        expect(matchesKeys("meta+alt+1", chordToken(press("!", {ctrlKey: true, shiftKey: true, code: "Digit1"})))).toBe(false);
+    });
+
+    it("leaves AltGr (Ctrl+Alt on Windows/Linux) typing its character", () => {
+        // German AltGr+7 is `{`: a digit binding must never swallow it.
+        expect(chordToken(press("{", {ctrlKey: true, altKey: true, code: "Digit7"}))).toBe("ctrl+alt+{");
+    });
+
+    it("reads the period key physically too: the stop chord (⌥⌘. and Ctrl+Shift+.)", () => {
+        const mac = chordToken(press("≥", {altKey: true, metaKey: true, code: "Period"}));
+        expect(mac).toBe("alt+meta+.");
+        expect(matchesKeys("meta+alt+.", mac)).toBe(true);
+        for (const key of [">", ":"]) {
+            const other = chordToken(press(key, {ctrlKey: true, shiftKey: true, code: "Period"}));
+            expect(other).toBe("ctrl+shift+.");
+            expect(matchesKeys("ctrl+shift+.", other)).toBe(true);
+        }
+        // A bare `.` (Track's stop) and Ctrl+. are untouched.
+        expect(chordToken(press(".", {code: "Period"}))).toBe(".");
+        expect(chordToken(press(".", {ctrlKey: true, code: "Period"}))).toBe("ctrl+.");
+    });
+
+    it("leaves numpad digits alone", () => {
+        expect(chordToken(press("End", {ctrlKey: true, shiftKey: true, code: "Numpad1"}))).toBe("ctrl+shift+End");
+    });
+});
+
+describe("UNIT regressions: existing bindings resolve as before (plan 46 K)", () => {
+    const cases: [binding: string, pressed: ReturnType<typeof press>][] = [
+        ["?", press("?", {shiftKey: true, code: "Slash"})],
+        ["G", press("G", {shiftKey: true, code: "KeyG"})],
+        ["ctrl+d", press("d", {ctrlKey: true, code: "KeyD"})],
+        ["ctrl+meta+k", press("k", {ctrlKey: true, metaKey: true, code: "KeyK"})],
+        ["alt+S", press("Í", {altKey: true, shiftKey: true, code: "KeyS"})],
+        ["alt+ArrowUp", press("ArrowUp", {altKey: true, code: "ArrowUp"})],
+        ["ctrl+shift+ArrowDown", press("ArrowDown", {ctrlKey: true, shiftKey: true, code: "ArrowDown"})],
+        // The zoom keys on both platforms' modifiers, US and German/AZERTY.
+        ["ctrl++", press("+", {ctrlKey: true, shiftKey: true, code: "Equal"})],
+        ["meta++", press("+", {metaKey: true, code: "BracketRight"})],
+        ["ctrl+=", press("=", {ctrlKey: true, code: "Equal"})],
+        ["ctrl+-", press("-", {ctrlKey: true, code: "Minus"})],
+        ["ctrl+-", press("-", {ctrlKey: true, code: "Digit6"})],
+        ["meta+0", press("0", {metaKey: true, code: "Digit0"})],
+        ["meta+0", press("à", {metaKey: true, code: "Digit0"})],
+        ["ctrl+0", press("0", {ctrlKey: true, code: "Digit0"})],
+    ];
+    it.each(cases)("%s still matches", (binding, pressed) => {
+        expect(matchesKeys(binding, chordToken(pressed))).toBe(true);
+    });
+
+    it("mod+Enter and mod+shift+Enter resolve per platform as before", () => {
+        expect(canonical("mod+Enter", true)).toBe("meta+Enter");
+        expect(canonical("mod+Enter", false)).toBe("ctrl+Enter");
+        expect(canonical("mod+shift+Enter", true)).toBe("meta+shift+Enter");
+        expect(matchesKeys("mod+0", chordToken(press("0", {[IS_MAC ? "metaKey" : "ctrlKey"]: true, code: "Digit0"})))).toBe(true);
+    });
+
+    it("a g chord still splits into two plain steps", () => {
+        expect(steps("g j", true)).toEqual(["g", "j"]);
+        expect(steps("g j", false)).toEqual(["g", "j"]);
+    });
+});
+
+describe("UNIT formatKeys per platform (plan 46 K)", () => {
+    it("renders the slot chord with each platform's glyphs and joiner", () => {
+        expect(formatKeys("meta+alt+1", true)).toEqual([{text: "⌥-⌘-1"}]);
+        expect(formatKeys("ctrl+shift+1", false)).toEqual([{text: "Ctrl+Shift+1"}]);
+        expect(formatKeys("ctrl+shift+ArrowDown", false)).toEqual([{text: "Ctrl+Shift+↓"}]);
+    });
+
+    it("renders existing bindings as before", () => {
+        expect(formatKeys("mod+shift+Enter", true)).toEqual([{text: "⌘-Shift-Enter"}]);
+        expect(formatKeys("mod+shift+Enter", false)).toEqual([{text: "Ctrl+Shift+Enter"}]);
+        expect(formatKeys("alt+S", true)).toEqual([{text: "⌥-Shift-S"}]);
+        expect(formatKeys("alt+S", false)).toEqual([{text: "Alt+Shift+S"}]);
+        expect(formatKeys("mod++", true)).toEqual([{text: "⌘-+"}]);
+        expect(formatKeys("?", true)).toEqual([{text: "?"}]);
     });
 });

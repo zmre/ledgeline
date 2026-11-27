@@ -1,0 +1,19 @@
+# Time — pat — November 2026
+# Written by Ledgeline; hand edits welcome. Keep two spaces before amounts.
+
+2026-11-02 Mon  ; person: pat
+    clients:acme:tax-return          90m  ; gathered documents
+    internal:admin                   15m
+
+2026-11-03 Tue  ; person: pat
+    clients:globex:audit              2h
+    clients:initech:discovery        40m
+
+2026-11-25 Wed  ; person: pat
+    clients:acme:tax-return         130m  ; reviewed schedules C and E
+    internal:admin                   15m
+
+2026-11-26 Thu  ; person: pat
+    clients:acme:tax-return          45m  ; invoice: 108
+    clients:acme:tax-return          20m  ; call with Fred about the K-1
+    clients:acme:advisory             1h

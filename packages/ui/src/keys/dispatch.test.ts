@@ -3,7 +3,7 @@
 // written to take plain data rather than read the store directly.
 
 import {describe, expect, it} from "vitest";
-import {fieldBindings, handleKey, helpSections, inScope, resolveBindings, type Dispatch} from "./dispatch";
+import {fieldBindings, handleKey, helpSections, inScope, keysFor, resolveBindings, type Dispatch} from "./dispatch";
 import {PRIORITY, type Binding, type Layer, type RegisteredLayer} from "./types";
 
 function binding(keys: string, label = keys, extra: Partial<Binding> = {}): Binding {
@@ -259,5 +259,66 @@ describe("UNIT scoped and field bindings (invoicer Phase 5k)", () => {
         );
 
         expect(resolveBindings(layers).map((b) => b.label)).toEqual(["Save"]);
+    });
+});
+
+// Plan 46 (K, T9): a binding may spell itself differently on macOS. The
+// keymap resolves that once, so the dispatcher, shadowing and the `?` sheet
+// only ever see the current platform's keys.
+describe("UNIT per-platform bindings (macKeys)", () => {
+    const slot = (extra: Partial<Binding> = {}) => binding("ctrl+shift+1", "Toggle slot 1", {macKeys: "meta+alt+1", ...extra});
+
+    it("keysFor picks macKeys on macOS and keys elsewhere", () => {
+        expect(keysFor(slot(), true)).toBe("meta+alt+1");
+        expect(keysFor(slot(), false)).toBe("ctrl+shift+1");
+        // Without macKeys, `keys` (with `mod+`) serves both.
+        expect(keysFor(binding("mod+Enter"), true)).toBe("mod+Enter");
+    });
+
+    it("resolves to the platform's keys, so each platform's press runs it and the other's does not", () => {
+        const layers = stack({id: "global", bindings: [slot()]});
+        const mac = resolveBindings(layers, true);
+        const other = resolveBindings(layers, false);
+
+        expect(mac.map((b) => b.keys)).toEqual(["meta+alt+1"]);
+        expect(other.map((b) => b.keys)).toEqual(["ctrl+shift+1"]);
+
+        const optionCmd1 = {...press("¡", {altKey: true, metaKey: true}), code: "Digit1"};
+        const ctrlShift1 = {...press("!", {ctrlKey: true, shiftKey: true}), code: "Digit1"};
+        expect(handleKey(mac, "", optionCmd1).kind).toBe("run");
+        expect(handleKey(mac, "", ctrlShift1).kind).toBe("ignore");
+        expect(handleKey(other, "", ctrlShift1).kind).toBe("run");
+        expect(handleKey(other, "", optionCmd1).kind).toBe("ignore");
+    });
+
+    it("shadows by the resolved keys: on macOS it does not collide with a ctrl+shift+1 below", () => {
+        const layers = stack(
+            {id: "page", priority: PRIORITY.page, bindings: [binding("ctrl+shift+1", "page")]},
+            {id: "global", priority: PRIORITY.widget, bindings: [slot()]}
+        );
+
+        expect(resolveBindings(layers, true).map((b) => b.label)).toEqual(["Toggle slot 1", "page"]);
+        expect(resolveBindings(layers, false).map((b) => b.label)).toEqual(["Toggle slot 1"]);
+    });
+
+    it("is not a field binding unless it says so, so Ctrl+Shift+arrows keep extending a selection", () => {
+        const adjust = binding("ctrl+shift+ArrowDown", "Adjust down", {macKeys: "meta+alt+ArrowDown"});
+        const active = resolveBindings(stack({id: "global", bindings: [adjust, slot()]}), false);
+        const pressed = press("ArrowDown", {ctrlKey: true, shiftKey: true});
+
+        expect(handleKey(active, "", pressed).kind).toBe("run");
+        expect(fieldBindings(active)).toEqual([]);
+        expect(handleKey(fieldBindings(active), "", pressed).kind).toBe("ignore");
+        // Opting in with `fields` behaves as it does for a plain binding.
+        const opted = resolveBindings(stack({id: "global", bindings: [{...adjust, fields: true}]}), false);
+        expect(handleKey(fieldBindings(opted), "", pressed).kind).toBe("run");
+    });
+
+    it("renders the current platform's keys on the help sheet", () => {
+        const layers = stack({id: "global", bindings: [slot(), binding("mod+Enter", "Save")]});
+        const rows = (mac: boolean) => helpSections(resolveBindings(layers, mac), [], mac)[0].rows.map((row) => row.tokens.map((t) => t.text).join(" "));
+
+        expect(rows(true)).toEqual(["⌥-⌘-1", "⌘-Enter"]);
+        expect(rows(false)).toEqual(["Ctrl+Shift+1", "Ctrl+Enter"]);
     });
 });

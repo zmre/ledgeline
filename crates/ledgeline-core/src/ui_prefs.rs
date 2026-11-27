@@ -78,7 +78,9 @@
 //! - `browser`: the headless server was started with
 //!   `$LEDGELINE_UI_PREFS_IN_BROWSER` set. Built-in defaults only, nothing is
 //!   read or written, and the SPA keeps its view state in `localStorage` as it
-//!   used to. For the e2e and live-contract harnesses, which run against
+//!   used to. The one exception is a key the server acts on itself
+//!   ([`Schema::server_side`]): a save of it is kept in the process's memory,
+//!   so the server's own routes see it. For the e2e and live-contract harnesses, which run against
 //!   committed fixtures and rely on each browser context starting from its own
 //!   clean state.
 //!
@@ -206,8 +208,13 @@ pub enum Kind {
     Whole { min: i64, max: i64, default: i64 },
     /// A scenario file's relative id, or none (`""` in a file, `null` on the
     /// wire). The routes that open it re-validate it as a path; this only
-    /// bounds it.
+    /// bounds it. Also any other optional short text whose user checks it
+    /// again (the time tracker's person and slot-0 account, plan 46).
     FileId,
+    /// A list of up to `max` short names, in order, `""` for an empty place
+    /// (the time tracker's pinned accounts, plan 46 T8). Each is bounded and
+    /// free of control characters; the user checks them again.
+    Names { max: usize },
     /// Benchmark ticker symbols, deduplicated, in order.
     Tickers,
     /// A folder relative to the journal's own (`syncSourceDir`): no `..`, no
@@ -244,6 +251,13 @@ pub struct Schema {
     /// ([`Context::ledger_id`]), never at top level: a top-level spelling is
     /// ignored on read, and the first per-ledger save removes it.
     pub per_ledger: &'static [&'static str],
+    /// Keys the server itself acts on, rather than view state the SPA shows
+    /// (the invoicer's time tracker: its person, pins, step). In
+    /// [`Storage::Browser`] the browser can't hold these for the server, so a
+    /// save of one is kept in this process's memory (per ledger when
+    /// [`per_ledger`](Self::per_ledger)) and read back by [`current`]; every
+    /// other key stays at its built-in default there, as before.
+    pub server_side: &'static [&'static str],
 }
 
 impl Schema {
@@ -257,6 +271,12 @@ impl Schema {
     #[must_use]
     pub fn is_per_ledger(&self, key: &str) -> bool {
         self.per_ledger.contains(&key)
+    }
+
+    /// Whether the server acts on `key` itself ([`Self::server_side`]).
+    #[must_use]
+    pub fn is_server_side(&self, key: &str) -> bool {
+        self.server_side.contains(&key)
     }
 
     /// Whether `key` is one of this schema's.
@@ -309,6 +329,39 @@ pub const SETTLEMENT_LEAD_DAYS: Spec = whole(
     settle::DEFAULT_LEAD_DAYS as i64,
 );
 
+/// The time tracker's person (plan 46 P-person): the short name written as
+/// `person:` and into the tracker file's path; none is a valid answer.
+/// Ledgeline Invoicer's, per user.
+pub const TIME_PERSON: Spec = Spec {
+    key: "time.person",
+    kind: Kind::FileId,
+};
+
+/// The tracker's pinned slots 1–5 (T8), in order, `""` for an empty pin.
+/// Account names mean something in one ledger only, so the invoicer's
+/// schema keeps them per ledger ([`Schema::per_ledger`]).
+pub const TIME_PINNED: Spec = Spec {
+    key: "time.pinned",
+    kind: Kind::Names { max: 5 },
+};
+
+/// Slot 0 (T8): the account last chosen through *Other…*. Per ledger, as
+/// [`TIME_PINNED`].
+pub const TIME_OTHER: Spec = Spec {
+    key: "time.other",
+    kind: Kind::FileId,
+};
+
+/// The tracker's `+`/`−` step, in minutes (T-slots; default 5).
+pub const TIME_STEP: Spec = whole("time.step", 1, 120, 5);
+
+/// How long a timer may run before the long-running guard asks, in minutes
+/// (T-running; default 4 h). 0 turns the guard off.
+pub const TIME_LONG_RUNNING: Spec = whole("time.long-running", 0, 24 * 60, 240);
+
+/// The week strip's target, in hours (T-dash); 0 is none.
+pub const TIME_WEEKLY_TARGET: Spec = whole("time.weekly-target", 0, 168, 0);
+
 /// The matcher's settings from effective preferences ([`WireUiPrefs::prefs`]):
 /// the ledger's pinned value, else the global one, else the default, as
 /// [`current`] merged them. A schema without the keys gets the defaults.
@@ -354,6 +407,7 @@ pub enum PrefValue {
     Whole(i64),
     FileId(Option<String>),
     Tickers(Vec<String>),
+    Names(Vec<String>),
 }
 
 /// A complete or partial set of values, by [`Spec::key`].
@@ -368,6 +422,7 @@ impl Kind {
             Self::FileId => PrefValue::FileId(None),
             Self::RelDir { default } => PrefValue::Text(default.to_string()),
             Self::Tickers => PrefValue::Tickers(Vec::new()),
+            Self::Names { .. } => PrefValue::Names(Vec::new()),
         }
     }
 
@@ -422,6 +477,25 @@ impl Kind {
                 let kept = kept.into_iter().take(MAX_BENCHMARKS).collect();
                 Ok((PrefValue::Tickers(kept), note))
             }
+            Self::Names { max } => {
+                let entries = value.as_array().ok_or("must be a list of names")?;
+                let names: Vec<String> = entries
+                    .iter()
+                    .filter_map(toml_edit::Value::as_str)
+                    .map(|name| check_name(name).unwrap_or_default())
+                    .collect();
+                let note = if names.len() > max {
+                    Some("has too many entries; only the first ones are used")
+                } else if names.len() < entries.len() {
+                    Some("has entries that are not names; they are ignored")
+                } else {
+                    None
+                };
+                Ok((
+                    PrefValue::Names(names.into_iter().take(max).collect()),
+                    note,
+                ))
+            }
         }
     }
 
@@ -466,6 +540,18 @@ impl Kind {
                 }
                 Ok(PrefValue::Tickers(kept))
             }
+            Self::Names { max } => {
+                let entries = value.as_array().ok_or("must be a list of names")?;
+                if entries.len() > max {
+                    return Err("has too many entries");
+                }
+                entries
+                    .iter()
+                    .map(|entry| entry.as_str().ok_or("must be a list of names"))
+                    .map(|name| name.and_then(check_name))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map(PrefValue::Names)
+            }
         }
     }
 }
@@ -488,6 +574,21 @@ fn check_file_id(text: &str) -> Result<Option<String>, &'static str> {
         return Err("contains control characters");
     }
     Ok((!text.is_empty()).then(|| text.to_string()))
+}
+
+/// The longest [`Kind::Names`] entry kept.
+const MAX_NAME_BYTES: usize = 256;
+
+/// One [`Kind::Names`] entry, trimmed (`""` is an empty place).
+fn check_name(text: &str) -> Result<String, &'static str> {
+    let trimmed = text.trim();
+    if trimmed.len() > MAX_NAME_BYTES {
+        return Err("has an entry that is too long");
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err("has an entry with control characters");
+    }
+    Ok(trimmed.to_string())
 }
 
 /// A folder relative to the journal's folder, as [`Kind::RelDir`] accepts
@@ -541,7 +642,7 @@ impl PrefValue {
             Self::Text(text) => Json::String(text.clone()),
             Self::Whole(number) => Json::from(*number),
             Self::FileId(id) => id.clone().map_or(Json::Null, Json::String),
-            Self::Tickers(symbols) => Json::from(symbols.clone()),
+            Self::Tickers(symbols) | Self::Names(symbols) => Json::from(symbols.clone()),
         }
     }
 
@@ -553,7 +654,7 @@ impl PrefValue {
             // TOML has no null: none is the empty string, which reads back as
             // none ([`check_file_id`]) and still overrides a global value.
             Self::FileId(id) => toml_edit::Value::from(id.as_deref().unwrap_or_default()),
-            Self::Tickers(symbols) => {
+            Self::Tickers(symbols) | Self::Names(symbols) => {
                 toml_edit::Value::Array(symbols.iter().map(String::as_str).collect())
             }
         }
@@ -1476,7 +1577,11 @@ pub fn edit_ledger_text<E: From<UiPrefsError>>(
 pub fn current(ctx: &Context<'_>) -> WireUiPrefs {
     let (schema, session) = (ctx.schema, ctx.session);
     if session.browser {
-        return browser_answer(schema, &Values::new());
+        let kept = session.kept();
+        return browser_answer(
+            schema,
+            &[&kept.for_ledger(ctx.ledger_id.as_deref()), &kept.values],
+        );
     }
     let global = global_layer(schema, ctx.global_file.as_deref(), ctx.ledger_id.as_deref());
     let (ledger, local_keys) = match &ctx.ledger {
@@ -1531,7 +1636,25 @@ pub fn current(ctx: &Context<'_>) -> WireUiPrefs {
 pub fn apply(ctx: &Context<'_>, patch: &Patch) -> Result<WireUiPrefs, UiPrefsError> {
     let session = ctx.session;
     if session.browser {
-        return Ok(browser_answer(ctx.schema, &patch.values));
+        let mut kept = session.kept();
+        let (server, _) = patch.split(|key| ctx.schema.is_server_side(key));
+        let (mine, shared) = server.split(|key| ctx.schema.is_per_ledger(key));
+        kept.values.extend(shared.values);
+        // With no ledger open there is nothing to keep a per-ledger key against.
+        if let Some(ledger) = ctx.ledger_id.as_deref() {
+            kept.ledgers
+                .entry(ledger.to_string())
+                .or_default()
+                .extend(mine.values);
+        }
+        return Ok(browser_answer(
+            ctx.schema,
+            &[
+                &patch.values,
+                &kept.for_ledger(ctx.ledger_id.as_deref()),
+                &kept.values,
+            ],
+        ));
     }
     if !patch.is_empty() {
         // Released before `current`, which takes it again.
@@ -1788,10 +1911,11 @@ fn unpin_ledger(
     })
 }
 
-/// [`Storage::Browser`]'s answer: the defaults under `overrides`, from no file.
-fn browser_answer(schema: &Schema, overrides: &Values) -> WireUiPrefs {
+/// [`Storage::Browser`]'s answer: the defaults under `layers` (first wins),
+/// from no file.
+fn browser_answer(schema: &Schema, layers: &[&Values]) -> WireUiPrefs {
     WireUiPrefs {
-        prefs: prefs_json(&merge(schema, &[overrides])),
+        prefs: prefs_json(&merge(schema, layers)),
         storage: Storage::Browser,
         local_keys: Vec::new(),
         issues: Vec::new(),
@@ -1806,6 +1930,56 @@ mod tests {
 
     /// Ledgeline's schema: the one these tests pin the engine's behaviour to.
     const S: &Schema = &ledgeline::SCHEMA;
+
+    /// A schema with one server-side key per ledger and one shared, for
+    /// browser storage.
+    const SERVER: Schema = Schema {
+        specs: &[THEME, TIME_PERSON, TIME_PINNED],
+        pinnable: &[],
+        per_ledger: &["time.pinned"],
+        server_side: &["time.person", "time.pinned"],
+    };
+
+    fn browser_ctx<'a>(session: &'a UiPrefsSession, ledger: Option<&str>) -> Context<'a> {
+        Context {
+            schema: &SERVER,
+            session,
+            global_file: None,
+            ledger: LedgerSlot::NoLedger,
+            ledger_id: ledger.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn browser_storage_keeps_server_side_keys_in_memory_only() {
+        let session = UiPrefsSession::browser();
+        let patch = Patch::from_json(
+            &SERVER,
+            &json!({"theme": "nord", "time": {"person": "pat", "pinned": ["a:b"]}}),
+        )
+        .expect("patch");
+        let answer = apply(&browser_ctx(&session, Some("one")), &patch).expect("apply");
+        assert_eq!(
+            answer.prefs()["theme"],
+            "nord",
+            "the answer echoes the save"
+        );
+        let after = current(&browser_ctx(&session, Some("one")));
+        assert_eq!(after.prefs()["time"]["person"], "pat");
+        assert_eq!(after.prefs()["time"]["pinned"], json!(["a:b"]));
+        // View state stays the browser's: the default again on the next read.
+        assert_eq!(
+            after.prefs()["theme"],
+            current(&browser_ctx(&UiPrefsSession::browser(), None)).prefs()["theme"]
+        );
+        // Pins belong to one ledger; the person to every one.
+        let other = current(&browser_ctx(&session, Some("two")));
+        assert_eq!(other.prefs()["time"]["pinned"], json!([]));
+        assert_eq!(other.prefs()["time"]["person"], "pat");
+        // A fresh process starts clean.
+        let fresh = current(&browser_ctx(&UiPrefsSession::browser(), Some("one")));
+        assert_eq!(fresh.prefs()["time"]["person"], Json::Null);
+    }
 
     #[test]
     fn boot_appearance_resolves_families_variants_and_unknowns() {
@@ -2263,6 +2437,41 @@ unknownKey = { deep = [1, 2] }
             "lastProjectionId = \"a.journal\"\n",
         );
         assert_eq!(prefs["lastProjectionId"], Json::Null);
+    }
+
+    #[test]
+    fn names_keep_places_and_refuse_too_many() {
+        let kind = Kind::Names { max: 5 };
+        let ok = kind
+            .check_json(&serde_json::json!(["clients:acme", "", " internal:admin "]))
+            .expect("names");
+        assert_eq!(
+            ok,
+            PrefValue::Names(vec![
+                "clients:acme".into(),
+                String::new(),
+                "internal:admin".into()
+            ])
+        );
+        assert!(
+            kind.check_json(&serde_json::json!(["a", "b", "c", "d", "e", "f"]))
+                .is_err()
+        );
+        assert!(kind.check_json(&serde_json::json!(["a\u{7}"])).is_err());
+        let item: Item =
+            toml_edit::value(toml_edit::Array::from_iter(["a", "b", "c", "d", "e", "f"]));
+        let (value, note) = kind.check_toml(&item).expect("clamped");
+        assert_eq!(
+            value,
+            PrefValue::Names(vec![
+                "a".into(),
+                "b".into(),
+                "c".into(),
+                "d".into(),
+                "e".into()
+            ])
+        );
+        assert!(note.is_some());
     }
 
     #[test]

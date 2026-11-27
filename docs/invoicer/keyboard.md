@@ -30,6 +30,7 @@ A capital letter means Shift: <kbd>N</kbd> is <kbd>Shift</kbd>+<kbd>N</kbd>. A s
 | <kbd>d</kbd>                | New deposit invoice                                                            |
 | <kbd>N</kbd>                | Open the New menu (deposit invoice, customer, catalog item, snippet, template) |
 | <kbd>/</kbd>                | Search this list (on pages with a search box)                                  |
+| <kbd>T</kbd>                | Open or close the time tracker beside the sidebar's light                      |
 | <kbd>Esc</kbd>              | Leave the field you are typing in                                              |
 | <kbd>Cmd</kbd>+<kbd>,</kbd> | Open Settings, from inside a field too                                         |
 | <kbd>Cmd</kbd>+<kbd>+</kbd> | Larger text                                                                    |
@@ -40,17 +41,26 @@ The text size keys work from inside a field too, and over a dialog. The desktop 
 
 ## Go to
 
-| Keys                      | Goes to   |
-|---------------------------|-----------|
-| <kbd>g</kbd> <kbd>d</kbd> | Dashboard |
-| <kbd>g</kbd> <kbd>i</kbd> | Invoices  |
-| <kbd>g</kbd> <kbd>c</kbd> | Customers |
-| <kbd>g</kbd> <kbd>k</kbd> | Catalog   |
-| <kbd>g</kbd> <kbd>s</kbd> | Snippets  |
-| <kbd>g</kbd> <kbd>t</kbd> | Templates |
-| <kbd>g</kbd> <kbd>,</kbd> | Settings  |
+| Keys                      | Goes to                      |
+|---------------------------|------------------------------|
+| <kbd>g</kbd> <kbd>d</kbd> | Home (the dashboard)         |
+| <kbd>g</kbd> <kbd>i</kbd> | Invoices                     |
+| <kbd>g</kbd> <kbd>u</kbd> | To bill                      |
+| <kbd>g</kbd> <kbd>w</kbd> | Time (its overview)          |
+| <kbd>g</kbd> <kbd>e</kbd> | Time entries                 |
+| <kbd>g</kbd> <kbd>r</kbd> | Track                        |
+| <kbd>g</kbd> <kbd>c</kbd> | Customers                    |
+| <kbd>g</kbd> <kbd>k</kbd> | Catalog, in the Library      |
+| <kbd>g</kbd> <kbd>s</kbd> | Snippets, in the Library     |
+| <kbd>g</kbd> <kbd>t</kbd> | Templates, in the Library    |
+| <kbd>g</kbd> <kbd>a</kbd> | Time accounts, in the Library |
+| <kbd>g</kbd> <kbd>,</kbd> | Settings                     |
 
-## Dashboard
+The sidebar's **Library** is a button: <kbd>Tab</kbd> to it and press <kbd>Enter</kbd> or <kbd>Space</kbd> to open or close it.
+
+Time tracking also has keys that work on every screen: <kbd>T</kbd> opens the [tracker beside the sidebar's light](../time/tracking.md#the-tracker-beside-the-light), and <kbd>Option</kbd>+<kbd>Cmd</kbd>+<kbd>1</kbd> starts slot 1. Its pages have keys of their own. See [Tracking time](../time/tracking.md#keys-on-every-screen) and [Entries and accounts](../time/entries-and-accounts.md).
+
+## Home
 
 | Keys                                   | Does                                                                |
 |----------------------------------------|---------------------------------------------------------------------|
@@ -120,6 +130,16 @@ Inside the table, <kbd>Option</kbd>+<kbd>↑</kbd> and <kbd>Option</kbd>+<kbd>�
 | <kbd>e</kbd>                | Edit the customer                                  |
 | <kbd>Cmd</kbd>+<kbd>S</kbd> | Save, while editing                                |
 | <kbd>Esc</kbd>              | Cancel editing; asks first if something is unsaved |
+
+## To bill
+
+| Keys                         | Does                                         |
+|------------------------------|----------------------------------------------|
+| <kbd>Shift</kbd>+<kbd>B</kbd> | Bill all…: each customer's main period in turn |
+| <kbd>1</kbd> / <kbd>2</kbd>  | The To bill / To pay tab                     |
+| <kbd>←</kbd> / <kbd>→</kbd>  | The other tab, once a tab has focus          |
+
+See [Billing time](../time/billing.md).
 
 ## Catalog, snippets and templates
 

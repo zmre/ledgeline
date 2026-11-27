@@ -173,6 +173,7 @@ pub const SCHEMA: Schema = Schema {
     specs: SPECS,
     pinnable: PINNABLE,
     per_ledger: PER_LEDGER,
+    server_side: &[],
 };
 
 /// The top of a [`super::LEDGER_FILE`] that linking a bank account creates

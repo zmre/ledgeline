@@ -1,0 +1,4 @@
+; The books with the time roll-up included, as the hledger docs teach.
+; Ledgeline's money reports must read exactly as they do for books.journal.
+include books.journal
+include time.journal

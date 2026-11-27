@@ -9,8 +9,13 @@
 // Pure: no runes, no DOM. `keymap.svelte.ts` owns the state, this owns the
 // decisions.
 
-import {canonical, formatKeys, isPrefixOf, type KeyEventLike, type KeyToken, chordToken} from "./chord";
-import {PRIORITY, type KeyGroup, type RegisteredLayer, type ResolvedBinding} from "./types";
+import {canonical, formatKeys, isPrefixOf, IS_MAC, type KeyEventLike, type KeyToken, chordToken} from "./chord";
+import {PRIORITY, type Binding, type KeyGroup, type RegisteredLayer, type ResolvedBinding} from "./types";
+
+/** The keys `binding` answers to on this platform: `macKeys` on macOS when set, else `keys`. */
+export function keysFor(binding: Pick<Binding, "keys" | "macKeys">, mac: boolean = IS_MAC): string {
+    return mac && binding.macKeys !== undefined ? binding.macKeys : binding.keys;
+}
 
 /**
  * Every binding that can fire right now, best candidate first.
@@ -27,8 +32,12 @@ import {PRIORITY, type KeyGroup, type RegisteredLayer, type ResolvedBinding} fro
  * The one exception to the modal blind is an `always` binding (zoom): it is
  * still collected from below a modal layer, because the browser's own zoom
  * works over any dialog and ours should too.
+ *
+ * Each binding's `keys` come out as the platform's own (`keysFor`), so a
+ * `macKeys` spelling shadows and is shadowed by what it actually is here.
+ * `mac` is the platform; tests pass it explicitly.
  */
-export function resolveBindings(layers: readonly RegisteredLayer[]): ResolvedBinding[] {
+export function resolveBindings(layers: readonly RegisteredLayer[], mac: boolean = IS_MAC): ResolvedBinding[] {
     const ordered = [...layers].sort((a, b) => (b.priority ?? PRIORITY.page) - (a.priority ?? PRIORITY.page) || b.seq - a.seq);
 
     const resolved: ResolvedBinding[] = [];
@@ -38,10 +47,11 @@ export function resolveBindings(layers: readonly RegisteredLayer[]): ResolvedBin
         for (const binding of layer.bindings) {
             if (blinded && binding.always !== true) continue;
             if (binding.enabled !== undefined && !binding.enabled()) continue;
-            const key = canonical(binding.keys);
+            const keys = keysFor(binding, mac);
+            const key = canonical(keys, mac);
             if (claimed.has(key)) continue;
             claimed.add(key);
-            resolved.push({...binding, layerId: layer.id});
+            resolved.push({...binding, keys, layerId: layer.id});
         }
         if (layer.modal === true) blinded = true;
     }
@@ -120,14 +130,14 @@ export interface HelpSection {
  * the named ones, in the order its first binding resolved: a forgotten
  * section is misplaced, never hidden. An empty group is omitted rather than
  * rendered as a bare heading, and a binding marked `help: false` (an
- * alternate spelling) is not listed.
+ * alternate spelling) is not listed. `mac` picks the glyphs (`formatKeys`).
  */
-export function helpSections(active: readonly ResolvedBinding[], order: readonly KeyGroup[] = []): HelpSection[] {
+export function helpSections(active: readonly ResolvedBinding[], order: readonly KeyGroup[] = [], mac: boolean = IS_MAC): HelpSection[] {
     const byGroup = new Map<KeyGroup, HelpRow[]>();
     for (const binding of active) {
         if (binding.help === false) continue;
         const rows = byGroup.get(binding.group) ?? [];
-        rows.push({keys: binding.keys, label: binding.label, tokens: formatKeys(binding.keys)});
+        rows.push({keys: binding.keys, label: binding.label, tokens: formatKeys(binding.keys, mac)});
         byGroup.set(binding.group, rows);
     }
     const named = order.filter((group) => byGroup.has(group));

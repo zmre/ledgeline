@@ -21,6 +21,7 @@ Every invoice is a markdown file in your books folder, and so is every customer.
 - Notes on each invoice whether it has been paid, partly paid or not, by reading the payments in your books.
 - Exports a PDF through a template you can change, and keeps a copy of every final PDF it exports.
 - Shows what you are owed on a [dashboard](dashboard.md): what is overdue, how old it is, and what came in recently.
+- Tracks your time in hledger timedot files and bills it. See [Time tracking](../time/index.md).
 - Does almost everything from the [command line](cli.md) too, so you can [script it](scripting.md).
 
 ## Getting it
@@ -60,20 +61,28 @@ The invoicer shares its theme and text size with Ledgeline: change them in eithe
 
 ## Getting around
 
-The sidebar has six sections:
+The sidebar has five sections, and a **Library** below them:
 
 | Section   | What it holds                                                                                     |
 |-----------|---------------------------------------------------------------------------------------------------|
-| Dashboard | What you are owed, what is overdue, what was paid recently. See [Dashboard](dashboard.md).        |
+| Home      | What you are owed, what is overdue, what was paid recently. See [Dashboard](dashboard.md).        |
 | Invoices  | Every invoice, with filters for status, customer, dates and how late it is.                       |
-| Customers | The people and organizations you bill, what each owes, and their open purchase orders.            |
-| Catalog   | Products and services you bill often, with their rate and the account each one books to.          |
-| Snippets  | Reusable text such as payment instructions and terms, copied into an invoice when you insert one. |
-| Templates | How invoices look on screen and on paper. See [Templates](templates.md).                          |
+| To bill   | Tracked time to bill, by customer, and contractor time to pay. Its link shows how many customers have unbilled time. See [Billing time](../time/billing.md). |
+| Time      | Time tracking: the overview, every entry, and Track. See [Time tracking](../time/index.md).        |
+| Customers | The people and organizations you bill, what each owes, and their open purchase orders and, if you track time, their time accounts. |
+
+The **Library** holds what invoices are made from. Click it to open or close it. It opens by itself on any of its pages, and remembers whether you left it open, in the same `ui-prefs.toml` as the theme.
+
+| In the Library | What it holds                                                                                     |
+|----------------|---------------------------------------------------------------------------------------------------|
+| Catalog        | Products and services you bill often, with their rate and the account each one books to.          |
+| Snippets       | Reusable text such as payment instructions and terms, copied into an invoice when you insert one. |
+| Templates      | How invoices look on screen and on paper. See [Templates](templates.md).                          |
+| Time accounts  | The time account tree, linking time to customers. See [Entries and accounts](../time/entries-and-accounts.md#accounts). |
 
 **Settings**, at the foot of the sidebar, holds these books' settings and the appearance. <kbd>g</kbd> <kbd>,</kbd> or <kbd>Cmd</kbd>+<kbd>,</kbd> opens it too. See [Settings](settings.md).
 
-The **New** button at the top of the sidebar starts a new invoice. Its menu also offers a new customer, catalog item, snippet or template. Press <kbd>?</kbd> anywhere to see the [keyboard shortcuts](keyboard.md) for the page you are on.
+The **New** button at the top of the sidebar starts a new invoice. Its menu also offers a new customer, catalog item, snippet or template, and, once time tracking is set up, **Bill time…**, which opens To bill and starts **Bill all…**. Press <kbd>?</kbd> anywhere to see the [keyboard shortcuts](keyboard.md) for the page you are on.
 
 Web and email links in notes and invoices open in your browser and mail app.
 
@@ -96,3 +105,4 @@ A sent invoice can still be edited. Saving it re-books it to match, unless its d
 - [Keyboard shortcuts](keyboard.md): every key, page by page.
 - [Command line](cli.md): every command and option.
 - [Scripting recipes](scripting.md): `grep`, `hledger` and the command line working on your invoices.
+- [Time tracking](../time/index.md): tracking hours and billing them, in its own section.

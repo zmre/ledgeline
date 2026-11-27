@@ -102,6 +102,9 @@ pub struct NewInvoice {
     pub prose_before: Option<String>,
     /// Prose below the table; else the customer's default snippets.
     pub prose_after: Option<String>,
+    /// Supporting tables (a timesheet, plan 46 B-invoice) between the bill
+    /// table and the prose below it: markdown, left as written (§3.3).
+    pub supporting: Option<String>,
     /// Custom fields, written after the standard ones.
     pub extra: Vec<(String, Value)>,
 }
@@ -121,6 +124,7 @@ impl NewInvoice {
             rows: Vec::new(),
             prose_before: None,
             prose_after: None,
+            supporting: None,
             extra: Vec::new(),
         }
     }
@@ -465,6 +469,16 @@ pub fn render(
         body.push_str("\n\n");
     }
     body.push_str(&table);
+    if let Some(supporting) = new
+        .supporting
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        body.push('\n');
+        body.push_str(supporting);
+        body.push('\n');
+    }
     if !after.trim().is_empty() {
         body.push('\n');
         body.push_str(after.trim_end());

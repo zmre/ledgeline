@@ -1,0 +1,13 @@
+; Time tracking roll-up. Not included by books.journal on purpose:
+; hours are not money. To report on time:
+;   hledger -f time.journal bal --tree -p thismonth
+;   hledger -f time.journal bal --pivot billable -p lastmonth
+;   hledger -f time.journal reg not:tag:invoice tag:customer=Acme
+; To see time beside the books, include this file from books.journal.
+
+commodity ""                      ; time has no commodity (needed for -s)
+commodity h                       ; timeclock hours (needed for -s)
+
+include time-accounts.journal
+include time/**/*.timedot
+include time/**/*.timeclock

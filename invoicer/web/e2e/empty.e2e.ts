@@ -40,7 +40,15 @@ async function open(page: Page): Promise<void> {
     await expect(page).toHaveURL(/\/app\/invoices$/);
 }
 
+/** Open the sidebar's Library (Catalog, Snippets, Templates, Time accounts) when it is closed. */
+async function openLibrary(page: Page): Promise<void> {
+    const library = page.getByTestId("sidebar-group-library");
+    if ((await library.getAttribute("aria-expanded")) === "false") await library.click();
+    await expect(library).toHaveAttribute("aria-expanded", "true");
+}
+
 async function section(page: Page, name: string): Promise<void> {
+    if (["Catalog", "Snippets", "Templates"].includes(name)) await openLibrary(page);
     // A section link's name ends with its count for screen readers ("Customers 0 customers").
     await page
         .getByTestId("sidebar")
@@ -68,6 +76,7 @@ test.describe("empty books (:5198)", () => {
         await expect(page.getByTestId("sidebar-invoices-overdue")).toHaveCount(0);
         await expect(page.getByTestId("sidebar-invoices-count")).toHaveCount(0);
         await expect(page.getByTestId("sidebar-customers-count")).toHaveText("0 customers");
+        await openLibrary(page);
         await expect(page.getByTestId("sidebar-catalog-count")).toHaveText("0 items");
         await expect(page.getByTestId("sidebar-snippets-count")).toHaveText("0 snippets");
         // Templates counts the starters the page lists (4d).
@@ -206,7 +215,7 @@ test.describe("empty books (:5198)", () => {
         // The token is this tab's now (sessionStorage): the root is the dashboard.
         await page.goto("/app/");
         await expect(page).toHaveURL(/\/app\/$/);
-        await expect(page.getByTestId("sidebar").getByRole("link", {name: "Dashboard", exact: true})).toHaveAttribute("aria-current", "page");
+        await expect(page.getByTestId("sidebar").getByRole("link", {name: "Home", exact: true})).toHaveAttribute("aria-current", "page");
         // No button of its own (R13): the text points at the sidebar's New, the one way to start.
         const card = page.getByTestId("dashboard-empty");
         await expect(card.getByRole("heading", {name: "No invoices yet", exact: true})).toBeVisible();

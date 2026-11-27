@@ -1,0 +1,21 @@
+; Time accounts. Tags: customer (links to an Invoicer customer), billable
+; (yes/no, nearest ancestor wins), item (catalog code to bill as),
+; archived (hide from pickers). Edit freely.
+
+account clients                                   ; billable: yes
+account clients:acme                              ; customer: Acme Corp, item: ARCH
+account clients:acme:advisory
+account clients:acme:tax-return                   ; item: TAX
+account clients:acme:travel                       ; billable: no
+
+account clients:globex                            ; customer: Globex, item: AUD
+account clients:globex:audit
+
+account clients:initech                           ; customer: Initech Inc
+account clients:initech:discovery
+
+account clients:orphan
+
+account internal                                  ; billable: no
+account internal:admin
+account internal:old                              ; archived: yes

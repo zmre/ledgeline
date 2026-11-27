@@ -8,7 +8,11 @@
      The paid window is the URL's (`/app/?paid_days=90`, R14): absent, the
      server's `[invoicer] paid-window-days`. Picking another is a history
      step (Back returns to the last one); the setting's own writes no
-     query. -->
+     query.
+
+     Under it, the time row (lib/time/home): this week's hours and billable
+     share against last week's, and what is unbilled with Bill…. It loads
+     on its own, and is absent for books that don't track time. -->
 <script lang="ts">
     import {untrack} from "svelte";
     import {goto} from "$app/navigation";
@@ -22,6 +26,8 @@
     import {errorText} from "#lib/labels.js";
     import DashboardView from "#lib/components/DashboardView.svelte";
     import EmptyState from "#lib/components/EmptyState.svelte";
+    import HomeTime from "#lib/time/home/HomeTime.svelte";
+    import type {HomeTimeLinks} from "#lib/time/home/homeTime.js";
 
     let dashboard = $state<Dashboard | null>(null);
     let error = $state<Error | null>(null);
@@ -90,14 +96,25 @@
 
     const listBase = resolve("/invoices");
     const invoiceHref = (number: string): string => resolve("/invoices/[number]", {number});
+
+    // Where Bill… goes: the To bill page.
+    const TO_BILL = resolve("/to-bill");
+    const overview = resolve("/time");
+    const timeLinks: HomeTimeLinks = {
+        hours: `${overview}?period=this-week`,
+        billable: `${overview}?period=this-week&split=billable`,
+        unbilled: `${resolve("/time/entries")}?period=all&billed=unbilled`,
+        bill: TO_BILL,
+        overview,
+    };
 </script>
 
 <svelte:head>
-    <title>Dashboard · Ledgeline Invoicer</title>
+    <title>Home · Ledgeline Invoicer</title>
 </svelte:head>
 
 <div class="@container mx-auto flex max-w-6xl flex-col gap-4">
-    <h1 class="text-2xl font-semibold tracking-tight">Dashboard</h1>
+    <h1 class="text-2xl font-semibold tracking-tight">Home</h1>
     <AsyncSection {view} value={dashboard} {error} testid="dashboard-error" label="the dashboard" loadingLabel="Loading the dashboard" onRetry={retry}>
         {#snippet children(d)}
             {#if d.invoices === 0 && d.commodities.length === 0}
@@ -120,4 +137,5 @@
             {/if}
         {/snippet}
     </AsyncSection>
+    <HomeTime links={timeLinks} />
 </div>

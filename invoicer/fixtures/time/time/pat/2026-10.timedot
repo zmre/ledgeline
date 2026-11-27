@@ -1,0 +1,14 @@
+# Time — pat — October 2026
+# Written by Ledgeline; hand edits welcome. Keep two spaces before amounts.
+
+2026-10-06 Tue  ; person: pat
+    clients:acme:tax-return           3h  ; first pass, invoice: 101
+    clients:acme:advisory            50m  ; year-end planning
+    internal:admin                   20m
+    internal:training                25m  ; not declared yet
+
+2026-10-20 Tue  ; person: pat
+    clients:acme:tax-return           2h  ; invoice: 101
+    clients:globex:audit             90m  ; walkthrough
+    clients:initech:discovery        40m
+    clients:orphan                   15m

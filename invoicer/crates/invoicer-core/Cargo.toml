@@ -44,6 +44,8 @@ csv = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+# A private copy of a fixture for the tests that write (already in
+# Cargo.lock).
 tempfile = "3"
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 

@@ -7,6 +7,7 @@ import {render} from "@testing-library/svelte";
 import {flushSync} from "svelte";
 import {afterEach, describe, expect, it} from "vitest";
 import KeysProbe from "#ui/testing/fixtures/KeysProbe.svelte";
+import {IS_MAC} from "./chord";
 import {keymap} from "./keymap.svelte";
 import {PRIORITY, type Layer} from "./types";
 
@@ -230,5 +231,66 @@ describe("COMPONENT field-scoped bindings (invoicer Phase 5k)", () => {
 
         expect(added).toBe(1);
         expect(accent.defaultPrevented).toBe(false);
+    });
+});
+
+// Plan 46 (K, T9): the slot keys, through the real store and real
+// KeyboardEvents. jsdom's platform is whatever the host says, so each press is
+// the current platform's own spelling.
+describe("COMPONENT per-platform digit chords (plan 46 K)", () => {
+    const toggle = IS_MAC ? {key: "¡", altKey: true, metaKey: true, code: "Digit1"} : {key: "!", ctrlKey: true, shiftKey: true, code: "Digit1"};
+    const adjust = IS_MAC ? {altKey: true, metaKey: true, code: "ArrowDown"} : {ctrlKey: true, shiftKey: true, code: "ArrowDown"};
+
+    function slotLayer(onToggle: () => void, onAdjust: () => void): Layer {
+        return {
+            id: "time",
+            bindings: [
+                {keys: "ctrl+shift+1", macKeys: "meta+alt+1", label: "Toggle slot 1", group: "Time", run: onToggle},
+                {keys: "ctrl+shift+ArrowDown", macKeys: "meta+alt+ArrowDown", label: "Adjust down", group: "Time", run: onAdjust},
+            ],
+        };
+    }
+
+    it("fires the platform's chord outside a field and claims it", () => {
+        let toggled = 0;
+        let adjusted = 0;
+        render(KeysProbe, {
+            props: {
+                layerOf: () =>
+                    slotLayer(
+                        () => (toggled += 1),
+                        () => (adjusted += 1)
+                    ),
+            },
+        });
+        const {key, ...mods} = toggle;
+
+        const event = press(key, document.body, mods);
+        press("ArrowDown", document.body, adjust);
+
+        expect({toggled, adjusted, prevented: event.defaultPrevented}).toEqual({toggled: 1, adjusted: 1, prevented: true});
+    });
+
+    it("stays off inside a text field, where Ctrl+Shift+arrows extend the selection", () => {
+        let toggled = 0;
+        let adjusted = 0;
+        render(KeysProbe, {
+            props: {
+                layerOf: () =>
+                    slotLayer(
+                        () => (toggled += 1),
+                        () => (adjusted += 1)
+                    ),
+            },
+        });
+        const input = document.createElement("input");
+        document.body.append(input);
+        const {key, ...mods} = toggle;
+
+        const event = press("ArrowDown", input, adjust);
+        press(key, input, mods);
+
+        expect({toggled, adjusted, prevented: event.defaultPrevented}).toEqual({toggled: 0, adjusted: 0, prevented: false});
+        input.remove();
     });
 });

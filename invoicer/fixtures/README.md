@@ -1,6 +1,6 @@
 # Invoicer fixtures
 
-Three books folders for the invoicer (PLAN 0d, and `empty/` from Phase 4
+Four books folders for the invoicer (PLAN 0d, and `empty/` from Phase 4
 feedback H22). Every name, number and amount
 is invented. The clock is **2026-11-17**.
 `invoicer-core/tests/fixtures.rs` checks that both read with no problems and
@@ -62,6 +62,37 @@ or snippets, so every list shows its empty state and the next number is
 second server over a scratch copy of it; `session.rs` and the app's
 `files_tests.rs` check it reads empty.
 
+## `time/`
+
+Time tracking (plan 46) beside small accrual books. **Its clock is
+2026-11-26.** `time.journal` is the roll-up (`books.journal` does not
+include it); `time-accounts.journal` links `clients:acme` to Acme Corp,
+`clients:globex` to Globex and `clients:initech` to `Initech Inc` (that
+customer's `ledger_customer`), with `item:` codes from
+`invoices/catalog.md`. Tests: `invoicer-core/tests/time.rs`, the app's
+`time_tests.rs`, and `cli.rs`'s `time_*`.
+
+Open `books.journal`, on a copy (the app writes): `just invoicer-server
+<copy>/books.journal`. Opened as the journal, `time.journal` is refused.
+
+| File / note                   | Case                                                                                         |
+|-------------------------------|----------------------------------------------------------------------------------------------|
+| `time/pat/2026-10.timedot`    | Pat's October: 5 h on invoice 101 (sent and booked: locked), unbilled lines, an orphan account with no customer, an undeclared `internal:training` |
+| `time/pat/2026-11.timedot`    | Pat's November: two 2-minute emails (rounding), travel (not billable), an archived account   |
+| `time/sam/2026-11.timedot`    | A contractor (no `person:` tag: the folder says who), rebilled to Acme as `JR`               |
+| `time/riley/2026-11.timedot`  | A contractor whose note has no rate or accounts: a bill asks for them                        |
+| `time/imported/2026-09.timeclock` | One timeclock session                                                                     |
+| `customers/Acme Corp.md`      | `cadence: monthly`, `time_detail: daily`, 6-minute increments rounded up, a `time_items` rule |
+| `customers/Globex.md`         | No cadence, `time_detail: entries`                                                           |
+| `people/Sam Lee.md`           | A timekeeper with every key, paid to `[[Lee Consulting LLC]]` (`pay_to`, `vendor:`)          |
+| `people/Riley Chen.md`        | A timekeeper with none                                                                       |
+| `invoices/… Invoice 101.md`   | Sent and booked (by `send`), so its time is locked                                           |
+
+```sh
+hledger -f time/time.journal bal --tree
+hledger -f time/time.journal bal --pivot billable -p 2026-11
+```
+
 ## Check the books with hledger
 
 ```sh
@@ -69,4 +100,5 @@ hledger -s -f accrual/books.journal -f accrual/recognition.journal check
 hledger -f accrual/books.journal bal 'tag:invoice=^10[1-7]$' 'assets:accounts receivable'
 hledger -s -f cash/books.journal check
 hledger -s -f empty/books.journal check
+hledger -s -f time/books.journal check
 ```

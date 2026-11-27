@@ -98,5 +98,12 @@ name = "receivables"
 path = "benches/receivables.rs"
 harness = false
 
+# Plan 46's time engine (load, unbilled, dashboard) on a 10-year,
+# five-person book of ~146k entry lines.
+[[bench]]
+name = "time"
+path = "benches/time.rs"
+harness = false
+
 [lib]
 bench = false
