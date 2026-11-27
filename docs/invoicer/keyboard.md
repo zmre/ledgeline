@@ -48,7 +48,7 @@ The text size keys work from inside a field too, and over a dialog. The desktop 
 | <kbd>g</kbd> <kbd>k</kbd> | Catalog   |
 | <kbd>g</kbd> <kbd>s</kbd> | Snippets  |
 | <kbd>g</kbd> <kbd>t</kbd> | Templates |
-| <kbd>g</kbd> <kbd>w</kbd> | Time dashboard |
+| <kbd>g</kbd> <kbd>w</kbd> | Time overview |
 | <kbd>g</kbd> <kbd>e</kbd> | Time entries |
 | <kbd>g</kbd> <kbd>r</kbd> | Track     |
 | <kbd>g</kbd> <kbd>a</kbd> | Time accounts |

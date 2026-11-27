@@ -1,13 +1,13 @@
 ---
-title: Time dashboard
-description: "The time dashboard in Ledgeline Invoicer: total and billable hours, working days, hours over time, the account tree and top lists, each with the hledger command that reproduces it."
+title: Time overview
+description: "The time overview in Ledgeline Invoicer: total and billable hours, working days, hours over time, the account tree and top lists, each with the hledger command that reproduces it."
 order: 30
 tags: [invoicer, time]
 ---
 
-# Time dashboard
+# Time overview
 
-The dashboard shows where your time went, whether you bill it or not. Open it with **Time → Dashboard** or <kbd>g</kbd> <kbd>w</kbd>.
+The overview shows where your time went, whether you bill it or not. Open it with **Time → Overview** or <kbd>g</kbd> <kbd>w</kbd>.
 
 Every figure links to the [Entries](entries-and-accounts.md#entries) behind it, with the same filters. Every figure also has an info tip with the `hledger` command that prints the same number, so you can check it, or take it into a script.
 
@@ -85,9 +85,9 @@ $ hledger -f time.journal bal -p 2026-11 --pivot billable
 
 ### Where hledger's figure can differ
 
-hledger and the dashboard agree to within a few hundredths of an hour. Where they can differ, the tip says so.
+hledger and the overview agree to within a few hundredths of an hour. Where they can differ, the tip says so.
 
-- **Rounding.** hledger 1.52 rounds every line to 0.01 hour, so a `2m` line counts 0.03 and two of them 0.06. The dashboard adds the exact minutes. [Formats](formats.md#lines-hledger-misreads) has more.
+- **Rounding.** hledger 1.52 rounds every line to 0.01 hour, so a `2m` line counts 0.03 and two of them 0.06. The overview adds the exact minutes. [Formats](formats.md#lines-hledger-misreads) has more.
 - **Billable, with a tree.** The billable filter becomes `--pivot billable` where it can, which gets the nearest parent's value right. Where the command already pivots on something else or needs account names, it falls back to `tag:billable=yes`, which also counts a `billable: no` account under a billable one. See [Billable time](hledger.md#billable-time).
-- **People.** hledger knows a person only from a `person:` tag. The invoicer also knows the person from the folder a file is in (`time/sam/…`). A contractor's timesheet without `person:` tags counts in the dashboard's Top people but shows as no one in `--pivot person`.
+- **People.** hledger knows a person only from a `person:` tag. The invoicer also knows the person from the folder a file is in (`time/sam/…`). A contractor's timesheet without `person:` tags counts in the overview's Top people but shows as no one in `--pivot person`.
 - **Notes.** hledger can't group by a note, so the notes command lists every entry with its note instead.

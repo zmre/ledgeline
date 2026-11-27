@@ -181,7 +181,7 @@ Your own choices are kept with your other view settings, under `[time]` in `ui-p
 | `person`        | none    | Your name in the time files. Set at setup, or with **Change** on Track.                |
 | `step`          | `5`     | Minutes that <kbd>+</kbd> and <kbd>-</kbd> add or take off.                              |
 | `long-running`  | `240`   | Minutes before a running clock asks whether it was left on. `0` turns it off.          |
-| `weekly-target` | `0`     | Hours a week, drawn on Track's week strip and the dashboard's chart. `0` is no target. |
+| `weekly-target` | `0`     | Hours a week, drawn on Track's week strip and the overview's chart. `0` is no target. |
 
 ```toml
 [time]

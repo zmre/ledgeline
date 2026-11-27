@@ -1,6 +1,6 @@
 ---
 title: Time tracking
-description: "Time tracking in Ledgeline Invoicer: hours kept in plain hledger timedot and timeclock files beside your books, a ten-slot tracker, a dashboard, and billing time to invoices or paying contractors for it."
+description: "Time tracking in Ledgeline Invoicer: hours kept in plain hledger timedot and timeclock files beside your books, a ten-slot tracker, an overview, and billing time to invoices or paying contractors for it."
 order: 85
 tags: [invoicer, time]
 ---
@@ -17,7 +17,7 @@ Time tracking is the **Time** group in the Invoicer's sidebar, with five pages:
 
 | Page      | What it is for                                                                                                     | Keys                      |
 |-----------|--------------------------------------------------------------------------------------------------------------------|---------------------------|
-| Dashboard | Where your time went: totals, billable share, hours over time, the account tree and top lists. See [Dashboard](dashboard.md). | <kbd>g</kbd> <kbd>w</kbd> |
+| Overview | Where your time went: totals, billable share, hours over time, the account tree and top lists. See [Overview](dashboard.md). | <kbd>g</kbd> <kbd>w</kbd> |
 | Entries   | Every line of time, by day, by week or by account, to add, change and correct. See [Entries and accounts](entries-and-accounts.md). | <kbd>g</kbd> <kbd>e</kbd> |
 | Track     | Ten slots, one key each, to start and stop the clock. See [Tracking time](tracking.md).                          | <kbd>g</kbd> <kbd>r</kbd> |
 | Accounts  | The time account tree: which customer each bills, whether it's billable, what it bills as. See [Entries and accounts](entries-and-accounts.md#accounts). | <kbd>g</kbd> <kbd>a</kbd> |
@@ -104,7 +104,7 @@ Ledgeline reads the time files then, but keeps their hours apart from your trans
 
 - [Tracking time](tracking.md): the Track page, the slots, the light, keys on each platform, and the `time` command line for scripts and launchers.
 - [Entries and accounts](entries-and-accounts.md): adding and correcting time, the weekly grid, and managing the account tree and its tags.
-- [Dashboard](dashboard.md): where your time went, with the hledger command behind every figure.
+- [Overview](dashboard.md): where your time went, with the hledger command behind every figure.
 - [Billing time](billing.md): unbilled time, billing it on an invoice draft, rounding, and paying contractors for theirs.
 - [Formats](formats.md): timedot and timeclock as the invoicer writes and reads them, hledger's pitfalls, and the settings for names, places and languages.
 - [Time with hledger](hledger.md): reporting on time with `hledger` directly.

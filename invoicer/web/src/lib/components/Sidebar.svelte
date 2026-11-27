@@ -9,7 +9,7 @@
      due; drafts are in neither (the link's tooltip says so).
 
      Groups follow the main links under a heading of their own (plan 46:
-     Time · Dashboard, Entries, Track, Accounts). The `lamp` is pinned above
+     Time · Overview, Entries, Track, Accounts, Unbilled). The `lamp` is pinned above
      every link (time tracking's running light, T-light).
 
      Settings sits last, at the foot above the books (one link, pushed down;
@@ -42,9 +42,9 @@
         counts?: SidebarCount[];
         /** The link's tooltip (every count in words). */
         title?: string;
-        /** Its name in the narrow top bar, where the group's heading isn't shown ("Time" for time's Dashboard). */
+        /** Its name in the narrow top bar, where the group's heading isn't shown ("Time" for time's Overview). */
         narrowLabel?: string;
-        /** Its accessible name when the visible label leans on the group's heading ("Time dashboard" for Dashboard under Time). */
+        /** Its accessible name when the visible label leans on the group's heading ("Time overview" for Overview under Time). */
         ariaLabel?: string;
     }
 

@@ -135,7 +135,7 @@
             id: "time",
             title: "Time",
             links: [
-                link("time-dashboard", time, "Dashboard", "Time", "Time dashboard", path.replace(/\/$/, "") === time.replace(/\/$/, "")),
+                link("time-overview", time, "Overview", "Time", "Time overview", path.replace(/\/$/, "") === time.replace(/\/$/, "")),
                 link("time-entries", `${time}/entries`, "Entries", "Time entries", "Time entries", under(`${time}/entries`)),
                 link("time-track", resolve("/time/track"), "Track", "Track", "Track time", under(resolve("/time/track"))),
                 link("time-accounts", `${time}/accounts`, "Accounts", "Time accounts", "Time accounts", under(`${time}/accounts`)),
