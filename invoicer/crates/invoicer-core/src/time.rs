@@ -41,7 +41,7 @@ use ledgeline_core::time::{TagRole, TimeError, TimeFormat, TimeQty, note_problem
 use ledgeline_core::vault::{Vault, VaultPath};
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -81,6 +81,10 @@ pub enum TimeOpError {
     /// The request reads, but the time isn't in a state for it.
     #[error("{0}")]
     Conflict(String),
+    /// Releasing an invoice's time by hand while the invoice still exists
+    /// (a draft, or sent and not void): the same hours would bill twice.
+    #[error("{0}")]
+    InvoiceExists(String),
     /// The books refused (an AP bill).
     #[error(transparent)]
     Books(#[from] BooksError),
@@ -112,6 +116,7 @@ impl TimeOpError {
             Self::NotFound(_) => "not-found",
             Self::BadRequest(_) => "bad-request",
             Self::Conflict(_) => "conflict",
+            Self::InvoiceExists(_) => "invoice-exists",
             Self::Books(error) => error.code(),
             Self::Draft(DraftError::Exists(_) | DraftError::DuplicateNumber { .. }) => "exists",
             Self::Draft(DraftError::UnknownCustomer(_) | DraftError::NotACustomer(_)) => {
@@ -404,12 +409,13 @@ impl Locks {
     pub fn reason(&self, book: &TimeBook, entry: &TimeEntry) -> Option<String> {
         if let Some(bill) = entry.tag(&book.tags, TagRole::Bill) {
             return Some(format!(
-                "it is on bill {bill}; release the bill to change it"
+                "it is on bill {bill}; release the bill (which voids it in the books) to \
+                 change it"
             ));
         }
         let invoice = entry.tag(&book.tags, TagRole::Invoice)?;
         (self.known.contains(invoice) && !self.drafts.contains(invoice)).then(|| {
-            format!("it is on invoice {invoice}, which is sent; void it or release its time to change it")
+            format!("it is on invoice {invoice}, which is sent; void the invoice to change it")
         })
     }
 }
@@ -433,6 +439,44 @@ impl std::fmt::Debug for TimeBooks {
     }
 }
 
+/// A time file as an edit found it and left it, so a later step that fails
+/// can put it back ([`TimeBooks::restore`]).
+#[derive(Debug, Clone)]
+pub(crate) struct Snapshot {
+    path: VaultPath,
+    before: String,
+    after: String,
+}
+
+/// Snapshot every file `files` changed: `before` is each one's text as read
+/// (taken by [`before_edit`]).
+pub(crate) fn snapshots(files: &TimeFiles, before: &BTreeMap<VaultPath, String>) -> Vec<Snapshot> {
+    files
+        .pending()
+        .into_iter()
+        .filter_map(|(path, after, _)| {
+            Some(Snapshot {
+                path: path.clone(),
+                before: before.get(path)?.clone(),
+                after: after.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Remember `path`'s text before its first edit.
+pub(crate) fn before_edit(
+    files: &mut TimeFiles,
+    path: &VaultPath,
+    before: &mut BTreeMap<VaultPath, String>,
+) -> Result<(), TimeError> {
+    if !before.contains_key(path) {
+        let text = files.text(path)?.to_string();
+        before.insert(path.clone(), text);
+    }
+    Ok(())
+}
+
 /// What [`TimeBooks::write`] did.
 #[derive(Debug, Clone)]
 pub struct Written<T> {
@@ -442,7 +486,8 @@ pub struct Written<T> {
     pub saved: Vec<VaultPath>,
     /// Whether a change on disk made it read and apply again.
     pub retried: bool,
-    /// `include` lines added to the roll-up for files it didn't reach.
+    /// Lines added to the roll-up: an `include` for each file it didn't
+    /// reach, and the `commodity h` a first timeclock file needs (fact 10).
     pub included: Vec<String>,
 }
 
@@ -561,7 +606,41 @@ impl TimeBooks {
         })
     }
 
-    /// Add an `include` to the roll-up for each of `files` it doesn't reach.
+    /// Put back each snapshot's file as it was, if it still holds exactly
+    /// what the edit wrote (a file changed since is left alone and named).
+    ///
+    /// # Errors
+    /// [`TimeOpError::Storage`] naming the files that couldn't be put back.
+    pub(crate) fn restore(&self, snapshots: &[Snapshot]) -> Result<(), TimeOpError> {
+        let failed: Vec<String> =
+            snapshots
+                .iter()
+                .filter(|snap| {
+                    let put_back = self.vault.read_pinned(&snap.path, None).ok().and_then(
+                        |(bytes, revision)| {
+                            (bytes == snap.after.as_bytes()).then(|| {
+                                self.vault
+                                    .replace(&snap.path, snap.before.as_bytes(), &revision)
+                            })
+                        },
+                    );
+                    !matches!(put_back, Some(Ok(_)))
+                })
+                .map(|snap| self.paths.relative(&snap.path))
+                .collect();
+        if failed.is_empty() {
+            Ok(())
+        } else {
+            Err(TimeOpError::Storage(format!(
+                "couldn't put back {}",
+                failed.join(", ")
+            )))
+        }
+    }
+
+    /// Add an `include` to the roll-up for each of `files` it doesn't reach,
+    /// and, with a timeclock file among them, the `commodity h` strict mode
+    /// needs when the roll-up lacks it (plan 46 fact 10).
     fn cover(&self, files: &[VaultPath]) -> Result<Vec<String>, TimeOpError> {
         let rollup = &self.paths.rollup;
         if files.is_empty() || TimeFormat::of_path(rollup.as_str()).is_some() {
@@ -583,6 +662,14 @@ impl TimeBooks {
             {
                 text = book::with_include(&text, &line);
                 added.push(line);
+                if TimeFormat::of_path(file.as_str()) == Some(TimeFormat::Timeclock) {
+                    for declaration in
+                        book::missing_commodities(&text, &[], &[TimeFormat::Timeclock])
+                    {
+                        text = book::with_declaration(&text, &declaration);
+                        added.push(declaration);
+                    }
+                }
             }
         }
         if !added.is_empty() {

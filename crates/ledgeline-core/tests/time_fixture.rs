@@ -245,6 +245,51 @@ fn invoice_101_matches_reg() {
     assert_eq!(rows, register("reg-invoice-101-with-books.csv"));
 }
 
+/// Fact 4: every billed posting, whichever line carries its `invoice:` —
+/// the entry's own, a continuation line under it, or the day's — and none
+/// that a `#` line or an unindented `;` line only seems to bill.
+#[test]
+fn every_billed_entry_matches_reg_tag_invoice() {
+    let book = load_book();
+    let ours: Vec<(String, String, f64)> = book
+        .entries
+        .iter()
+        .filter(|e| book.tags.has(&e.tags, TagRole::Invoice))
+        .map(|e| (e.date.clone(), e.account.clone(), e.quantity.hours_f64()))
+        .collect();
+    let mut ours = ours;
+    let mut theirs = register("reg-invoiced.csv");
+    ours.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+    theirs.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+    assert_eq!(ours.len(), theirs.len(), "{ours:?}\n{theirs:?}");
+    for (a, b) in ours.iter().zip(&theirs) {
+        assert_eq!((&a.0, &a.1), (&b.0, &b.1));
+        close(&format!("{} {}", a.0, a.1), a.2, b.2, 0.005 + 1e-9);
+    }
+    // The September file's continuation lines: billed and written off.
+    let sept = |account: &str| {
+        book.entries
+            .iter()
+            .find(|e| e.date.starts_with("2026-09-2") && e.account == account)
+            .unwrap_or_else(|| panic!("{account}"))
+    };
+    let tax = sept("clients:acme:tax-return");
+    assert_eq!(book.tags.value(&tax.tags, TagRole::Invoice), Some("101"));
+    assert_eq!(tax.note, "extension prep, called the IRS");
+    assert_eq!(tax.person.as_deref(), Some("pat"));
+    assert!(
+        book.tags
+            .has(&sept("clients:acme:advisory").tags, TagRole::Nobill)
+    );
+    let initech = sept("clients:initech:discovery");
+    assert!(!book.tags.has(&initech.tags, TagRole::Invoice));
+    assert!(!book.tags.has(&initech.tags, TagRole::Nobill));
+    assert_eq!(
+        sept("clients:globex:audit").note,
+        "follow-up questions, on the trial balance"
+    );
+}
+
 #[test]
 fn time_transactions_match_print() {
     let ours = parse("time.journal");
@@ -375,7 +420,9 @@ fn unbilled_and_suggested_periods_on_the_fixture() {
     let acme = &report.customers[0].1;
     // Not billed: the aab letters (45m), Oct 30 advisory (1h), Nov 2 (90m),
     // Nov 25 (130m), Nov 26 call (20m) and advisory (1h), Sam's Nov 24 (1h).
-    // Travel is not billable; the 20m courtesy call is nobill.
+    // Travel is not billable; the 20m courtesy call is nobill. September's
+    // 2h and 30m are billed and written off on continuation lines (fact 4):
+    // read as unbilled, they would double-bill, and move the period.
     assert_eq!(
         acme.quantity,
         TimeQty::from_minutes(45 + 60 + 90 + 130 + 20 + 60 + 60)

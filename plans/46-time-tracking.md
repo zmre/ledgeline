@@ -140,9 +140,21 @@ design:
    commodity if one applies. **Duplicate account lines in a day are separate
    postings. Duplicate and unsorted dates are fine.**
 4. **Entry tags work:** `acme:dev  45m  ; invoice:108` matches
-   `tag:invoice=108`. Date-line tags match on every posting of that day. An
-   *indented* `; …` line under an entry is a comment and **is dropped**: it
-   does not attach to the entry.
+   `tag:invoice=108`. Date-line tags match on every posting of that day.
+   **An indented `;` line continues the comment of the line right above
+   it** (re-verified 2026-11-26 in `/tmp/p46v`, `/tmp/p46w`; the earlier
+   "dropped" was wrong). Under a date line it becomes a transaction comment
+   and its tags are day tags. Under an entry it becomes that entry's
+   posting comment and its tags count: `    acme:dev  1h` then
+   `    ; invoice: 108` matches `tag:invoice=108`. Several such lines
+   accumulate. The run ends at a blank line, an *unindented* `;` line or
+   *any* `#` line (indented or not): those are ignored, and so is every
+   indented `;` line after them until the next date line or entry. So a
+   line billed on a continuation line is billed: Ledgeline's parser,
+   readers (billing state, locks, unbilled, the open line, person, notes)
+   and writers all follow this (a tag found on a continuation line is
+   changed or removed there; an entry is deleted with its continuation
+   lines).
 5. **No directives in timedot files.** A `.journal` that includes them
    provides `account`, `alias`, `apply account`, `D`/`commodity`; all of
    these were verified to apply.
@@ -161,8 +173,10 @@ design:
    indentation; they're laid out by ordering and blank lines (F-accounts).
 9. **Timeclock** (1.50+ syntax):
    - `i DATE TIME ACCOUNT␣␣DESCRIPTION ;comment` and `o DATE TIME [ACCOUNT] ;comment`.
-   - Comments on the `i` line, on indented lines under it, and on the `o`
-     line all become **transaction** tags.
+   - Comments on the `i` line, on the `o` line, and on indented `;` lines
+     right under either all become **transaction** tags. As in timedot, a
+     blank line, an unindented comment or any `#` line ends the run (an
+     indented `# …` is ignored, not a comment of the session).
    - A bare `o` closes the most recent open session.
    - Two open sessions on **different** accounts are fine; the **same**
      account twice is an error in 1.52.
@@ -171,8 +185,12 @@ design:
    - Output is `(acct)  1.50h` in commodity `h`, rounded to 0.01 h in 1.52.
    - `b`/`h`/`O` lines with free text fail to parse in 1.52 (the manual says
      they should).
-10. **Strict mode** (`-s`) needs `commodity ""` (or a `D`) declared and every
-    account declared, both in the including journal.
+10. **Strict mode** (`-s`) needs `commodity ""` declared (with a `D`, that
+    commodity declared instead) and every account declared, both in the
+    including journal. **Timeclock hours are commodity `h`**, which needs
+    `commodity h` too: without it `hledger -s` refuses the file. Setup
+    writes it for a timeclock tracker, the first timeclock include adds it,
+    and adopt reports it missing.
 
 ## What is true today (in the code)
 
@@ -523,7 +541,8 @@ A sidebar block, pinned above the section links, on every Invoicer screen:
   any timedot file:
   - Changes are verified by re-parse.
   - A line tagged with a **sent** invoice or a booked bill is read-only. The
-    unlock path is to void or release the invoice/bill.
+    unlock path is to void the invoice (Void releases its time), or to
+    release the bill (which voids it in the books first).
   - Timeclock sessions edit as start/end; tags go on the `o` line.
 - **Bulk:** select rows, then *Mark billable / Mark nobill / Move to account
   / Set person*.
@@ -652,6 +671,11 @@ Lifecycle:
 - **Delete a draft** removes its `invoice:` tags (releases the time).
 - **Void** a sent invoice asks: *Release the time* (the default) or *Mark it
   nobill*.
+- **Release by hand** (`POST /api/time/release {invoice}`, `time release
+  N`) is for orphan tags only: refused (409 `invoice-exists`) while invoice
+  N is a draft or sent and not void, since the draft's rows (or the sent
+  invoice) and the unbilled time would bill the same hours twice. Allowed
+  for no such invoice, a deleted draft, a void invoice.
 - **Rebook** after editing hours leaves the time tags alone. The invoice is
   the truth for money (ARCHITECTURE §1.3).
 
@@ -701,6 +725,13 @@ Lifecycle:
   `bill: <reference>`.
 - Contractor time can still be rebilled to the customer. The `invoice` and
   `bill` tags are independent.
+- **Release a bill** (`POST /api/time/release {bill: REF, how}`, `time
+  release --bill REF [--nobill]`): the lines lose `bill: REF` (or swap it for
+  `nobill: bill REF void`) first, then the bill is voided in the books
+  (plan 45's void, found by `reference:`). When the void fails, the lines
+  are put back byte for byte. A paid bill (a payment linked) is refused. A
+  bill already void, or tags with no bill, just have their tags changed.
+  Booking a bill never creates the recognition file.
 - **Getting their time in.** A contractor can:
   1. send a `.timedot` file that we drop into `time/<person>/`;
   2. use the same app pointed at a shared folder;

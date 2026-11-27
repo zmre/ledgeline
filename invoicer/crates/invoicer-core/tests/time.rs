@@ -336,6 +336,60 @@ fn notes_on_existing_lines_and_new_month_files_are_included() {
     );
 }
 
+/// Fact 10: the first timeclock file Ledgeline writes brings the roll-up
+/// its include and the `commodity h` that `hledger -s` needs.
+#[test]
+fn a_first_timeclock_file_declares_commodity_h() {
+    let books = books();
+    let rollup = books.read("time.journal").replace(
+        &format!("{}\n", ledgeline_core::time::book::TIMECLOCK_COMMODITY),
+        "",
+    );
+    std::fs::write(books.root.join("time.journal"), &rollup).expect("write");
+    assert!(!rollup.contains("commodity h"));
+    let settings = books.read("ledgeline.toml");
+    std::fs::write(
+        books.root.join("ledgeline.toml"),
+        format!("{settings}\n[time]\ntrack-file = \"clock/{{person}}.timeclock\"\nrecord = \"timeclock\"\n"),
+    )
+    .expect("settings");
+    let time = books.time();
+    let done = track::start(
+        &time,
+        None,
+        Some("pat"),
+        "internal:admin",
+        &at("2026-11-26T09:00:00"),
+    )
+    .expect("start");
+    assert_eq!(
+        done.included,
+        vec![
+            "include clock/*.timeclock".to_string(),
+            ledgeline_core::time::book::TIMECLOCK_COMMODITY.to_string()
+        ]
+    );
+    let rollup = books.read("time.journal");
+    assert!(
+        rollup.contains(&format!(
+            "{}\n{}\n",
+            ledgeline_core::time::book::TIMEDOT_COMMODITY,
+            ledgeline_core::time::book::TIMECLOCK_COMMODITY
+        )),
+        "{rollup}"
+    );
+    // The next file needs neither.
+    let done = track::start(
+        &time,
+        None,
+        Some("kim"),
+        "internal:admin",
+        &at("2026-11-26T09:00:00"),
+    )
+    .expect("start");
+    assert!(done.included.is_empty(), "{:?}", done.included);
+}
+
 #[test]
 fn entries_filter_lock_and_edit() {
     let books = books();
@@ -715,6 +769,70 @@ fn unbilled_suggests_periods_and_finds_orphans() {
     assert_eq!(people, ["riley", "sam"], "pat's own time is no payable");
 }
 
+/// Plan 46 fact 4: a line billed on an indented `; invoice:` line under it
+/// is billed — locked, not unbilled, never the line new minutes go onto.
+#[test]
+fn a_line_billed_on_a_continuation_line_is_billed_everywhere() {
+    let books = books();
+    let time = books.time();
+    let session = books.session();
+    let locks = Locks::of(session.index(), session.booked_numbers());
+    let acme_entries = |book: &ledgeline_core::time::model::TimeBook| {
+        report::unbilled(book, session.index(), &locks.known, TODAY)
+            .customers
+            .iter()
+            .find(|c| c.customer == "Acme Corp")
+            .map(|c| c.entries)
+            .expect("acme")
+    };
+    let before = acme_entries(&time.require().expect("book"));
+    let file = "time/pat/2026-11.timedot";
+    let billed_line = "    clients:acme:advisory             1h  ; call with Fred about the K-1\n";
+    let text = books.read(file);
+    assert!(text.contains(billed_line));
+    std::fs::write(
+        books.root.join(file),
+        text.replace(billed_line, &format!("{billed_line}    ; invoice: 101\n")),
+    )
+    .expect("write");
+    let book = time.require().expect("book");
+    assert_eq!(acme_entries(&book), before - 1, "no longer unbilled");
+    let listed = entries::list(
+        &book,
+        &EntryQuery {
+            from: Some(TODAY.into()),
+            to: Some(TODAY.into()),
+            person: Some("pat".into()),
+            ..EntryQuery::default()
+        },
+        &locks,
+    );
+    let advisory = listed
+        .entries
+        .iter()
+        .find(|e| e.account == "clients:acme:advisory")
+        .expect("advisory");
+    assert!(advisory.locked.is_some(), "101 is sent: {advisory:?}");
+    assert_eq!(advisory.note, "call with Fred about the K-1");
+    // Fifteen more minutes: a new line after the billed one's block.
+    track::adjust(
+        &time,
+        None,
+        Some("pat"),
+        "clients:acme:advisory",
+        15,
+        &at("2026-11-26T15:00:00"),
+    )
+    .expect("adjust");
+    let text = books.read(file);
+    assert!(
+        text.contains(&format!(
+            "{billed_line}    ; invoice: 101\n    internal:admin                   15m\n    clients:acme:advisory            15m\n"
+        )),
+        "{text}"
+    );
+}
+
 fn acme_november() -> BillRequest {
     BillRequest {
         customer: "Acme Corp".into(),
@@ -1064,4 +1182,85 @@ fn paying_a_contractor_books_a_payable_and_tags_the_time() {
             .read("people/Riley Chen.md")
             .contains("pay_rate: $60\n")
     );
+    assert!(
+        !books.root.join("recognition.journal").exists(),
+        "booking a bill writes the journal only"
+    );
+
+    // Unlocking sam's bill: a void dated before the bill is refused by the
+    // books after the tags came off, so the lines are put back exactly.
+    let sam_file = books.read("time/sam/2026-11.timedot");
+    let invoice_books = session.invoice_books();
+    let refused = pay::unlock_bill(
+        &time,
+        None,
+        &invoice_books,
+        "sam timesheet 2026-11",
+        Release::Release,
+        "2026-11-01",
+    );
+    assert!(refused.is_err(), "{refused:?}");
+    assert_eq!(books.read("time/sam/2026-11.timedot"), sam_file);
+    assert!(!books.read("books.journal").contains("(void)"));
+    // Dated today: voided, then the lines are free.
+    let done = pay::unlock_bill(
+        &time,
+        None,
+        &invoice_books,
+        "sam timesheet 2026-11",
+        Release::Release,
+        TODAY,
+    )
+    .expect("unlock");
+    assert!(done.voided);
+    assert_eq!(done.released, 4);
+    assert!(
+        !books
+            .read("time/sam/2026-11.timedot")
+            .contains("bill: sam timesheet")
+    );
+    // Voided, the reference can be billed again.
+    let session = books.session();
+    let book = time.require().expect("book");
+    let again = pay::preview(
+        &book,
+        session.index(),
+        session.journal(),
+        &request("sam"),
+        TODAY,
+    )
+    .expect("preview");
+    assert!(
+        again.needs.iter().all(|n| n.field != "reference"),
+        "{:?}",
+        again.needs
+    );
+
+    // A paid bill keeps its time: the payment's link is detected.
+    let journal = books.read("books.journal").replace(
+        "liabilities:accounts payable  $-180.00  ; vendor: Riley Chen",
+        "liabilities:accounts payable  $-180.00  ; vendor: Riley Chen, match: m-77",
+    );
+    assert!(journal.contains("match: m-77"), "{journal}");
+    std::fs::write(
+        books.root.join("books.journal"),
+        format!(
+            "{journal}\n2026-11-27 Pay Riley\n    liabilities:accounts payable  $180.00  ; match: m-77\n    assets:checking\n"
+        ),
+    )
+    .expect("pay riley");
+    let riley_file = books.read("time/riley/2026-11.timedot");
+    let paid = pay::unlock_bill(
+        &time,
+        None,
+        &books.session().invoice_books(),
+        "riley timesheet 2026-11",
+        Release::Release,
+        TODAY,
+    );
+    assert!(
+        matches!(&paid, Err(invoicer_core::time::TimeOpError::Conflict(why)) if why.contains("paid")),
+        "{paid:?}"
+    );
+    assert_eq!(books.read("time/riley/2026-11.timedot"), riley_file);
 }

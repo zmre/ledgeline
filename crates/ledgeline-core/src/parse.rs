@@ -1923,7 +1923,16 @@ fn parse_time_source(
                     .postings()
                     .filter(|p| p.entry.day == start)
                     .map(|p| {
-                        let mut comment = p.entry.comment.clone().unwrap_or_default();
+                        // The line's comment, then its continuation lines'
+                        // (fact 4), one per line as hledger prints them.
+                        let mut comment = p
+                            .entry
+                            .comment
+                            .iter()
+                            .chain(&p.entry.continued)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join("\n");
                         let mut tags: Vec<(String, String)> = p
                             .entry
                             .tags
@@ -1953,7 +1962,14 @@ fn parse_time_source(
                     status: Status::Cleared,
                     code: String::new(),
                     description: day.description.clone(),
-                    comment: stored_comment(day.comment.as_deref().unwrap_or("")),
+                    comment: stored_comment(
+                        &day.comment
+                            .iter()
+                            .chain(&day.continued)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    ),
                     preceding_comment: String::new(),
                     tags: day.tags.clone(),
                     postings,

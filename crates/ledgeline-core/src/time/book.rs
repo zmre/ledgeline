@@ -32,6 +32,7 @@ use super::{TagNames, TimeError, TimeFormat};
 use crate::ledger_file::{self, LedgerFile};
 use crate::parse::{glob_path_match, parse_time_rollup};
 use crate::vault::{Vault, VaultError, VaultPath};
+use std::collections::BTreeSet;
 use toml_edit::{DocumentMut, Item, Table, value};
 
 /// The `[time]` table of `ledgeline.toml`.
@@ -911,7 +912,14 @@ pub fn setup_plan(
     };
     let mut files = vec![(
         paths.rollup.clone(),
-        rollup_text(main_name, &rollup_name, &accounts_include, &include, config),
+        rollup_text(
+            main_name,
+            &rollup_name,
+            &accounts_include,
+            &include,
+            paths.track.format(),
+            config,
+        ),
     )];
     if !exists(&paths.accounts) {
         files.push((
@@ -928,12 +936,14 @@ pub fn setup_plan(
     Ok(SetupPlan { paths, files })
 }
 
-/// The roll-up's text (F-files).
+/// The roll-up's text (F-files), declaring the commodity strict mode needs
+/// for `format`'s files (fact 10).
 fn rollup_text(
     main_name: &str,
     rollup_name: &str,
     accounts_include: &str,
     include: &str,
+    format: TimeFormat,
     config: &TimeConfig,
 ) -> String {
     use super::TagRole;
@@ -948,10 +958,15 @@ fn rollup_text(
          ;   hledger -f {rollup_name} reg not:tag:{invoice} tag:{customer}=Acme\n\
          ; To see time beside the books, include this file from {main_name}.\n\
          \n\
-         commodity \"\"                      ; time has no commodity (needed for -s)\n\
+         {TIMEDOT_COMMODITY}\n\
+         {clock}\
          \n\
          include {accounts_include}\n\
-         {include}\n"
+         {include}\n",
+        clock = match format {
+            TimeFormat::Timedot => String::new(),
+            TimeFormat::Timeclock => format!("{TIMECLOCK_COMMODITY}\n"),
+        },
     )
 }
 
@@ -1020,6 +1035,118 @@ pub(crate) fn create_file(
         })
 }
 
+/// The roll-up's declaration of timedot's commodity (fact 10).
+pub const TIMEDOT_COMMODITY: &str =
+    "commodity \"\"                      ; time has no commodity (needed for -s)";
+/// The roll-up's declaration of timeclock's `h` (fact 10: `hledger -s`
+/// refuses a timeclock file's hours without it).
+pub const TIMECLOCK_COMMODITY: &str =
+    "commodity h                       ; timeclock hours (needed for -s)";
+
+/// The commodity symbol a `commodity` or `D` directive's spec names: `""`
+/// for `""`, `h` for `h`, `0.00h` or `1.000,00 h`.
+fn spec_symbol(spec: &str) -> String {
+    let spec = spec.split(';').next().unwrap_or("").trim();
+    if let Some(quoted) = spec.strip_prefix('"') {
+        return quoted.split('"').next().unwrap_or("").to_string();
+    }
+    spec.chars()
+        .filter(|c| !(c.is_ascii_digit() || matches!(c, '.' | ',' | ' ' | '-' | '+')))
+        .collect()
+}
+
+/// The commodities `text` declares with `commodity`, and the `D` default's
+/// commodity, if any (top-level directives only).
+fn declarations(text: &str) -> (BTreeSet<String>, Option<String>) {
+    let mut declared = BTreeSet::new();
+    let mut default = None;
+    for line in text.lines() {
+        if let Some(spec) = line.strip_prefix("commodity")
+            && spec.starts_with([' ', '\t'])
+        {
+            declared.insert(spec_symbol(spec));
+        } else if let Some(spec) = line.strip_prefix("D")
+            && spec.starts_with([' ', '\t'])
+        {
+            default = Some(spec_symbol(spec));
+        }
+    }
+    (declared, default)
+}
+
+/// The `commodity` lines strict mode (`hledger -s`, fact 10) needs that the
+/// roll-up `rollup_text` doesn't declare, for time files of `formats`: the
+/// timedot commodity (`""`, or the `D` default's) and timeclock's `h`.
+/// `also` is the text of journals it includes, whose declarations count.
+#[must_use]
+pub fn missing_commodities(
+    rollup_text: &str,
+    also: &[&str],
+    formats: &[TimeFormat],
+) -> Vec<String> {
+    let mut declared = BTreeSet::new();
+    let mut default = None;
+    for text in std::iter::once(rollup_text).chain(also.iter().copied()) {
+        let (more, d) = declarations(text);
+        declared.extend(more);
+        default = default.or(d);
+    }
+    let mut missing = Vec::new();
+    if formats.contains(&TimeFormat::Timedot) {
+        match default {
+            Some(symbol) if !declared.contains(&symbol) => {
+                missing.push(format!("commodity {symbol}"));
+            }
+            None if !declared.contains("") => missing.push(TIMEDOT_COMMODITY.to_string()),
+            _ => {}
+        }
+    }
+    if formats.contains(&TimeFormat::Timeclock) && !declared.contains("h") {
+        missing.push(TIMECLOCK_COMMODITY.to_string());
+    }
+    missing
+}
+
+/// `rollup_text` with `line` (a `commodity` declaration) added after its
+/// last `commodity` line, else before its first `include`, else at the end;
+/// every other byte kept.
+#[must_use]
+pub fn with_declaration(rollup_text: &str, line: &str) -> String {
+    let newline = if rollup_text.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let spans = super::line_spans(rollup_text);
+    let starts = |(start, end, _): &(usize, usize, usize), prefix: &str| {
+        rollup_text[*start..*end].starts_with(prefix)
+    };
+    let at = spans
+        .iter()
+        .rev()
+        .find(|span| starts(span, "commodity "))
+        .map(|(_, _, next)| *next)
+        .or_else(|| {
+            spans
+                .iter()
+                .find(|span| starts(span, "include "))
+                .map(|(start, _, _)| *start)
+        });
+    match at {
+        Some(at) => {
+            let mut out = rollup_text[..at].to_string();
+            if !out.is_empty() && !out.ends_with('\n') {
+                out.push_str(newline);
+            }
+            out.push_str(line);
+            out.push_str(newline);
+            out.push_str(&rollup_text[at..]);
+            out
+        }
+        None => with_include(rollup_text, line),
+    }
+}
+
 /// What adopting an existing file means (setup's *Use existing*).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdoptPlan {
@@ -1029,6 +1156,10 @@ pub struct AdoptPlan {
     pub format: Option<TimeFormat>,
     /// Whether `[time] file` must be written (it isn't the default name).
     pub needs_setting: bool,
+    /// The `commodity` lines `hledger -s` needs that the roll-up lacks
+    /// ([`missing_commodities`]), to add by hand; empty for a single time
+    /// file (it can hold no directives) or a roll-up that has them.
+    pub missing: Vec<String>,
 }
 
 /// Check that `file` (relative to the journal's folder) can be the roll-up:
@@ -1053,11 +1184,28 @@ pub fn adopt_plan(vault: &dyn Vault, main: &VaultPath, file: &str) -> Result<Ado
     if vault.stat(&paths.rollup).ok().flatten().is_none() {
         return Err(TimeError::Missing(file.to_string()));
     }
-    load_rollup(vault, &paths, &config, None)?;
+    let parsed =
+        parse_time_rollup(vault, &paths.rollup).map_err(|e| TimeError::Parse(e.to_string()))?;
+    let formats: Vec<TimeFormat> = parsed
+        .sources
+        .iter()
+        .filter_map(|source| source.time_format)
+        .collect();
+    let journals: Vec<&str> = parsed
+        .sources
+        .iter()
+        .filter(|source| source.time_format.is_none())
+        .filter_map(|source| source.read.as_ref().map(|(text, _)| text.as_str()))
+        .collect();
+    let missing = match (format, journals.split_first()) {
+        (None, Some((rollup, also))) => missing_commodities(rollup, also, &formats),
+        _ => Vec::new(),
+    };
     Ok(AdoptPlan {
         file: file.trim().to_string(),
         format,
         needs_setting: file.trim() != DEFAULT_FILE,
+        missing,
     })
 }
 
@@ -1141,6 +1289,77 @@ mod tests {
             coverage("", &rollup, &flat_target, Some(&flat)),
             Coverage::NotCovered("include time/*.timedot".to_string())
         );
+    }
+
+    /// Fact 10: `hledger -s` refuses timeclock hours unless `commodity h` is
+    /// declared (verified with `hledger -s -f time.journal check` on
+    /// `fixtures/time`, 2026-11-26).
+    #[test]
+    fn strict_mode_declarations_for_timeclock() {
+        let vault = MemVault::with_root("/books");
+        vault.insert_file("books.journal", "");
+        let config = parse_config(
+            "[time]\ntrack-file = \"time/{person}/{yyyy}-{mm}.timeclock\"\nrecord = \"timeclock\"\n",
+        );
+        let plan = setup_plan(
+            &vault,
+            &main_path(),
+            &config,
+            Some("pat"),
+            "2026-11-26",
+            &[],
+        )
+        .expect("plan");
+        let rollup = &plan.files[0].1;
+        assert!(
+            rollup.contains(&format!(
+                "{TIMEDOT_COMMODITY}\n{TIMECLOCK_COMMODITY}\n\ninclude "
+            )),
+            "{rollup}"
+        );
+        let both = [TimeFormat::Timedot, TimeFormat::Timeclock];
+        assert!(missing_commodities(rollup, &[], &both).is_empty());
+        // A timedot setup declares only "".
+        let plan = setup_plan(
+            &vault,
+            &main_path(),
+            &TimeConfig::default(),
+            None,
+            "2026-11-26",
+            &[],
+        )
+        .expect("plan");
+        assert!(!plan.files[0].1.contains("commodity h"));
+        assert_eq!(
+            missing_commodities(&plan.files[0].1, &[], &both),
+            vec![TIMECLOCK_COMMODITY.to_string()]
+        );
+        // Declarations in an included journal count; a `D` needs its own.
+        assert!(missing_commodities("", &["commodity \"\"\ncommodity 0.00h\n"], &both).is_empty());
+        assert_eq!(
+            missing_commodities("D 1.00 h\n", &[], &[TimeFormat::Timedot]),
+            vec!["commodity h".to_string()]
+        );
+        // Added after the last commodity line, else before the includes.
+        assert_eq!(
+            with_declaration("; x\ncommodity \"\"\n\ninclude a\n", "commodity h"),
+            "; x\ncommodity \"\"\ncommodity h\n\ninclude a\n"
+        );
+        assert_eq!(
+            with_declaration("; x\ninclude a\n", "commodity h"),
+            "; x\ncommodity h\ninclude a\n"
+        );
+        // Adopt reports what's missing; a single time file can't hold it.
+        vault.insert_file(
+            "hours.journal",
+            "commodity \"\"\ninclude t.timeclock\ninclude d.timedot\n",
+        );
+        vault.insert_file("t.timeclock", "i 2026-11-01 08:00 a\no 2026-11-01 09:00\n");
+        vault.insert_file("d.timedot", "2026-11-01\n  a  1h\n");
+        let adopted = adopt_plan(&vault, &main_path(), "hours.journal").expect("adopt");
+        assert_eq!(adopted.missing, vec![TIMECLOCK_COMMODITY.to_string()]);
+        let single = adopt_plan(&vault, &main_path(), "t.timeclock").expect("adopt");
+        assert!(single.missing.is_empty());
     }
 
     #[test]

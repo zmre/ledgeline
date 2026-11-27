@@ -452,6 +452,31 @@ async fn bill_preview_create_then_delete_the_draft_releases_its_time() {
     // Again: nothing unbilled is left for the period.
     let (status, again) = json_of(&app, post_json("/api/time/bill", &request)).await;
     assert_eq!(status, StatusCode::CONFLICT, "{again}");
+    // Releasing by hand while the draft exists is refused: its rows and
+    // the unbilled time would bill the same hours twice.
+    let (status, refused) = json_of(
+        &app,
+        post_json("/api/time/release", &json!({"invoice": "102"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["code"], "invoice-exists");
+    assert!(read(&app, "time/pat/2026-11.timedot").contains("invoice: 102"));
+    // So is a sent invoice's; void it instead.
+    let (status, sent) = json_of(
+        &app,
+        post_json(
+            "/api/time/release",
+            &json!({"invoice": "101", "how": "nobill"}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        (status, sent["code"].clone()),
+        (StatusCode::CONFLICT, json!("invoice-exists"))
+    );
+    let (status, neither) = json_of(&app, post_json("/api/time/release", &json!({}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{neither}");
     // Delete the draft: its time is released.
     let deleted = ok(&app, delete("/api/invoices/102")).await;
     assert_eq!(deleted["time"]["released"], 6);
@@ -479,6 +504,13 @@ async fn void_can_write_the_time_off() {
         "{text}"
     );
     assert!(!text.contains("invoice: 101"), "{text}");
+    // Void, 101's time may be released by hand (nothing is left to take).
+    let again = ok(
+        &app,
+        post_json("/api/time/release", &json!({"invoice": "101"})),
+    )
+    .await;
+    assert_eq!(again["done"], 0, "{again}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -522,9 +554,34 @@ async fn pay_lists_what_it_needs_then_books_the_bill() {
     assert!(read(&app, "time/riley/2026-11.timedot").contains("bill: riley timesheet 2026-11"));
     let entries = ok(&app, authed("/api/time/entries?person=riley")).await;
     assert!(
-        entries["entries"][0]["locked"].is_string(),
-        "a booked bill locks it"
+        entries["entries"][0]["locked"]
+            .as_str()
+            .is_some_and(|why| why.contains("release the bill")),
+        "a booked bill locks it: {entries}"
     );
+    assert!(!root(&app).join("recognition.journal").exists());
+
+    // Unlock it: the bill is voided in the books, its lines written off.
+    let unlocked = ok(
+        &app,
+        post_json(
+            "/api/time/release",
+            &json!({"bill": "riley timesheet 2026-11", "how": "nobill", "today": "2026-11-26"}),
+        ),
+    )
+    .await;
+    assert_eq!(unlocked["voided"], true, "{unlocked}");
+    assert_eq!(unlocked["how"], "nobill");
+    assert!(read(&app, "books.journal").contains("Riley Chen | riley timesheet 2026-11 (void)"));
+    let text = read(&app, "time/riley/2026-11.timedot");
+    assert!(!text.contains("bill: riley"), "{text}");
+    assert!(
+        text.contains("nobill: bill riley timesheet 2026-11 void"),
+        "{text}"
+    );
+    let entries = ok(&app, authed("/api/time/entries?person=riley")).await;
+    assert!(entries["entries"][0]["locked"].is_null(), "{entries}");
+    assert!(!root(&app).join("recognition.journal").exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]

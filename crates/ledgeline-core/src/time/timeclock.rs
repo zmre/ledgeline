@@ -5,8 +5,11 @@
 //!   account ends at two or more spaces. `o DATE TIME [ACCOUNT]  ; comment`
 //!   ends one: the named account's, or with no account the most recently
 //!   started open one. Times are `HH:MM` or `HH:MM:SS`, kept exactly (T13).
-//! - Comments on the `i` line, on indented `;` lines after it, and on the
-//!   `o` line are all the session's (transaction) tags.
+//! - Comments on the `i` line, on the `o` line, and on indented `;` lines
+//!   right after either (only other such lines between) are all the
+//!   session's (transaction) tags. A blank line, an unindented comment or
+//!   any `#` line ends that run; an indented `;` line after it is ignored,
+//!   as hledger 1.52 ignores it (verified 2026-11-26).
 //! - Two open sessions on different accounts are fine; the same account
 //!   twice is an error, as is an `o` with nothing to close or an end before
 //!   its start.
@@ -77,9 +80,11 @@ pub struct ClockOut {
 pub enum ClockLineKind {
     /// Empty or whitespace.
     Blank,
-    /// A top-level comment (`;`, `#`, `*`).
+    /// A comment hledger ignores: a top-level `;`, `#` or `*` line, an
+    /// indented `#` line, or an indented `;` line that continues nothing.
     Comment,
-    /// An indented `;` comment: the preceding session's.
+    /// An indented `;` comment continuing the clock line above it: that
+    /// session's.
     SessionComment(String),
     /// Clock in.
     In(ClockIn),
@@ -126,6 +131,8 @@ pub struct Session {
     pub tags: Vec<(String, String)>,
     /// The comments' text, in the same order (hledger's transaction comment).
     pub comments: Vec<String>,
+    /// Indices of its [`ClockLineKind::SessionComment`] lines, in order.
+    pub comment_lines: Vec<usize>,
 }
 
 impl Session {
@@ -213,7 +220,7 @@ pub fn parse(text: &str) -> TimeclockFile {
     let mut file = TimeclockFile::default();
     // Indices into `file.sessions` of the open ones, oldest first.
     let mut open: Vec<usize> = Vec::new();
-    // The session the last clock line belonged to, for indented comments.
+    // The session whose clock line an indented `;` line would continue.
     let mut last: Option<usize> = None;
     for (n, (start, end, next)) in line_spans(text).into_iter().enumerate() {
         let number = u32::try_from(n + 1).unwrap_or(u32::MAX);
@@ -249,6 +256,7 @@ pub fn parse(text: &str) -> TimeclockFile {
                         end: None,
                         tags,
                         comments,
+                        comment_lines: Vec::new(),
                     });
                     open.push(file.sessions.len() - 1);
                     last = Some(file.sessions.len() - 1);
@@ -298,14 +306,24 @@ pub fn parse(text: &str) -> TimeclockFile {
                 }
             }
             ClockLineKind::SessionComment(comment) => {
-                if let Some(session) = last.and_then(|at| file.sessions.get_mut(at)) {
-                    session.tags.extend(parse_tags(&comment));
-                    session.comments.push(comment.clone());
+                match last.and_then(|at| file.sessions.get_mut(at)) {
+                    Some(session) => {
+                        session.tags.extend(parse_tags(&comment));
+                        session.comments.push(comment.clone());
+                        session.comment_lines.push(index);
+                        ClockLineKind::SessionComment(comment)
+                    }
+                    None => ClockLineKind::Comment,
                 }
-                ClockLineKind::SessionComment(comment)
             }
             other => other,
         };
+        if !matches!(
+            kind,
+            ClockLineKind::In(_) | ClockLineKind::Out(_) | ClockLineKind::SessionComment(_)
+        ) {
+            last = None;
+        }
         if let Some((finding_kind, message)) = problem {
             let severity = if finding_kind == FindingKind::Ignored {
                 Severity::Info
@@ -349,8 +367,11 @@ fn classify(content: &str, problem: &mut Option<(FindingKind, String)>) -> Clock
         return ClockLineKind::Blank;
     }
     if content.starts_with([' ', '\t']) {
-        if let Some(comment) = trimmed.strip_prefix([';', '#']) {
+        if let Some(comment) = trimmed.strip_prefix(';') {
             return ClockLineKind::SessionComment(comment.trim().to_string());
+        }
+        if trimmed.starts_with('#') {
+            return ClockLineKind::Comment;
         }
         *problem = Some((
             FindingKind::Invalid,
@@ -492,6 +513,47 @@ i 2026-09-04 08:00 a\ni 2026-09-04 08:30 b\no 2026-09-04 09:00 a\no 2026-09-04 0
         );
         assert!(parse("o 2026-09-06 08:00\n").has_errors());
         assert!(parse("i 2026-09-06 08:00 a\no 2026-09-05 08:00\n").has_errors());
+    }
+
+    /// As hledger 1.52 printed each (2026-11-26, /tmp/p46w): indented `;`
+    /// lines continue the clock line above (an `o` line too); a `#` line, a
+    /// blank line or an unindented comment ends the run.
+    #[test]
+    fn indented_comments_continue_only_the_line_above() {
+        let text = concat!(
+            "i 2026-11-27 09:00:00 acme:dev  work ; a: 1\n",
+            "    ; b: 2\n",
+            "# hash\n",
+            "    ; c: 3\n",
+            "\n",
+            "    ; d: 4\n",
+            "o 2026-11-27 10:00:00 ; e: 5\n",
+            "    ; f: 6\n",
+            "    # g: 7\n",
+            "    ; h: 8\n",
+            "i 2026-11-27 11:00 a  w\n",
+            "i 2026-11-27 11:30 b  w\n",
+            "    ; y: 2\n",
+            "o 2026-11-27 12:00 a\n",
+            "    ; z: 3\n",
+            "o 2026-11-27 13:00 b\n",
+        );
+        let file = parse(text);
+        assert!(!file.has_errors(), "{:?}", file.findings);
+        let names = |at: usize| -> Vec<&str> {
+            file.sessions[at]
+                .tags
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect()
+        };
+        assert_eq!(names(0), vec!["a", "b", "e", "f"]);
+        assert_eq!(file.sessions[0].comment_lines, vec![1, 7]);
+        for at in [3, 5, 8, 9] {
+            assert_eq!(file.lines[at].kind, ClockLineKind::Comment, "line {at}");
+        }
+        assert_eq!(names(1), vec!["z"]);
+        assert_eq!(names(2), vec!["y"]);
     }
 
     #[test]

@@ -561,7 +561,9 @@ pub fn bulk(
             refs.insert(at);
         }
         let names = &book.tags;
-        for at in &refs {
+        // Last line first: removing a tag can remove the continuation
+        // line it was on, which would shift every later line of the file.
+        for at in refs.iter().rev() {
             match op {
                 BulkOp::Billable => set_tag(files, at, names.name(TagRole::Nobill), None)?,
                 BulkOp::Nobill { reason } => {
