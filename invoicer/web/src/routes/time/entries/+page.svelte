@@ -1,6 +1,9 @@
 <!-- Time → Entries (plan 46 T-entries): every line of the time book for the
      URL's period and filters, as a timesheet by day (the default), by
-     account, or as the weekly grid. Add (`a`), change in place (Enter),
+     account, or as the weekly grid. The second of the Time area's two tabs
+     (`TimeTabs`), with Overview; both share one filter bar
+     (`TimeFilterBar`, `#lib/time/filters/query.ts`), so a tab switch keeps
+     the filters, and `[`/`]` step the period (the week, in the grid). Add (`a`), change in place (Enter),
      delete, and act on picked lines in bulk. The URL is the state (the
      invoicer's list contract): a link opens the same view, Back and Forward
      step through it. Again whenever a file changes on disk.
@@ -32,31 +35,33 @@
     import BillDialog from "#lib/time/billing/BillDialog.svelte";
     import {entriesBillTarget} from "#lib/time/billing/words.js";
     import BulkBar from "#lib/time/entries/BulkBar.svelte";
-    import EntryFilters from "#lib/time/entries/EntryFilters.svelte";
     import EntryForm from "#lib/time/entries/EntryForm.svelte";
     import EntryTable from "#lib/time/entries/EntryTable.svelte";
     import WeekGrid from "#lib/time/entries/WeekGrid.svelte";
     import {EntriesStore, type WriteOutcome} from "#lib/time/entries/entriesStore.svelte.js";
-    import {addDays, mondayOf, dayMonth} from "#lib/time/dates.js";
+    import {addDays, mondayOf, dayMonth, dayMonthYear, rangeText} from "#lib/time/dates.js";
     import {formatDuration} from "#lib/time/duration.js";
     import {groupByAccount, groupByDay, overDayWarnings, planCellEdit, weekGrid, type WeekCell} from "#lib/time/entries/group.js";
+    import {entriesApiQuery, entriesQueryString, parseEntriesQuery, shownRange, shownWeek, type EntriesQuery, type Grouping} from "#lib/time/entries/query.js";
     import {
-        clearEntriesFilters,
-        entriesApiQuery,
-        entriesFiltered,
-        entriesQueryString,
+        clearFilters,
         filterPerson,
-        parseEntriesQuery,
-        shownWeek,
-        type EntriesQuery,
-        type Grouping,
-    } from "#lib/time/entries/query.js";
+        filtersOf,
+        filtersQueryString,
+        isAllTime,
+        isFiltered,
+        resolveRange,
+        stepPeriod,
+        withQuery,
+    } from "#lib/time/filters/query.js";
+    import TimeFilterBar from "#lib/time/filters/TimeFilterBar.svelte";
+    import TimeTabs from "#lib/time/filters/TimeTabs.svelte";
 
     const today = localToday();
     const query = $derived(parseEntriesQuery(page.url.searchParams));
-    const queryString = $derived(entriesQueryString(query));
     const apiQuery = $derived(entriesApiQuery(query, today));
-    const filtered = $derived(entriesFiltered(query));
+    const filtered = $derived(isFiltered(query));
+    const tabQuery = $derived(filtersQueryString(filtersOf(query)));
 
     const store = new EntriesStore();
     let accountsView = $state<AccountsView | null>(null);
@@ -81,12 +86,20 @@
     const customers = $derived(accountsView === null ? [] : customersOf(accountsView));
     const notSetUp = $derived(store.error instanceof EditorApiError && store.error.code === "not-set-up");
 
+    // The URL changes only once a navigation lands, so a second `[` pressed
+    // before then would step from the old period. `pending` is the query the
+    // last navigation is heading to; steps and choices build on it.
+    let pending: EntriesQuery | null = null;
+    const current = (): EntriesQuery => pending ?? query;
+
     function setQuery(next: EntriesQuery, options: {replace: boolean} = {replace: false}): void {
         const qs = entriesQueryString(next);
-        if (qs === queryString) return;
-        const base = resolve("/time/entries");
+        if (qs === entriesQueryString(current())) return;
+        pending = next;
         // eslint-disable-next-line svelte/no-navigation-without-resolve -- the path is resolve()d; only the query is added
-        void goto(qs === "" ? base : `${base}?${qs}`, {replace: options.replace, reset: false});
+        void Promise.resolve(goto(withQuery(resolve("/time/entries"), qs), {replace: options.replace, reset: false})).finally(() => {
+            if (pending === next) pending = null;
+        });
     }
 
     // ---- Views
@@ -237,11 +250,32 @@
     const setWeek = (date: string): void => setQuery({...query, week: mondayOf(date) === mondayOf(today) ? "" : mondayOf(date)});
     const setGroup = (group: Grouping): void => setQuery({...query, group});
 
+    /** `[`/`]`: the week in the grid, else the period (All time doesn't step). */
+    function step(direction: -1 | 1): void {
+        const from = current();
+        if (from.group === "week") {
+            const monday = addDays(shownWeek(from, today), 7 * direction);
+            setQuery({...from, week: monday === mondayOf(today) ? "" : monday});
+        } else setQuery(stepPeriod(from, today, direction));
+    }
+    const canStep = (): boolean => current().group === "week" || !isAllTime(current());
+
+    /** The dates shown, for the line under the period. */
+    const rangeLine = $derived.by(() => {
+        const r = shownRange(query, today);
+        if (r.from !== null && r.to !== null) return rangeText(r.from, r.to);
+        if (r.from !== null) return `From ${dayMonthYear(r.from)}`;
+        if (r.to !== null) return `To ${dayMonthYear(r.to)}`;
+        return "All time";
+    });
+
     // ---- Keys
     registerKeys({
         id: "time-entries-page",
         priority: PRIORITY.page,
         bindings: [
+            {keys: "[", label: "Previous period", group: "Time", enabled: canStep, run: () => step(-1)},
+            {keys: "]", label: "Next period", group: "Time", enabled: canStep, run: () => step(1)},
             {keys: "a", label: "Add time", group: "Time entries", enabled: () => store.list !== null && !adding, run: startAdd},
             {keys: "b", label: "Bill the picked time…", group: "Time entries", enabled: () => picked.length > 0 && billing === null, run: billPicked},
             {
@@ -263,36 +297,45 @@
 </svelte:head>
 
 <div class="mx-auto flex max-w-6xl flex-col gap-4">
-    <div class="flex flex-wrap items-center justify-between gap-2">
-        <h1 class="text-2xl font-semibold tracking-tight">Time entries</h1>
-        <div class="flex flex-wrap items-center gap-2">
-            <div class="join" role="group" aria-label="Show">
-                {#each ["day", "week", "account"] as const as group (group)}
-                    <button
-                        type="button"
-                        class={["btn join-item btn-sm", query.group === group ? "btn-active" : "btn-ghost"]}
-                        aria-pressed={query.group === group}
-                        onclick={() => setGroup(group)}
-                        data-testid="entries-group-{group}">{GROUP_LABELS[group]}</button
-                    >
-                {/each}
-            </div>
+    <TimeTabs current="entries" overviewHref={withQuery(resolve("/time"), tabQuery)} entriesHref={`${page.url.pathname}${page.url.search}`}>
+        {#snippet actions()}
             {#if store.list !== null && query.group !== "week"}
                 <button type="button" class="btn btn-primary btn-sm" onclick={startAdd} disabled={adding} data-testid="entries-add">Add time</button>
             {/if}
-        </div>
-    </div>
+        {/snippet}
+    </TimeTabs>
 
     {#if !notSetUp}
-        <EntryFilters
+        <TimeFilterBar
             {query}
-            {today}
-            people={[...store.people]}
+            range={resolveRange(query, today)}
+            people={[...store.people].sort()}
             {customers}
             {accounts}
-            onChange={setQuery}
-            onClear={() => setQuery(clearEntriesFilters(query))}
-        />
+            showPeriod={query.group !== "week"}
+            onChange={(next, options) => setQuery({...query, ...next}, options)}
+            onStep={isAllTime(query) ? null : step}
+            onClear={() => setQuery(clearFilters(query))}
+        >
+            {#snippet options()}
+                <div class="join" role="group" aria-label="Show">
+                    {#each ["day", "week", "account"] as const as group (group)}
+                        <button
+                            type="button"
+                            class={["btn join-item btn-sm", query.group === group ? "btn-active" : "btn-ghost"]}
+                            aria-pressed={query.group === group}
+                            onclick={() => setGroup(group)}
+                            data-testid="entries-group-{group}">{GROUP_LABELS[group]}</button
+                        >
+                    {/each}
+                </div>
+            {/snippet}
+            {#snippet status()}
+                {#if query.group !== "week"}
+                    <p class="text-sm text-base-content/70" data-testid="entries-range">{rangeLine}</p>
+                {/if}
+            {/snippet}
+        </TimeFilterBar>
     {/if}
 
     {#if query.group === "week"}
@@ -362,7 +405,7 @@
                 {:else if list.entries.length === 0 && filtered}
                     <div class="rounded-box border border-base-300 px-4 py-8 text-center" data-testid="entries-no-match">
                         <p class="text-base-content/70">No time matches these filters.</p>
-                        <button type="button" class="btn mt-3 btn-outline btn-sm" onclick={() => setQuery(clearEntriesFilters(query))}>Clear filters</button>
+                        <button type="button" class="btn mt-3 btn-outline btn-sm" onclick={() => setQuery(clearFilters(query))}>Clear filters</button>
                     </div>
                 {:else if list.entries.length === 0}
                     {#if !adding}

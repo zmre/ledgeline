@@ -1,8 +1,9 @@
-// Time tracking's dashboard end to end (plan 46 T-dash): the figures for
-// the time fixture's October against September, the URL as the filter
-// bar's state (a filter is a URL, Back undoes it, `[`/`]` step the period),
-// every figure a link into Entries with the same filters, the hledger
-// command in each (i), and the tree's own toggles.
+// Time tracking's dashboard (Time → Overview) end to end (plan 46 T-dash):
+// the figures for the time fixture's October against September, the URL as
+// the shared filter bar's state (a filter is a URL, Back undoes it, `[`/`]`
+// step the period), every figure a link into Entries with the same
+// filters, the Overview/Entries tabs keeping them, the hledger command in
+// each (i), and the tree's own toggles.
 //
 // Its own server, shared with time-track.e2e.ts: `--server` on :5194 over
 // a scratch copy of invoicer/fixtures/time (TIME_SERVER_URL/TIME_COPY in
@@ -76,21 +77,21 @@ test.describe("time dashboard", () => {
 
     test("filters live in the URL: a choice is a step, Back undoes it, [ and ] step the period", async ({page}) => {
         await open(page, `?${OCTOBER}`);
-        await page.getByTestId("time-dash-billable").selectOption("yes");
+        await page.getByTestId("time-filter-billable").selectOption("yes");
         await expect(page).toHaveURL(/billable=yes/);
         await expect(page.getByTestId("tile-total-value")).toHaveText("8h 15m");
         await page.goBack();
         await expect(page).not.toHaveURL(/billable=/);
         await expect(page.getByTestId("tile-total-value")).toHaveText("9h");
 
-        // `/` focuses the account filter; typing narrows after a pause.
+        // `/` focuses the search (notes and account names); typing narrows after a pause.
         await page.keyboard.press("/");
-        await expect(page.getByTestId("time-dash-account")).toBeFocused();
+        await expect(page.getByTestId("time-filter-search")).toBeFocused();
         await page.keyboard.type("internal");
-        await expect(page).toHaveURL(/account=internal/);
+        await expect(page).toHaveURL(/q=internal/);
         await expect(page.getByTestId("tile-total-value")).toHaveText("45m");
         await page.keyboard.press("Escape");
-        await expect(page).not.toHaveURL(/account=/);
+        await expect(page).not.toHaveURL(/q=/);
         await page.keyboard.press("Escape");
 
         // October's next is November: this month, the default, so a bare URL.
@@ -107,5 +108,25 @@ test.describe("time dashboard", () => {
         await expect(page.getByTestId("tile-unbilled-value")).toHaveAttribute("href", `/app/time/entries?${OCTOBER}&customer=Acme+Corp&billed=unbilled`);
         await page.getByTestId("tile-total-value").click();
         await expect(page).toHaveURL(new RegExp(`/app/time/entries\\?${OCTOBER}&customer=Acme\\+Corp`));
+    });
+
+    test("the Overview and Entries tabs share the filters, and `[` steps on both", async ({page}) => {
+        await open(page, `?${OCTOBER}&customer=Acme+Corp&depth=3`);
+        await expect(page.getByTestId("time-tab-overview")).toHaveAttribute("aria-current", "page");
+        // The filters go across; Overview's depth stays behind.
+        await page.getByTestId("time-tab-entries").click();
+        await expect(page).toHaveURL(new RegExp(`/app/time/entries\\?${OCTOBER}&customer=Acme\\+Corp`));
+        await expect(page).not.toHaveURL(/depth=/);
+        await expect(page.getByTestId("time-tab-entries")).toHaveAttribute("aria-current", "page");
+        await expect(page.getByTestId("time-filter-customer")).toHaveValue("Acme Corp");
+        await page.getByTestId("time-filter-billable").selectOption("yes");
+        await expect(page).toHaveURL(/billable=yes/);
+        await page.getByTestId("time-filter-billable").blur();
+        await page.keyboard.press("[");
+        await expect(page).toHaveURL(/from=2026-09-01&to=2026-09-30/);
+        await page.getByTestId("time-tab-overview").click();
+        await expect(page).toHaveURL(/\/app\/time\?from=2026-09-01&to=2026-09-30&customer=Acme\+Corp&billable=yes/);
+        await expect(page.getByTestId("time-dashboard")).toBeVisible();
+        await expect(page.getByTestId("time-filter-billable")).toHaveValue("yes");
     });
 });

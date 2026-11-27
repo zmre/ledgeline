@@ -7,7 +7,8 @@ import DashboardBody from "./DashboardBody.svelte";
 import {META, NOVEMBER, NOVEMBER_NOTES, OCTOBER, OCTOBER_NOTES} from "./fixtures.js";
 import type {DashMeta} from "./meta.js";
 import {factsOf} from "./model.js";
-import {DEFAULT_QUERY, presetRange, previousRange, type DashQuery} from "./query.js";
+import {presetRange, previousRange} from "../filters/query.js";
+import {DEFAULT_QUERY, type DashQuery} from "./query.js";
 
 const range = presetRange("this-month", "2026-11-26");
 
@@ -37,10 +38,9 @@ describe("COMPONENT time dashboard figures", () => {
         expect(screen.getByTestId("tile-average-value").textContent).toBe("1h 12m");
         expect(screen.getByTestId("tile-days-value").textContent).toBe("7 of 19");
         expect(screen.getByTestId("tile-days-delta").textContent).toContain("+5");
-        expect(screen.getByTestId("tile-total-value").getAttribute("href")).toBe("/app/time/entries?from=2026-11-01&to=2026-11-30&person=pat");
-        expect(screen.getByTestId("tile-unbilled-value").getAttribute("href")).toBe(
-            "/app/time/entries?from=2026-11-01&to=2026-11-30&person=pat&billed=unbilled"
-        );
+        // This month goes across as This month, so Entries steps from it too.
+        expect(screen.getByTestId("tile-total-value").getAttribute("href")).toBe("/app/time/entries?person=pat");
+        expect(screen.getByTestId("tile-unbilled-value").getAttribute("href")).toBe("/app/time/entries?person=pat&billed=unbilled");
     });
 
     it("gives every figure its hledger command (the (i) tooltips, portalled to the body)", () => {
@@ -112,7 +112,7 @@ describe("COMPONENT time dashboard figures", () => {
         mount({depth: 3});
         const accounts = screen.getAllByTestId("time-dash-top-accounts-item");
         expect(accounts[0].dataset.key).toBe("clients:globex:audit");
-        expect(accounts[0].querySelector("a")?.getAttribute("href")).toBe("/app/time/entries?from=2026-11-01&to=2026-11-30&account=clients%3Aglobex%3Aaudit");
+        expect(accounts[0].querySelector("a")?.getAttribute("href")).toBe("/app/time/entries?account=clients%3Aglobex%3Aaudit");
         const customers = screen.getAllByTestId("time-dash-top-customers-item");
         expect(customers.at(-1)?.textContent).toContain("No customer");
         expect(customers.at(-1)?.querySelector("a")).toBeNull();

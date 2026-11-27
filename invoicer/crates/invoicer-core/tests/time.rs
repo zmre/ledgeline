@@ -678,6 +678,7 @@ fn summaries_group_cut_rank_and_series() {
             depth: Some(2),
             top: Some(2),
             series: report::interval("week"),
+            ..SummaryQuery::default()
         },
     );
     assert_eq!(top.rows.len(), 2);
@@ -738,6 +739,56 @@ fn summaries_group_by_note_and_by_many_parts() {
     let seconds: i64 = facts.rows.iter().map(|r| r.quantity.seconds).sum();
     assert_eq!(seconds, facts.total.seconds);
     assert_eq!(facts.total, notes.total);
+}
+
+#[test]
+fn summaries_take_entries_billing_and_search_filters() {
+    let books = books();
+    let book = books.time().require().expect("book");
+    let november = || Filter {
+        period: entries::period(Some("2026-11-01"), Some("2026-11-30")),
+        ..Filter::default()
+    };
+    let total = |billed: Option<&str>, q: Option<&str>| {
+        report::summary(
+            &book,
+            &SummaryQuery {
+                filter: november(),
+                billed,
+                q,
+                ..SummaryQuery::default()
+            },
+        )
+        .total
+        .seconds
+    };
+    let list = |billed: Option<&str>, q: Option<&str>| {
+        let listed = entries::list(
+            &book,
+            &EntryQuery {
+                from: Some("2026-11-01".into()),
+                to: Some("2026-11-30".into()),
+                billed: billed.map(str::to_string),
+                q: q.map(str::to_string),
+                ..EntryQuery::default()
+            },
+            &Locks::default(),
+        );
+        listed.total.seconds
+    };
+    // Each filter narrows, and matches Entries' list for the same filters.
+    let all = total(None, None);
+    for (billed, q) in [
+        (Some("unbilled"), None),
+        (Some("not-billable"), None),
+        (None, Some("email")),
+        (None, Some("ACME")),
+    ] {
+        let narrowed = total(billed, q);
+        assert!(narrowed < all, "{billed:?} {q:?}");
+        assert_eq!(narrowed, list(billed, q), "{billed:?} {q:?}");
+    }
+    assert_eq!(total(None, Some("email")), 240);
 }
 
 #[test]

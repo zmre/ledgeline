@@ -67,23 +67,53 @@ describe("COMPONENT TimeDashboard", () => {
     });
 
     it("writes a filter into the URL, keeping the others", async () => {
-        nav.url = new URL("http://localhost/app/time?period=ytd");
+        nav.url = new URL("http://localhost/app/time?period=last-year&depth=3");
         render(TimeDashboard, props);
-        await waitFor(() => screen.getByTestId("time-dash-billable"));
-        await fireEvent.change(screen.getByTestId("time-dash-billable"), {target: {value: "yes"}});
-        expect(nav.goto).toHaveBeenLastCalledWith("/app/time?period=ytd&billable=yes", {replace: false, reset: false});
-        await fireEvent.change(screen.getByTestId("time-dash-person"), {target: {value: "sam"}});
-        expect(nav.goto).toHaveBeenLastCalledWith("/app/time?period=ytd&person=sam", {replace: false, reset: false});
+        await waitFor(() => screen.getByTestId("time-filter-billable"));
+        await fireEvent.change(screen.getByTestId("time-filter-billable"), {target: {value: "yes"}});
+        expect(nav.goto).toHaveBeenLastCalledWith("/app/time?period=last-year&billable=yes&depth=3", {replace: false, reset: false});
+        await fireEvent.change(screen.getByTestId("time-filter-person"), {target: {value: "sam"}});
+        expect(nav.goto).toHaveBeenLastCalledWith("/app/time?period=last-year&person=sam&depth=3", {replace: false, reset: false});
+        await fireEvent.change(screen.getByTestId("time-filter-billed"), {target: {value: "unbilled"}});
+        expect(nav.goto).toHaveBeenLastCalledWith("/app/time?period=last-year&billed=unbilled&depth=3", {replace: false, reset: false});
+    });
+
+    it("shows Overview and Entries as tabs, Entries' carrying the filters but not the view options", async () => {
+        nav.url = new URL("http://localhost/app/time?period=last-month&customer=Globex&q=email&depth=3&split=person");
+        render(TimeDashboard, props);
+        const overview = await screen.findByTestId("time-tab-overview");
+        expect(overview.getAttribute("aria-current")).toBe("page");
+        const entries = screen.getByTestId("time-tab-entries");
+        expect(entries.getAttribute("aria-current")).toBeNull();
+        expect(entries.getAttribute("href")).toBe("/app/time/entries?period=last-month&customer=Globex&q=email");
+        // The search and billing state reach the summary too.
+        await waitFor(() => expect(api.summary).toHaveBeenCalledWith(expect.objectContaining({customer: "Globex", q: "email"})));
+    });
+
+    it("reads an old Year to date link as This year, and All time from the first month with time", async () => {
+        nav.url = new URL("http://localhost/app/time?period=ytd");
+        const first = render(TimeDashboard, props);
+        await waitFor(() => expect((screen.getByTestId("time-filter-period") as HTMLSelectElement).value).toBe("this-year"));
+        first.unmount();
+        api.summary.mockClear();
+        nav.url = new URL("http://localhost/app/time?period=all");
+        render(TimeDashboard, props);
+        // META's first month is September; All time has nothing to compare with.
+        await waitFor(() => expect(api.summary).toHaveBeenCalledTimes(2));
+        expect(api.summary).toHaveBeenCalledWith(expect.objectContaining({from: "2026-09-01", to: "2026-11-26"}));
+        expect((screen.getByTestId("time-dash-compare") as HTMLInputElement).disabled).toBe(true);
+        await press("[");
+        expect(nav.goto).not.toHaveBeenCalled();
     });
 
     it("steps the period with [ and ] and the arrows beside it", async () => {
         render(TimeDashboard, props);
-        await waitFor(() => screen.getByTestId("time-dash-period"));
+        await waitFor(() => screen.getByTestId("time-filter-period"));
         await press("[");
         expect(nav.goto).toHaveBeenLastCalledWith("/app/time?period=last-month", expect.anything());
         await press("]");
         expect(nav.goto).toHaveBeenLastCalledWith("/app/time?from=2026-12-01&to=2026-12-31", expect.anything());
-        await fireEvent.click(screen.getByTestId("time-dash-prev"));
+        await fireEvent.click(screen.getByTestId("time-filter-prev"));
         expect(nav.goto).toHaveBeenLastCalledWith("/app/time?period=last-month", expect.anything());
     });
 
@@ -91,7 +121,7 @@ describe("COMPONENT TimeDashboard", () => {
         // A navigation that hasn't landed yet: the URL still says this month.
         nav.goto.mockReturnValue(new Promise(() => {}));
         render(TimeDashboard, props);
-        await waitFor(() => screen.getByTestId("time-dash-period"));
+        await waitFor(() => screen.getByTestId("time-filter-period"));
         await press("[");
         await press("[");
         expect(nav.goto).toHaveBeenLastCalledWith("/app/time?from=2026-09-01&to=2026-09-30", expect.anything());
@@ -99,8 +129,8 @@ describe("COMPONENT TimeDashboard", () => {
 
     it("offers custom dates when Custom is picked", async () => {
         render(TimeDashboard, props);
-        await waitFor(() => screen.getByTestId("time-dash-period"));
-        await fireEvent.change(screen.getByTestId("time-dash-period"), {target: {value: "custom"}});
+        await waitFor(() => screen.getByTestId("time-filter-period"));
+        await fireEvent.change(screen.getByTestId("time-filter-period"), {target: {value: "custom"}});
         expect(nav.goto).toHaveBeenLastCalledWith("/app/time?from=2026-11-01&to=2026-11-30", expect.anything());
     });
 

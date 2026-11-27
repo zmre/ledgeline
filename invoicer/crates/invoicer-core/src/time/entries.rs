@@ -197,6 +197,13 @@ pub struct FindingView {
     pub message: String,
 }
 
+/// Whether `needle` (lower case) is in the entry's note or account: the
+/// search of Entries and of the summary.
+#[must_use]
+pub fn has_text(entry: &TimeEntry, needle: &str) -> bool {
+    entry.note.to_lowercase().contains(needle) || entry.account.to_lowercase().contains(needle)
+}
+
 /// The entries `query` keeps.
 #[must_use]
 pub fn list(book: &TimeBook, query: &EntryQuery, locks: &Locks) -> EntryList {
@@ -228,10 +235,9 @@ pub fn list(book: &TimeBook, query: &EntryQuery, locks: &Locks) -> EntryList {
                 .is_none_or(|n| entry.tag(&book.tags, TagRole::Bill) == Some(n))
         })
         .filter(|(_, entry)| {
-            needle.as_deref().is_none_or(|needle| {
-                entry.note.to_lowercase().contains(needle)
-                    || entry.account.to_lowercase().contains(needle)
-            })
+            needle
+                .as_deref()
+                .is_none_or(|needle| has_text(entry, needle))
         })
         .map(|(_, entry)| EntryView::of(book, entry, locks))
         .collect();

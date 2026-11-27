@@ -1,5 +1,6 @@
-<!-- Time's home (plan 46 T-dash, W1–W3): the time dashboard. The component
-     renders its own heading and width; this route only mounts it. -->
+<!-- Time's home (plan 46 T-dash, W1–W3): the Overview tab, the time
+     dashboard. The component renders the Time heading, its tabs and its
+     width; this route only mounts it. -->
 <script lang="ts">
     import {resolve} from "$app/paths";
     import TimeDashboard from "#lib/time/dashboard/TimeDashboard.svelte";

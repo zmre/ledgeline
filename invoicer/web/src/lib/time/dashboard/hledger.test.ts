@@ -67,4 +67,13 @@ describe("UNIT time dashboard hledger commands", () => {
         });
         expect(totalCommand(F, NOV, {...DEFAULT_QUERY, person: "-"}).text).toContain("not:tag:person");
     });
+
+    it("says billing states as tags where it can, and flags the rest and the search", () => {
+        expect(totalCommand(F, NOV, {...DEFAULT_QUERY, billed: "invoiced"})).toEqual({text: "hledger -f time.journal bal -p 2026-11 tag:invoice --depth 0"});
+        expect(totalCommand(F, NOV, {...DEFAULT_QUERY, billed: "unbilled"}).caveat).toContain("billing filter");
+        expect(totalCommand(F, NOV, {...DEFAULT_QUERY, q: "email"})).toMatchObject({
+            text: "hledger -f time.journal bal -p 2026-11 --depth 0",
+            caveat: expect.stringContaining("leaves out the search"),
+        });
+    });
 });

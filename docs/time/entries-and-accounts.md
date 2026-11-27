@@ -11,7 +11,7 @@ Track is for the clock. **Entries** is for everything else you do with time: add
 
 ## Entries
 
-**Time → Entries** (<kbd>g</kbd> <kbd>e</kbd>) lists every line of time in the period, from every file the roll-up includes, whoever wrote it. Three buttons choose the view:
+**Entries**, the second tab of **Time** (<kbd>g</kbd> <kbd>e</kbd>), lists every line of time in the period, from every file the roll-up includes, whoever wrote it. Three buttons at the end of the filter bar's period row choose the view:
 
 | View           | Shows                                                                                       |
 |----------------|---------------------------------------------------------------------------------------------|
@@ -21,7 +21,7 @@ Track is for the clock. **Entries** is for everything else you do with time: add
 
 The columns are **Date**, **Person**, **Account**, **Hours**, **Note**, **Billing** and **File**. Billing says **Unbilled**, **Not billable**, **Invoice 108** (a link to it), **Bill …** or **Not billed**, with the reason if one was given. File gives the file and line the entry is on, so you can find it in an editor. Person and File drop out in a narrow window.
 
-The filters above the list narrow it by period, person, customer, billable, and billing state, and **Search** matches notes and account names. They're kept in the address, so the [overview](dashboard.md) can link straight to a filtered list, and Back returns to the previous filter.
+The filter bar above the list is the one the [Overview](dashboard.md#filters) tab has: period, search, person, customer, billable, billing state and account. Switching between the tabs keeps the filters. They're kept in the address, so the overview links straight to a filtered list, and Back returns to the previous filter. In **Week**, the grid picks its own week, so the period is hidden.
 
 ### Adding time
 
@@ -82,6 +82,7 @@ Above the list, Entries warns about:
 | <kbd>x</kbd>                | Tick the line under the cursor             |
 | <kbd>b</kbd>                | Bill the ticked lines                      |
 | <kbd>Esc</kbd>              | Untick every line                          |
+| <kbd>[</kbd> / <kbd>]</kbd> | Previous / next period (week, in Week)     |
 | <kbd>/</kbd>                | Search                                     |
 
 ## Accounts

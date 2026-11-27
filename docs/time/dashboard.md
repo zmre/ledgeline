@@ -7,30 +7,41 @@ tags: [invoicer, time]
 
 # Time overview
 
-The overview shows where your time went, whether you bill it or not. Open it with **Time → Overview** or <kbd>g</kbd> <kbd>w</kbd>.
+The overview shows where your time went, whether you bill it or not. Open it with **Time** in the sidebar, or <kbd>g</kbd> <kbd>w</kbd>.
 
-Every figure links to the [Entries](entries-and-accounts.md#entries) behind it, with the same filters. Every figure also has an info tip with the `hledger` command that prints the same number, so you can check it, or take it into a script.
+**Time** has two tabs: **Overview**, this page, and [Entries](entries-and-accounts.md#entries) (<kbd>g</kbd> <kbd>e</kbd>), the lines behind it. Both share one filter bar, and switching tabs keeps the filters.
+
+Every figure links to the entries behind it, with the same filters. Every figure also has an info tip with the `hledger` command that prints the same number, so you can check it, or take it into a script.
 
 ## Filters
 
-The bar at the top sets what every figure on the page counts:
+The bar at the top sets what every figure counts, and on Entries, which lines are listed:
 
-| Filter                     | Choices                                                                                          |
-|----------------------------|--------------------------------------------------------------------------------------------------|
-| **Period**                 | This week, Last week, This month, Last month, This quarter, Year to date, Last 12 months, or Custom… with a From and To date. ‹ and › step to the period before or after. |
-| **Compare with previous**  | On by default. Each figure shows its change against the period before, of the same length.       |
-| **Person**                 | Everyone, one person, or Unattributed (time with no person). Hidden when only one person has time. |
-| **Customer**               | Any customer, or one.                                                                            |
-| **Billable**               | All time, Billable, or Non-billable.                                                             |
-| **Depth**                  | How many levels of the account tree to show.                                                     |
-| **Account**                | An account and everything under it, such as `clients:acme`.                                      |
+| Filter       | Choices                                                                                          |
+|--------------|--------------------------------------------------------------------------------------------------|
+| **Period**   | This week, Last week, This month, Last month, This quarter, This year, Last year, Last 12 months, All time, or Custom… with a From and To date. ‹ and › step to the period before or after. |
+| **Search**   | Text in the note or the account name.                                                            |
+| **Person**   | Everyone, one person, or No one named (time with no person). Hidden when only one person has time. |
+| **Customer** | Any customer, or one.                                                                            |
+| **Billable** | Either, Billable, or Not billable.                                                               |
+| **Billing**  | Any, Unbilled, On an invoice, Not billed (written off), Not billable, or Invoiced or written off. |
+| **Account**  | An account and everything under it, such as `clients:acme`.                                      |
 
-The filters are kept in the address. A link, a reload and Back all land on the same view. **Clear filters** resets them.
+Each tab adds its own view options at the end of the period row. The overview's are:
+
+| Option                     | Does                                                                                    |
+|----------------------------|-----------------------------------------------------------------------------------------|
+| **Compare with previous**  | On by default. Each figure shows its change against the period before, of the same length. Off for All time. |
+| **Depth**                  | How many levels of the account tree to show.                                            |
+
+All time runs from the first month with any time to today.
+
+The filters are kept in the address. A link, a reload and Back all land on the same view. **Clear filters** resets them, and keeps the period. Switching tabs keeps the filters but not the other tab's view options.
 
 | Keys                        | Does                         |
 |-----------------------------|------------------------------|
 | <kbd>[</kbd> / <kbd>]</kbd> | Previous / next period       |
-| <kbd>/</kbd>                | Go to the Account filter     |
+| <kbd>/</kbd>                | Go to Search                 |
 
 ## The page
 
@@ -71,7 +82,7 @@ The tips give commands like these. Run them from your books folder, where `time.
 | Top people                     | `hledger -f time.journal bal -p 2026-11 --pivot person -S`                                      |
 | Most frequent notes            | `hledger -f time.journal print -p 2026-11`                                                     |
 
-The filters add query terms: `^clients:acme(:|$)` for an account, `'tag:customer=Acme Corp'` for a customer, `tag:person=pat` for a person.
+The filters add query terms: `^clients:acme(:|$)` for an account, `'tag:customer=Acme Corp'` for a customer, `tag:person=pat` for a person, `tag:invoice` for time on an invoice and `tag:nobill` for time written off. The other billing states and Search have no single hledger query, so the command leaves them out, and its tip says so.
 
 On the [sample time books](https://github.com/zmre/ledgeline/tree/main/invoicer/fixtures/time), the billable split for November reads:
 

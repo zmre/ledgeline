@@ -41,6 +41,8 @@ describe("UNIT time dashboard meta", () => {
         expect(meta.billableCustomers).toBe(true);
         expect(meta.anyTime).toBe(true);
         expect(meta.weeklyTarget).toBe(30);
+        expect(meta.firstDay).toBeNull();
+        expect(metaOf(STATE, accounts, people, ["2025-03", "2026-11"]).firstDay).toBe("2025-03-01");
     });
 
     it("has no Unbilled tile without a billable account that names a customer", () => {
