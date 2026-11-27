@@ -72,6 +72,15 @@ async function open(page: Page, path: string): Promise<void> {
     await expect(page).toHaveURL(new RegExp(`/app${path}$`));
 }
 
+// The server's clock is real: just after midnight, a timer moved back a step
+// starts yesterday, and the long-running guard rightly asks about it. That
+// isn't what these steps test, so keep the timer whenever it asks.
+test.beforeEach(async ({page}) => {
+    await page.addLocatorHandler(page.getByTestId("time-guard"), async () => {
+        await page.getByTestId("time-guard-keep").click();
+    });
+});
+
 test.beforeAll(async ({request}) => {
     const saved = await request.patch(`${TIME_SERVER_URL}/api/ui-prefs`, {
         headers: {Authorization: `Bearer ${API_TOKEN}`},

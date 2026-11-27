@@ -55,7 +55,7 @@ The filters are kept in the address. A link, a reload and Back all land on the s
 
 **Hours over time** is a stacked bar chart, one bar per day, week or month. The page picks the bar size from the period's length (days up to a month, weeks up to about six months, months beyond), and the **Day**, **Week** and **Month** buttons change it. **Split by** colours each bar by top-level account, customer, person, or billable. With a weekly target set (`weekly-target` in [Settings](formats.md#settings)), **Target** draws it as a line. **Table** under the chart lists the same numbers.
 
-**The account tree** shows **Hours**, **Share** of the total, **Billable** hours and the **Change** at each level, rolled up from the levels below, to the depth in the filter bar. Unfold or fold any branch on its own, and **Reset to depth N** goes back.
+**The account tree** shows **Hours**, **Share** of the total, **Billable** hours and the **Change** at each level, rolled up from the levels below, to the depth in the filter bar. Unfold or fold any branch on its own, and **Reset to depth N** goes back. It lists only accounts with time in the period, so a large chart of accounts shows just what you worked on. A line under the table counts what it left out, including accounts that had time only in the previous period; their hours still count in their parents' **Change**.
 
 **The top lists** show the ten biggest of each, the rest summed as **Other**, each with its change:
 

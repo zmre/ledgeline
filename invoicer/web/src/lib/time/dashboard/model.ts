@@ -450,6 +450,34 @@ export function treeOf(current: readonly Fact[], previous: readonly Fact[] = [])
     return roots;
 }
 
+/** The tree without the accounts that had no time this period. */
+export interface TimedTree {
+    roots: TreeNode[];
+    /** Subtrees left out (each counted once, at its top). */
+    hidden: number;
+    /** Their previous period's hours. */
+    hiddenPrevious: number;
+}
+
+/**
+ * The tree to show: only the accounts with time this period. A large chart
+ * of accounts shows just what was worked on. An account with time only in
+ * the previous period, or only `0m` lines, is left out with everything
+ * below it; its previous hours still count in its parents' change.
+ */
+export function withTime(roots: readonly TreeNode[]): TimedTree {
+    let hidden = 0;
+    let hiddenPrevious = 0;
+    const keep = (list: readonly TreeNode[]): TreeNode[] =>
+        list.flatMap((node) => {
+            if (node.seconds > 0) return [{...node, children: keep(node.children)}];
+            hidden++;
+            hiddenPrevious += node.previous;
+            return [];
+        });
+    return {roots: keep(roots), hidden, hiddenPrevious};
+}
+
 export interface TreeRow {
     node: TreeNode;
     expandable: boolean;

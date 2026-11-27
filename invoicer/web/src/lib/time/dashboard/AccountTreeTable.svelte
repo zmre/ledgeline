@@ -1,5 +1,6 @@
 <!-- The account tree (plan 46 T-dash; `hledger bal --tree`): every account
-     with roll-ups at each level. Columns: hours, % of the period's total,
+     with roll-ups at each level, only those with time this period (a
+     footnote says how many were left out). Columns: hours, % of the period's total,
      billable hours and, with comparison on, the change against the
      previous period. Rows show to the filter bar's depth; each row's toggle
      opens it below that depth or closes it above, and "Reset" returns to
@@ -18,6 +19,8 @@
 
     let {
         roots,
+        hidden = 0,
+        hiddenPrevious = 0,
         depth,
         total,
         compare,
@@ -25,6 +28,10 @@
         accountHref,
     }: {
         roots: TreeNode[];
+        /** Accounts left out for having no time this period (`withTime`). */
+        hidden?: number;
+        /** Their previous period's seconds, said with comparison on. */
+        hiddenPrevious?: number;
         depth: number;
         /** The period's total, for the share column. */
         total: number;
@@ -116,5 +123,12 @@
                 </tbody>
             </table>
         </div>
+    {/if}
+    {#if hidden > 0}
+        <p class="text-xs text-base-content/60" data-testid="time-dash-tree-hidden">
+            Not shown: {hidden === 1 ? "1 account" : `${hidden} accounts`} with no time in this period{compare && hiddenPrevious > 0
+                ? ` (${duration(hiddenPrevious)} in the previous one)`
+                : ""}.
+        </p>
     {/if}
 </section>

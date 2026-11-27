@@ -27,7 +27,7 @@
         unbilledCommand,
     } from "./hledger.js";
     import type {DashMeta} from "./meta.js";
-    import {accountsAt, byCustomer, byPerson, chartOf, kpisOf, notesOf, splitDrill, splitLabel, topOf, treeOf, type Fact} from "./model.js";
+    import {accountsAt, byCustomer, byPerson, chartOf, kpisOf, notesOf, splitDrill, splitLabel, topOf, treeOf, withTime, type Fact} from "./model.js";
     import {withQuery, type Range} from "../filters/query.js";
     import {entriesQuery, grainOf, type DashQuery, type Drill, type Split} from "./query.js";
 
@@ -72,7 +72,7 @@
         billable: () => [],
     };
     const chart = $derived(chartOf(current, range, grain, query.split, ORDER[query.split](meta)));
-    const tree = $derived(treeOf(current, prior ?? []));
+    const tree = $derived(withTime(treeOf(current, prior ?? [])));
 
     const onePerson = $derived(meta.people.length <= 1 || query.person !== "");
     const topAccounts = $derived(
@@ -124,7 +124,9 @@
     />
 
     <AccountTreeTable
-        roots={tree}
+        roots={tree.roots}
+        hidden={tree.hidden}
+        hiddenPrevious={tree.hiddenPrevious}
         depth={query.depth}
         total={kpis.total}
         {compare}

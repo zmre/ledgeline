@@ -97,7 +97,7 @@
                     {#each link.counts ?? [] as count (count.id)}
                         <!-- The words are for screen readers and the tooltip; a leading space Svelte would trim from markup. -->
                         <span
-                            class={count.tone === "error" ? "badge badge-sm tabular-nums badge-error" : "text-xs opacity-60 tabular-nums"}
+                            class={count.tone === "error" ? "badge badge-sm tabular-nums badge-error" : "text-xs tabular-nums opacity-60"}
                             title="{count.value} {count.label}"
                             data-testid="sidebar-{link.id}-{count.id}">{count.value}<span class="sr-only">{` ${count.label}`}</span></span
                         >

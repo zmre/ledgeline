@@ -102,7 +102,9 @@ describe("COMPONENT time dashboard figures", () => {
         await fireEvent.click(screen.getByRole("button", {name: "Expand clients:acme"}));
         expect(accounts()).toContain("clients:acme:tax-return");
         await fireEvent.click(screen.getByRole("button", {name: "Collapse clients"}));
-        expect(accounts()).toEqual(["clients", "internal", "internal:admin", "internal:old", "internal:training"]);
+        // internal:training had time only last period: left out, and said so.
+        expect(accounts()).toEqual(["clients", "internal", "internal:admin", "internal:old"]);
+        expect(screen.getByTestId("time-dash-tree-hidden").textContent).toMatch(/Not shown: \d+ accounts? with no time in this period/);
         await fireEvent.click(screen.getByTestId("time-dash-tree-reset"));
         expect(accounts()).toContain("clients:globex");
         expect(accounts()).not.toContain("clients:acme:tax-return");

@@ -15,6 +15,7 @@ import {
     slotsFor,
     topOf,
     treeOf,
+    withTime,
     visibleRows,
 } from "./model.js";
 import {presetRange, previousRange} from "../filters/query.js";
@@ -185,6 +186,27 @@ describe("UNIT time dashboard account tree", () => {
         const closed = visibleRows(tree, 2, new Set(["clients"]));
         expect(closed.map((r) => r.node.account)).toEqual(["clients", "internal", "internal:admin", "internal:old", "internal:training"]);
         expect(visibleRows(tree, 1, new Set()).map((r) => r.node.account)).toEqual(["clients", "internal"]);
+    });
+});
+
+describe("UNIT time dashboard account tree, only accounts with time", () => {
+    it("leaves out each subtree with no time this period, counting it once", () => {
+        const {roots, hidden, hiddenPrevious} = withTime(treeOf(nov, oct));
+        const clients = roots.find((n) => n.account === "clients");
+        expect(clients?.children.map((n) => n.account)).not.toContain("clients:initech");
+        expect(hidden).toBeGreaterThanOrEqual(1);
+        expect(hiddenPrevious).toBeGreaterThanOrEqual(40 * 60);
+        // The parent's change still counts it.
+        expect(clients?.previous).toBe(495 * 60);
+        const shown = (list: typeof roots): boolean => list.every((n) => n.seconds > 0 && shown(n.children));
+        expect(shown(roots)).toBe(true);
+    });
+
+    it("drops an account whose only lines are 0m, and its empty parent", () => {
+        const zero = {...nov[0], account: "admin:idle:waiting", seconds: 0, billable: false};
+        const {roots, hidden} = withTime(treeOf([...nov, zero]));
+        expect(roots.map((n) => n.account)).not.toContain("admin");
+        expect(hidden).toBe(1);
     });
 });
 
