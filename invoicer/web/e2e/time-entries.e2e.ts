@@ -81,7 +81,7 @@ test("`a` adds a line to Pat's month file; Enter edits it, refusing a tag in the
     await add.getByTestId("entry-add-note").press("Enter");
     await expect(add).toHaveCount(0);
     await expect(row(page, "expense reports")).toHaveCount(1);
-    expect(read(PAT_NOVEMBER)).toMatch(/internal:admin\s+90m\s+; expense reports/);
+    await expect.poll(() => read(PAT_NOVEMBER)).toMatch(/internal:admin\s+90m\s+; expense reports/);
 
     // Enter on the cursored line edits it in place.
     await row(page, "expense reports").getByTestId("entry-edit").focus();
@@ -95,7 +95,7 @@ test("`a` adds a line to Pat's month file; Enter edits it, refusing a tag in the
     await expect(edit.getByTestId("entry-edit-form-note")).toHaveValue("re expense reports");
     await edit.getByTestId("entry-edit-form-save").click();
     await expect(edit).toHaveCount(0);
-    expect(read(PAT_NOVEMBER)).toContain("; re expense reports");
+    await expect.poll(() => read(PAT_NOVEMBER)).toContain("; re expense reports");
 });
 
 test("picked lines are written off in bulk, then one is deleted", async ({page}) => {
@@ -112,13 +112,13 @@ test("picked lines are written off in bulk, then one is deleted", async ({page})
     await page.getByTestId("bulk-reason").press("Enter");
     await expect(page.getByTestId("bulk-bar")).toHaveCount(0);
     await expect(emails.getByTestId("entry-billing").first()).toHaveText("Not billed: courtesy");
-    expect(read(PAT_NOVEMBER).match(/nobill: courtesy/g)).toHaveLength(2);
+    await expect.poll(() => read(PAT_NOVEMBER).match(/nobill: courtesy/g)?.length ?? 0).toBe(2);
 
     await open(page, "/time/entries?person=pat&q=expense");
     await page.getByTestId("entry-row").getByTestId("entry-delete").click();
     await page.getByTestId("entry-delete-dialog-confirm").click();
     await expect(page.getByTestId("entry-row")).toHaveCount(0);
-    expect(read(PAT_NOVEMBER)).not.toContain("expense reports");
+    await expect.poll(() => read(PAT_NOVEMBER)).not.toContain("expense reports");
 });
 
 test("a week-grid cell writes the difference on the day's open line", async ({page}) => {
@@ -128,7 +128,8 @@ test("a week-grid cell writes the difference on the day's open line", async ({pa
     await cell.fill("2h");
     await cell.press("Enter");
     await expect(cell).toHaveValue("2h");
-    expect(read(PAT_NOVEMBER)).toMatch(/clients:acme:advisory\s+(120m|2h)\s+; call with Fred about the K-1/);
+    // The cell shows the typed total at once; the file write follows it.
+    await expect.poll(() => read(PAT_NOVEMBER)).toMatch(/clients:acme:advisory\s+(120m|2h)\s+; call with Fred about the K-1/);
 });
 
 test("Rename previews every changed line, then rewrites the files", async ({page}) => {
@@ -144,7 +145,7 @@ test("Rename previews every changed line, then rewrites the files", async ({page
     await dialog.getByTestId("account-rename-dialog-submit").click();
     await expect(dialog).toHaveCount(0);
     await expect(page.locator("[data-testid=account-row][data-account='internal:office']")).toHaveCount(1);
-    expect(read("time-accounts.journal")).toContain("account internal:office");
-    expect(read(PAT_NOVEMBER)).not.toContain("internal:admin");
-    expect(read("time/sam/2026-11.timedot")).toContain("internal:office");
+    await expect.poll(() => read("time-accounts.journal")).toContain("account internal:office");
+    await expect.poll(() => read(PAT_NOVEMBER)).not.toContain("internal:admin");
+    await expect.poll(() => read("time/sam/2026-11.timedot")).toContain("internal:office");
 });

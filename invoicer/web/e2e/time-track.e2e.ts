@@ -95,7 +95,7 @@ test("a digit starts a slot and the lamp lights; another switches", async ({page
     await expect(page.getByTestId("time-slot-2")).toHaveAttribute("aria-pressed", "false");
     await expect(lamp).toHaveAttribute("aria-label", /^Time tracking running: Globex · audit/);
     await expect.poll(() => read(trackFile())).toContain("running clients:globex:audit");
-    expect(read(trackFile())).not.toContain("running clients:acme:advisory");
+    await expect.poll(() => read(trackFile())).not.toContain("running clients:acme:advisory");
 });
 
 test("+ moves the running start back a step; . stops and banks it", async ({page}) => {
@@ -107,7 +107,7 @@ test("+ moves the running start back a step; . stops and banks it", async ({page
     await page.keyboard.press(".");
     await expect(page.getByTestId("time-lamp-stopped")).toHaveAttribute("aria-label", "Time tracking stopped. Resume Globex · audit");
     await expect.poll(() => read(trackFile())).toMatch(/clients:globex:audit\s+[56]m/);
-    expect(read(trackFile())).not.toContain("running clients:globex:audit");
+    await expect.poll(() => read(trackFile())).not.toContain("running clients:globex:audit");
 });
 
 test("n writes a note, warning about a word hledger would read as a tag", async ({page}) => {
