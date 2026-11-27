@@ -160,7 +160,9 @@
     {#if notSetUp}
         <EmptyState
             title="Time tracking isn't set up"
-            text="These books have no time files yet. Set up time tracking from Track in the sidebar, then your accounts show here."
+            text="These books have no time files yet. Set up time tracking, then your accounts show here."
+            action="Set up time tracking"
+            href={resolve("/time/track")}
             testid="accounts-not-set-up"
         />
     {:else}

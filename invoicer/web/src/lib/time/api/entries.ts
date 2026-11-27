@@ -10,15 +10,8 @@
 import {EditorApiError, send} from "#lib/editorApi.js";
 import {errorText} from "#lib/labels.js";
 
-/** A length of time as the server spells it. */
-export interface Qty {
-    /** Whole seconds. */
-    seconds: number;
-    /** Exact hours, as decimal text. */
-    hours: string;
-    /** For people: `1h 05m`, `45m`. */
-    text: string;
-}
+import type {Qty} from "../types.js";
+export type {Qty};
 
 /** Which billing state a line is in (B-states). */
 export type Billed = "unbilled" | "invoiced" | "nobill" | "not-billable";
