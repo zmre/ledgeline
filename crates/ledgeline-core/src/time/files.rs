@@ -261,7 +261,7 @@ impl TimeFiles {
             let path = writes
                 .iter()
                 .find(|w| files.get(&w.path).is_some_and(|s| s.dirty))
-                .map_or_else(|| VaultPath::root(), |w| w.path.clone());
+                .map_or_else(VaultPath::root, |w| w.path.clone());
             changed_on_disk(&path, error)
         })?;
         Ok(saved)

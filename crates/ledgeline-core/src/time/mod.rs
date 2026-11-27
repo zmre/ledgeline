@@ -158,10 +158,9 @@ impl TimeQty {
         Dec::new(self.0, 9).normalized()
     }
 
-    /// Minutes, exact when the duration is a whole number of milliseconds-ish
-    /// fractions of a minute that terminate in decimal (every timedot value);
-    /// otherwise rounded half away from zero to nine places (a timeclock
-    /// session of 20 s is 0.333333333 min).
+    /// Minutes: exact whenever the value terminates within nine decimal
+    /// places (every timedot quantity not in seconds does), otherwise rounded half away from
+    /// zero to nine places (a 20 s timeclock session is 0.333333333 min).
     #[must_use]
     pub fn minutes(self) -> Dec {
         Self::ratio(self.0, NANOS_PER_MINUTE)
