@@ -127,9 +127,24 @@ export function saveForm(number: string, form: EditorForm, revision: string, opt
     });
 }
 
-/** `POST /api/invoices/{num}/void`: the reversing entry (accrual), `status: void`. */
-export function voidInvoice(number: string, date: string): Promise<unknown> {
-    return send("POST", `/api/invoices/${num(number)}/void`, isObject, {date, today: localToday()});
+/** What a void or a draft's delete did to the invoice's time (plan 46 T10): lines released, or why not. */
+export interface TimeReleased {
+    released: number;
+    how?: "release" | "nobill";
+    error?: string;
+}
+
+/**
+ * `POST /api/invoices/{num}/void`: the reversing entry (accrual), `status: void`.
+ * Its time is released back to Unbilled (`release`, the default) or written off (`nobill`).
+ */
+export function voidInvoice(number: string, date: string, time: "release" | "nobill" = "release"): Promise<{time?: TimeReleased}> {
+    return send("POST", `/api/invoices/${num(number)}/void`, isObject, {date, time, today: localToday()});
+}
+
+/** `DELETE /api/invoices/{num}`: delete a draft (never a sent invoice) and release its time. */
+export function deleteDraft(number: string): Promise<{deleted: string; number: string | null; time: TimeReleased | null}> {
+    return send("DELETE", `/api/invoices/${num(number)}`, (b) => isObject(b) && typeof b.deleted === "string");
 }
 
 /** `POST /api/invoices/{num}/rebook`: replace its transaction with what the file now says. */
