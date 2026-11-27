@@ -136,7 +136,7 @@ Without the include, give hledger both files when you want both: `hledger -f boo
 
 `hledger -s` checks that every account and commodity is declared. The roll-up declares `commodity ""` for timedot hours, and `time-accounts.journal` declares the accounts. Two things can still fail the check:
 
-- **Timeclock files.** Their hours are in the commodity `h`, which the roll-up doesn't declare. If you have any, add `commodity h` to `time.journal`.
+- **Timeclock files.** Their hours are in the commodity `h`. Setup declares it when the tracker writes timeclock, and the invoicer adds `commodity h` when it first writes a timeclock file the roll-up doesn't include yet. A roll-up of your own may not declare it: `ledgeline-invoicer time setup --adopt FILE` lists the `commodity` lines it lacks.
 - **An account that has time but isn't declared.** Declare it on the [Accounts](entries-and-accounts.md#undeclared-accounts) page, or add an `account` line by hand.
 
 ```sh

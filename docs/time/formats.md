@@ -50,6 +50,17 @@ Any timedot hledger reads, the invoicer reads too:
 
 Date lines can be written `2026-11-26`, `2026/11/26` or `2026.11.26`, and org-mode `*` headings around them are fine. A line starting with `#` or `;` is a comment.
 
+An **indented `;` line** right under a date line or an entry continues that line's comment, as in hledger. Its text adds to the note, and its tags count:
+
+```timedot
+2026-11-26 Thu
+    ; person: pat
+    clients:acme:advisory  30m
+    ; invoice: 108
+```
+
+Here the first `;` line puts `person: pat` on the whole day, and the second bills the entry on invoice 108. Several indented `;` lines in a row all continue the same line. The run ends at a blank line, a `;` line that isn't indented, or any `#` line. An indented `;` line after that is a plain comment, and so is every `#` line, indented or not.
+
 The invoicer keeps exact time: `20m` is 20 minutes, not 0.33 hours.
 
 ## Timeclock
@@ -84,7 +95,7 @@ These are the rules the invoicer follows when it writes, and the ones to follow 
 - **Two spaces or more** between the account and the amount.
 - **No tabs**, and no spaces inside a number.
 - **No `mo` or `y` units.** Write `30d`, or hours.
-- **Tags and notes on the entry's own line**, after `;`.
+- **Tags and notes on the entry's own line**, after `;`. The invoicer reads indented `;` lines under an entry, but writes its own tags on the entry's line.
 - **A note can't contain `;`, a line break, or a word followed by a colon.** A `;` starts a new comment, and hledger reads `re: K-1` as a tag named `re`. Write `re K-1`, or `10.30` for a time of day. The app's note field warns and offers that rewording.
 - **Account names** can't contain `;`, a tab or two spaces in a row, and can't start with `*`, `#`, `(`, `[` or something that looks like a date.
 
@@ -103,15 +114,12 @@ These lines don't mean what they seem to in hledger 1.52. The invoicer never wri
 
 The rounding is why hledger's totals can be off by a few hundredths of an hour from the invoicer's: three `2m` lines are 0.09 hours in hledger and 0.10 in the invoicer. Invoices never use hledger's figure.
 
-> [!CAUTION]
-> In hledger 1.52, an indented `;` line under an entry attaches to that entry: `; invoice: 108` on the line after `clients:acme  30m` tags it. The invoicer reads an indented line as a plain comment, so the two would disagree on whether the time is billed. Keep tags on the entry's own line. An indented `#` line, hledger ignores.
-
 A few more facts about how hledger reads these files:
 
 - A timedot or timeclock file can't hold directives such as `account` or `commodity`. The roll-up journal that includes it can.
 - `include` needs the extension (`.timedot`, `.timeclock`) or a `timedot:` / `timeclock:` prefix. Globs work, `**` included: `include time/**/*.timedot`.
 - In timeclock, the same account clocked in twice at once is an error. Two sessions open on different accounts are fine. A session over midnight is split at 00:00.
-- With hledger's strict mode (`-s`), the roll-up must declare `commodity ""` and every account, and `commodity h` too if you have timeclock files. The roll-up setup writes declares `commodity ""` only. See [Strict mode](hledger.md#strict-mode).
+- With hledger's strict mode (`-s`), the roll-up must declare `commodity ""` and every account, and `commodity h` too if you have timeclock files. See [Strict mode](hledger.md#strict-mode).
 
 ## Settings
 

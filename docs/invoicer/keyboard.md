@@ -52,6 +52,7 @@ The text size keys work from inside a field too, and over a dialog. The desktop 
 | <kbd>g</kbd> <kbd>e</kbd> | Time entries |
 | <kbd>g</kbd> <kbd>r</kbd> | Track     |
 | <kbd>g</kbd> <kbd>a</kbd> | Time accounts |
+| <kbd>g</kbd> <kbd>u</kbd> | Unbilled time |
 | <kbd>g</kbd> <kbd>,</kbd> | Settings  |
 
 Time tracking also has keys that work on every screen, such as <kbd>Option</kbd>+<kbd>Cmd</kbd>+<kbd>1</kbd> to start slot 1, and keys of its own on each page. See [Tracking time](../time/tracking.md#keys-on-every-screen) and [Entries and accounts](../time/entries-and-accounts.md).

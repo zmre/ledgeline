@@ -13,7 +13,7 @@ Time is not money, so the hours stay out of your journal. They sit under their o
 
 ## Where it lives
 
-Time tracking is the **Time** group in the Invoicer's sidebar, with four pages:
+Time tracking is the **Time** group in the Invoicer's sidebar, with five pages:
 
 | Page      | What it is for                                                                                                     | Keys                      |
 |-----------|--------------------------------------------------------------------------------------------------------------------|---------------------------|
@@ -21,6 +21,7 @@ Time tracking is the **Time** group in the Invoicer's sidebar, with four pages:
 | Entries   | Every line of time, by day, by week or by account, to add, change and correct. See [Entries and accounts](entries-and-accounts.md). | <kbd>g</kbd> <kbd>e</kbd> |
 | Track     | Ten slots, one key each, to start and stop the clock. See [Tracking time](tracking.md).                          | <kbd>g</kbd> <kbd>r</kbd> |
 | Accounts  | The time account tree: which customer each bills, whether it's billable, what it bills as. See [Entries and accounts](entries-and-accounts.md#accounts). | <kbd>g</kbd> <kbd>a</kbd> |
+| Unbilled  | Time to bill, by customer, and contractor time to pay. Its link shows how many customers have unbilled time. See [Billing time](billing.md). | <kbd>g</kbd> <kbd>u</kbd> |
 
 Track is <kbd>g</kbd> <kbd>r</kbd> (r for recording) because <kbd>g</kbd> <kbd>t</kbd> already goes to Templates.
 

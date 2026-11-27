@@ -67,7 +67,7 @@ The sidebar has six sections, and a **Time** group below them:
 | Catalog   | Products and services you bill often, with their rate and the account each one books to.          |
 | Snippets  | Reusable text such as payment instructions and terms, copied into an invoice when you insert one. |
 | Templates | How invoices look on screen and on paper. See [Templates](templates.md).                          |
-| Time      | Time tracking: Dashboard, Entries, Track and Accounts. See [Time tracking](../time/index.md).     |
+| Time      | Time tracking: Dashboard, Entries, Track, Accounts and Unbilled. See [Time tracking](../time/index.md).     |
 
 **Settings**, at the foot of the sidebar, holds these books' settings and the appearance. <kbd>g</kbd> <kbd>,</kbd> or <kbd>Cmd</kbd>+<kbd>,</kbd> opens it too. See [Settings](settings.md).
 

@@ -44,7 +44,7 @@ The line goes under its date in the month's tracker file, which is created if it
 
 **Delete** takes the line out of its file, after you confirm.
 
-A line on a sent invoice, or on a contractor's bill, is **read-only**. Its Billing cell has a **read-only** badge, and Edit explains why, with a link to the invoice. To change it, void the invoice, or release its time (see [Billing time](billing.md#releasing-time)). A line on a draft invoice can still be changed.
+A line on a sent invoice, or on a contractor's bill, is **read-only**. Its Billing cell has a **read-only** badge, and Edit explains why. For an invoice it links to the invoice: void it to change the line (see [Releasing time](billing.md#releasing-time)). For a bill it offers **Void bill and release time…** (see [Voiding a bill](billing.md#voiding-a-bill)). A line on a draft invoice can still be changed.
 
 ### Changing many lines at once
 
@@ -56,6 +56,7 @@ Tick the box at the start of each line, or press <kbd>x</kbd> on the line under 
 | **Mark not billable…**  | Adds `nobill:`, with a reason if you give one. The time leaves Unbilled.                      |
 | **Move to account…**    | Moves the lines to another account.                                                          |
 | **Set person…**         | Sets who did the work. Leave it empty for no one.                                            |
+| **Bill…**               | Bills the picked lines on an invoice draft. They must be one customer's unbilled time. See [Billing time](billing.md#billing-a-customer). <kbd>b</kbd> does the same. |
 | **Clear**               | Unticks them all. <kbd>Esc</kbd> does the same.                                              |
 
 ### The weekly grid
@@ -79,6 +80,7 @@ Above the list, Entries warns about:
 | <kbd>j</kbd> / <kbd>k</kbd> | Move the cursor down / up                  |
 | <kbd>Enter</kbd>            | Edit the line under the cursor             |
 | <kbd>x</kbd>                | Tick the line under the cursor             |
+| <kbd>b</kbd>                | Bill the ticked lines                      |
 | <kbd>Esc</kbd>              | Untick every line                          |
 | <kbd>/</kbd>                | Search                                     |
 
