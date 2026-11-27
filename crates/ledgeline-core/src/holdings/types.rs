@@ -48,6 +48,25 @@ pub struct HoldingsScope {
     /// caller knows better: the `/api/holdings` `valueIn` query param, or the
     /// journal's own `D` default-commodity directive.
     pub value_in: Option<Commodity>,
+    /// The holdings filter (plan 47 D6): which ROWS the report counts, empty =
+    /// every row. Keyed by the row identity of the engine reading the scope —
+    /// commodity symbols for the Stocks engine ([`super::compute_holdings`],
+    /// the series and the benchmark flows), row accounts for the Other engine
+    /// ([`super::other_holdings`]) — mirroring the SPA's one `holdings` set,
+    /// which holds whichever the open tab is keyed by.
+    ///
+    /// It narrows what is COUNTED, never how it is valued: the valuation base
+    /// is still chosen from the whole account scope, so a filtered total is
+    /// always a part of the unfiltered one, in the same commodity.
+    pub selection: BTreeSet<String>,
+}
+
+impl HoldingsScope {
+    /// Whether the [`selection`](Self::selection) keeps the row keyed `key`.
+    #[must_use]
+    pub fn selects(&self, key: &str) -> bool {
+        self.selection.is_empty() || self.selection.contains(key)
+    }
 }
 
 /// Where a holding's price came from.

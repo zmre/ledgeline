@@ -1446,6 +1446,7 @@ pub fn journal_to_stock_diagnostics(journal: &Journal) -> Vec<WireDiagnostic> {
         as_of: STOCK_DIAGNOSTICS_AS_OF.to_string(),
         gain_since: None,
         value_in: None,
+        selection: Default::default(),
     };
     let Ok(report) = compute_holdings(
         &journal.transactions,

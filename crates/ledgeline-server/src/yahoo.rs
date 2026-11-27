@@ -77,6 +77,23 @@ pub struct FetchedPrice {
     pub quantity: Dec,
 }
 
+/// One delayed market quote (plan 47 D11): what the chart endpoint's `meta`
+/// says the instrument last traded at — `regularMarketPrice` at
+/// `regularMarketTime`. Held in memory only (`intraday::QuoteCache`), never
+/// written to any journal. `pub` for the same reason as [`FetchedPrice`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct MarketQuote {
+    /// Per-unit price, in `currency`.
+    pub price: Dec,
+    /// When it traded, Unix seconds.
+    pub time: i64,
+    /// The EXCHANGE's calendar date for `time` (its `gmtoffset` applied), so a
+    /// 3pm New York quote read in Tokyo is still that day's.
+    pub date: String,
+    /// The quote's ISO currency (`USD`), when Yahoo says.
+    pub currency: Option<String>,
+}
+
 /// A failure fetching or decoding a quote. Distinct from "fetched fine but no
 /// usable candle" (that is `Ok(None)`) — this is a transport/shape failure, and
 /// the caller reports it as `fetch-error` rather than `not-found`. `pub` for
@@ -125,6 +142,35 @@ pub trait PriceFeed: Send + Sync {
     /// never the number of requests.
     async fn daily_closes(&self, ticker: &str, from: &str)
     -> Result<Vec<FetchedPrice>, YahooError>;
+
+    /// [`Self::latest_close`], plus the market quote the same reply carried
+    /// in its `meta` — so a close fetch refreshes the intraday cache for free
+    /// (plan 47 D11). The default answers no quote, which is all a source
+    /// without one (every test fake that predates it) can say.
+    async fn latest_close_and_quote(
+        &self,
+        ticker: &str,
+        as_of: &str,
+    ) -> Result<(Option<FetchedPrice>, Option<MarketQuote>), YahooError> {
+        Ok((self.latest_close(ticker, as_of).await?, None))
+    }
+
+    /// [`Self::daily_closes`], plus the reply's market quote; see
+    /// [`Self::latest_close_and_quote`].
+    async fn daily_closes_and_quote(
+        &self,
+        ticker: &str,
+        from: &str,
+    ) -> Result<(Vec<FetchedPrice>, Option<MarketQuote>), YahooError> {
+        Ok((self.daily_closes(ticker, from).await?, None))
+    }
+
+    /// The latest delayed quote for `ticker` alone — `POST /api/prices/intraday`.
+    /// `Ok(None)` when the reply had none (an unknown ticker), and by default.
+    async fn market_quote(&self, ticker: &str) -> Result<Option<MarketQuote>, YahooError> {
+        let _ = ticker;
+        Ok(None)
+    }
 }
 
 /// The real Yahoo Finance chart endpoint.
@@ -145,7 +191,7 @@ impl PriceFeed for YahooClient {
         ticker: &str,
         as_of: &str,
     ) -> Result<Option<FetchedPrice>, YahooError> {
-        fetch_latest_close(&self.client, ticker, as_of).await
+        Ok(fetch_latest_close(&self.client, ticker, as_of).await?.0)
     }
 
     async fn daily_closes(
@@ -153,7 +199,30 @@ impl PriceFeed for YahooClient {
         ticker: &str,
         from: &str,
     ) -> Result<Vec<FetchedPrice>, YahooError> {
+        Ok(fetch_daily_closes(&self.client, ticker, from).await?.0)
+    }
+
+    async fn latest_close_and_quote(
+        &self,
+        ticker: &str,
+        as_of: &str,
+    ) -> Result<(Option<FetchedPrice>, Option<MarketQuote>), YahooError> {
+        fetch_latest_close(&self.client, ticker, as_of).await
+    }
+
+    async fn daily_closes_and_quote(
+        &self,
+        ticker: &str,
+        from: &str,
+    ) -> Result<(Vec<FetchedPrice>, Option<MarketQuote>), YahooError> {
         fetch_daily_closes(&self.client, ticker, from).await
+    }
+
+    async fn market_quote(&self, ticker: &str) -> Result<Option<MarketQuote>, YahooError> {
+        // The smallest reply that carries `meta`: one day of daily candles.
+        let bytes =
+            send_chart(&self.client, ticker, &[("interval", "1d"), ("range", "1d")]).await?;
+        parse_chart_quote(bytes.as_ref())
     }
 }
 
@@ -186,9 +255,12 @@ async fn fetch_latest_close(
     client: &reqwest::Client,
     ticker: &str,
     as_of: &str,
-) -> Result<Option<FetchedPrice>, YahooError> {
+) -> Result<(Option<FetchedPrice>, Option<MarketQuote>), YahooError> {
     let bytes = send_chart(client, ticker, &[("interval", "1d"), ("range", RANGE)]).await?;
-    parse_chart_response(bytes.as_ref(), as_of, now_seconds())
+    Ok((
+        parse_chart_response(bytes.as_ref(), as_of, now_seconds())?,
+        parse_chart_quote(bytes.as_ref())?,
+    ))
 }
 
 /// GET the chart endpoint for `ticker`'s daily candles from `from` until now,
@@ -202,7 +274,7 @@ async fn fetch_daily_closes(
     client: &reqwest::Client,
     ticker: &str,
     from: &str,
-) -> Result<Vec<FetchedPrice>, YahooError> {
+) -> Result<(Vec<FetchedPrice>, Option<MarketQuote>), YahooError> {
     let now = now_seconds();
     let period1 = (days_from_iso(from) * SECONDS_PER_DAY).to_string();
     let period2 = (now + SECONDS_PER_DAY).to_string();
@@ -216,7 +288,10 @@ async fn fetch_daily_closes(
         ],
     )
     .await?;
-    parse_chart_closes(bytes.as_ref(), now)
+    Ok((
+        parse_chart_closes(bytes.as_ref(), now)?,
+        parse_chart_quote(bytes.as_ref())?,
+    ))
 }
 
 const SECONDS_PER_DAY: i64 = 86_400;
@@ -340,6 +415,17 @@ pub(crate) struct ChartMeta {
     /// the day's close. See [`parse_chart_closes`].
     #[serde(default, rename = "currentTradingPeriod")]
     pub(crate) current_trading_period: Option<TradingPeriods>,
+    /// The last trade's price — during the session a delayed intraday quote,
+    /// after it the close. Plan 47's intraday valuation reads it
+    /// ([`parse_chart_quote`]); nothing ever records it as a close.
+    #[serde(default, rename = "regularMarketPrice")]
+    pub(crate) regular_market_price: Option<f64>,
+    /// When [`Self::regular_market_price`] traded, Unix seconds.
+    #[serde(default, rename = "regularMarketTime")]
+    pub(crate) regular_market_time: Option<i64>,
+    /// The instrument's trading currency, e.g. `USD`.
+    #[serde(default)]
+    pub(crate) currency: Option<String>,
 }
 
 /// `meta.currentTradingPeriod`: `pre`, `regular` and `post` sessions. Only the
@@ -456,6 +542,44 @@ pub(crate) fn parse_chart_closes(bytes: &[u8], now: i64) -> Result<Vec<FetchedPr
             Ok(FetchedPrice { date, quantity })
         })
         .collect()
+}
+
+/// The market quote in a chart response's `meta`, or `None` when it carries
+/// no usable price and time (an unknown ticker's `result: null`, a
+/// non-finite or non-positive price).
+///
+/// # Errors
+/// [`YahooError::Shape`] for a body that is not the chart shape at all.
+pub(crate) fn parse_chart_quote(bytes: &[u8]) -> Result<Option<MarketQuote>, YahooError> {
+    let parsed: ChartResponse =
+        serde_json::from_slice(bytes).map_err(|error| YahooError::Shape(error.to_string()))?;
+    let Some(meta) = parsed
+        .chart
+        .result
+        .into_iter()
+        .flatten()
+        .next()
+        .map(|result| result.meta)
+    else {
+        return Ok(None);
+    };
+    let (Some(price), Some(time)) = (meta.regular_market_price, meta.regular_market_time) else {
+        return Ok(None);
+    };
+    if !price.is_finite() || price <= 0.0 {
+        return Ok(None);
+    }
+    // An unparseable float (an exponent form) is no quote, not a failed fetch:
+    // the closes beside it may be perfectly good.
+    let Ok(price) = Dec::parse(&price.to_string(), '.') else {
+        return Ok(None);
+    };
+    Ok(Some(MarketQuote {
+        price,
+        time,
+        date: date_from_timestamp(time, meta.gmtoffset.unwrap_or(0)),
+        currency: meta.currency.filter(|currency| !currency.trim().is_empty()),
+    }))
 }
 
 /// A Unix timestamp, shifted by an exchange's UTC offset, as an ISO calendar
@@ -739,6 +863,30 @@ mod tests {
         assert!(closes.len() > 200, "a year of closes");
         let closes = parse_chart_closes(SPY_1Y, 1_790_625_600).unwrap();
         assert_eq!(closes.last().map(|p| p.date.as_str()), Some("2026-09-28"));
+    }
+
+    /// The saved reply's `meta` is a mid-session quote, dated by the exchange.
+    #[test]
+    fn the_market_quote_comes_from_meta() {
+        const SPY_1Y: &[u8] = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/yahoo/chart_SPY_1y_1d.json"
+        ));
+        let quote = parse_chart_quote(SPY_1Y)
+            .unwrap()
+            .expect("meta carries a quote");
+        assert_eq!(quote.price, Dec::parse("766.29", '.').unwrap());
+        assert_eq!(quote.time, 1_790_612_371);
+        assert_eq!(quote.date, "2026-09-28");
+        assert_eq!(quote.currency.as_deref(), Some("USD"));
+    }
+
+    #[test]
+    fn no_price_or_an_unknown_ticker_is_no_quote() {
+        let unknown = br#"{"chart":{"result":null,"error":null}}"#;
+        assert_eq!(parse_chart_quote(unknown).unwrap(), None);
+        let priceless = body("1", "1.0", "0");
+        assert_eq!(parse_chart_quote(priceless.as_bytes()).unwrap(), None);
     }
 
     /// Garbage in the body is a `Shape` error, not a panic or a silent `None`.

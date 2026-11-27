@@ -157,6 +157,7 @@ pub fn scope(as_of: &str, mode: ScopeMode, accounts: &[&str]) -> HoldingsScope {
         as_of: as_of.to_string(),
         gain_since: None,
         value_in: None,
+        selection: Default::default(),
     }
 }
 
