@@ -104,6 +104,7 @@ export const META: DashMeta = {
     maxDepth: 3,
     billableCustomers: true,
     anyTime: true,
+    firstDay: "2026-09-01",
     branchOrder: ["clients", "internal"],
     customerOrder: ["Globex", "Acme Corp", "Initech Inc"],
 };

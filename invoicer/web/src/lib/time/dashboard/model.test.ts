@@ -17,7 +17,7 @@ import {
     treeOf,
     visibleRows,
 } from "./model.js";
-import {presetRange, previousRange} from "./query.js";
+import {presetRange, previousRange} from "../filters/query.js";
 
 const TODAY = "2026-11-26";
 const nov = factsOf(NOVEMBER);

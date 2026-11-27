@@ -24,7 +24,8 @@ import {
     weekdayName,
     workingDays,
 } from "../dates.js";
-import type {Drill, Grain, Range, Split} from "./query.js";
+import type {Range} from "../filters/query.js";
+import type {Drill, Grain, Split} from "./query.js";
 
 /** The fact table's grouping, in this order. */
 export const FACT_GROUPS: readonly SummaryGroup[] = ["account", "customer", "person", "billable", "billed", "day"];

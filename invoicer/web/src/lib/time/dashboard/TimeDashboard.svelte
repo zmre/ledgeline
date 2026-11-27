@@ -1,21 +1,26 @@
-<!-- Time tracking's dashboard (plan 46 T-dash): where the time went, for
-     anyone tracking time, invoicing or not. The filter bar's state is the
-     URL's (`query.ts`), so a reload, a link and Back/Forward land on the same
-     page, and every figure drills into Entries with the same filters.
+<!-- Time → Overview (plan 46 T-dash): where the time went, for anyone
+     tracking time, invoicing or not. The first of the Time area's two tabs
+     (`TimeTabs`), with Entries; both share one filter bar (`TimeFilterBar`,
+     `../filters/query.ts`), so a tab switch keeps the filters. The bar's
+     state is the URL's (`query.ts`), so a reload, a link and Back/Forward
+     land on the same page, and every figure drills into Entries with the
+     same filters.
 
      Data, per period: one `GET /api/time/summary` grouped into a fact table
      (account, customer, person, billable, billed, day) and one grouped by
      note, for the period and, with comparison on, the one before it: four
      requests at once, nothing more when the split, grain, depth or target
      change. Once per visit (and after a file changes): the state, the
-     accounts and everyone's hours (`meta.ts`). Only the latest request's
+     accounts and everyone's hours by month (`meta.ts`; All time starts at
+     the first). Only the latest request's
      answer is shown; while the next one loads, the figures stay on screen,
      dimmed (dataviz: refetch keeps the frame).
 
      Before setup, and with no time yet, the page points at Track.
 
      Keys (the page's layer, in the `?` sheet's Time group): `[` and `]`
-     step the period; `/` focuses the account filter (the app's search key).
+     step the period (not All time); `/` focuses the search (the app's
+     search key).
 
      Mount it on the dashboard route with the resolved links it needs:
          <TimeDashboard entriesBase={resolve("/time/entries")} trackHref={resolve("/time/track")} /> -->
@@ -31,11 +36,14 @@
     import EmptyState from "#lib/components/EmptyState.svelte";
     import {localToday} from "#lib/invoices.js";
     import {fetchSummary, type Summary} from "../api/summary.js";
+    import {rangeText} from "../dates.js";
+    import {clearFilters, filtersOf, filtersQueryString, isAllTime, previousRange, resolveRange, stepPeriod, withQuery, type Range} from "../filters/query.js";
+    import TimeFilterBar from "../filters/TimeFilterBar.svelte";
+    import TimeTabs from "../filters/TimeTabs.svelte";
     import DashboardBody from "./DashboardBody.svelte";
-    import DashFilters from "./DashFilters.svelte";
     import {fetchDashMeta, type DashMeta} from "./meta.js";
     import {FACT_GROUPS, factsOf, type Fact} from "./model.js";
-    import {apiFilter, clearFilters, dashQueryString, parseDashQuery, previousRange, resolveRange, stepPeriod, type DashQuery, type Range} from "./query.js";
+    import {apiFilter, dashQueryString, parseDashQuery, type DashQuery} from "./query.js";
 
     let {
         entriesBase,
@@ -50,12 +58,15 @@
         today?: string;
     } = $props();
 
-    const query = $derived(parseDashQuery(page.url.searchParams));
-    const range = $derived(resolveRange(query, today));
-    const previous = $derived<Range | null>(query.compare ? previousRange(range) : null);
-
     // ── The meta: once, and again after a change on disk ────────────────
     let meta = $state<DashMeta | null>(null);
+
+    const query = $derived(parseDashQuery(page.url.searchParams));
+    const allTime = $derived(isAllTime(query));
+    const range = $derived(resolveRange(query, today, meta?.firstDay ?? null));
+    /** All time has no period before it. */
+    const previous = $derived<Range | null>(query.compare && !allTime ? previousRange(range) : null);
+    const tabQuery = $derived(filtersQueryString(filtersOf(query)));
     let metaError = $state<Error | null>(null);
     let metaSeq = 0;
     function loadMeta(): void {
@@ -163,8 +174,8 @@
         id: "time-dashboard",
         priority: PRIORITY.page,
         bindings: [
-            {keys: "[", label: "Previous period", group: "Time", run: () => step(-1)},
-            {keys: "]", label: "Next period", group: "Time", run: () => step(1)},
+            {keys: "[", label: "Previous period", group: "Time", enabled: () => !isAllTime(current()), run: () => step(-1)},
+            {keys: "]", label: "Next period", group: "Time", enabled: () => !isAllTime(current()), run: () => step(1)},
         ],
     });
 
@@ -181,7 +192,7 @@
 {#snippet nothing()}{/snippet}
 
 <div class="@container mx-auto flex max-w-6xl flex-col gap-4" data-testid="time-dashboard">
-    <h1 class="text-2xl font-semibold tracking-tight">Time</h1>
+    <TimeTabs current="overview" overviewHref={`${page.url.pathname}${page.url.search}`} entriesHref={withQuery(entriesBase, tabQuery)} />
     {#if metaError !== null || meta === null}
         <AsyncSection
             view={metaError !== null ? "error" : "loading"}
@@ -211,7 +222,50 @@
         />
     {:else}
         {@const known = meta}
-        <DashFilters {query} meta={known} {range} {previous} onChange={navigate} onStep={step} onClear={() => navigate(clearFilters(query))} />
+        {@const depths = Array.from({length: Math.max(known.maxDepth, query.depth)}, (_, i) => i + 1)}
+        <TimeFilterBar
+            {query}
+            {range}
+            people={known.people}
+            customers={known.customers}
+            accounts={known.accounts}
+            onChange={(next, options) => navigate({...query, ...next}, options)}
+            onStep={allTime ? null : step}
+            onClear={() => navigate(clearFilters(query))}
+        >
+            {#snippet options()}
+                <label class="flex items-center gap-2 self-end pb-1 text-sm">
+                    <input
+                        type="checkbox"
+                        class="checkbox checkbox-sm"
+                        checked={query.compare && !allTime}
+                        disabled={allTime}
+                        onchange={(event) => navigate({...query, compare: event.currentTarget.checked})}
+                        data-testid="time-dash-compare"
+                    />
+                    Compare with previous
+                </label>
+                <label class="flex min-w-0 basis-24 flex-col gap-1 text-sm"
+                    >Depth
+                    <select
+                        class="select w-full select-sm"
+                        value={String(query.depth)}
+                        onchange={(event) => navigate({...query, depth: Number(event.currentTarget.value)})}
+                        data-testid="time-dash-depth"
+                    >
+                        {#each depths as depth (depth)}
+                            <option value={String(depth)}>{depth}</option>
+                        {/each}
+                    </select>
+                </label>
+            {/snippet}
+            {#snippet status()}
+                <p class="text-sm text-base-content/70" data-testid="time-dash-range">
+                    {`${rangeText(range.from, range.end)}${range.end !== range.to ? " so far" : ""}`}
+                    {#if previous !== null}<span class="text-base-content/60">{` · compared with ${rangeText(previous.from, previous.to)}`}</span>{/if}
+                </p>
+            {/snippet}
+        </TimeFilterBar>
         <AsyncSection
             {view}
             value={figures}

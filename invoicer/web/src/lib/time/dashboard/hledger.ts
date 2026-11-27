@@ -11,8 +11,12 @@
 //     tree; elsewhere it falls back to the query, with a caveat.
 //   - hledger knows a person only from a `person:` tag; time the Invoicer
 //     attributes by its folder (`time/sam/…`) carries none.
+// The search (`q`, text in the note or account) and the billing states
+// other than "on an invoice" and "written off" have no hledger query of
+// their own here; the commands leave them out and say so.
 import {addDays, isMonthEnd, isMonthStart} from "../dates.js";
-import {UNATTRIBUTED, type DashQuery, type Grain, type Range, type Split} from "./query.js";
+import {UNATTRIBUTED, type Range} from "../filters/query.js";
+import type {DashQuery, Grain, Split} from "./query.js";
 
 export interface Command {
     /** One line, shell-quoted. */
@@ -24,6 +28,11 @@ export interface Command {
 const BILLABLE_CAVEAT =
     "hledger's tag:billable query matches the tag on any parent account, so an account marked billable: no under a billable one counts as both.";
 const PERSON_CAVEAT = "hledger sees a person only where a person: tag is written; time filed under a person's folder without one isn't counted.";
+const BILLED_CAVEAT = "The command leaves out the billing filter, which hledger can't say in one query.";
+const SEARCH_CAVEAT = "The command leaves out the search, which looks in the notes and account names.";
+
+/** The billing states hledger can say with a tag query. */
+const BILLED_TAGS: Partial<Record<string, string>> = {invoiced: "tag:invoice", nobill: "tag:nobill"};
 
 /** A shell word: as is when safe, else single-quoted. */
 export function shellWord(word: string): string {
@@ -70,6 +79,12 @@ function filters(query: DashQuery, shape: Shape): Built {
             caveats.push(BILLABLE_CAVEAT);
         }
     }
+    if (query.billed !== "") {
+        const tag = BILLED_TAGS[query.billed];
+        if (tag === undefined) caveats.push(BILLED_CAVEAT);
+        else args.push(tag);
+    }
+    if (query.q.trim() !== "") caveats.push(SEARCH_CAVEAT);
     return {args, caveats};
 }
 

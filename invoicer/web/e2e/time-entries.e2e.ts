@@ -51,6 +51,8 @@ const row = (page: Page, note: string) => page.getByTestId("entry-row").filter({
 
 test("the month's timesheet, by day, with every line", async ({page}) => {
     await open(page, "/time/entries");
+    await expect(page.getByTestId("time-tab-entries")).toHaveAttribute("aria-current", "page");
+    await expect(page.getByTestId("entries-range")).toHaveText("Nov 1 – 30, 2026");
     await expect(page.getByTestId("entries-count")).toContainText("15 entries");
     await expect(page.getByTestId("entry-group").first()).toHaveAttribute("data-key", "2026-11-26");
     await expect(row(page, "call with Fred about the K-1").getByTestId("entry-billing")).toHaveText("Unbilled");

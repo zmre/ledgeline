@@ -61,7 +61,39 @@ describe("COMPONENT time pages", () => {
         await waitFor(() => expect(api.entries).toHaveBeenCalledWith("from=2026-10-01&to=2026-10-31&customer=Acme+Corp&billed=unbilled"));
         expect((await screen.findAllByTestId("entry-row")).length).toBe(2);
         expect(screen.getByTestId("entries-count").textContent).toContain("2 entries");
-        expect((screen.getByTestId("entry-filter-period") as HTMLSelectElement).value).toBe("last-month");
+        expect((screen.getByTestId("time-filter-period") as HTMLSelectElement).value).toBe("last-month");
+        expect(screen.getByTestId("entries-range").textContent).toBe("Oct 1 – 31, 2026");
+    });
+
+    it("shows the Time tabs, Overview's carrying the filters but not the grouping", async () => {
+        nav.url = new URL("http://localhost/app/time/entries?period=last-month&person=pat&group=account");
+        render(EntriesPage);
+        const entries = await screen.findByTestId("time-tab-entries");
+        expect(entries.getAttribute("aria-current")).toBe("page");
+        expect(screen.getByTestId("time-tab-overview").getAttribute("href")).toBe("/app/time?period=last-month&person=pat");
+    });
+
+    it("steps the period with [ and ], and the week in the grid", async () => {
+        nav.url = new URL("http://localhost/app/time/entries?customer=Globex");
+        const month = render(EntriesPage);
+        await screen.findAllByTestId("entry-row");
+        await press("[");
+        expect(nav.goto).toHaveBeenLastCalledWith("/app/time/entries?period=last-month&customer=Globex", expect.anything());
+        month.unmount();
+        nav.goto.mockReset();
+        nav.url = new URL("http://localhost/app/time/entries?group=week");
+        render(EntriesPage);
+        await screen.findByTestId("week-grid");
+        await press("]");
+        expect(nav.goto).toHaveBeenLastCalledWith("/app/time/entries?group=week&week=2026-11-30", expect.anything());
+    });
+
+    it("the shared bar writes a filter into the URL, keeping the grouping", async () => {
+        nav.url = new URL("http://localhost/app/time/entries?group=account");
+        render(EntriesPage);
+        await screen.findAllByTestId("entry-row");
+        await fireEvent.change(screen.getByTestId("time-filter-billed"), {target: {value: "invoiced"}});
+        expect(nav.goto).toHaveBeenLastCalledWith("/app/time/entries?billed=invoiced&group=account", {replace: false, reset: false});
     });
 
     it("the week view asks for its week and shows the grid", async () => {

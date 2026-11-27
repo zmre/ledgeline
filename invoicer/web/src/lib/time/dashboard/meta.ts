@@ -3,8 +3,9 @@
 // and the weekly target (`GET /api/time/state`), the account tree
 // (`GET /api/time/accounts`: the customers to filter by, whether any
 // billable account has one, the depth the tree goes to and a stable colour
-// order) and everyone's all-time hours (`GET /api/time/summary?group=person`:
-// the people to filter by, and whether there is any time at all).
+// order) and everyone's all-time hours (`GET /api/time/summary?group=person`,
+// by month: the people to filter by, whether there is any time at all, and
+// the month All time starts in).
 //
 // Each endpoint is read through its own module (../api/); `metaOf` takes
 // only the fields it uses, so its tests stay small.
@@ -32,6 +33,8 @@ export interface DashMeta {
     billableCustomers: boolean;
     /** Any time at all, in any period. */
     anyTime: boolean;
+    /** The first day of the first month with time (where All time starts); null with none. */
+    firstDay: string | null;
     /** Stable colour orders: top-level branches and customers, most hours (all time) first. */
     branchOrder: string[];
     customerOrder: string[];
@@ -53,7 +56,9 @@ const byHours = (totals: ReadonlyMap<string, number>): string[] =>
 export function metaOf(
     state: StateBody,
     accounts: {accounts: AccountBody[]; undeclared: string[]},
-    people: {key: string[]; quantity: {seconds: number}}[]
+    people: {key: string[]; quantity: {seconds: number}}[],
+    /** The months with time (`2026-11`), in order. */
+    months: readonly string[] = []
 ): DashMeta {
     const branches = new Map<string, number>();
     const customers = new Map<string, number>();
@@ -82,6 +87,7 @@ export function metaOf(
         maxDepth,
         billableCustomers,
         anyTime: people.some((p) => p.quantity.seconds !== 0),
+        firstDay: months.length === 0 ? null : `${months[0]}-01`,
         branchOrder: byHours(branches),
         customerOrder: byHours(customers),
     };
@@ -93,6 +99,6 @@ export async function fetchDashMeta(): Promise<DashMeta> {
     if (!state.configured) {
         return metaOf(state, {accounts: [], undeclared: []}, []);
     }
-    const [accounts, people] = await Promise.all([fetchAccounts(), fetchSummary({group: ["person"]})]);
-    return metaOf(state, accounts, people.rows);
+    const [accounts, people] = await Promise.all([fetchAccounts(), fetchSummary({group: ["person"], series: "month"})]);
+    return metaOf(state, accounts, people.rows, people.buckets);
 }

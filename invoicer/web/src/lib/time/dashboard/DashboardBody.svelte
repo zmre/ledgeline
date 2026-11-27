@@ -28,7 +28,8 @@
     } from "./hledger.js";
     import type {DashMeta} from "./meta.js";
     import {accountsAt, byCustomer, byPerson, chartOf, kpisOf, notesOf, splitDrill, splitLabel, topOf, treeOf, type Fact} from "./model.js";
-    import {entriesQuery, grainOf, type DashQuery, type Drill, type Range, type Split} from "./query.js";
+    import {withQuery, type Range} from "../filters/query.js";
+    import {entriesQuery, grainOf, type DashQuery, type Drill, type Split} from "./query.js";
 
     let {
         query,
@@ -88,7 +89,7 @@
     );
     const topNotes = $derived(topOf(notesOf(notes.rows), priorNotes === null ? null : notesOf(priorNotes.rows), {by: "entries", drill: (q) => ({q})}));
 
-    const href = (drill: Drill = {}): string => `${entriesBase}?${entriesQuery(query, range, drill)}`;
+    const href = (drill: Drill = {}): string => withQuery(entriesBase, entriesQuery(query, drill));
     const set = (patch: Partial<DashQuery>): void => onQuery({...query, ...patch}, {replace: false});
     const compare = $derived(previous !== null);
 </script>

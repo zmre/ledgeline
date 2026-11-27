@@ -1,7 +1,7 @@
 // `GET /api/time/summary` (plan 46 T-dash, `app/time.rs`): time grouped by
 // any of account, branch, customer, person, billable, billed, note or a
 // period bucket, over the same filters as Entries (from, to, person,
-// customer, billable, account), with an optional depth cut, top N (the
+// customer, billable, billed, account, q), with an optional depth cut, top N (the
 // rest summed as `other`) and per-row period series. `view=tree` is
 // `hledger bal --tree`'s rows instead; the dashboard builds its tree from
 // grouped rows, so it isn't wrapped here.
@@ -51,8 +51,12 @@ export interface SummaryParams {
     /** One customer (the `customer:` tag's value). */
     customer?: string;
     billable?: boolean;
+    /** Entries' billing state: `unbilled`, `invoiced`, `nobill`, `not-billable`, `billed`. */
+    billed?: string;
     /** This account or below. */
     account?: string;
+    /** Text in the note or account. */
+    q?: string;
     group: readonly SummaryGroup[];
     depth?: number;
     top?: number;
@@ -67,7 +71,9 @@ export function summaryQueryString(params: SummaryParams): string {
     if (params.person !== undefined) out.set("person", params.person);
     if (params.customer !== undefined) out.set("customer", params.customer);
     if (params.billable !== undefined) out.set("billable", String(params.billable));
+    if (params.billed !== undefined) out.set("billed", params.billed);
     if (params.account !== undefined) out.set("account", params.account);
+    if (params.q !== undefined) out.set("q", params.q);
     if (params.group.length > 0) out.set("group", params.group.join(","));
     if (params.depth !== undefined) out.set("depth", String(params.depth));
     if (params.top !== undefined) out.set("top", String(params.top));

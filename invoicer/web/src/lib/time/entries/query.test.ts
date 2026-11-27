@@ -2,17 +2,8 @@
 // of the URL, periods resolve against today, and the API gets what it reads.
 import {describe, expect, it} from "vitest";
 import {addDays, shiftMonth, isIsoDate, mondayOf, monthRange, weekDates} from "../dates.js";
-import {
-    clearEntriesFilters,
-    entriesApiQuery,
-    entriesFiltered,
-    entriesQueryString,
-    filterPerson,
-    parseEntriesQuery,
-    periodRange,
-    shownRange,
-    UNATTRIBUTED,
-} from "./query.js";
+import {clearFilters, filterPerson, isFiltered, UNATTRIBUTED} from "../filters/query.js";
+import {entriesApiQuery, entriesQueryString, parseEntriesQuery, periodRange, shownRange} from "./query.js";
 
 const TODAY = "2026-11-26"; // a Thursday
 const parse = (qs: string) => parseEntriesQuery(new URLSearchParams(qs));
@@ -47,6 +38,7 @@ describe("UNIT time entries query", () => {
         expect(periodRange("last-month", TODAY)).toEqual({from: "2026-10-01", to: "2026-10-31"});
         expect(periodRange("this-year", TODAY)).toEqual({from: "2026-01-01", to: "2026-12-31"});
         expect(periodRange("last-year", TODAY)).toEqual({from: "2025-01-01", to: "2025-12-31"});
+        expect(periodRange("this-quarter", TODAY)).toEqual({from: "2026-10-01", to: "2026-12-31"});
         expect(periodRange("all", TODAY)).toEqual({from: null, to: null});
         expect(entriesApiQuery(parse("period=all"), TODAY)).toBe("");
     });
@@ -69,10 +61,10 @@ describe("UNIT time entries query", () => {
     });
 
     it("knows a filter from a period, and clears only filters", () => {
-        expect(entriesFiltered(parse("period=last-week&group=week"))).toBe(false);
+        expect(isFiltered(parse("period=last-week&group=week"))).toBe(false);
         const query = parse("period=last-week&q=fieldwork&customer=Globex");
-        expect(entriesFiltered(query)).toBe(true);
-        expect(entriesQueryString(clearEntriesFilters(query))).toBe("period=last-week");
+        expect(isFiltered(query)).toBe(true);
+        expect(entriesQueryString(clearFilters(query))).toBe("period=last-week");
     });
 });
 
