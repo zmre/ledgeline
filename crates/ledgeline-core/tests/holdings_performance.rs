@@ -6,8 +6,8 @@
 //! money out negative (a sell at its proceeds).
 
 use ledgeline_core::holdings::{
-    HoldingsPoint, HoldingsScope, ScopeMode, SeriesWindow, anchor_window, holdings_series,
-    other_holdings_series, return_anchor_range,
+    HoldingsPoint, HoldingsScope, ScopeMode, SeriesWindow, anchor_window, compute_holdings,
+    holdings_flows, holdings_series, other_holdings_series, return_anchor_range,
 };
 use ledgeline_core::reports::Interval;
 use ledgeline_core::{Dec, Journal, parse_journal};
@@ -152,17 +152,21 @@ P 2025-01-01 FUND $100.00
     income:dividends
 ";
 
+/// REVISED for plan 48 WP4 (was `a_reinvested_dividend_is_a_small_inflow_and_no_return_on_its_own`,
+/// which pinned plan 47's A1f limit: the reinvestment counted as $50 of new
+/// money, so the dividend never showed in Performance). Under C6 a buy funded
+/// by an income account is return: no flow, no marker, +0.5 %.
 #[test]
-fn a_reinvested_dividend_is_a_small_inflow_and_no_return_on_its_own() {
+fn a_reinvested_dividend_is_return_not_new_money() {
     let points = stocks(
         DIVIDEND_REINVEST,
         "2025-02-28",
         &SeriesWindow::counted(Interval::Monthly, 2),
     );
     assert_eq!(points[1].market_value, usd("10050.00"));
-    assert_eq!(flows(&points), vec![Dec::zero(), usd("50.00")]);
+    assert_eq!(flows(&points), vec![Dec::zero(), Dec::zero()], "no marker");
     assert!(
-        near(points[1].return_pct, 0.0),
+        near(points[1].return_pct, 0.005),
         "{:?}",
         points[1].return_pct
     );
@@ -286,4 +290,293 @@ fn other_flows_are_read_from_the_balance_sheet_counter_legs() {
         near(returns[4], 1.1 * (1.0 + 20.0 / 440.0) - 1.0),
         "{returns:?}"
     );
+}
+
+// ── Plan 48 WP4 (C6): income-funded buys and in-kind fees are not flows ──
+//
+// Every journal below holds a position at a flat price from January and does
+// one thing in February, so the February return is that one thing's value
+// over the January value, and the flows say whether it was money in or out.
+
+fn monthly_feb(text: &str) -> Vec<HoldingsPoint> {
+    stocks(
+        text,
+        "2025-02-28",
+        &SeriesWindow::counted(Interval::Monthly, 2),
+    )
+}
+
+fn holding(text: &str, as_of: &str, symbol: &str) -> ledgeline_core::holdings::Holding {
+    let journal = journal(text);
+    let report = compute_holdings(
+        &journal.transactions,
+        &journal.prices,
+        &journal.accounts,
+        &journal.commodity_tags,
+        &scope(as_of),
+    )
+    .expect("report computes");
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    report
+        .holdings
+        .into_iter()
+        .find(|holding| holding.symbol == symbol)
+        .expect("symbol held")
+}
+
+fn all_flows(text: &str, as_of: &str) -> Vec<(String, Dec)> {
+    let journal = journal(text);
+    holdings_flows(
+        &journal.transactions,
+        &journal.prices,
+        &journal.accounts,
+        &journal.commodity_tags,
+        &scope(as_of),
+        None,
+    )
+    .expect("flows compute")
+    .flows
+    .into_iter()
+    .map(|flow| (flow.date, flow.amount))
+    .collect()
+}
+
+/// 1 ETH at $3,000, then a 0.01 ETH staking reward booked at fair value.
+const STAKING_REWARD: &str = "\
+account assets:crypto  ; type: A
+account assets:bank  ; type: C
+account income:staking  ; type: R
+
+P 2025-01-01 ETH $3000.00
+
+2025-01-05 buy
+    assets:crypto    1 ETH @ $3000.00
+    assets:bank
+
+2025-02-15 staking reward
+    assets:crypto    0.01 ETH @ $3000.00
+    income:staking
+";
+
+#[test]
+fn a_staking_reward_is_return_not_new_money() {
+    let points = monthly_feb(STAKING_REWARD);
+    assert_eq!(points[1].market_value, usd("3030.00"));
+    assert_eq!(flows(&points), vec![Dec::zero(), Dec::zero()], "no marker");
+    assert!(
+        near(points[1].return_pct, 0.01),
+        "{:?}",
+        points[1].return_pct
+    );
+    // The holding's own accounting is unchanged: the reward is basis at its
+    // fair value (income now, gain only on what the coin does next).
+    let eth = holding(STAKING_REWARD, "2025-02-28", "ETH");
+    assert_eq!(eth.shares, usd("1.01"));
+    assert_eq!(eth.basis, Some(usd("3030.00")));
+    assert_eq!(eth.gain, Some(Dec::zero()));
+}
+
+/// The crypto docs' example: a wallet move that pays its network fee in the
+/// coin to an expense account.
+const COIN_FEE: &str = "\
+account assets:crypto:coinbase  ; type: A
+account assets:crypto:cold  ; type: A
+account assets:bank  ; type: C
+account expenses:fees:crypto  ; type: X
+
+P 2025-01-01 BTC $60000.00
+
+2025-01-05 buy
+    assets:crypto:coinbase    0.05000000 BTC @ $60000.00
+    assets:bank
+
+2025-02-09 move to cold storage
+    assets:crypto:cold         0.04990000 BTC
+    expenses:fees:crypto       0.00010000 BTC
+    assets:crypto:coinbase    -0.05000000 BTC
+";
+
+#[test]
+fn an_in_kind_coin_fee_is_a_loss_not_a_withdrawal() {
+    let points = monthly_feb(COIN_FEE);
+    assert_eq!(points[1].market_value, usd("2994.00"));
+    assert_eq!(flows(&points), vec![Dec::zero(), Dec::zero()], "no marker");
+    // $6 of $3,000 paid away: −0.2 %.
+    assert!(
+        near(points[1].return_pct, -0.002),
+        "{:?}",
+        points[1].return_pct
+    );
+    // The fee leaves with its share of the basis, as a sale at nothing would;
+    // the arriving cold-storage leg is the same coins, not a cost-less buy
+    // (it used to taint the basis to unknown).
+    let btc = holding(COIN_FEE, "2025-02-28", "BTC");
+    assert_eq!(btc.shares, usd("0.0499"));
+    assert_eq!(btc.basis, Some(usd("2994.00")));
+    assert_eq!(btc.gain, Some(Dec::zero()));
+}
+
+/// An advisory fee taken in shares of the fund.
+const SHARE_FEE: &str = "\
+account assets:broker  ; type: A
+account assets:cash  ; type: C
+account expenses:fees  ; type: X
+
+P 2025-01-01 FUND $100.00
+
+2025-01-05 buy
+    assets:broker    100 FUND @ $100.00
+    assets:cash
+
+2025-02-15 advisory fee
+    assets:broker    -0.5 FUND
+    expenses:fees     0.5 FUND
+";
+
+#[test]
+fn an_in_kind_share_fee_is_a_loss_not_a_withdrawal() {
+    let points = monthly_feb(SHARE_FEE);
+    assert_eq!(points[1].market_value, usd("9950.00"));
+    assert_eq!(flows(&points), vec![Dec::zero(), Dec::zero()], "no marker");
+    assert!(
+        near(points[1].return_pct, -0.005),
+        "{:?}",
+        points[1].return_pct
+    );
+    let fund = holding(SHARE_FEE, "2025-02-28", "FUND");
+    assert_eq!(fund.basis, Some(usd("9950.00")));
+}
+
+#[test]
+fn part_income_part_cash_funding_leaves_only_the_cash_as_a_flow() {
+    let text = "\
+account assets:broker  ; type: A
+account assets:cash  ; type: C
+account income:dividends  ; type: R
+
+P 2025-01-01 FUND $100.00
+
+2025-01-05 buy
+    assets:broker    100 FUND @ $100.00
+    assets:cash
+
+2025-02-15 dividend topped up from cash and reinvested
+    assets:broker      1 FUND @ $100.00
+    income:dividends   $-40.00
+    assets:cash        $-60.00
+";
+    let points = monthly_feb(text);
+    assert_eq!(flows(&points), vec![Dec::zero(), usd("60.00")]);
+    // (10100 − 10000 − 60) / (10000 + 30)
+    assert!(
+        near(points[1].return_pct, 40.0 / 10_030.0),
+        "{:?}",
+        points[1].return_pct
+    );
+}
+
+#[test]
+fn an_equity_funded_arrival_is_still_money_in() {
+    // An ACATS-style transfer from another broker, booked against equity:
+    // money arriving from outside the books' holdings, so still a flow.
+    let text = "\
+account assets:broker  ; type: A
+account assets:cash  ; type: C
+account equity:transfers  ; type: E
+
+P 2025-01-01 FUND $100.00
+
+2025-01-05 buy
+    assets:broker    100 FUND @ $100.00
+    assets:cash
+
+2025-02-15 transferred in
+    assets:broker      10 FUND @ $100.00
+    equity:transfers
+";
+    let points = monthly_feb(text);
+    assert_eq!(flows(&points), vec![Dec::zero(), usd("1000.00")]);
+    assert!(near(points[1].return_pct, 0.0));
+}
+
+/// Benchmarks replay `holdings_flows`: none of the income-funded or in-kind
+/// events reaches them, so the benchmark is not handed money the portfolio
+/// never received.
+#[test]
+fn benchmark_flows_ignore_income_funded_buys_and_in_kind_fees() {
+    for text in [DIVIDEND_REINVEST, STAKING_REWARD, COIN_FEE, SHARE_FEE] {
+        let flows = all_flows(text, "2025-02-28");
+        assert_eq!(flows.len(), 1, "only the January buy: {flows:?}");
+        assert_eq!(flows[0].0, "2025-01-05");
+    }
+}
+
+#[test]
+fn a_windowed_gain_counts_the_reward_while_the_all_time_gain_does_not() {
+    // The windowed gain subtracts the same flows Performance does, so the
+    // reward is gain inside a window; the all-time gain is value − basis, and
+    // the reward is basis.
+    let journal = journal(STAKING_REWARD);
+    let windowed = compute_holdings(
+        &journal.transactions,
+        &journal.prices,
+        &journal.accounts,
+        &journal.commodity_tags,
+        &HoldingsScope {
+            gain_since: Some("2025-01-31".to_string()),
+            ..scope("2025-02-28")
+        },
+    )
+    .expect("report computes");
+    assert_eq!(windowed.holdings[0].gain, Some(usd("30.00")));
+    let eth = holding(STAKING_REWARD, "2025-02-28", "ETH");
+    assert_eq!(eth.gain, Some(Dec::zero()));
+}
+
+/// The Other tab reads its flows from balance-sheet counter-legs, so income,
+/// expense and equity counter-legs were never flows there. Pinned so WP4's
+/// Stocks change cannot leak into it.
+#[test]
+fn other_tab_flows_still_exclude_income_expense_and_equity_counter_legs() {
+    let text = "\
+account assets:property:land  ; type: A
+account assets:cash  ; type: C
+account equity:opening  ; type: E
+account income:appreciation  ; type: R
+account expenses:depreciation  ; type: X
+
+2025-01-01 opening
+    assets:property:land    $100,000.00
+    equity:opening
+
+2025-02-15 appraisal booked as income
+    assets:property:land    $5,000.00
+    income:appreciation
+
+2025-03-15 written down
+    expenses:depreciation   $1,000.00
+    assets:property:land
+
+2025-04-15 bought the next lot from cash
+    assets:property:land    $20,000.00
+    assets:cash
+";
+    let journal = journal(text);
+    let series = other_holdings_series(
+        &journal.transactions,
+        &journal.prices,
+        &journal.accounts,
+        &scope("2025-04-30"),
+        &SeriesWindow::counted(Interval::Monthly, 4),
+    )
+    .expect("series computes");
+    assert_eq!(
+        flows(&series.points),
+        vec![Dec::zero(), Dec::zero(), Dec::zero(), usd("20000.00")]
+    );
+    let returns: Vec<Option<f64>> = series.points.iter().map(|p| p.return_pct).collect();
+    assert!(near(returns[1], 0.05), "{returns:?}");
+    // Cumulative: $100,000 → $104,000 is +4 %, and the April lot is money in.
+    assert!(near(returns[2], 0.04), "{returns:?}");
+    assert!(near(returns[3], 0.04), "{returns:?}");
 }

@@ -197,12 +197,18 @@ large portfolio are not marked. The Other tab shows the same markers when money
 moves into or out of those accounts. Performance has no markers, because
 buying and selling do not move it.
 
-**Dividends are not in Performance yet.** A dividend paid out as cash leaves
-your holdings without being counted as money taken out. A reinvested dividend
-is counted as new money you put in. Either way Performance leaves the dividend
-out, so it reads slightly low for a holding that pays one, while the benchmark
-lines include theirs. Over a year the gap is roughly the holding's dividend
-yield. Counting reinvested dividends as return is planned.
+**Income your holdings earn is return.** A purchase paid for by an income
+account (a reinvested dividend, a staking reward) is not money you put in, so
+it raises Performance and gets no marker. A fee paid in shares or coins to an
+expense account is not money you took out, so it lowers Performance. Ledgeline
+goes by each account's type (`type: R` for income, `type: X` for expenses).
+When income pays for only part of a purchase, the rest counts as money in.
+
+**Cash dividends are not in Performance yet.** A dividend paid out as cash
+leaves your holdings without being counted, so Performance reads slightly low
+for a holding that pays one, while the benchmark lines include theirs. Over a
+year the gap is roughly the holding's dividend yield. Reinvest the dividend in
+the same transaction, as above, to have it count.
 
 **Narrowing the chart to some holdings.** The **Holdings** menu beside the
 account chooser picks which holdings the chart and the summary figures above it
