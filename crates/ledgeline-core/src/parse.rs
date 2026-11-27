@@ -1607,7 +1607,7 @@ pub(crate) fn is_iso_date(value: &str) -> bool {
     shaped && normalize_date(value, None).is_ok_and(|date| date == value)
 }
 
-fn normalize_date(token: &str, default_year: Option<i32>) -> Result<String, ParseError> {
+pub(crate) fn normalize_date(token: &str, default_year: Option<i32>) -> Result<String, ParseError> {
     let comps: Vec<&str> = token.split(['-', '/', '.']).collect();
     let (year, month, day) = match comps.len() {
         3 => (

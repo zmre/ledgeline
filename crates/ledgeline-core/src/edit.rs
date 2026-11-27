@@ -3526,7 +3526,7 @@ fn comment_without_tags(comment: &str, names: &[String]) -> (String, Vec<String>
 
 /// The non-tag, non-empty comma segments of a comment, trimmed — the part a
 /// [`EditOp::SetTxnComment`] owns on one line.
-fn free_text(comment: &str) -> Vec<&str> {
+pub(crate) fn free_text(comment: &str) -> Vec<&str> {
     comment
         .split(',')
         .filter(|segment| tag_in_segment(segment).is_none())
