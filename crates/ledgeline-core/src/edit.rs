@@ -2500,61 +2500,82 @@ impl JournalEditor {
             .filter(|(_, file)| file.dirty)
             .map(|(key, _)| key.clone())
             .collect();
-
-        // Pass 1: external-change guard for every dirty file — write nothing if
-        // any changed.
-        for key in &dirty {
-            let file = self.files.get(key).ok_or_else(|| {
-                EditError::Internal(format!(
-                    "no loaded buffer for source file {}",
-                    key.display()
-                ))
-            })?;
-            if file_changed_externally(&*self.vault, file)? {
-                return Err(EditError::ExternalChange);
-            }
-        }
-
-        // Pass 2: atomically write each dirty file and refresh its revision.
-        // The write itself re-checks identity and content right up to the
-        // replacement (see `Vault::replace`, and `pinned::replace` behind the
-        // desktop's), so the TOCTOU window is a single file's last look to its
-        // rename rather than the whole pass.
-        for key in &dirty {
-            let (path, new_text, expected) = {
+        let writes = dirty
+            .iter()
+            .map(|key| {
                 let file = self.files.get(key).ok_or_else(|| {
                     EditError::Internal(format!(
                         "no loaded buffer for source file {}",
                         key.display()
                     ))
                 })?;
-                (
-                    file.path.clone(),
-                    file.rope.to_string(),
-                    file.revision.clone(),
-                )
-            };
-            let written = self
-                .vault
-                .replace(&path, new_text.as_bytes(), &expected)
-                .map_err(storage_error)?;
-            if let Some((_, known)) = self.sources.iter_mut().find(|(p, _)| *p == path) {
+                Ok(PinnedWrite {
+                    path: file.path.clone(),
+                    text: file.rope.to_string(),
+                    expected: file.revision.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>, EditError>>()?;
+        let vault = Arc::clone(&self.vault);
+        write_pinned(&*vault, &writes, |at, written| {
+            let path = &writes[at].path;
+            if let Some((_, known)) = self.sources.iter_mut().find(|(p, _)| p == path) {
                 *known = Some(written.clone());
             }
-            let file = self.files.get_mut(key).ok_or_else(|| {
-                EditError::Internal(format!(
-                    "no loaded buffer for source file {}",
-                    key.display()
-                ))
-            })?;
-            file.revision = written;
-            file.dirty = false;
-        }
-        Ok(())
+            if let Some(file) = self.files.get_mut(&dirty[at]) {
+                file.revision = written;
+                file.dirty = false;
+            }
+        })
     }
 }
 
-/// Whether `file` differs in the vault from its load-time revision.
+/// One file [`write_pinned`] writes: its new text, and the revision it must
+/// still be.
+pub(crate) struct PinnedWrite {
+    /// Where.
+    pub(crate) path: VaultPath,
+    /// The whole new text.
+    pub(crate) text: String,
+    /// What the file must still be (what was read).
+    pub(crate) expected: Revision,
+}
+
+/// Write every file in `writes`, each only over the revision it was read at:
+/// [`JournalEditor::save`]'s two passes, shared with the time files' editor
+/// ([`crate::time::files::TimeFiles`]).
+///
+/// Pass 1 is the external-change guard for every file, writing nothing if any
+/// changed. Pass 2 atomically replaces each file, the write itself re-checking
+/// identity and content right up to the replacement ([`Vault::replace`]), so
+/// the TOCTOU window is a single file's last look to its rename rather than
+/// the whole pass. `written` hears each file's new revision as it lands, so a
+/// failure part-way leaves the caller knowing exactly which files are now
+/// which.
+///
+/// # Errors
+/// [`EditError::ExternalChange`] or [`EditError::Io`].
+pub(crate) fn write_pinned(
+    vault: &dyn Vault,
+    writes: &[PinnedWrite],
+    mut written: impl FnMut(usize, Revision),
+) -> Result<(), EditError> {
+    for write in writes {
+        if file_changed_externally(vault, &write.path, &write.expected)? {
+            return Err(EditError::ExternalChange);
+        }
+    }
+    for (at, write) in writes.iter().enumerate() {
+        let revision = vault
+            .replace(&write.path, write.text.as_bytes(), &write.expected)
+            .map_err(storage_error)?;
+        written(at, revision);
+    }
+    Ok(())
+}
+
+/// Whether the file at `path` differs in the vault from `revision`, its
+/// load-time revision.
 ///
 /// The file is **always** re-read and its content hashed (DL-3). An unchanged
 /// mtime used to short-circuit this, which any mtime-preserving write defeats:
@@ -2569,9 +2590,13 @@ impl JournalEditor {
 /// Read without following a link, and judged on identity as well as content: a
 /// name that became a symlink or a non-regular file, or now holds a different
 /// inode than the one loaded, has changed whatever its bytes say.
-fn file_changed_externally(vault: &dyn Vault, file: &FileBuf) -> Result<bool, EditError> {
-    match vault.read_pinned(&file.path, None) {
-        Ok((_, current)) => Ok(!file.revision.matches(&current)),
+pub(crate) fn file_changed_externally(
+    vault: &dyn Vault,
+    path: &VaultPath,
+    revision: &Revision,
+) -> Result<bool, EditError> {
+    match vault.read_pinned(path, None) {
+        Ok((_, current)) => Ok(!revision.matches(&current)),
         Err(error) if error.is_not_regular_file() => Ok(true),
         Err(error) => Err(storage_error(error)),
     }
