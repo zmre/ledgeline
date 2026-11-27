@@ -72,6 +72,9 @@ customer's `ledger_customer`), with `item:` codes from
 `invoices/catalog.md`. Tests: `invoicer-core/tests/time.rs`, the app's
 `time_tests.rs`, and `cli.rs`'s `time_*`.
 
+Open `books.journal`, on a copy (the app writes): `just invoicer-server
+<copy>/books.journal`. Opened as the journal, `time.journal` is refused.
+
 | File / note                   | Case                                                                                         |
 |-------------------------------|----------------------------------------------------------------------------------------------|
 | `time/pat/2026-10.timedot`    | Pat's October: 5 h on invoice 101 (sent and booked: locked), unbilled lines, an orphan account with no customer, an undeclared `internal:training` |

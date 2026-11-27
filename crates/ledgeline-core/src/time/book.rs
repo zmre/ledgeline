@@ -599,20 +599,25 @@ fn place(dir: &VaultPath, relative: &str) -> Result<VaultPath, TimeError> {
 /// Where the files are for the journal whose main file is `main`.
 ///
 /// # Errors
-/// [`TimeError::Path`] for a path outside the journal's folder, one that is
-/// the main journal, or a track-file pattern that is unusable.
+/// [`TimeError::OpenedTimeFile`] when the main journal is the roll-up or the
+/// accounts file; [`TimeError::Path`] for a path outside the journal's folder
+/// or a track-file pattern that is unusable.
 pub fn paths(main: &VaultPath, config: &TimeConfig) -> Result<TimePaths, TimeError> {
     let dir = main.parent().unwrap_or_default();
     let rollup = place(&dir, config.file())?;
     let accounts = place(&dir, config.accounts_file())?;
-    for (path, name) in [
-        (&rollup, config.file()),
-        (&accounts, config.accounts_file()),
+    for (path, name, holds) in [
+        (&rollup, config.file(), "holds time tracking's hours"),
+        (
+            &accounts,
+            config.accounts_file(),
+            "declares time tracking's accounts",
+        ),
     ] {
         if path == main {
-            return Err(TimeError::Path {
+            return Err(TimeError::OpenedTimeFile {
                 path: name.to_string(),
-                reason: "it is the main journal".to_string(),
+                holds,
             });
         }
     }
@@ -1447,5 +1452,26 @@ mod tests {
         );
         assert_eq!(suggest_person(None, Some("pw")).as_deref(), Some("pw"));
         assert_eq!(slug("Acme Corp."), Some("acme-corp".to_string()));
+    }
+
+    #[test]
+    fn opening_a_time_file_as_the_books_says_which_to_open() {
+        let config = TimeConfig::default();
+        for (main, holds) in [
+            ("time.journal", "holds time tracking's hours"),
+            ("time-accounts.journal", "declares time tracking's accounts"),
+        ] {
+            let error = paths(&VaultPath::new(main).expect("path"), &config).expect_err("refused");
+            assert!(
+                matches!(&error, TimeError::OpenedTimeFile { path, holds: h } if path == main && *h == holds),
+                "{error:?}"
+            );
+            assert!(
+                error
+                    .to_string()
+                    .contains("Open the books' main journal instead")
+            );
+        }
+        assert!(paths(&main_path(), &config).is_ok());
     }
 }

@@ -53,6 +53,17 @@ pub enum TimeError {
         /// Why.
         reason: String,
     },
+    /// The journal opened is one of time tracking's own files (the roll-up
+    /// or the accounts file), not the books.
+    #[error(
+        "you opened `{path}`, which {holds}, not your books. Open the books' main journal instead; time tracking finds `{path}` beside it"
+    )]
+    OpenedTimeFile {
+        /// The file, as configured.
+        path: String,
+        /// What it holds: "holds time tracking's hours".
+        holds: &'static str,
+    },
     /// The roll-up (or a journal it includes) doesn't parse.
     #[error("the time roll-up does not parse: {0}")]
     Parse(String),

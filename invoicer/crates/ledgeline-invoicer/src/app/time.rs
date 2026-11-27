@@ -103,7 +103,9 @@ impl From<TimeOpError> for ApiError {
         let status = match code {
             "not-set-up" | "locked" | "conflict" | "invoice-exists" | "external-change"
             | "exists" => StatusCode::CONFLICT,
-            "note-tag" | "invalid" | "verify" | "settings" => StatusCode::UNPROCESSABLE_ENTITY,
+            "note-tag" | "invalid" | "verify" | "settings" | "opened-time-file" => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
             "not-found" => StatusCode::NOT_FOUND,
             "bad-request" => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,

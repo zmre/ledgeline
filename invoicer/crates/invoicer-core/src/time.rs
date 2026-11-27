@@ -104,6 +104,7 @@ impl TimeOpError {
             Self::NotSetUp(_) => "not-set-up",
             Self::Time(error) => match error {
                 TimeError::Path { .. } | TimeError::Parse(_) | TimeError::Invalid(_) => "invalid",
+                TimeError::OpenedTimeFile { .. } => "opened-time-file",
                 TimeError::Settings(_) => "settings",
                 TimeError::Exists(_) => "exists",
                 TimeError::Missing(_) | TimeError::NotFound(_) => "not-found",
