@@ -13,3 +13,38 @@ tr[data-drop="before"] > td {
 tr[data-drop="after"] > td {
     box-shadow: inset 0 -2px 0 var(--color-primary);
 }
+
+/* The customer card's copy buttons: on a wide window with a mouse, shown on
+   the row's hover or focus (and their own focus); on touch, and in a narrow
+   window, always. */
+@media (hover: hover) and (pointer: fine) {
+    @container app (width >= 40rem) {
+        .copy-reveal:not(:focus-visible) {
+            opacity: 0;
+        }
+        .group:hover .copy-reveal,
+        .group:focus-within .copy-reveal {
+            opacity: 1;
+        }
+    }
+}
+
+/* The customer card's read-only prose (notes, portal instructions, closed
+   POs): MBR's markdown field without its editor chrome, in the theme's
+   colours, so it reads as text on the card rather than as a field. */
+.customer-prose mbr-markdown-field {
+    --mbr-field-background: transparent;
+    --mbr-field-readonly-background: transparent;
+    --mbr-field-surface: transparent;
+    --mbr-field-border-width: 0;
+    --mbr-field-padding: 0;
+    --mbr-field-min-height: 0;
+    --mbr-field-radius: 0;
+    --mbr-field-font-family: inherit;
+    --mbr-field-font-size: 0.875rem;
+    --mbr-field-color: var(--color-base-content);
+    --mbr-field-muted-color: var(--color-muted);
+    --mbr-field-primary: var(--color-base-content);
+    --mbr-field-code-background: var(--color-base-200);
+    --mbr-field-code-color: var(--color-base-content);
+}

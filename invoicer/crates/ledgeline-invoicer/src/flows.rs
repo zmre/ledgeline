@@ -7,13 +7,19 @@
 //! - [`void`]: `void` and the app's Void.
 //! - [`settle`]: what follows any other write that moved an invoice's
 //!   payments (Apply payment, its undo).
+//! - [`update_company`]: Update from company, up to the re-book that
+//!   follows it for a sent invoice.
 //!
 //! Each write is retried once when the books or the file changed under it
 //! ([`retry_once`]); the result says whether it was, for the CLI's notice.
 
 use invoicer_core::books::{BooksError, Rebook, Rebooked, Void, Voided, retry_once};
+use invoicer_core::company;
+use invoicer_core::doc::{Invoice, Status};
+use invoicer_core::edit::{self, SetOutcome, WriteError};
 use invoicer_core::reconcile::{self, MirrorChange, ReconcileOptions, Reconciled};
 use invoicer_core::session::{OpenError, Session};
+use ledgeline_core::vault::VaultPath;
 
 /// A books write and the paid mirror it moved.
 #[derive(Debug)]
@@ -129,4 +135,68 @@ pub(crate) fn void(session: &mut Session, request: &Void) -> Outcome<Voided> {
         }
     };
     (result, retried)
+}
+
+/// Why [`update_company`] wrote nothing.
+#[derive(Debug)]
+pub(crate) enum UpdateRefused {
+    /// Void, or no company to copy: a sentence saying so.
+    Refused(String),
+    /// The file can't be read, edited safely or written.
+    Write(WriteError),
+    /// A sent invoice the books refuse to re-book (a closed period, …).
+    Books(BooksError),
+}
+
+/// **Update from company** (`update-company`, the invoice page's action):
+/// write the company note's current details into the document at `path`
+/// ([`company::update`]). A void invoice is history and refused; with no
+/// company nothing is written. A sent invoice follows its other edits: the
+/// text is checked as re-booking would book it before the file changes
+/// ([`InvoiceBooks::check_rebook`](invoicer_core::books::InvoiceBooks::check_rebook)),
+/// and the caller re-books it after ([`rebook`]) when this answers its
+/// number.
+pub(crate) fn update_company(
+    session: &mut Session,
+    path: &VaultPath,
+    today: &str,
+) -> Result<(SetOutcome, Option<String>), UpdateRefused> {
+    let (source, revision) =
+        edit::read_text(session.vault(), path).map_err(UpdateRefused::Write)?;
+    let invoice = Invoice::parse(source.as_str(), &session.settings().words);
+    let header = invoice.header();
+    let label = header
+        .number
+        .as_ref()
+        .map_or_else(|| path.to_string(), |n| format!("invoice {n}"));
+    if header.status == Some(Status::Void) {
+        return Err(UpdateRefused::Refused(format!(
+            "{label} is void: it keeps the details it was sent with"
+        )));
+    }
+    let index = session.index();
+    if company::fields(index.site(), index.settings(), session.vault()).is_none() {
+        return Err(UpdateRefused::Refused(
+            "there is no company to copy: set `[invoicer] company` to your company's note"
+                .to_string(),
+        ));
+    }
+    let rebook = match (header.status, &header.number) {
+        (Some(Status::Sent), Some(number)) => Some(number.to_string()),
+        _ => None,
+    };
+    if let Some(number) = &rebook
+        && let Some((text, _)) =
+            company::current_text(index, session.vault(), &source).map_err(UpdateRefused::Write)?
+    {
+        session
+            .invoice_books()
+            .check_rebook(index, number, &text, today)
+            .map_err(UpdateRefused::Books)?;
+    }
+    let (index, vault) = session.parts_mut();
+    let outcome =
+        company::update(index, vault, path, &source, &revision).map_err(UpdateRefused::Write)?;
+    let rebook = rebook.filter(|_| outcome.written);
+    Ok((outcome, rebook))
 }

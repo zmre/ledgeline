@@ -135,6 +135,8 @@ export interface EditorOptions {
     }[];
     catalog: CatalogItem[];
     accounts: string[];
+    /** Those of `accounts` that are revenue, by declared type first (a customer's revenue account suggests them first). */
+    revenue_accounts?: string[];
     deposit_account: string;
     revenue_account: string | null;
     fields: string[];

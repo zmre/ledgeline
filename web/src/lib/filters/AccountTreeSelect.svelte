@@ -117,7 +117,7 @@
         <ul class="max-h-64 overflow-y-auto">
             {#if open}
                 {#if visible.length === 0}
-                    <li class="px-2 py-1 text-sm text-base-content/60">No matching accounts</li>
+                    <li class="px-2 py-1 text-sm text-muted">No matching accounts</li>
                 {:else}
                     {@render nodes(visible, 0)}
                 {/if}

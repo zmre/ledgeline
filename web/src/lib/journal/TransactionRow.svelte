@@ -304,7 +304,7 @@
 
 {#snippet partnerDate()}
     {#if partner !== null && partner.date !== txn.date}
-        <span class="shrink-0 text-xs whitespace-nowrap text-base-content/55" title="The other half is dated {partner.date}" data-testid="transfer-partner-date"
+        <span class="shrink-0 text-xs whitespace-nowrap text-muted" title="The other half is dated {partner.date}" data-testid="transfer-partner-date"
             >→ {shortDate(partner.date)}</span
         >
     {/if}
@@ -315,7 +315,7 @@
     {#each rejections as value (value)}
         <button
             type="button"
-            class="badge shrink-0 cursor-pointer badge-ghost badge-xs text-base-content/60 hover:text-base-content"
+            class="badge shrink-0 cursor-pointer badge-ghost badge-xs text-muted hover:text-base-content"
             title="Rejected as a transfer match (nomatch:{value}) — click to forget the rejection"
             aria-label="Forget rejection {value}"
             onclick={() => onForget?.(value)}
@@ -414,10 +414,8 @@
             <div class="@container flex h-full min-w-0 flex-col justify-center gap-0.5 px-3">
                 <div class="flex min-w-0 items-center gap-2">
                     {#if columns.date}
-                        <span
-                            class="shrink-0 text-xs whitespace-nowrap text-base-content/60 tabular-nums @max-[16rem]:hidden"
-                            title={txn.date}
-                            data-testid="card-date">{cardDate(txn.date, today)}</span
+                        <span class="shrink-0 text-xs whitespace-nowrap text-muted tabular-nums @max-[16rem]:hidden" title={txn.date} data-testid="card-date"
+                            >{cardDate(txn.date, today)}</span
                         >
                     {/if}
                     <div class="min-w-0 grow text-sm font-medium">{@render descriptionContent()}</div>
@@ -427,22 +425,22 @@
                             title={amounts.map((amount) => formatAmount(amount)).join("\n")}
                         >
                             {#if amounts.length === 0}
-                                <span class="text-base-content/40">&mdash;</span>
+                                <span class="text-muted">&mdash;</span>
                             {:else}
-                                <span class={["whitespace-nowrap", amounts[0].qty.m < 0n && "text-error"]}>{formatAmount(amounts[0])}</span>
-                                {#if amounts.length > 1}<span class="text-xs text-base-content/50">+{amounts.length - 1}</span>{/if}
+                                <span class={["whitespace-nowrap", amounts[0].qty.m < 0n && "text-error-text"]}>{formatAmount(amounts[0])}</span>
+                                {#if amounts.length > 1}<span class="text-xs text-muted">+{amounts.length - 1}</span>{/if}
                             {/if}
                         </span>
                     {/if}
                 </div>
-                <div class="flex min-w-0 items-start gap-2 text-xs leading-4 text-base-content/60">
+                <div class="flex min-w-0 items-start gap-2 text-xs leading-4 text-muted">
                     <!-- Plain text, not chips: chips cannot wrap, and a phone needs
                          the whole name, not its last segment. -->
                     <p class="line-clamp-2 min-w-0 grow [overflow-wrap:anywhere]" title={cardAccounts}>
                         {#if columns.date}<span class="hidden tabular-nums @max-[16rem]:inline">{cardDate(txn.date, today)} · </span>{/if}
                         {#if columns.accounts}<span data-testid="card-accounts">{cardAccounts}</span>{/if}
                         {#if columns.status && txn.status !== "unmarked"}<span class="hidden @max-[16rem]:inline"> · {txn.status}</span>{/if}
-                        {#if tagText !== ""}<span class="hidden text-base-content/50 @max-[16rem]:inline"> · {tagText}</span>{/if}
+                        {#if tagText !== ""}<span class="hidden text-muted @max-[16rem]:inline"> · {tagText}</span>{/if}
                     </p>
                     {#if pinned !== null || tagText !== "" || columns.status}
                         <div class="flex max-w-[40%] shrink-0 flex-col items-end gap-0.5 @max-[16rem]:hidden">
@@ -455,7 +453,7 @@
                                 {#if columns.status}<span class="shrink-0"><StatusBadge status={txn.status} /></span>{/if}
                             </div>
                             {#if tagText !== ""}
-                                <span class="max-w-full truncate text-base-content/50" title={tagText} data-testid="card-tags">{tagText}</span>
+                                <span class="max-w-full truncate text-muted" title={tagText} data-testid="card-tags">{tagText}</span>
                             {/if}
                         </div>
                     {/if}

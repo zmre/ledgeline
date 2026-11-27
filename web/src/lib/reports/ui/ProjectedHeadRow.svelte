@@ -33,14 +33,14 @@
     <tr class="text-[length:max(0.6rem,8px)] tracking-widest uppercase" data-testid="projected-band">
         <th class="{fixed ? '' : 'w-full'} font-normal"><span class="sr-only">Period</span></th>
         {#if spans.actual > 0}
-            <th colspan={spans.actual} class="text-center font-normal text-base-content/40">Actual</th>
+            <th colspan={spans.actual} class="text-center font-normal text-muted">Actual</th>
         {/if}
-        <th colspan={spans.projected} class="border-l-2 border-l-primary/50 text-center font-semibold text-primary" data-testid="projected-label"
+        <th colspan={spans.projected} class="border-l-2 border-l-primary/50 text-center font-semibold text-primary-text" data-testid="projected-label"
             >{compareLabel ?? projectedLabel}</th
         >
         {#if trailing > 0}
             {#if compareLabel !== null}
-                <th colspan={trailing} class="text-center font-semibold text-base-content/60" data-testid="difference-label">Difference</th>
+                <th colspan={trailing} class="text-center font-semibold text-muted" data-testid="difference-label">Difference</th>
             {:else}
                 <th colspan={trailing}></th>
             {/if}

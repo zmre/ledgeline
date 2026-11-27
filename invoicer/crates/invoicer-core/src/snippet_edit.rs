@@ -266,7 +266,7 @@ fn clean_kind(kind: &str) -> Result<Option<String>, SnippetError> {
 
 /// A body as written: `\n` line ends, no blank lines at either end, one
 /// final newline (empty when there is nothing).
-fn clean_body(body: &str) -> String {
+pub(crate) fn clean_body(body: &str) -> String {
     let body = body.replace("\r\n", "\n");
     let body = body.trim_matches('\n');
     if body.trim().is_empty() {
@@ -278,7 +278,7 @@ fn clean_body(body: &str) -> String {
 
 /// `source` with everything after its frontmatter replaced by `body`, one
 /// blank line between them.
-fn with_body(source: &str, body: &str) -> String {
+pub(crate) fn with_body(source: &str, body: &str) -> String {
     let start = locate(source).map_or(0, |b| b.body_start);
     let mut out = source[..start].to_string();
     if start > 0 && !out.ends_with('\n') {

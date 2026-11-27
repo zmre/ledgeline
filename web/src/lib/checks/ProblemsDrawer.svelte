@@ -149,9 +149,9 @@
      Single-line messages keep the original wrapping treatment. -->
 {#snippet messageBody(problem: Problem)}
     {#if problem.message.includes("\n")}
-        <span class="block overflow-x-auto font-mono text-xs whitespace-pre text-base-content/60">{problem.message}</span>
+        <span class="block overflow-x-auto font-mono text-xs whitespace-pre text-muted">{problem.message}</span>
     {:else}
-        <span class="block text-xs text-base-content/60">{problem.message}</span>
+        <span class="block text-xs text-muted">{problem.message}</span>
     {/if}
 {/snippet}
 
@@ -160,7 +160,7 @@
         {#if kind === "find"}
             <button type="button" class="btn btn-xs" onclick={() => void findMatch(problem)} data-testid="problem-find-match">Find match</button>
         {:else if armedUnlink === problem.txnIndex}
-            <span class="text-xs text-base-content/70">Remove the broken link's tags?</span>
+            <span class="text-xs text-muted">Remove the broken link's tags?</span>
             <button
                 type="button"
                 class="btn btn-warning btn-xs"
@@ -175,7 +175,7 @@
             >
         {/if}
         {#if fixFailure !== null && fixFailure.txnIndex === problem.txnIndex}
-            <span class="text-xs text-error" role="alert">{fixFailure.message}</span>
+            <span class="text-xs text-error-text" role="alert">{fixFailure.message}</span>
         {/if}
     </div>
 {/snippet}
@@ -194,7 +194,7 @@
         {#if problems.drawerOpen}
             <header class="flex items-center justify-between">
                 <h2 class="text-base font-semibold">Problems</h2>
-                <span class="text-sm text-base-content/60">{total === 1 ? "1 finding" : `${total} findings`}</span>
+                <span class="text-sm text-muted">{total === 1 ? "1 finding" : `${total} findings`}</span>
             </header>
 
             <!-- Bank sync (plan 43): its own group, first — a broken connection is the most time-sensitive thing here. -->
@@ -203,9 +203,9 @@
             {#if problems.count === 0 && syncStore.problems.length > 0}
                 <!-- Only bank sync has something: no "all checks pass" under it. -->
             {:else if problems.count === 0}
-                <p class="text-sm text-base-content/60">No problems found. All checks pass.</p>
+                <p class="text-sm text-muted">No problems found. All checks pass.</p>
             {:else if problems.listLoading && problems.all.length === 0}
-                <p class="flex items-center gap-2 text-sm text-base-content/60" role="status">
+                <p class="flex items-center gap-2 text-sm text-muted" role="status">
                     <span class="loading loading-xs loading-spinner"></span> Loading findings…
                 </p>
             {:else}
@@ -227,16 +227,14 @@
                                          column still answers "what is this about?". -->
                                         <div class="w-full rounded-lg p-2 text-left">
                                             <span class="flex items-baseline gap-2">
-                                                <span class="truncate font-mono text-xs text-base-content/70" title={problem.account}
-                                                    >{problem.account ?? "—"}</span
-                                                >
+                                                <span class="truncate font-mono text-xs text-muted" title={problem.account}>{problem.account ?? "—"}</span>
                                             </span>
                                             {@render messageBody(problem)}
                                         </div>
                                     {:else}
                                         <button type="button" class="w-full rounded-lg p-2 text-left hover:bg-base-300" onclick={() => void jumpTo(problem)}>
                                             <span class="flex items-baseline gap-2">
-                                                <span class="shrink-0 font-mono text-xs text-base-content/70">{problem.date ?? "—"}</span>
+                                                <span class="shrink-0 font-mono text-xs text-muted">{problem.date ?? "—"}</span>
                                                 <span class="truncate text-sm" title={problem.description}>
                                                     {problem.description === undefined || problem.description === "" ? "(no description)" : problem.description}
                                                 </span>

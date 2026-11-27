@@ -384,7 +384,7 @@
 
 {#snippet olderNote()}
     {#if older !== null && page !== null}
-        <p class="flex flex-wrap items-center justify-center gap-2 text-sm text-base-content/70" data-testid="match-older">
+        <p class="flex flex-wrap items-center justify-center gap-2 text-sm text-muted" data-testid="match-older">
             {older}.
             <button type="button" class="btn btn-ghost btn-xs" disabled={busy} onclick={() => void matches.showAll()} data-testid="match-show-all"
                 >Show all</button
@@ -422,12 +422,12 @@
                 <span class="badge badge-ghost badge-sm" data-testid="match-focus-badge">one transaction</span>
             {/if}
             {#if started && page !== null && !focused}
-                <span class="shrink-0 text-sm whitespace-nowrap text-base-content/65 tabular-nums" data-testid="match-remaining" aria-live="polite"
+                <span class="shrink-0 text-sm whitespace-nowrap text-muted tabular-nums" data-testid="match-remaining" aria-live="polite"
                     >{queue.length} left</span
                 >
             {/if}
             {#if busy}
-                <span class="flex items-center gap-1.5 text-xs text-base-content/60" role="status" data-testid="match-saving">
+                <span class="flex items-center gap-1.5 text-xs text-muted" role="status" data-testid="match-saving">
                     <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-success"></span> saving…
                 </span>
             {/if}
@@ -468,9 +468,9 @@
             {#if focused}
                 <MatchFocus bind:this={focusView} panel={PANEL} {reduced} onClose={close} />
             {:else if page === null}
-                <div class="{PANEL} flex items-center justify-center gap-2 py-16 text-sm text-base-content/60" role="status">
+                <div class="{PANEL} flex items-center justify-center gap-2 py-16 text-sm text-muted" role="status">
                     {#if matches.error !== null}
-                        <span class="text-error">Couldn't find matches: {matches.error}</span>
+                        <span class="text-error-text">Couldn't find matches: {matches.error}</span>
                     {:else}
                         <span class="loading loading-sm loading-spinner"></span> Finding matches…
                     {/if}
@@ -479,7 +479,7 @@
                 <div class="{PANEL} flex flex-col items-center gap-3 px-5 py-14 text-center" data-testid="match-empty" data-match-panel tabindex="-1">
                     <span class="grid h-12 w-12 place-items-center rounded-full bg-success/15 text-success"><ReviewIcon name="check" class="h-6 w-6" /></span>
                     <p class="text-lg font-medium">Nothing to match</p>
-                    <p class="max-w-md text-sm text-base-content/60">
+                    <p class="max-w-md text-sm text-muted">
                         {!page.clearing
                             ? "No clearing account is declared, so there is nothing to pair up."
                             : matches.scope !== null
@@ -505,7 +505,7 @@
                     <p class="text-lg tabular-nums" data-testid="match-counts">
                         <span class="font-semibold text-success">{clearPairs.length} clear</span>, <span class="font-semibold">{checkCount} to check</span>
                     </p>
-                    <p class="max-w-md text-sm text-base-content/60">
+                    <p class="max-w-md text-sm text-muted">
                         Each pair is the two halves of one transfer, landed on the same clearing account. Linking writes one <code>match:</code> tag on each half
                         and changes nothing else.
                     </p>
@@ -566,7 +566,7 @@
                             ><ReviewIcon name="check" class="h-7 w-7" /></span
                         >
                         <p class="text-lg font-medium">All done</p>
-                        <p class="text-sm text-base-content/70 tabular-nums" data-testid="match-tally">
+                        <p class="text-sm text-muted tabular-nums" data-testid="match-tally">
                             {tally.linked} linked · {tally.rejected} not a match · {tally.ignored} ignored · {tally.skipped} skipped
                         </p>
                         <button type="button" class="btn btn-sm btn-success" onclick={close}>Done <kbd class="kbd kbd-xs">↵</kbd></button>
@@ -611,7 +611,7 @@
                                             <span title={header.toAccount ?? undefined}>{header.to}</span>
                                             {#if combination && proposal.to.index !== proposal.a.txn.index}{@render groupMore(proposal)}{/if}
                                         </h2>
-                                        <p class="mt-1.5 flex items-center gap-2 text-sm text-base-content/60">
+                                        <p class="mt-1.5 flex items-center gap-2 text-sm text-muted">
                                             <span
                                                 class={["badge badge-sm", proposal.clear && choiceAt === 0 ? "badge-success" : "badge-warning"]}
                                                 data-testid="match-confidence">{proposal.clear && choiceAt === 0 ? "clear" : "check"}</span
@@ -635,7 +635,7 @@
                                         class="mx-5 mt-4 min-w-0 rounded-box border border-warning/30 bg-warning/5 px-4 py-3 sm:mx-8"
                                         data-testid="match-choices"
                                     >
-                                        <legend class="px-1 text-xs font-medium text-base-content/70">More than one half fits. Pair with:</legend>
+                                        <legend class="px-1 text-xs font-medium text-muted">More than one half fits. Pair with:</legend>
                                         {#each choices as option, at (pairKey(option.a, option.b))}
                                             {@const other = otherHalf(option, proposal)}
                                             <label class="flex cursor-pointer items-center gap-2 py-0.5 text-sm">
@@ -648,7 +648,7 @@
                                                 />
                                                 <span class="tabular-nums">{longDate(other.txn.date)}</span>
                                                 <span class="truncate">{other.txn.description}</span>
-                                                <span class="shrink-0 text-xs text-base-content/50"
+                                                <span class="shrink-0 text-xs text-muted"
                                                     >{gapLabel(option.gapDays)}{option.taken ? " · in another pair" : ""}</span
                                                 >
                                             </label>
@@ -675,7 +675,7 @@
                                         />
                                         {#if combination}
                                             <section class="flex min-w-0 flex-col gap-2 p-5 sm:p-6" data-testid="match-group">
-                                                <p class="text-sm text-base-content/70">
+                                                <p class="text-sm text-muted">
                                                     {proposal.group.length} postings that add up to it, via {halfAccount(proposal.group[0])}
                                                 </p>
                                                 <ul class="flex flex-col divide-y divide-base-content/10">

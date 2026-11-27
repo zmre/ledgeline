@@ -6,7 +6,7 @@
 </script>
 
 <details class="text-sm" {open} data-testid="sync-who-sees">
-    <summary class="cursor-pointer text-base-content/70">{summary} ⓘ</summary>
+    <summary class="cursor-pointer text-muted">{summary} ⓘ</summary>
     <div class="mt-2 overflow-x-auto">
         <table class="table table-xs">
             <thead>

@@ -13,6 +13,7 @@ use crate::model::{AccountDeclaration, Commodity, PriceDirective, Transaction};
 use crate::reports::{ReportError, bucket_label, last_n_buckets};
 
 use super::engine::{HoldingsFlows, holdings_at_each_with_flows};
+use super::performance::attach_returns;
 use super::types::HoldingsScope;
 use super::window::{SeriesWindow, series_dates};
 
@@ -33,6 +34,14 @@ pub struct HoldingsPoint {
     /// known basis (same rule as `HoldingsReport.totals.basis`); `None` only when
     /// none qualify.
     pub basis: Option<Dec>,
+    /// Net money INTO the scoped holdings during the bucket ending here (plan
+    /// 47 A1): buys positive at cost, sells negative at proceeds, see
+    /// [`super::performance`]. Zero on the first point.
+    pub flow: Dec,
+    /// Cumulative time-weighted return since the first point, as a fraction
+    /// (`0.123` = +12.3 %); `None` before anything is held
+    /// ([`super::performance::growth_index`]).
+    pub return_pct: Option<f64>,
 }
 
 /// A market-value (and basis) trend over the last `count` period boundaries.
@@ -104,7 +113,10 @@ fn series_and_flows(
     // (or empty) bucket could legitimately land on a different commodity than
     // the last one — and a trend line whose units change partway along is worse
     // than no trend.
-    let flows_after = with_flows.then(|| dates.first().cloned()).flatten();
+    // Flows are always recorded (plan 47 A1: every point carries its bucket's
+    // net flow and the return chained from them); `with_flows` only decides
+    // whether the caller also gets them back.
+    let flows_after = dates.first().cloned();
     let (_, reports, flows) = holdings_at_each_with_flows(
         txns,
         prices,
@@ -129,14 +141,18 @@ fn series_and_flows(
             label: bucket_label(key),
             market_value: report.totals.market_value,
             basis: report.totals.basis,
+            flow: Dec::zero(),
+            return_pct: None,
         });
     }
+    let flows = flows.unwrap_or_default();
+    attach_returns(&mut points, &flows.flows)?;
     let series = HoldingsSeries {
         base,
         points,
         has_basis,
     };
-    Ok((series, flows))
+    Ok((series, with_flows.then_some(flows)))
 }
 
 #[cfg(test)]

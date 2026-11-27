@@ -162,7 +162,7 @@ describe("COMPONENT BudgetTable — columns", () => {
 
     it("colours Remaining by verdict: error only for an expense past its goal", () => {
         mount();
-        expect(within(row("expenses:gas")).getByTestId("budget-remaining").className).toContain("text-error");
+        expect(within(row("expenses:gas")).getByTestId("budget-remaining").className).toContain("text-error-text");
         expect(within(row("expenses:food")).getByTestId("budget-remaining").className).toContain("text-success");
     });
 });

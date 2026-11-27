@@ -81,6 +81,6 @@
         {/each}
     </div>
     {#if excludedNote !== null}
-        <p class="px-4 text-xs text-base-content/60" data-testid="holdings-basis-note">{excludedNote}</p>
+        <p class="px-4 text-xs text-muted" data-testid="holdings-basis-note">{excludedNote}</p>
     {/if}
 </div>

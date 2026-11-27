@@ -293,7 +293,7 @@ fn saving_the_form_unchanged_writes_nothing() {
     let p = path("customers/Fabrikam.md");
     let note = index.site().note(&p).expect("note").clone();
     let customer = Customer::from_note(&note).expect("customer");
-    let form = fields_of(&customer, &note);
+    let form = fields_of(&customer, &note, &vault.read_to_string(&p).expect("reads"));
     assert_eq!(
         form.addresses.as_deref().map(|a| a[0].value.as_str()),
         Some("1 Fabrikam Way\nSpringfield, IL 62701\nUSA")
@@ -516,7 +516,7 @@ fn the_fixture_customer_saves_unchanged() {
     let p = path("customers/Customer X.md");
     let note = index.site().note(&p).expect("note").clone();
     let customer = Customer::from_note(&note).expect("customer");
-    let form = fields_of(&customer, &note);
+    let form = fields_of(&customer, &note, &vault.read_to_string(&p).expect("reads"));
     let done = update(&mut index, &vault, &p, &hash_of(&vault, &p), &form).expect("saves");
     assert!(!done.written, "{:?}", done.changed);
     assert_eq!(vault.read_to_string(&p).expect("reads"), CUSTOMER_X);
@@ -577,7 +577,7 @@ fn open_pos_save_unchanged_and_keep_unknown_keys() {
     let p = path("customers/Contoso.md");
     let note = index.site().note(&p).expect("note").clone();
     let customer = Customer::from_note(&note).expect("customer");
-    let form = fields_of(&customer, &note);
+    let form = fields_of(&customer, &note, &vault.read_to_string(&p).expect("reads"));
     let listed = form.open_pos.clone().expect("open_pos");
     assert_eq!(listed[0].reference, "PO #105");
     assert_eq!(listed[0].amount.as_deref(), Some("40000"));
@@ -845,9 +845,238 @@ fn a_closed_po_line_reads_its_figures() {
         invoices: vec!["104".into()],
         invoiced: Some("$16,700.00".into()),
         remaining: Some("$23,300.00".into()),
+        attachment: None,
     };
     assert_eq!(
         closed_po_line(&usage, Some("2026-11-24")),
         "- PO #PY75334 — $40,000, expires 2027-06-30; invoiced $16,700.00; closed 2026-11-24."
     );
+}
+
+#[test]
+fn the_body_is_the_notes_and_white_space_alone_is_no_change() {
+    let (vault, mut index) = open(&[("customers/Fabrikam.md", HAND_WRITTEN)]);
+    let p = path("customers/Fabrikam.md");
+    let note = index.site().note(&p).expect("note").clone();
+    let customer = Customer::from_note(&note).expect("customer");
+    let form = fields_of(&customer, &note, HAND_WRITTEN);
+    assert_eq!(
+        form.body.as_deref(),
+        Some("Fabrikam pays by ACH.\n\n- Contact: Lee\n")
+    );
+    // Line ends, spaces at line ends and blank lines at either end: no change.
+    let same = fields(json!({"body": "\n\nFabrikam pays by ACH.  \r\n\r\n- Contact: Lee\n\n\n"}));
+    let done = update(&mut index, &vault, &p, &hash_of(&vault, &p), &same).expect("saves");
+    assert!(!done.written, "{:?}", done.changed);
+    assert_eq!(vault.read_to_string(&p).expect("reads"), HAND_WRITTEN);
+    // A real edit: only the body moves.
+    let done = update(
+        &mut index,
+        &vault,
+        &p,
+        &done.hash,
+        &fields(json!({"body": "Fabrikam pays by **wire** now.\n\n- Contact: Lee\n"})),
+    )
+    .expect("saves");
+    assert_eq!(done.changed, ["body"]);
+    let text = vault.read_to_string(&p).expect("reads");
+    let head = &HAND_WRITTEN[..HAND_WRITTEN.find("\n---\n").expect("closing") + 5];
+    assert_eq!(
+        text,
+        format!("{head}\nFabrikam pays by **wire** now.\n\n- Contact: Lee\n")
+    );
+    // Emptied: the note ends at its frontmatter.
+    let done = update(
+        &mut index,
+        &vault,
+        &p,
+        &done.hash,
+        &fields(json!({"body": "  \n"})),
+    )
+    .expect("saves");
+    assert_eq!(done.changed, ["body"]);
+    assert_eq!(vault.read_to_string(&p).expect("reads"), head);
+}
+
+#[test]
+fn a_save_that_edits_the_body_and_closes_a_po_notes_it_in_the_new_body() {
+    let (vault, mut index) = open(&[("customers/Contoso.md", WITH_POS)]);
+    let p = path("customers/Contoso.md");
+    let mut both = pos(json!([{"reference": "PO #200", "was": "PO #200"}]));
+    both.body = Some("New notes.\n".into());
+    let done = update_on(
+        &mut index,
+        &vault,
+        &p,
+        &hash_of(&vault, &p),
+        &both,
+        Some("2026-11-26"),
+    )
+    .expect("saves");
+    assert_eq!(done.changed, ["open_pos", "body"]);
+    assert_eq!(done.noted, ["PO #105"]);
+    let text = vault.read_to_string(&p).expect("reads");
+    assert!(
+        text.ends_with(
+            "terms: 30   # net\n---\n\nNew notes.\n\n## Closed POs\n\n- PO #105 — 40000, expires 2027-06-30; nothing invoiced; closed 2026-11-26.\n"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("Body stays."), "{text}");
+}
+
+#[test]
+fn po_attachments_are_set_kept_and_removed_by_key() {
+    let (vault, mut index) = open(&[
+        ("customers/Contoso.md", WITH_POS),
+        ("pos/PO 105.pdf", "%PDF-"),
+    ]);
+    let p = path("customers/Contoso.md");
+    let done = update(
+        &mut index,
+        &vault,
+        &p,
+        &hash_of(&vault, &p),
+        &pos(json!([
+            {"reference": "PO #105", "amount": "40000", "expires": "2027-06-30", "attachment": "/pos/PO 105.pdf", "was": "PO #105"},
+            {"reference": "PO #200", "attachment": "~/Documents/PO 200.pdf", "was": "PO #200"}
+        ])),
+    )
+    .expect("saves");
+    assert_eq!(done.changed, ["open_pos"]);
+    let text = vault.read_to_string(&p).expect("reads");
+    assert!(text.contains("attachment: /pos/PO 105.pdf"), "{text}");
+    assert!(
+        text.contains("attachment: ~/Documents/PO 200.pdf"),
+        "{text}"
+    );
+    assert!(text.contains("buyer: Lee"), "{text}");
+    let note = index.site().note(&p).cloned().expect("indexed");
+    let customer = Customer::from_note(&note).expect("customer");
+    assert_eq!(
+        customer.open_pos[0].attachment,
+        Some(Attachment::File {
+            path: "/pos/PO 105.pdf".into()
+        })
+    );
+    let form = fields_of(&customer, &note, &text);
+    assert_eq!(
+        form.open_pos.as_ref().map(|p| p[0].attachment.clone()),
+        Some(Some(Some("/pos/PO 105.pdf".into())))
+    );
+    // Absent: kept (a PO edited without the attachment, as the view's own
+    // PO editor does); null: removed.
+    let done = update(
+        &mut index,
+        &vault,
+        &p,
+        &done.hash,
+        &pos(json!([
+            {"reference": "PO #105", "amount": "40000", "expires": "2027-12-31", "was": "PO #105"},
+            {"reference": "PO #200", "attachment": null, "was": "PO #200"}
+        ])),
+    )
+    .expect("saves");
+    assert!(done.written);
+    let text = vault.read_to_string(&p).expect("reads");
+    assert!(text.contains("attachment: /pos/PO 105.pdf"), "{text}");
+    assert!(!text.contains("PO 200.pdf"), "{text}");
+    // What doesn't read is refused, naming the PO.
+    for (bad, says) in [
+        (
+            json!([{"reference": "PO #105", "attachment": "file://server/x.pdf", "was": "PO #105"}]),
+            "PO #105's attachment",
+        ),
+        (
+            json!([{"reference": "", "attachment": "/pos/PO 105.pdf"}]),
+            "needs its reference",
+        ),
+    ] {
+        let refused = update(&mut index, &vault, &p, &hash_of(&vault, &p), &pos(bad));
+        assert!(
+            matches!(&refused, Err(CustomerError::Invalid(m)) if m.contains(says)),
+            "{refused:?}"
+        );
+    }
+}
+
+#[test]
+fn a_closed_po_is_noted_with_its_attachment_by_name() {
+    let (vault, mut index) = open(&[
+        ("customers/Contoso.md", WITH_POS),
+        ("pos/PO 105.pdf", "%PDF-"),
+    ]);
+    let p = path("customers/Contoso.md");
+    let done = update(
+        &mut index,
+        &vault,
+        &p,
+        &hash_of(&vault, &p),
+        &pos(json!([
+            {"reference": "PO #105", "amount": "40000", "expires": "2027-06-30", "attachment": "/pos/PO 105.pdf", "was": "PO #105"},
+            {"reference": "PO #200", "was": "PO #200"}
+        ])),
+    )
+    .expect("saves");
+    update_on(
+        &mut index,
+        &vault,
+        &p,
+        &done.hash,
+        &pos(json!([{"reference": "PO #200", "was": "PO #200"}])),
+        Some("2026-11-26"),
+    )
+    .expect("saves");
+    let text = vault.read_to_string(&p).expect("reads");
+    assert!(
+        text.ends_with(
+            "- PO #105 — 40000, expires 2027-06-30; attachment PO 105.pdf; nothing invoiced; closed 2026-11-26.\n"
+        ),
+        "{text}"
+    );
+}
+
+#[test]
+fn contracts_take_outside_files_and_refuse_what_doesnt_read() {
+    let (vault, mut index) = open(&[("customers/Contoso.md", WITH_POS)]);
+    let p = path("customers/Contoso.md");
+    let done = update(
+        &mut index,
+        &vault,
+        &p,
+        &hash_of(&vault, &p),
+        &fields(
+            json!({"contracts": ["~/Documents/MSA.pdf", "file:///Volumes/Share/SOW%201.pdf", " "]}),
+        ),
+    )
+    .expect("saves");
+    assert_eq!(done.changed, ["contracts"]);
+    let note = index.site().note(&p).cloned().expect("indexed");
+    let customer = Customer::from_note(&note).expect("customer");
+    assert!(customer.contracts.iter().all(Attachment::is_outside));
+    assert_eq!(customer.contracts[1].name(), "SOW 1.pdf");
+    let refused = update(
+        &mut index,
+        &vault,
+        &p,
+        &done.hash,
+        &fields(json!({"contracts": ["file://server/MSA.pdf"]})),
+    );
+    assert!(
+        matches!(&refused, Err(CustomerError::Invalid(m)) if m.starts_with("a contract:")),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn a_new_customer_can_start_with_notes() {
+    let (vault, mut index) = open(&[]);
+    let new = fields(
+        json!({"title": "Northwind", "kind": "organization", "body": "\nMet at the expo.\n\n"}),
+    );
+    let prepared = prepare(&index, &new).expect("prepares");
+    assert_eq!(prepared.keys.last().map(String::as_str), Some("body"));
+    let made = create(&mut index, &vault, &new).expect("creates");
+    let text = vault.read_to_string(&made.path).expect("reads");
+    assert!(text.ends_with("\n---\n\nMet at the expo.\n"), "{text}");
 }

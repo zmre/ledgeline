@@ -70,7 +70,7 @@
                 >
             {/if}
             {#if first.ruleComment !== ""}
-                <span class="min-w-0 truncate font-mono text-xs text-base-content/45 italic">; {first.ruleComment.split("\n").join(" · ")}</span>
+                <span class="min-w-0 truncate font-mono text-xs text-muted italic">; {first.ruleComment.split("\n").join(" · ")}</span>
             {/if}
         </h3>
         {#if estimated}
@@ -81,7 +81,7 @@
         {#if entry.step !== null && nextStep !== null}
             <button
                 type="button"
-                class="ml-auto inline-flex items-center gap-1 rounded-full border border-primary/30 px-2 font-mono text-[0.6875rem] leading-[1.125rem] text-primary/90 hover:bg-primary/10"
+                class="ml-auto inline-flex items-center gap-1 rounded-full border border-primary/30 px-2 font-mono text-[0.6875rem] leading-[1.125rem] text-primary-text hover:bg-primary/10"
                 title="Step {entry.step.index} of {entry.step.of}: go to the other segment"
                 aria-label="Step {entry.step.index} of {entry.step.of} of {entry.name}: go to step {(entry.step.index % entry.step.of) + 1}"
                 data-testid="step-chip"
@@ -94,7 +94,7 @@
     {/snippet}
     {#snippet body()}
         {#if attached !== ""}
-            <p class="mt-0.5 pl-3 font-mono text-xs whitespace-pre-wrap text-base-content/50 italic" data-testid="entry-attached">
+            <p class="mt-0.5 pl-3 font-mono text-xs whitespace-pre-wrap text-muted italic" data-testid="entry-attached">
                 {attached
                     .split("\n")
                     .map((line) => `; ${line}`)
@@ -109,9 +109,9 @@
                 <PostingAccount account={line.account} classes={declared} class="text-base-content/90" />
                 <!-- Neutral, minus or not: a minus is a direction here, not a warning. -->
                 <span class="text-right whitespace-nowrap" data-testid="entry-amount">{amount}</span>
-                <span class="flex min-w-0 flex-wrap items-baseline gap-x-2 font-sans text-xs text-base-content/55 {POSTING_NOTES}">
+                <span class="flex min-w-0 flex-wrap items-baseline gap-x-2 font-sans text-xs text-muted {POSTING_NOTES}">
                     {#if line.growth !== null}
-                        <span class="rounded bg-base-content/6 px-1 font-mono whitespace-nowrap text-base-content/70">{growthText(line.growth)}</span>
+                        <span class="rounded bg-base-content/6 px-1 font-mono whitespace-nowrap text-muted">{growthText(line.growth)}</span>
                     {/if}
                     {#if asset}
                         <span class="font-mono whitespace-nowrap" data-testid="entry-balance">
@@ -137,7 +137,7 @@
                     account={counter.account ?? ""}
                     classes={declared}
                     dim={counter.inferred}
-                    class="col-span-full text-base-content/50"
+                    class="col-span-full text-muted"
                     testid="entry-counter"
                 >
                     <span aria-hidden="true">→</span><span class="sr-only">balanced against</span>

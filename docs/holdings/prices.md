@@ -72,6 +72,10 @@ under it — and lives happily beside any other tag you keep there. Anything Yah
 Finance quotes works: stocks, ETFs, mutual funds by their NAV, and index symbols
 like `^GSPC`.
 
+Coins need the tag. On Yahoo Finance `BTC`, `ETH` and `USDC` are other
+securities (`BTC` is a Grayscale ETF), so tag `commodity BTC ; yahoo: BTC-USD`.
+See [Crypto](crypto.md).
+
 ### What a press actually does
 
 - **Runs twice, writes once.** A symbol that already has a `P` line for the
@@ -145,6 +149,10 @@ A read-only journal is never written to.
   during a pause.
 - A stock Yahoo has nothing new for — a market holiday, a delisted ticker — is
   asked about once per trading day, not every hour.
+- [Today's delayed quotes](index.md#the-value-over-time-chart) on the 1 week
+  and 1 month views use the same pacing, skip any stock priced in the last 15
+  minutes, and stop for 15 minutes after a *too many requests*. They are never
+  written to the prices file.
 
 Next to the **Update prices** button, Holdings shows what the last automatic
 run did, such as *Prices auto-updated 2 h ago*.

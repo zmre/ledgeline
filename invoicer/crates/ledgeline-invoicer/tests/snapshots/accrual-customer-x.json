@@ -192,6 +192,7 @@
   "open_pos": [
     {
       "amount": "$40,000",
+      "attachment": null,
       "expires": "2027-06-30",
       "reference": "PO #PY75334"
     }
@@ -200,6 +201,7 @@
   "po_usage": [
     {
       "amount": "$40,000",
+      "attachment": null,
       "expired": false,
       "expires": "2027-06-30",
       "invoiced": "$8,350.00",

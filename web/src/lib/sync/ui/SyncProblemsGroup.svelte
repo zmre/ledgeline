@@ -26,7 +26,7 @@
         <ul class="flex flex-col gap-1">
             {#each syncStore.problems as placed (placed.key)}
                 <li class="rounded-lg bg-base-100/40">
-                    <span class="block px-2 pt-2 text-xs font-medium text-base-content/70">{placed.where}</span>
+                    <span class="block px-2 pt-2 text-xs font-medium text-muted">{placed.where}</span>
                     <ProblemNotice problem={placed.problem} scope={placed.scope} {onEffect} busy={syncStore.running} compact />
                 </li>
             {/each}

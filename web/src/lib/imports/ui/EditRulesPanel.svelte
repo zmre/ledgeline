@@ -311,13 +311,13 @@
                     <h2 class="card-title">No CSV import rules yet</h2>
                     <!-- By LABEL, never a path: the engine deliberately
                          never sends one, so there is none to show. -->
-                    <p class="max-w-lg text-base-content/60">
+                    <p class="max-w-lg text-muted">
                         Ledgeline looked through <code>{index.rootLabel}</code>, the folder your journal is in, and found no
                         <code>*.rules</code> files. hledger keeps a CSV's import rules in a file beside it — create
                         <code>statement.csv.rules</code> next to <code>statement.csv</code> and it will show up here.
                     </p>
                     {#each index.warnings as warning (warning)}
-                        <p class="max-w-lg text-xs text-base-content/50">{warning}</p>
+                        <p class="max-w-lg text-xs text-muted">{warning}</p>
                     {/each}
                 </div>
             </div>
@@ -333,12 +333,12 @@
                         onConfirmSwitch={confirmSwitch}
                         onCancelSwitch={() => (pendingId = null)}
                     />
-                    <p class="px-1 text-xs text-base-content/50">Found in <code>{index.rootLabel}</code>, the folder your journal is in.</p>
+                    <p class="px-1 text-xs text-muted">Found in <code>{index.rootLabel}</code>, the folder your journal is in.</p>
                     {#if index.truncated}
                         <p class="px-1 text-xs text-warning">There are more rules files than Ledgeline will list; this is a subset.</p>
                     {/if}
                     {#each index.warnings as warning (warning)}
-                        <p class="px-1 text-xs text-base-content/50">{warning}</p>
+                        <p class="px-1 text-xs text-muted">{warning}</p>
                     {/each}
                 </aside>
 
@@ -452,7 +452,7 @@
 
                             {#if clientErrors.length > 0}
                                 <ul
-                                    class="list-inside list-disc text-sm text-error"
+                                    class="list-inside list-disc text-sm text-error-text"
                                     role="alert"
                                     use:reveal={{arm, key: clientErrors}}
                                     data-testid="imports-client-errors"

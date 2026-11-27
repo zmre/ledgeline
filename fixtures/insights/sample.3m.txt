@@ -471,6 +471,112 @@ InsightsReport {
             recognition: None,
         },
     ],
+    top_payees: [
+        PayeeRow {
+            payee: "Oakview Properties",
+            current: Dec {
+                mantissa: 375000,
+                places: 2,
+            },
+            previous: Some(
+                Dec {
+                    mantissa: 375000,
+                    places: 2,
+                },
+            ),
+            delta: Some(
+                Dec {
+                    mantissa: 0,
+                    places: 2,
+                },
+            ),
+            pct: Some(
+                0.0,
+            ),
+        },
+        PayeeRow {
+            payee: "Delta Airlines",
+            current: Dec {
+                mantissa: 41280,
+                places: 2,
+            },
+            previous: None,
+            delta: None,
+            pct: None,
+        },
+        PayeeRow {
+            payee: "Safeway",
+            current: Dec {
+                mantissa: 24039,
+                places: 2,
+            },
+            previous: None,
+            delta: None,
+            pct: None,
+        },
+        PayeeRow {
+            payee: "Hotel Laimer Hof",
+            current: Dec {
+                mantissa: 239820000,
+                places: 6,
+            },
+            previous: None,
+            delta: None,
+            pct: None,
+        },
+        PayeeRow {
+            payee: "City Power & Light",
+            current: Dec {
+                mantissa: 11275,
+                places: 2,
+            },
+            previous: Some(
+                Dec {
+                    mantissa: 18482,
+                    places: 2,
+                },
+            ),
+            delta: Some(
+                Dec {
+                    mantissa: -7207,
+                    places: 2,
+                },
+            ),
+            pct: Some(
+                -38.99469754355589,
+            ),
+        },
+        PayeeRow {
+            payee: "Venmo payment",
+            current: Dec {
+                mantissa: 7500,
+                places: 2,
+            },
+            previous: None,
+            delta: None,
+            pct: None,
+        },
+        PayeeRow {
+            payee: "Chevron",
+            current: Dec {
+                mantissa: 6552,
+                places: 2,
+            },
+            previous: None,
+            delta: None,
+            pct: None,
+        },
+        PayeeRow {
+            payee: "Bäckerei Rischart",
+            current: Dec {
+                mantissa: 21412500,
+                places: 6,
+            },
+            previous: None,
+            delta: None,
+            pct: None,
+        },
+    ],
     has_holdings: true,
     meta: None,
 }

@@ -215,7 +215,7 @@
     <div class="flex flex-wrap items-baseline justify-between gap-2">
         <div>
             <h2 class="text-sm font-semibold tracking-tight">Rules</h2>
-            <p class="text-xs text-base-content/60">
+            <p class="text-xs text-muted">
                 Read top to bottom — <strong>later matches win</strong>, so a rule further down overrides one above it.
             </p>
         </div>
@@ -224,7 +224,7 @@
 
     {#if entries.length === 0}
         <div class="rounded-box border border-dashed border-base-content/10 p-6 text-center" data-testid="imports-no-rules">
-            <p class="text-sm text-base-content/70">No rules yet. Add one to send matching rows somewhere other than the fallback category.</p>
+            <p class="text-sm text-muted">No rules yet. Add one to send matching rows somewhere other than the fallback category.</p>
         </div>
     {:else}
         <div class="flex flex-col gap-2">

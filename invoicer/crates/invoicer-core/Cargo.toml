@@ -26,6 +26,10 @@ toml_edit = "0.25"
 # Column alignment by display width, so a CJK or emoji description still
 # lines up in a monospace editor. Already in Cargo.lock.
 unicode-width = "0.2"
+# Outside-the-books attachments are written as `file:///` URLs
+# (`attachment`): the WHATWG parser percent-encodes and decodes them. The
+# version ledgeline-core uses, so this adds no crate.
+url = "2"
 # Frontmatter is read with the YAML parser MBR uses (ARCHITECTURE §5.5,
 # PLAN 1b), so a note reads the same here as in MBR: YAML 1.2 core schema
 # (`no` is a string, `2026-11-17` is a string), insertion-ordered maps. The

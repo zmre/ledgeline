@@ -962,6 +962,7 @@ describe("UNIT nativeDecode — HoldingsReport over the holdings golden", () => 
             holdings: [],
             accounts: [],
             totals: {marketValue: dec(10552625, 3), basis: null, gain: null, gainPct: null},
+            liveAt: null,
         });
         expect(report.totals.marketValue).toEqual({m: 10552625n, p: 3});
         expect(report.totals.basis).toBeNull();
@@ -1007,6 +1008,7 @@ describe("UNIT nativeDecode — OtherHoldingsReport (plans/14)", () => {
         accounts: ["assets:partners:acme", "assets:property:house", "assets:vehicles:van"],
         totals: {value: dec(17500000, 2), cost: dec(15000000, 2), change: dec(2500000, 2), changePct: 16.67},
         warnings: [{account: "assets:foreign", kind: "unpriced", message: "no market price for FOO"}],
+        liveAt: null,
     };
 
     it("decodes the committed golden: a commodity-booked home and a dollar-booked car", () => {
@@ -1141,9 +1143,9 @@ describe("UNIT nativeDecode — OtherHoldingsReport (plans/14)", () => {
     });
 
     it("throws ApiShapeError when any unconditional key is missing", () => {
-        const ok = {asOf: "2026-07-08", base: "$", holdings: [], accounts: [], totals: {value: dec(0, 0)}, warnings: []};
+        const ok = {asOf: "2026-07-08", base: "$", holdings: [], accounts: [], totals: {value: dec(0, 0)}, warnings: [], liveAt: null};
         expect(decodeOtherHoldingsReport(ok).holdings).toEqual([]);
-        for (const key of ["asOf", "base", "holdings", "accounts", "totals", "warnings"] as const) {
+        for (const key of ["asOf", "base", "holdings", "accounts", "totals", "warnings", "liveAt"] as const) {
             expect(() => decodeOtherHoldingsReport(without(ok, key)), `dropping ${key} was absorbed`).toThrow(ApiShapeError);
         }
     });
@@ -1171,8 +1173,11 @@ describe("UNIT nativeDecode — HoldingsSeries over the holdings-series golden",
     it("keeps a null basis null", () => {
         const series = decodeHoldingsSeries({
             base: "$",
-            points: [{date: "2026-05-31", bucket: "2026-05", label: "May 2026", marketValue: dec(10045300, 3), basis: null}],
+            points: [{date: "2026-05-31", bucket: "2026-05", label: "May 2026", marketValue: dec(10045300, 3), basis: null, flow: dec(0, 0), returnPct: null}],
             hasBasis: false,
+            anchor: null,
+            returnAnchor: null,
+            liveAt: null,
         });
         expect(series.points[0].basis).toBeNull();
         expect(series.hasBasis).toBe(false);
@@ -1248,6 +1253,24 @@ describe("UNIT nativeDecode — InsightsReport over the insights golden", () => 
         const top = report.topTxns[0];
         expect(top).toMatchObject({index: 144, date: "2026-01-27", description: "Acme Corp | January salary"});
         expect(top.amount).toEqual({m: 566000n, p: 2});
+    });
+
+    it("decodes top payees, with a null previous for a payee new this period", () => {
+        const report = decodeInsightsReport(raw);
+        // Card payments (Chase) and the paycheck (Acme Corp) are never payees.
+        expect(report.topPayees.map((row) => row.payee)).not.toContain("Chase");
+        expect(report.topPayees.map((row) => row.payee)).not.toContain("Acme Corp");
+        const rent = report.topPayees[0];
+        expect(rent).toMatchObject({payee: "Oakview Properties", current: {m: 1125000n, p: 2}, previous: {m: 1305000n, p: 2}, delta: {m: -180000n, p: 2}});
+        expect(rent.pct).toBeCloseTo(-13.7931034, 6);
+        const airline = report.topPayees.find((row) => row.payee === "Delta Airlines");
+        expect(airline).toMatchObject({current: {m: 41280n, p: 2}, previous: null, delta: null, pct: null});
+    });
+
+    it("refuses a top payee with no payee name", () => {
+        const base = raw as {topPayees: Record<string, unknown>[]};
+        const nameless = {...base.topPayees[0], payee: undefined};
+        expect(() => decodeInsightsReport({...(raw as object), topPayees: [nameless]})).toThrow(ApiShapeError);
     });
 
     // Plan 45 Q7, additive: a line standing for a month of recognition entries.

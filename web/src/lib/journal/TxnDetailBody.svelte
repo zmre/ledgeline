@@ -34,7 +34,7 @@
     const negative = (posting: Posting): boolean => posting.amounts.length > 0 && posting.amounts.every((amount) => amount.qty.m < 0n);
 </script>
 
-<div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm text-base-content/70">
+<div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
     <span class="font-mono whitespace-nowrap tabular-nums" data-testid="detail-date">{txn.date}</span>
     {#if txn.date2 !== undefined}<span class="font-mono text-xs" title="Secondary date">={txn.date2}</span>{/if}
     <StatusBadge status={txn.status} />
@@ -46,12 +46,12 @@
 {:else}
     <h2 class="mt-1 text-lg font-semibold [overflow-wrap:anywhere]" data-testid="detail-description">{txn.description || "(no description)"}</h2>
 {/if}
-{#if note !== null}<p class="mt-1 text-sm [overflow-wrap:anywhere] text-base-content/60">{note}</p>{/if}
+{#if note !== null}<p class="mt-1 text-sm [overflow-wrap:anywhere] text-muted">{note}</p>{/if}
 {#if txnComment !== ""}
-    <p class="mt-2 text-sm [overflow-wrap:anywhere] whitespace-pre-wrap text-base-content/70" data-testid="detail-comment">{txnComment}</p>
+    <p class="mt-2 text-sm [overflow-wrap:anywhere] whitespace-pre-wrap text-muted" data-testid="detail-comment">{txnComment}</p>
 {/if}
 {#if txn.tags.length > 0}
-    <p class="mt-2 text-sm [overflow-wrap:anywhere] text-base-content/60" data-testid="detail-tags">Tags: {tagText(txn.tags)}</p>
+    <p class="mt-2 text-sm [overflow-wrap:anywhere] text-muted" data-testid="detail-tags">Tags: {tagText(txn.tags)}</p>
 {/if}
 <ul class="mt-3 flex flex-col divide-y divide-base-300 rounded-box border border-base-300" data-testid="detail-postings">
     {#each txn.postings as posting, index (index)}
@@ -71,16 +71,14 @@
                 <span
                     class={[
                         "ml-auto shrink-0 text-right font-mono text-sm tabular-nums",
-                        negative(posting) && "text-error",
-                        posting.elided && "text-base-content/50",
+                        negative(posting) && "text-error-text",
+                        posting.elided && "text-muted",
                     ]}
                     title={posting.elided ? "Not written in the file: the amount that balances the transaction" : undefined}>{amountText(posting)}</span
                 >
             </div>
             {#if postingComment !== ""}
-                <span class="text-xs [overflow-wrap:anywhere] whitespace-pre-wrap text-base-content/60" data-testid="detail-posting-comment"
-                    >{postingComment}</span
-                >
+                <span class="text-xs [overflow-wrap:anywhere] whitespace-pre-wrap text-muted" data-testid="detail-posting-comment">{postingComment}</span>
             {/if}
         </li>
     {/each}

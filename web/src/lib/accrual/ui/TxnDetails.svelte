@@ -36,7 +36,7 @@
     {#if detail === null || detail.state === "loading"}
         <div class="h-4 w-full skeleton opacity-50" aria-label="Loading the transaction" data-testid="txn-details-loading"></div>
     {:else if detail.state === "failed"}
-        <p class="flex flex-wrap items-center gap-2 text-sm text-error" role="alert" data-testid="txn-details-failed">
+        <p class="flex flex-wrap items-center gap-2 text-sm text-error-text" role="alert" data-testid="txn-details-failed">
             Couldn't load transaction #{index}: {detail.error}
             <button type="button" class="btn btn-ghost btn-xs" onclick={() => txnDetails.retry(index)} data-testid="txn-details-retry">Retry</button>
         </p>

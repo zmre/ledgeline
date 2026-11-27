@@ -65,13 +65,13 @@
 </script>
 
 <fieldset class="flex flex-col gap-3 text-sm" {disabled} data-testid="accrual-schedule-form">
-    <legend class="mb-1 text-xs font-semibold tracking-wide text-base-content/60 uppercase">{label} · {draft.id}</legend>
+    <legend class="mb-1 text-xs font-semibold tracking-wide text-muted uppercase">{label} · {draft.id}</legend>
     {#if banner !== null}
         <p class="rounded bg-info/10 px-2 py-1 text-xs" data-testid="accrual-renewal-banner">{banner}</p>
     {/if}
     {#if !endOnly}
         <label class="flex flex-col gap-1">
-            <span class="text-xs text-base-content/60">{partyKind === "vendor" ? "Vendor" : "Customer"} (optional)</span>
+            <span class="text-xs text-muted">{partyKind === "vendor" ? "Vendor" : "Customer"} (optional)</span>
             <input
                 class="input input-sm"
                 list="{uid}-parties"
@@ -94,7 +94,7 @@
             </button>
         {/if}
         <div class="flex flex-col gap-1">
-            <span class="text-xs text-base-content/60">Service start</span>
+            <span class="text-xs text-muted">Service start</span>
             <DateInput
                 value={draft.start}
                 aria-label="Service start"
@@ -103,7 +103,7 @@
             />
         </div>
         <div class="flex flex-col gap-1">
-            <span class="text-xs text-base-content/60">Term</span>
+            <span class="text-xs text-muted">Term</span>
             <div class="flex flex-wrap items-center gap-1" role="group" aria-label="Term">
                 {#each TERM_CHIPS as months (months)}
                     <button
@@ -126,7 +126,7 @@
     {/if}
     {#if usesEndDate || endOnly}
         <div class="flex flex-col gap-1">
-            <span class="text-xs text-base-content/60">{endOnly ? "End contract on" : "Service end"}</span>
+            <span class="text-xs text-muted">{endOnly ? "End contract on" : "Service end"}</span>
             <DateInput
                 value={draft.term.through ?? ""}
                 aria-label={endOnly ? "End contract on" : "Service end"}
@@ -137,7 +137,7 @@
     {/if}
     {#if !endOnly}
         <label class="flex flex-col gap-1">
-            <span class="text-xs text-base-content/60">Recognize into</span>
+            <span class="text-xs text-muted">Recognize into</span>
             <input
                 class="input input-sm"
                 list="{uid}-accounts"
@@ -150,7 +150,7 @@
             </datalist>
         </label>
         <div class="flex flex-col gap-1">
-            <span class="text-xs text-base-content/60">Timing</span>
+            <span class="text-xs text-muted">Timing</span>
             <label class="flex items-center gap-2">
                 <input
                     type="radio"
@@ -174,7 +174,7 @@
             </label>
         </div>
         <label class="flex flex-col gap-1">
-            <span class="text-xs text-base-content/60">Contract</span>
+            <span class="text-xs text-muted">Contract</span>
             <select
                 class="select select-sm"
                 value={draft.contract ?? ""}
@@ -188,7 +188,7 @@
             </select>
         </label>
         <label class="flex flex-col gap-1">
-            <span class="text-xs text-base-content/60">Entry description</span>
+            <span class="text-xs text-muted">Entry description</span>
             <input
                 class="input input-sm"
                 value={draft.description}

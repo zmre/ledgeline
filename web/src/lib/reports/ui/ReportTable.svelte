@@ -1,7 +1,7 @@
 <!-- Spreadsheet-style report table (WP-07): sticky header row + sticky account
      column (daisyUI table-pin-rows/pin-cols), zebra rows, depth-indented
      accounts with single-child chain compression, right-aligned exact amounts
-     (negatives in text-error), emphasized subtotal/total rows. Handles both
+     (negatives in text-error-text), emphasized subtotal/total rows. Handles both
      SectionedReport (bs/is — engine rows arrive pre-sign-flipped, rendered
      as-is) and PeriodReport (cf/nw — one column per bucket, horizontal scroll
      on mobile, plus a Total column when the report carries one: cash flow
@@ -87,10 +87,10 @@
 {#snippet amount(ma: MixedAmount)}
     {@const lines = formatTotals(ma, styles)}
     {#if lines.length === 0}
-        <span class="text-base-content/40">0</span>
+        <span class="text-muted">0</span>
     {:else}
         {#each lines as line (line.text)}
-            <div class={line.negative ? "text-error" : ""}>{line.text}</div>
+            <div class={line.negative ? "text-error-text" : ""}>{line.text}</div>
         {/each}
     {/if}
 {/snippet}
@@ -107,7 +107,7 @@
             {#each sectioned.sections as section, at (section.title)}
                 <tbody>
                     <tr>
-                        <th class="pt-3 text-xs font-semibold tracking-wide text-base-content/60 uppercase">{section.title}</th>
+                        <th class="pt-3 text-xs font-semibold tracking-wide text-muted uppercase">{section.title}</th>
                         <td></td>
                     </tr>
                     {#each sectionRows[at] ?? [] as display (display.row.account)}
@@ -163,7 +163,7 @@
                 {/each}
                 {#if period.rows.length === 0}
                     <tr>
-                        <th class="font-normal text-base-content/50">No matching accounts</th>
+                        <th class="font-normal text-muted">No matching accounts</th>
                         <td colspan={columns.headers.length}></td>
                     </tr>
                 {/if}

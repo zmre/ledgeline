@@ -39,7 +39,7 @@
                 data-testid="imports-statement"
             >
                 <span class="text-sm font-medium">{statementChoiceLabel(choice, index)}</span>
-                <span class="text-xs text-base-content/60">{statementChoiceDetail(choice)}</span>
+                <span class="text-xs text-muted">{statementChoiceDetail(choice)}</span>
             </button>
         {/each}
     </div>

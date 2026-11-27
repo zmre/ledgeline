@@ -7,7 +7,7 @@ tags: [reports]
 
 # Insights
 
-Insights is the first tab on the Reports page. It compares a current period with the previous one of the same length and shows the result in up to ten boxes: six headline figures and four short lists. Boxes that don't apply to your journal are hidden (see [When boxes hide](#when-boxes-hide)). When the journal holds the books of a subscription business, a section of [startup metrics](startup-metrics.md) appears under the headline boxes.
+Insights is the first tab on the Reports page. It compares a current period with the previous one of the same length and shows the result in up to eleven boxes: six headline figures and five short lists. Boxes that don't apply to your journal are hidden (see [When boxes hide](#when-boxes-hide)). When the journal holds the books of a subscription business, a section of [startup metrics](startup-metrics.md) appears under the headline boxes.
 
 ![The Insights dashboard with its default year-over-year comparison](images/insights.png)
 
@@ -60,9 +60,9 @@ The total of your cash accounts at the end of the current period.
 
 Figures are in the base currency, which is the commodity your price directives most often price things in (`$` if you have none). When a box also holds other commodities, they appear on a smaller line under the big figure.
 
-## The four lists
+## The five lists
 
-Each list shows up to five rows from the current period.
+Each list shows up to five rows from the current period, except Top Payees, which shows up to ten.
 
 ### Biggest Expense Changes and Biggest Revenue Changes
 
@@ -89,6 +89,28 @@ A transaction that touches no revenue or expense account scores zero and drops o
 
 Revenue debits in a transaction that credits a deferred revenue account (`kpi: deferred-revenue`) are moves to deferred revenue, not income, and don't count. A pure move to deferred revenue therefore drops out, and an entry that recognises revenue and moves some of it in one go shows only what it recognises. See [Deferred revenue books](startup-metrics.md#deferred-revenue-books).
 
+### Top Payees
+
+Who got the most of your spending this period. Each row shows what you spent with that payee in the current period, what you spent in the previous one, and the change in amount and percent. A payee you didn't pay in the previous period shows **new** instead of a change.
+
+The payee is the part of a transaction's description before `|`, so `Costco | groceries` and `Costco | household` both count towards **Costco**. Case and extra spaces don't matter: `COSTCO`, `Costco` and `costco ` are one payee, shown with the spelling you used most this period.
+
+Only expense postings count, and only in a transaction where money actually moved: one with a posting to a cash account (`type: C`) or a liability, such as a credit card. That leaves out entries that move no money, such as depreciation or a prepaid expense being used up.
+
+| Transaction | Counts as |
+| --- | --- |
+| A purchase: `expenses:groceries` $84.20, `liabilities:card` | $84.20 to that payee |
+| A refund: `expenses:shopping` −$40.00, `liabilities:card` | −$40.00, taken off that payee's total |
+| A mortgage payment: `expenses:interest` $880.00, `liabilities:mortgage` $620.00, `assets:bank` | $880.00, the interest. The principal isn't an expense. |
+| The card payment: `liabilities:card`, `assets:bank` | Nothing. The purchases it paid for are already counted under their own payees. |
+| A paycheck with withholding to `expenses:` accounts | Nothing. It brings money in. |
+| Depreciation: `expenses:depreciation`, `assets:car:accumulated depreciation` | Nothing. No cash or card moved. |
+| A bill you owe: `expenses:repairs` $400.00, `liabilities:payable` | $400.00. It's owed to that payee, and paying it later adds nothing. |
+
+Cash accounts are found the same way as for Cash Balance: an account's declared `type: C`, else its nearest declared parent's type, else its name (an account under `assets` with a segment such as `bank`, `checking`, `savings` or `cash`). If you declare `account assets ; type: A` but not your bank accounts, they count as plain assets and bank purchases won't show here. Declare them `type: C` to fix that.
+
+Accounts under `expenses:tax` and `expenses:taxes` are left out, as in Avg Monthly Costs. Amounts in other commodities are valued in your base currency at the posting's date. Click a payee, or tab to it and press Enter, to open the journal filtered to that payee and the current period.
+
 ## When boxes hide
 
 A box that has nothing useful to say is hidden, and the boxes after it move up to fill the gap:
@@ -99,7 +121,7 @@ A box that has nothing useful to say is hidden, and the boxes after it move up t
 | Investment Performance | No holdings exist in either period. |
 | Biggest Movers | It would have no rows, for example when you hold no stocks. |
 
-A household journal with a positive net worth and stocks keeps all ten boxes.
+A household journal with a positive net worth and stocks keeps all eleven boxes.
 
 ### Runway
 

@@ -129,12 +129,12 @@
 
         <form class="flex flex-col gap-4" onsubmit={submit}>
             <label class="form-control">
-                <span class="label-text mb-1 block text-xs text-base-content/70">How often</span>
+                <span class="label-text mb-1 block text-xs text-muted">How often</span>
                 {#if periodFixed}
                     <!-- Shown, not offered: see `periodFixed`. -->
                     <div class="flex items-center gap-2">
                         <span class="badge badge-neutral">{periodLabel}</span>
-                        <span class="text-xs text-base-content/50">
+                        <span class="text-xs text-muted">
                             set by the rule this goal is in{draft.rule !== null && draft.rule.description !== "" ? ` — “${draft.rule.description}”` : ""}
                         </span>
                     </div>
@@ -148,7 +148,7 @@
             </label>
 
             <label class="form-control">
-                <span class="label-text mb-1 block text-xs text-base-content/70">Category</span>
+                <span class="label-text mb-1 block text-xs text-muted">Category</span>
                 {#if editing}
                     <!-- Renaming a goal's account is a move, not an edit: it
                          would mean deleting one line and writing another, under
@@ -172,7 +172,7 @@
             <ReferenceStrip view={referenceView} {reference} {styles} />
 
             <label class="form-control">
-                <span class="label-text mb-1 block text-xs text-base-content/70">
+                <span class="label-text mb-1 block text-xs text-muted">
                     Amount per {BUDGET_PERIODS.find((p) => p.id === period)?.plural.replace(/s$/, "") ?? "period"}
                 </span>
                 <input
@@ -185,17 +185,17 @@
                     aria-invalid={amount.trim() !== "" && parsed === null}
                 />
                 {#if amount.trim() !== "" && parsed === null}
-                    <span class="mt-1 text-xs text-error">That isn't a number.</span>
+                    <span class="mt-1 text-xs text-error-text">That isn't a number.</span>
                 {:else if reference?.inverted === true}
                     <!-- Said out loud, because it is the one place the app writes
                          a different number than the one that was typed. -->
-                    <span class="mt-1 text-xs text-base-content/60">This is an income account, so hledger records it as a negative amount.</span>
+                    <span class="mt-1 text-xs text-muted">This is an income account, so hledger records it as a negative amount.</span>
                 {/if}
             </label>
 
             {#if preview !== null}
                 <div class="rounded-box bg-base-200 px-3 py-2">
-                    <span class="mb-1 block text-xs text-base-content/60">Will be written as</span>
+                    <span class="mb-1 block text-xs text-muted">Will be written as</span>
                     <code class="font-mono text-sm" data-testid="goal-preview">{preview}</code>
                 </div>
             {/if}

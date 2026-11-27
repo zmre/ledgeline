@@ -53,7 +53,7 @@
             <p class="text-sm">
                 None of the <code>*.rules</code> files beside your journal fit this data, so Ledgeline has nothing to read it through.
             </p>
-            <p class="text-sm text-base-content/60">
+            <p class="text-sm text-muted">
                 Ledgeline can write one for you: it reads your file, guesses which column is the date, the payee and the amount, and shows you the mapping
                 before anything is saved. You can still just keep the converted CSV instead — the destination below is where it goes.
             </p>
@@ -90,10 +90,10 @@
                         <span class="grow truncate font-medium">{card.candidate.label}</span>
                         <span class="badge badge-{scoreTone(card.candidate.score)} badge-sm">{formatScore(card.candidate.score)}</span>
                     </span>
-                    <span class="truncate text-xs text-base-content/50">{card.candidate.id}</span>
+                    <span class="truncate text-xs text-muted">{card.candidate.id}</span>
                     <ul class="text-xs">
                         {#each signalLines(card.candidate.signals) as line (line.text)}
-                            <li class={line.bad ? "text-warning" : "text-base-content/60"}>{line.text}</li>
+                            <li class={line.bad ? "text-warning" : "text-muted"}>{line.text}</li>
                         {/each}
                     </ul>
                     {#if card.sample.length > 0}
@@ -122,7 +122,7 @@
             />
             <span class="flex flex-col">
                 <span class="font-medium">Don't import — just save the CSV</span>
-                <span class="text-xs text-base-content/60">Writes the converted file to the destination below and leaves your journal alone.</span>
+                <span class="text-xs text-muted">Writes the converted file to the destination below and leaves your journal alone.</span>
             </span>
         </label>
 
@@ -130,7 +130,7 @@
             <button type="button" class="btn btn-ghost btn-sm" disabled={disabled || creating} onclick={onCreate} data-testid="imports-create-rules">
                 Create a new rules file…
             </button>
-            <span class="text-xs text-base-content/50">when none of these is the right one for this statement</span>
+            <span class="text-xs text-muted">when none of these is the right one for this statement</span>
         </div>
     {/if}
 </section>

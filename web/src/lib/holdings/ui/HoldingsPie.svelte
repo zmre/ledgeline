@@ -18,7 +18,12 @@
        the pad-angle gaps between slices, and the tooltips.
      - a slice past the palette's last slot never gets a generated hue: it
        folds into "(other)" (dataviz non-negotiable), which is why the
-       named-slice cap is the palette's slot count. -->
+       named-slice cap is the palette's slot count.
+     - a wedge is a filter (plan 47 D7): clicking one charts only its holdings
+       — the symbol, every symbol folded into "(other)", or, in a category
+       view, every holding with ANY share in that category. While a filter is
+       set, the wedges holding none of it are dimmed; every wedge stays, so the
+       next one is still there to click. -->
 <script lang="ts">
     import {PieChart, Tooltip} from "layerchart";
     import ChartLegend from "#ui/components/ChartLegend.svelte";
@@ -32,7 +37,22 @@
     import {settings} from "#lib/stores/settings.svelte.js";
     import {pieSlices, PIE_OTHER, type PieSlice} from "./view";
 
-    let {holdings, format}: {holdings: Holding[]; format: (v: Dec) => string} = $props();
+    let {
+        holdings,
+        format,
+        selected = new Set<string>(),
+        onSelect,
+    }: {
+        holdings: Holding[];
+        format: (v: Dec) => string;
+        /** The holdings filter: wedges holding none of it are dimmed. */
+        selected?: ReadonlySet<string>;
+        /** A wedge was clicked: chart exactly these symbols. */
+        onSelect?: (symbols: string[]) => void;
+    } = $props();
+
+    /** A dimmed wedge's opacity — still legible, plainly not chosen. */
+    const DIMMED = 0.35;
 
     const DIMENSION_LABELS: Record<PieDimension, string> = {
         holding: "By holding",
@@ -125,7 +145,13 @@
         extra: string;
         title: string;
         italic: boolean;
+        /** The symbols a click on it selects. */
+        symbols: string[];
     }
+
+    /** layerchart reads a datum's own `props` onto its arc: the dimming, while a filter leaves this wedge out. */
+    const withDimming = (wedge: Wedge): Wedge & {props?: {opacity: number}} =>
+        selected.size === 0 || wedge.symbols.some((symbol) => selected.has(symbol)) ? wedge : {...wedge, props: {opacity: DIMMED}};
 
     const share = (percent: number): string => `${percent.toFixed(1)}%`;
 
@@ -140,6 +166,7 @@
         extra: share(slice.share),
         title: `${slice.name} — ${slice.formatted}`,
         italic: false,
+        symbols: slice.symbols,
     });
 
     const categoryWedge = (slice: CategorySlice): Wedge => {
@@ -155,15 +182,23 @@
             extra: `${share(slice.share)} · ${formatted}`,
             title: `${slice.label} — ${formatted} (${describe(slice)})`,
             italic: slice.kind === "unclassified",
+            symbols: slice.symbols,
         };
     };
 
-    const wedges = $derived(category === null ? pieSlices(holdings, format, chartColors.categorical.length).map(holdingWedge) : slices.map(categoryWedge));
+    const wedges = $derived(
+        (category === null ? pieSlices(holdings, format, chartColors.categorical.length).map(holdingWedge) : slices.map(categoryWedge)).map(withDimming)
+    );
+
+    function clickWedge(_event: MouseEvent, detail: {data: unknown}): void {
+        const symbols = (detail.data as Partial<Wedge> | null)?.symbols;
+        if (symbols !== undefined && symbols.length > 0) onSelect?.(symbols);
+    }
 </script>
 
 <div class="flex flex-col gap-1" data-testid="holdings-pie-panel">
     <div class="flex flex-wrap items-center justify-between gap-2">
-        <label class="flex items-center gap-2 text-xs text-base-content/60">
+        <label class="flex items-center gap-2 text-xs text-muted">
             <span class="sr-only sm:not-sr-only">Divide by</span>
             <select
                 class="select w-auto select-xs"
@@ -178,24 +213,24 @@
             </select>
         </label>
         {#if loading}
-            <span class="flex items-center gap-1 text-xs text-base-content/60" role="status" data-testid="holdings-pie-loading">
+            <span class="flex items-center gap-1 text-xs text-muted" role="status" data-testid="holdings-pie-loading">
                 <span class="loading loading-xs loading-spinner"></span>
                 Classifying holdings…
             </span>
         {:else if failed && profiles !== null}
             <!-- An older answer is still on screen; say it could not be refreshed rather than pass it off as current. -->
-            <span class="flex items-center gap-1 text-xs text-base-content/60" data-testid="holdings-pie-stale">
+            <span class="flex items-center gap-1 text-xs text-muted" data-testid="holdings-pie-stale">
                 Couldn't refresh classifications.
                 <button type="button" class="link" onclick={retry}>Retry</button>
             </span>
         {:else if yahooHint !== null}
-            <span class="text-xs text-base-content/60" data-testid="holdings-pie-yahoo-hint">{yahooHint}</span>
+            <span class="text-xs text-muted" data-testid="holdings-pie-yahoo-hint">{yahooHint}</span>
         {/if}
     </div>
 
     {#if category !== null && profiles === null}
         <!-- No answer yet: hold the pie's own height so nothing below jumps when it lands. -->
-        <div class="flex h-56 w-full flex-col items-center justify-center gap-2 text-sm text-base-content/60 sm:h-64" data-testid="holdings-pie-pending">
+        <div class="flex h-56 w-full flex-col items-center justify-center gap-2 text-sm text-muted sm:h-64" data-testid="holdings-pie-pending">
             {#if failed}
                 <p data-testid="holdings-pie-error">Couldn't load classifications.</p>
                 <button type="button" class="btn btn-ghost btn-xs" onclick={retry}>Retry</button>
@@ -204,10 +239,10 @@
             {/if}
         </div>
     {:else if wedges.length === 0}
-        <p class="py-10 text-center text-sm text-base-content/60">No priced holdings to chart.</p>
+        <p class="py-10 text-center text-sm text-muted">No priced holdings to chart.</p>
     {:else if category !== null && onlyUnclassified}
         <div
-            class="flex h-56 w-full flex-col items-center justify-center gap-1 px-4 text-center text-sm text-base-content/60 sm:h-64"
+            class="flex h-56 w-full flex-col items-center justify-center gap-1 px-4 text-center text-sm text-muted sm:h-64"
             data-testid="holdings-pie-unclassified"
         >
             <p>No holding here has {DIMENSION_LABELS[category].toLowerCase()} data.</p>
@@ -217,8 +252,16 @@
         </div>
     {:else}
         <!-- A refetch keeps the previous pie at reduced opacity rather than flashing a spinner (dataviz: no skeleton on refetch). -->
-        <div class={["h-56 w-full transition-opacity sm:h-64", loading && "opacity-50"]} data-testid="holdings-pie">
-            <PieChart data={wedges} key="key" label="label" value={(d) => d.value} cRange={wedges.map((d) => d.color)} padAngle={0.02}>
+        <div class={["h-56 w-full transition-opacity sm:h-64", loading && "opacity-50", onSelect !== undefined && "cursor-pointer"]} data-testid="holdings-pie">
+            <PieChart
+                data={wedges}
+                key="key"
+                label="label"
+                value={(d) => d.value}
+                cRange={wedges.map((d) => d.color)}
+                padAngle={0.02}
+                onArcClick={onSelect === undefined ? undefined : clickWedge}
+            >
                 {#snippet tooltip()}
                     <Tooltip.Root>
                         {#snippet children({data})}
@@ -226,10 +269,10 @@
                             <div class="flex flex-col gap-0.5 text-xs">
                                 <div class="flex items-center gap-2">
                                     <span class="inline-block h-2 w-2 rounded-full" style="background:{d.color}"></span>
-                                    <span class="text-base-content/70">{d.name}</span>
+                                    <span class="text-muted">{d.name}</span>
                                     <span class="font-semibold">{d.formatted}</span>
                                 </div>
-                                {#if d.detail !== null}<span class="text-base-content/60">{d.detail}</span>{/if}
+                                {#if d.detail !== null}<span class="text-muted">{d.detail}</span>{/if}
                             </div>
                         {/snippet}
                     </Tooltip.Root>

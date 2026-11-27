@@ -1,7 +1,8 @@
 //! Creating a draft (ARCHITECTURE §5.2) and saving documents.
 //!
 //! A draft snapshots the customer and your company into frontmatter
-//! (`invoicee_*`, `invoicer_*`), takes its terms (with `due_date = date +
+//! (`invoicee_*`, `invoicer_*`; the company's keys then follow its note
+//! until the draft is sent: [`crate::company`]), takes its terms (with `due_date = date +
 //! terms`) and template from the request, else the customer, else `[invoicer]
 //! default-terms` and `default-template` (else the first template for its
 //! type), copies the customer's default snippets, builds the
@@ -21,6 +22,7 @@
 //! with readable frontmatter and a bill table whose amounts agree.
 
 use crate::catalog::CatalogItem;
+use crate::company;
 use crate::customers::{self, CustomerLookup};
 use crate::doc::{DocType, Invoice, InvoiceNumber};
 use crate::frontmatter::{self, EditError};
@@ -380,8 +382,6 @@ pub fn render(
         None => index.next_number(books.iter().copied())?,
     };
     let bill_to = customer.billing_contact(site, words);
-    let company = customers::company(site, settings);
-    let labels = &words.billing_labels;
     let mut warnings: Vec<String> = Vec::new();
     let template = new
         .template
@@ -450,22 +450,7 @@ pub fn render(
             .as_deref()
             .map(|a| ("invoicee_address", block_text(a))),
     );
-    if let Some(company) = &company {
-        fields.push(("invoicer", text(&format!("[[{}]]", company.title))));
-        fields.push(("invoicer_name", text(&company.title)));
-        fields.extend(company.email(labels).map(|e| ("invoicer_email", text(e))));
-        fields.extend(company.phone(labels).map(|p| ("invoicer_phone", text(p))));
-        fields.extend(
-            company
-                .address(labels)
-                .map(|a| ("invoicer_address", block_text(a))),
-        );
-        // Rooted, so the page finds it from any folder (MBR serves the books at `/`).
-        fields.extend(
-            customers::company_logo(site, vault, company)
-                .map(|p| ("invoicer_logo", text(&format!("/{}", p.as_str())))),
-        );
-    }
+    fields.extend(company::fields(site, settings, vault).into_iter().flatten());
     fields.extend(new.extra.iter().map(|(k, v)| (k.as_str(), v.clone())));
     let frontmatter = frontmatter::render_block(&fields)?;
 

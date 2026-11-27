@@ -150,7 +150,7 @@
                     }}
                 >
                     <span class="truncate">{match.payee}</span>
-                    <span class="shrink-0 text-xs text-base-content/50 tabular-nums">{match.count}×</span>
+                    <span class="shrink-0 text-xs text-muted tabular-nums">{match.count}×</span>
                 </button>
             </li>
         {/each}

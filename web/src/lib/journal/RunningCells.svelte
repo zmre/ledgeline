@@ -66,7 +66,7 @@
             <span class="tooltip tooltip-left shrink-0" data-tip="{detail}. Click to narrow the dates to the gap.">
                 <button
                     type="button"
-                    class="cursor-pointer font-semibold text-error"
+                    class="cursor-pointer font-semibold text-error-text"
                     aria-label="Narrow to gap: {detail}"
                     data-testid="running-assertion-fail"
                     onclick={() => narrow(assertion)}>{assertionLabel(assertion, pinned)}</button
@@ -80,21 +80,21 @@
     <td class="py-1 text-right font-mono text-sm tabular-nums" data-testid="running-change">
         {#if cell !== null && cell.change !== null}
             <div
-                class={["whitespace-nowrap", cell.change.qty.m < 0n && "text-error", internal && "text-base-content/60"]}
+                class={["whitespace-nowrap", cell.change.qty.m < 0n && "text-error-text", internal && "text-muted"]}
                 title={internal ? `Internal: moves within ${pinned}` : undefined}
             >
                 {formatAmount(cell.change)}
             </div>
         {/if}
         {#if cell?.postedOn != null}
-            <div class="text-xs whitespace-nowrap text-base-content/60" data-testid="running-posted-on">posts {cell.postedOn}</div>
+            <div class="text-xs whitespace-nowrap text-muted" data-testid="running-posted-on">posts {cell.postedOn}</div>
         {/if}
     </td>
     <td class="py-1 font-mono text-sm tabular-nums" data-testid="running-balance">
         {#if cell !== null}
             <div class="flex items-center justify-end gap-1.5 whitespace-nowrap">
                 <span
-                    class={carried ? "text-base-content/50" : undefined}
+                    class={carried ? "text-muted" : undefined}
                     data-carried={carried ? "" : undefined}
                     title={carried ? `Carried: this row doesn't change ${pinned} in ${cell.balance.commodity}` : undefined}>{formatAmount(cell.balance)}</span
                 >
@@ -104,8 +104,8 @@
     </td>
 {:else if cell !== null}
     <span class="flex shrink-0 items-center gap-1 font-mono text-xs whitespace-nowrap tabular-nums" data-testid="running-balance">
-        <span class="text-base-content/60">Bal</span>
-        <span class={carried ? "text-base-content/50" : undefined} data-carried={carried ? "" : undefined}>{formatAmount(cell.balance)}</span>
+        <span class="text-muted">Bal</span>
+        <span class={carried ? "text-muted" : undefined} data-carried={carried ? "" : undefined}>{formatAmount(cell.balance)}</span>
         {@render assertionMarks()}
     </span>
 {/if}

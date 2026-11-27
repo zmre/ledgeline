@@ -459,7 +459,7 @@
                             <button type="button" class="btn mt-2 btn-outline btn-sm" onclick={() => void openLedgeline()} data-testid="settings-open-ledgeline"
                                 >Open in Ledgeline</button
                             >
-                            {#if ledgelineFailure !== null}<p class="mt-1 text-sm text-error" role="status">{ledgelineFailure}</p>{/if}
+                            {#if ledgelineFailure !== null}<p class="mt-1 text-sm text-error-text" role="status">{ledgelineFailure}</p>{/if}
                         {:else}
                             <div class="mt-1">
                                 {#if section.id === "payments" && accrual}

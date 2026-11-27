@@ -123,7 +123,7 @@
 <button
     bind:this={trigger}
     type="button"
-    class="inline-flex cursor-pointer items-center gap-1.5 font-mono text-primary tabular-nums hover:underline"
+    class="inline-flex cursor-pointer items-center gap-1.5 font-mono text-primary-text tabular-nums hover:underline"
     aria-haspopup="dialog"
     aria-expanded={open}
     aria-label="Edit budget for {account} ({refs.length} goals)"
@@ -147,7 +147,7 @@
         class="fixed z-[1001] flex flex-col gap-1 overflow-y-auto rounded-box border border-base-300 bg-base-200 p-3 text-sm shadow-lg"
         style="top: {placement.top}px; left: {placement.left}px; width: {placement.width}px; max-height: {placement.maxHeight}px"
     >
-        <div class="truncate pb-1 text-xs font-semibold text-base-content/70" title={account}>{account}</div>
+        <div class="truncate pb-1 text-xs font-semibold text-muted" title={account}>{account}</div>
         <ul class="flex flex-col">
             {#each refs as ref (goalKey(ref.file.journalId, ref.goal))}
                 <li class="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-base-content/5 py-1.5 last:border-b-0">
@@ -157,12 +157,12 @@
                              otherwise two lines reading "Monthly" would not say
                              which subaccount each one budgets. -->
                         {#if ref.goal.account !== account}
-                            <span class="block truncate text-xs text-base-content/50" title={ref.goal.account}>{ref.goal.account}</span>
+                            <span class="block truncate text-xs text-muted" title={ref.goal.account}>{ref.goal.account}</span>
                         {/if}
                     </span>
                     <span class="font-mono tabular-nums">{goalAmountText(ref.goal, styles)}</span>
                     {#if !ref.editable}
-                        <span class="text-xs text-base-content/50" title={lockReason(listing, ref)} data-testid="goal-locked">🔒 read-only</span>
+                        <span class="text-xs text-muted" title={lockReason(listing, ref)} data-testid="goal-locked">🔒 read-only</span>
                     {:else if armed(ref)}
                         <span class="flex items-center gap-1">
                             <span class="text-xs">Remove it?</span>
@@ -182,7 +182,7 @@
                             <button type="button" class="btn btn-ghost btn-xs" disabled={busy} onclick={() => edit(ref)}>Edit</button>
                             <button
                                 type="button"
-                                class="btn btn-ghost text-error btn-xs"
+                                class="btn btn-ghost text-error-text btn-xs"
                                 disabled={busy}
                                 onclick={() => onRemove(ref.file.journalId, ref.goal)}
                             >

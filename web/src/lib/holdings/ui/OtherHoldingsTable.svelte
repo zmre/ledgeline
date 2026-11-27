@@ -39,6 +39,8 @@
         format,
         formatUnits,
         gainPeriod = "all",
+        selected = new Set<string>(),
+        onSelect,
     }: {
         holdings: OtherHolding[];
         totals: OtherHoldingsReport["totals"];
@@ -49,6 +51,10 @@
         /** One held commodity as the journal writes it, e.g. "1 HOUSE". */
         formatUnits: (commodity: string, qty: Dec) => string;
         gainPeriod?: GainPeriod;
+        /** The holdings filter (plan 47): these rows (accounts) are highlighted. Every row is still listed. */
+        selected?: ReadonlySet<string>;
+        /** A row was clicked (or `f` pressed on the cursor row): filter the chart to that account. */
+        onSelect?: (account: string) => void;
     } = $props();
 
     // Window tag on the Change header so a YTD/12mo figure isn't read as all-time.
@@ -97,6 +103,15 @@
             {keys: "G", label: "Last holding", group: "Holdings", run: () => (cursor.last(), move(0))},
             {keys: "Escape", label: "Clear the cursor", group: "Holdings", run: () => cursor.clear()},
             {
+                keys: "f",
+                label: "Chart only this holding (again: all)",
+                group: "Holdings",
+                run: () => {
+                    const holding = cursor.item;
+                    if (holding !== null) onSelect?.(holding.account);
+                },
+            },
+            {
                 keys: "Enter",
                 label: "Show this holding in the journal",
                 group: "Holdings",
@@ -108,6 +123,18 @@
             },
         ],
     });
+
+    /**
+     * A click anywhere on a row filters the chart to it (plan 47 D7) and puts
+     * the keyboard cursor there — except a click on a control inside the row
+     * (the basis tooltip's button), which keeps doing only its own thing.
+     */
+    function clickRow(event: MouseEvent, account: string): void {
+        if (onSelect === undefined) return;
+        if (event.target instanceof Element && event.target.closest("button, a, input, select") !== null) return;
+        cursor.to(rows.findIndex((h) => h.account === account));
+        onSelect(account);
+    }
 </script>
 
 {#snippet sortButton(key: OtherSortKey, label: string)}
@@ -118,15 +145,15 @@
 
 {#snippet money(v: Dec | null)}
     {#if v === null}
-        <span class="text-base-content/40">{EM_DASH}</span>
+        <span class="text-muted">{EM_DASH}</span>
     {:else}
-        <span class={toNumber(v) < 0 ? "text-error" : ""}>{format(v)}</span>
+        <span class={toNumber(v) < 0 ? "text-error-text" : ""}>{format(v)}</span>
     {/if}
 {/snippet}
 
 {#snippet changeMoney(v: Dec | null)}
     {#if v === null}
-        <span class="text-base-content/40">{EM_DASH}</span>
+        <span class="text-muted">{EM_DASH}</span>
     {:else}
         <span class={signClass(toNumber(v))}>{format(v)}</span>
     {/if}
@@ -153,15 +180,18 @@
         </thead>
         <tbody>
             {#each rows as h (h.account)}
+                {@const chosen = selected.has(h.account)}
                 <tr
                     data-testid="other-holding-{h.account}"
-                    class={cursor.key === h.account ? "bg-primary/25" : ""}
+                    class={[cursor.key === h.account ? "bg-primary/25" : chosen && "bg-primary/10", onSelect !== undefined && "cursor-pointer"]}
                     aria-current={cursor.key === h.account ? "true" : undefined}
+                    data-selected={chosen ? "true" : undefined}
+                    onclick={(event) => clickRow(event, h.account)}
                 >
                     <th class="min-w-32 font-normal whitespace-normal md:whitespace-nowrap" title={h.account}>
-                        {h.name}<span class="block text-xs [overflow-wrap:anywhere] text-base-content/60 md:hidden">{h.account}</span>
+                        {h.name}<span class="block text-xs [overflow-wrap:anywhere] text-muted md:hidden">{h.account}</span>
                     </th>
-                    <th class="hidden font-normal whitespace-nowrap text-base-content/70 md:table-cell">{h.account}</th>
+                    <th class="hidden font-normal whitespace-nowrap text-muted md:table-cell">{h.account}</th>
                     <td class="text-right font-mono whitespace-nowrap tabular-nums" data-testid="held-{h.account}">
                         {formatHeldCommodities(h.commodities, base, formatUnits)}
                     </td>
@@ -169,7 +199,7 @@
                     <td class="text-right font-mono whitespace-nowrap tabular-nums">{@render money(h.cost)}</td>
                     <td class="text-right font-mono whitespace-nowrap tabular-nums">{@render changeMoney(h.change)}</td>
                     <td class="text-right font-mono whitespace-nowrap tabular-nums">
-                        <span class={h.changePct === null ? "text-base-content/40" : signClass(h.changePct)}>{formatGainPct(h.changePct)}</span>
+                        <span class={h.changePct === null ? "text-muted" : signClass(h.changePct)}>{formatGainPct(h.changePct)}</span>
                     </td>
                 </tr>
             {/each}

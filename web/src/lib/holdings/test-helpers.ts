@@ -42,5 +42,5 @@ export function pd(date: ISODate, commodity: string, priceCents: number | bigint
 
 /** Scope shorthand; defaults to include-everything, all-time gain. */
 export function scope(asOf: ISODate, mode: "include" | "exclude" = "include", accounts: string[] = []): HoldingsScope {
-    return {accounts: new Set(accounts), mode, asOf, gainPeriod: "all"};
+    return {accounts: new Set(accounts), mode, asOf, gainPeriod: "all", holdings: new Set()};
 }

@@ -11,7 +11,7 @@
      forces overflow-y to auto per CSS). The wrapper scrolls horizontally
      only, for small screens — vertical scrolling belongs to the page.
      Right-aligned numerics via the exact domain formatters (2dp display
-     cap), em-dash for null cells, negatives in text-error (gain cells
+     cap), em-dash for null cells, negatives in text-error-text (gain cells
      additionally show positives in text-success), "inferred" badge when the
      price came from a cost annotation instead of a P directive. A tfoot
      totals row (always below the body, whatever the sort) shows the ENGINE's
@@ -34,7 +34,18 @@
         totals,
         format,
         gainPeriod = "all",
-    }: {holdings: Holding[]; totals: HoldingsReport["totals"]; format: (v: Dec) => string; gainPeriod?: GainPeriod} = $props();
+        selected = new Set<string>(),
+        onSelect,
+    }: {
+        holdings: Holding[];
+        totals: HoldingsReport["totals"];
+        format: (v: Dec) => string;
+        gainPeriod?: GainPeriod;
+        /** The holdings filter (plan 47): these rows are highlighted. Every row is still listed. */
+        selected?: ReadonlySet<string>;
+        /** A row was clicked (or `f` pressed on the cursor row): filter the chart to that symbol. */
+        onSelect?: (symbol: string) => void;
+    } = $props();
 
     // Window tag on the Gain header so a YTD/12mo gain number isn't read as all-time.
     const gainHeader = $derived(`Gain${gainWindowSuffix(gainPeriod)}`);
@@ -84,6 +95,15 @@
             {keys: "G", label: "Last holding", group: "Holdings", run: () => (cursor.last(), move(0))},
             {keys: "Escape", label: "Clear the cursor", group: "Holdings", run: () => cursor.clear()},
             {
+                keys: "f",
+                label: "Chart only this holding (again: all)",
+                group: "Holdings",
+                run: () => {
+                    const holding = cursor.item;
+                    if (holding !== null) onSelect?.(holding.symbol);
+                },
+            },
+            {
                 keys: "Enter",
                 label: "Show this holding in the journal",
                 group: "Holdings",
@@ -100,6 +120,18 @@
             },
         ],
     });
+
+    /**
+     * A click anywhere on a row filters the chart to it (plan 47 D7) and puts
+     * the keyboard cursor there — except a click on a control inside the row
+     * (the basis tooltip's button), which keeps doing only its own thing.
+     */
+    function clickRow(event: MouseEvent, symbol: string): void {
+        if (onSelect === undefined) return;
+        if (event.target instanceof Element && event.target.closest("button, a, input, select") !== null) return;
+        cursor.to(rows.findIndex((h) => h.symbol === symbol));
+        onSelect(symbol);
+    }
 </script>
 
 {#snippet sortButton(key: SortKey, label: string)}
@@ -110,15 +142,15 @@
 
 {#snippet money(v: Dec | null)}
     {#if v === null}
-        <span class="text-base-content/40">{EM_DASH}</span>
+        <span class="text-muted">{EM_DASH}</span>
     {:else}
-        <span class={toNumber(v) < 0 ? "text-error" : ""}>{format(v)}</span>
+        <span class={toNumber(v) < 0 ? "text-error-text" : ""}>{format(v)}</span>
     {/if}
 {/snippet}
 
 {#snippet gainMoney(v: Dec | null)}
     {#if v === null}
-        <span class="text-base-content/40">{EM_DASH}</span>
+        <span class="text-muted">{EM_DASH}</span>
     {:else}
         <span class={signClass(toNumber(v))}>{format(v)}</span>
     {/if}
@@ -149,13 +181,16 @@
         </thead>
         <tbody>
             {#each rows as h (h.symbol)}
+                {@const chosen = selected.has(h.symbol)}
                 <tr
                     data-testid="holding-{h.symbol}"
-                    class={cursor.key === h.symbol ? "bg-primary/25" : ""}
+                    class={[cursor.key === h.symbol ? "bg-primary/25" : chosen && "bg-primary/10", onSelect !== undefined && "cursor-pointer"]}
                     aria-current={cursor.key === h.symbol ? "true" : undefined}
+                    data-selected={chosen ? "true" : undefined}
+                    onclick={(event) => clickRow(event, h.symbol)}
                 >
                     <th class="min-w-32 font-normal whitespace-normal md:whitespace-nowrap" title={h.accounts.join(", ")}>
-                        {h.name}{#if h.name !== h.symbol}<span class="block text-xs font-medium text-base-content/60 md:hidden">{h.symbol}</span>{/if}
+                        {h.name}{#if h.name !== h.symbol}<span class="block text-xs font-medium text-muted md:hidden">{h.symbol}</span>{/if}
                     </th>
                     <th class="hidden font-medium md:table-cell">{h.symbol}</th>
                     <td class="text-right font-mono whitespace-nowrap tabular-nums" data-testid="shares-{h.symbol}">{formatShares(h.shares)}</td>
@@ -170,7 +205,7 @@
                     </td>
                     <td class="text-right font-mono whitespace-nowrap tabular-nums">
                         {#if h.price === null}
-                            <span class="text-base-content/40">{EM_DASH}</span>
+                            <span class="text-muted">{EM_DASH}</span>
                         {:else}
                             {format(h.price.qty)}
                             {#if h.price.source === "cost"}
@@ -182,7 +217,7 @@
                     </td>
                     <td class="whitespace-nowrap">
                         {#if h.price === null}
-                            <span class="text-base-content/40">{EM_DASH}</span>
+                            <span class="text-muted">{EM_DASH}</span>
                         {:else}
                             {h.price.date}
                         {/if}
@@ -190,7 +225,7 @@
                     <td class="text-right font-mono whitespace-nowrap tabular-nums">{@render money(h.marketValue)}</td>
                     <td class="text-right font-mono whitespace-nowrap tabular-nums">{@render gainMoney(h.gain)}</td>
                     <td class="text-right font-mono whitespace-nowrap tabular-nums">
-                        <span class={h.gainPct === null ? "text-base-content/40" : signClass(h.gainPct)}>{formatGainPct(h.gainPct)}</span>
+                        <span class={h.gainPct === null ? "text-muted" : signClass(h.gainPct)}>{formatGainPct(h.gainPct)}</span>
                     </td>
                 </tr>
             {/each}

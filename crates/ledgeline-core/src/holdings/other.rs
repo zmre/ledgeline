@@ -39,6 +39,7 @@ use super::classify::{
 };
 use super::commodities::Currencies;
 use super::engine::{FALLBACK_BASE, gain_pct, scope_accounts};
+use super::performance::attach_point_flows;
 use super::series::{HoldingsPoint, HoldingsSeries};
 use super::types::HoldingsScope;
 use super::window::{SeriesWindow, series_dates};
@@ -193,6 +194,33 @@ impl<'a> OtherInputs<'a> {
     /// currency already, so the balance sheet's rule — caller's override, else
     /// the price database's base — is both simpler and what the rest of the app
     /// shows.
+    /// The account owning `account`'s row ([`row_roots`]); itself when it
+    /// owns its own.
+    fn row_root<'s>(&'s self, account: &'s str) -> &'s str {
+        self.row_roots.get(account).map_or(account, String::as_str)
+    }
+
+    /// Every commodity the in-scope (and [`selected`](HoldingsScope::selection))
+    /// rows hold at `scope.as_of` — the symbols a live quote could move.
+    ///
+    /// # Errors
+    /// Returns [`ReportError`] on decimal overflow.
+    pub fn held_commodities(
+        &self,
+        scope: &HoldingsScope,
+    ) -> Result<BTreeSet<Commodity>, ReportError> {
+        let base = self.base(scope);
+        Ok(rows_at(self, scope, &scope.as_of, &base)?
+            .into_iter()
+            .flat_map(|row| {
+                row.commodities
+                    .iter()
+                    .map(|(commodity, _)| commodity.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect())
+    }
+
     fn base(&self, scope: &HoldingsScope) -> Commodity {
         scope
             .value_in
@@ -490,7 +518,10 @@ impl OtherInputs<'_> {
     /// # Errors
     /// Returns [`ReportError`] on decimal overflow.
     pub fn first_holding_date(&self, scope: &HoldingsScope) -> Result<Option<String>, ReportError> {
-        let qualifies = ever_held(self, scope_accounts(scope))?;
+        let in_scope = scope_accounts(scope);
+        let qualifies = ever_held(self, |account| {
+            in_scope(account) && scope.selects(self.row_root(account))
+        })?;
         Ok(self
             .txns
             .iter()
@@ -544,10 +575,13 @@ fn rows_at(
         {
             continue;
         }
-        let root = inputs
-            .row_roots
-            .get(account)
-            .map_or(account.as_str(), String::as_str);
+        let root = inputs.row_root(account);
+        // The holdings filter (`HoldingsScope::selection`) is keyed by the ROW,
+        // so it applies after the roll-up: selecting a house selects both its
+        // cost and its mark account.
+        if !scope.selects(root) {
+            continue;
+        }
         held.entry(root).or_default().ma_add_assign(&commodities)?;
 
         // A mark contributes to value and NOT to cost. Everything else is money
@@ -818,12 +852,97 @@ impl OtherInputs<'_> {
                 label: bucket_label(key),
                 market_value,
                 basis,
+                flow: Dec::zero(),
+                return_pct: None,
             });
         }
+        let flows = self.point_flows(scope, &points, &base)?;
+        attach_point_flows(&mut points, &flows)?;
         Ok(HoldingsSeries {
             base: base.0,
             points,
             has_basis,
         })
+    }
+}
+
+impl OtherInputs<'_> {
+    /// Net money INTO the in-scope (and selected) rows during each point's
+    /// bucket, `(previous point, point]`, in `base` — the Other tab's analogue
+    /// of the Stocks engine's flows (plan 47 A1). Zero on the first point.
+    ///
+    /// A row here is an account balance, not a pool of shares with a cost per
+    /// leg, so the flow is read from the OTHER side of each transaction: the
+    /// money that left (or arrived in) the rest of the balance sheet. For every
+    /// transaction posting to a member account, the flow is minus the sum of
+    /// its legs on Asset/Cash/Liability accounts that are NOT members, each
+    /// valued in `base` on the transaction's date. So:
+    ///
+    /// - buying a house from cash and a mortgage is the whole price in;
+    /// - selling it is the proceeds out — including a gain booked only at the
+    ///   sale, which the row's value never showed;
+    /// - a revaluation (mark account against equity or income) and
+    ///   depreciation (against an expense) touch no other balance-sheet
+    ///   account, so they are NOT flows: they are the return;
+    /// - an opening balance against equity is no flow either;
+    /// - a transfer between two member rows nets to nothing, one to an
+    ///   out-of-scope or unselected asset is a flow out.
+    ///
+    /// A counter-leg with no price route to `base` is left out.
+    fn point_flows(
+        &self,
+        scope: &HoldingsScope,
+        points: &[HoldingsPoint],
+        base: &Commodity,
+    ) -> Result<Vec<Dec>, ReportError> {
+        let mut flows = vec![Dec::zero(); points.len()];
+        let (Some(first), Some(last)) = (points.first(), points.last()) else {
+            return Ok(flows);
+        };
+        let in_scope = scope_accounts(scope);
+        let members = ever_held(self, |account| {
+            in_scope(account) && scope.selects(self.row_root(account))
+        })?;
+        let balance_sheet = |account: &str| {
+            matches!(
+                self.types.resolve(account),
+                Some(AccountType::Asset | AccountType::Cash | AccountType::Liability)
+            )
+        };
+        for txn in self.txns {
+            let date = txn.date.as_str();
+            if date <= first.date.as_str() || date > last.date.as_str() {
+                continue;
+            }
+            if !txn
+                .postings
+                .iter()
+                .any(|posting| members.contains(posting.account.0.as_str()))
+            {
+                continue;
+            }
+            let mut outside = MixedAmount::default();
+            for posting in txn.postings.iter().filter(|posting| {
+                let account = posting.account.0.as_str();
+                !members.contains(account) && balance_sheet(account)
+            }) {
+                for amount in &posting.amounts {
+                    outside.accumulate(&amount.commodity, amount.quantity)?;
+                }
+            }
+            outside.drop_zeros();
+            if outside.is_zero() {
+                continue;
+            }
+            let (Some(value), _) = value_or_nothing(&outside, base, &self.db, date)? else {
+                continue;
+            };
+            // The bucket ending at or after `date`; `date > first` makes it ≥ 1.
+            let bucket = points.partition_point(|point| point.date.as_str() < date);
+            if let Some(slot) = flows.get_mut(bucket) {
+                *slot = slot.sub(value)?;
+            }
+        }
+        Ok(flows)
     }
 }

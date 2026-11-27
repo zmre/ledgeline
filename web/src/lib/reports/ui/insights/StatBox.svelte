@@ -33,14 +33,14 @@
     <div class="card-body gap-1 p-4">
         <div class="flex items-start justify-between gap-2">
             <div class="flex items-center gap-1">
-                <div class="text-xs font-semibold tracking-wide text-base-content/60 uppercase">{title}</div>
+                <div class="text-xs font-semibold tracking-wide text-muted uppercase">{title}</div>
                 {#if help !== undefined}<InfoTip {...help} placement="bottom-start" />{/if}
             </div>
             {#if aside !== undefined}{@render aside()}{/if}
         </div>
         <div class="font-mono text-2xl font-semibold tabular-nums md:text-3xl {bigClass}" data-testid={testid ? `${testid}-big` : undefined}>{big}</div>
         {#if extras.length > 0}
-            <div class="text-xs text-base-content/50">{extras.join(" · ")}</div>
+            <div class="text-xs text-muted">{extras.join(" · ")}</div>
         {/if}
         {#if small}
             <div class="mt-1 text-sm {small.klass ?? ''}" data-testid={testid ? `${testid}-small` : undefined}>

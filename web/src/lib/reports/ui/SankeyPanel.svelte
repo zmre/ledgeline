@@ -195,7 +195,7 @@
             <span class="font-mono text-xs font-semibold tabular-nums">{total}</span>
         {/if}
     {/snippet}
-    <p class="text-xs text-base-content/50">{caption}</p>
+    <p class="text-xs text-muted">{caption}</p>
 
     <!-- Error branch BEFORE the data branch, which is `AsyncSection`'s whole
              job (FE-5). A flows fetch that fails says so here and leaves the
@@ -214,7 +214,7 @@
             {#if view.links.length === 0}
                 <!-- The two reasons read differently, and only one of them is
                          about this date range. -->
-                <p class="py-8 text-center text-sm text-base-content/60" data-testid="sankey-empty-{slug}">
+                <p class="py-8 text-center text-sm text-muted" data-testid="sankey-empty-{slug}">
                     {#if report.base === null}
                         Several commodities here, with no prices between them, so there is no width to draw.
                     {:else}
@@ -365,7 +365,7 @@
                                     <span>{hover.tip.title}</span>
                                 </div>
                                 {#each hover.tip.lines as line, i (i)}
-                                    <div class={["tabular-nums", i === 0 ? "font-semibold" : "text-base-content/60"]}>{line}</div>
+                                    <div class={["tabular-nums", i === 0 ? "font-semibold" : "text-muted"]}>{line}</div>
                                 {/each}
                             </div>
                         </div>
@@ -379,7 +379,7 @@
                     <!-- The gap is a fact about the journal (a posting with no
                              counterparty, or a line that netted negative over the
                              window), and this line is the only place it can be seen. -->
-                    <p class="text-xs text-base-content/50" data-testid="sankey-incomplete-{slug}">
+                    <p class="text-xs text-muted" data-testid="sankey-incomplete-{slug}">
                         Showing {view.total} of {view.sectionTotal}
                     </p>
                 {/if}

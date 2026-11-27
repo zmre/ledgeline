@@ -170,11 +170,11 @@
     {#if allRows.length === 0}
         <div class="rounded-box border border-base-content/10 px-4 py-8 text-center" data-testid="no-goals">
             <p class="font-medium">No budget goals yet.</p>
-            <p class="mx-auto mt-1 max-w-prose text-sm text-base-content/60">
+            <p class="mx-auto mt-1 max-w-prose text-sm text-muted">
                 A budget is a set of <code class="rounded bg-base-200 px-1">~</code> rules in your journal saying what you plan to spend or earn each period.
             </p>
             {#if listing.canCreateFile}
-                <p class="mx-auto mt-3 max-w-prose text-sm text-base-content/60">
+                <p class="mx-auto mt-3 max-w-prose text-sm text-muted">
                     Ledgeline can start one for you: it will create
                     <code class="rounded bg-base-200 px-1">{listing.createFileName}</code>
                     beside your journal and add an <code class="rounded bg-base-200 px-1">include</code> line at the end of the main file. Nothing else changes.
@@ -190,11 +190,9 @@
         </div>
     {:else}
         {#if rows.length === 0}
-            <p class="text-sm text-base-content/60" data-testid="budget-editor-all-in-table">
-                Every goal is in the table above. Click a budgeted amount to change it.
-            </p>
+            <p class="text-sm text-muted" data-testid="budget-editor-all-in-table">Every goal is in the table above. Click a budgeted amount to change it.</p>
         {:else if hidden !== undefined}
-            <p class="text-sm text-base-content/60">
+            <p class="text-sm text-muted">
                 Goals the table above can't show: on a parent account whose subaccounts have goals of their own, or on accounts with no row in this period.
             </p>
         {/if}
@@ -251,7 +249,7 @@
                                         </button>
                                         <button
                                             type="button"
-                                            class="btn btn-ghost text-error btn-xs"
+                                            class="btn btn-ghost text-error-text btn-xs"
                                             disabled={busy}
                                             onclick={() => onRemove(row.file.journalId, row.goal)}
                                         >
@@ -263,9 +261,9 @@
                                 <!-- The engine's own sentence, verbatim. It says
                                      what stopped it, which is the only thing that
                                      makes a read-only row actionable. -->
-                                <span class="shrink-0 text-xs text-base-content/50" title={locked} data-testid="goal-locked">🔒 read-only</span>
+                                <span class="shrink-0 text-xs text-muted" title={locked} data-testid="goal-locked">🔒 read-only</span>
                             {:else if !row.file.writable}
-                                <span class="shrink-0 text-xs text-base-content/50" title="This file is not a regular file inside the journal's directory.">
+                                <span class="shrink-0 text-xs text-muted" title="This file is not a regular file inside the journal's directory.">
                                     🔒 read-only
                                 </span>
                             {/if}

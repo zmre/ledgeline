@@ -96,6 +96,29 @@ describe("UNIT matchAccounts", () => {
     });
 });
 
+describe("UNIT matchAccounts with preferred names", () => {
+    const names = ["expenses:consult", "revenue:consulting", "assets:cash", "sales:widgets"];
+    const revenue = new Set(["revenue:consulting", "sales:widgets"]);
+
+    it("lists the preferred names first for an empty query", () => {
+        expect(matchAccounts("", names, undefined, revenue).map((m) => m.name)).toEqual([
+            "revenue:consulting",
+            "sales:widgets",
+            "assets:cash",
+            "expenses:consult",
+        ]);
+    });
+
+    it("ranks a preferred name first within its tier", () => {
+        expect(matchAccounts("consult", names, undefined, revenue).map((m) => m.name)).toEqual(["revenue:consulting", "expenses:consult"]);
+        expect(matchAccounts("consult", names).map((m) => m.name)).toEqual(["expenses:consult", "revenue:consulting"]);
+    });
+
+    it("never pushes a better match down", () => {
+        expect(matchAccounts("assets:cash", names, undefined, revenue)[0].name).toBe("assets:cash");
+    });
+});
+
 describe("UNIT longestCommonPrefix", () => {
     it("is empty for no names", () => {
         expect(longestCommonPrefix([])).toBe("");

@@ -233,7 +233,7 @@ frontmatter.
 | `template`                       | yes      | MBR's per-file template path (`/`-rooted, `.html`). MBR itself renders the styled invoice.                                    |
 | `customer`                       | yes      | Wikilink to the customer note. This is the stable link. The `invoicee_*` fields are a snapshot of what was sent.              |
 | `invoicee_name`, `_email`, `_phone`, `_address` | yes  | A snapshot copied from the customer at creation. Edits to the customer later don't change sent invoices. Use `\|` (literal) for addresses, never `>`, which folds lines. `_phone` is optional (copied when the customer has `phones:`). |
-| `invoicer`, `invoicer_*`         | yes      | The same pattern for your own company; `invoicer_logo` (optional) is its note's `logo:`, `/`-rooted (PLAN D16).               |
+| `invoicer`, `invoicer_*`         | yes      | Your own company (`[invoicer] company`): `_name`, `_email`, `_phone`, `_address`, and `invoicer_logo` (optional), its note's `logo:`, `/`-rooted (PLAN D16). **Derived in a draft, a snapshot once sent** (PLAN I21, D18): a draft shows, previews and exports with the company note's current details whatever its file says, and Send writes them in. A hand-written value in a draft is overwritten at Send. A sent invoice keeps what was sent; Update from company (`update-company`) rewrites it on request. |
 | `terms`                          | no       | Net days (integer). The customer's default is copied in.                                                                      |
 | `due_date`                       | no       | Written for grep and templates: `date + terms` unless set by hand. Overdue is always derived from it, never stored.          |
 | `reference`                      | no       | Free text the customer quotes back: `PO #PY75334`. (This was `po_num` in the first sketch.)                                   |
@@ -244,6 +244,16 @@ frontmatter.
 | `deposit_for`                    | no       | On a deposit invoice: what it is a deposit on (free text or a wikilink to an estimate).                                       |
 | `stripe_id`, `stripe_url`, …     | no       | Later: sync identity (§7).                                                                                                    |
 | *anything else*                  | no       | Custom fields. Templates see them, MBR autocompletes them, and the invoicer keeps them byte-for-byte.                         |
+
+**The company's details on a draft** (`invoicer_core::company`). A draft
+follows the company note until it is sent: every render overlays the note's
+details as they are now (set what differs, remove what the note no longer
+has); nothing is written. MBR renders a note's file as written, so the
+server answers a page request for a draft whose file holds an older copy
+itself, with MBR's standalone render of the overlaid text (no sidebar in a
+browser tab until it is sent). Send adds the same keys to the write that
+sets `status: sent`, before any PDF is kept or `sent_hash` taken. With no
+company, or one naming no note, nothing follows and the file's copy stands.
 
 `check` reports a missing required field as an error, except the snapshot
 emails and addresses (`invoicee_email`, `invoicee_address`, `invoicer_email`,
@@ -468,12 +478,14 @@ ledger_customer: Customer X         # the customer: tag value in the books; defa
 contracts:
   - "[[Customer X MSA 2026]]"                                    # a markdown note
   - "/customers/contracts/Customer X SOW 3 renewal (signed).pdf" # an executed PDF
+  - "~/Documents/Legal/Customer X NDA.pdf"                       # outside the books
 cadence: monthly
 renewal_date: 2027-11-17
 open_pos:
   - reference: "PO #PY75334"
     amount: $40,000
     expires: 2027-06-30
+    attachment: "/customers/pos/PO PY75334.pdf"   # optional; as a contract entry
 billing_portal:
   name: Coupa
   url: https://customerx.coupahost.com/
@@ -500,13 +512,37 @@ Fred Smith is the champion.
   plan 45's settlement ranking already use it. Renaming a note doesn't rename
   history unless the user asks; `ledgeline-invoicer customers rename` is
   later.
-- **Contracts.** Each entry is either a wikilink to a note or a path to any
-  file: `/`-rooted from the books folder, or relative to the customer note.
+- **Contracts.** Each entry is a wikilink to a note, a path to a file in
+  the books (`/`-rooted from the books folder, or relative to the customer
+  note), or a file outside the books folder: `~/rest/of/path.pdf` under the
+  user's home folder, else a percent-encoded `file:///abs/path.pdf` URL.
   Executed contracts are usually PDFs, so paths are the common case. The
-  invoicer lists them in the customer view and opens them with the system
-  viewer, and `check` reports paths that don't exist. Today MBR resolves
-  neither form in frontmatter. MBR-CHANGES M1 asks for both, so the
-  contract shows up in MBR as a link too.
+  desktop app's open dialog writes an outside entry for a file outside the
+  books folder (2026-11-26); one inside it is written as before. Entries are
+  read and written in one place, `invoicer_core::attachment` (a typed enum:
+  note, books path, outside path). The invoicer lists them in the customer
+  view (an outside file marked "outside the books") and opens them with
+  the system viewer, and `check` reports entries that don't exist, an
+  outside file included: it doesn't move with the books. Today MBR
+  resolves no form in frontmatter. MBR-CHANGES M1 asks for the first two,
+  so the contract shows up in MBR as a link too.
+- **Opening outside files.** `POST /api/files/open` opens a file outside
+  the books folder only when some customer note names it (a contract or a
+  PO attachment), comparing canonical paths with `~` expanded against the
+  real home folder, so the API can't open arbitrary files. SEC-5 still
+  holds: only a document opens, judged on the file a link leads to; any
+  other file is shown in Finder. In a browser there is no native open, so
+  the page shows an outside file's name and place as text.
+- **PO attachments.** An `open_pos` entry may name an `attachment`, written
+  as a contract entry is (the PO's PDF, say). The customer page shows it as
+  it shows a contract; `check` reports a missing one
+  (`missing-attachment`); closing the PO names it in the `## Closed POs`
+  line.
+- **Notes.** The note's markdown body is the user's notes on the customer.
+  The customer form edits it (sent only when it changed; white space alone
+  is no change) and the view renders it read-only with MBR's markdown
+  field. A save that edits the body and closes a PO adds the Closed POs
+  line to the new body.
 - **Vendor portals.** Some customers take invoices only through a portal
   (Coupa, Ariba, Tungsten, and so on). `billing_portal` records how:
   - `name` and `url`;
@@ -567,11 +603,23 @@ is the point, since a third party can render our invoices with plain `mbr`.
   alone. The base's comment header is the guide. It is versioned in its
   name because the user owns the copy: a fix ships as `v2`, and templates
   that extend `v1` keep it. A whole-page template (no base) works as well.
-- **Starter templates.** The invoicer ships two (Classic, Modern), both
-  children of the base. Each is copied into `invoices/tpl/` the first time
-  an invoice uses it, with the base beside it (create-new), and from then
-  on both are the user's files. Each starter adds its own print CSS
-  (`@page` size and margins) and look.
+- **Starter templates.** The invoicer ships four (Classic, Modern, Classic
+  with logo, Modern with logo), all children of the base. Each is copied
+  into `invoices/tpl/` the first time an invoice uses it, with the base
+  beside it (create-new), and from then on it is the user's file. Each
+  starter adds its own print CSS (`@page` size and margins) and look. The
+  "with logo" two are laid out around a large logo (PLAN D17).
+- **Preview vs. real output.** The invoicer's preview (`/api/preview` and
+  its page, so the picker and both editors) renders the note with
+  `invoicer_preview: true` added to its frontmatter, never saved. A
+  template may draw something for the preview alone under
+  `{% if fm.invoicer_preview %}`: the "with logo" starters draw a "Your
+  logo" box where an invoice has no logo. The PDF export, MBR's browser,
+  `mbr -o` and QuickLook render the saved file, so they never see the flag.
+  A draft whose file holds an older copy of your company is the exception:
+  the app serves its page itself, with the company's current details and
+  without the flag (§3.2). `mbr -o` and QuickLook, outside the app, still
+  render the file as written.
 - **MBR's chrome.** Served by MBR (`server_mode`), the base includes MBR's
   partials (`/.mbr/_head_markdown.html`, `_nav.html`, `_breadcrumbs.html`,
   the previous/next footer, `_footer.html`, `_scripts.html`), so an invoice
@@ -1234,6 +1282,7 @@ so a script there can read but not send. Raw HTML in notes is sanitized
 | `GET /api/invoices?status=&customer=&open=`   | List: frontmatter, total, books state, paid mirror, aging bucket.             |
 | `GET/PUT /api/invoices/{num}`                 | The structured document (frontmatter, rows, prose blocks), with its content hash. |
 | `POST /api/invoices` · `/{num}/send` · `/{num}/void` · `/{num}/rebook` | Lifecycle (§4).                                      |
+| `POST /api/invoices/{num}/company`            | Update from company: a sent invoice's `invoicer_*` from the company note, re-booked (§3.2). |
 | `POST /api/invoices/{num}/pdf`                | Export to a path, or to a temp file for drag/share.                           |
 | `POST /api/preview`                           | Render an unsaved document to HTML.                                           |
 | `GET/PUT/POST /api/customers…`                | Customers (MBR contact schema + invoicing keys).                              |
@@ -1308,6 +1357,7 @@ ledgeline-invoicer set NUM key=value...              # surgical frontmatter edit
 ledgeline-invoicer recalc [FILE|NUM...]              # rewrite computed amounts
 ledgeline-invoicer check                             # validate files vs arithmetic vs books; exit 1 on problems
 ledgeline-invoicer send NUM | void NUM [--date D] | rebook NUM
+ledgeline-invoicer update-company NUM                # a sent invoice's invoicer_* from the company note, re-booked
 ledgeline-invoicer pdf NUM [-o PATH]
 ledgeline-invoicer apply-payment NUM [--txn REF]     # cash books: list candidates, or apply one
 ledgeline-invoicer reconcile                         # refresh paid: mirrors
@@ -1415,6 +1465,7 @@ Rules the commands follow:
 | `send N --dry-run`, `rebook N --dry-run`                 | `{number, path, status, basis, booking, receivable, would_book, booked, in_step, linked, generation}`                                                                                     |
 | `void N [--date D]`                                      | `{number, path, basis, reversal, link, journal_written, markdown_written}`                                                                                                                |
 | `rebook N`                                               | `{number, path, basis, changed, previous, booked, warnings, mirror}`                                                                                                                      |
+| `update-company N`                                       | `{path, number, changed, written, problems, rebooked, mirror}` (`rebooked` as `rebook N`, `null` unless a sent invoice was written)                                                      |
 | `apply-payment N`                                        | `{number, path, commodity, total, paid, remaining, candidates: [{reference, date, description, received, exact, by_number, by_customer, gap_days, text}]}`                                |
 | `apply-payment N --txn REF`                              | `{number, transaction, received, applied: [[account, amount]], remaining, undo, undo_file, mirror, warnings}`                                                                             |
 | `apply-payment N --undo [--txn REF]`                     | `{number, reference, deposit_date, deposit_description, restored_text, undo_file, mirror, warnings}`                                                                                      |

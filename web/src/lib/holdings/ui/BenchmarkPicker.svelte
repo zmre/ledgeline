@@ -5,7 +5,15 @@
      history loads, a short error hint (and a retry) when it could not be had —
      so one unreachable index never hides the others' status. The button shows
      how many are ticked, so a closed dropdown still says the chart has more on
-     it than the portfolio; the legend under the chart names them. -->
+     it than the portfolio; the legend under the chart names them.
+
+     The button is a PRIMARY button (plan 47 D5). It was a ghost one and read as
+     a label beside the heading — nobody guessed it opened anything.
+
+     Comparing is a Performance-chart thing (A1d): each benchmark is drawn as
+     its own total return since the first point. While the chart shows Value
+     (`active` false), pressing Compare calls `onActivate` (the chart switches
+     to Performance) and opens the panel; switching back to Value closes it. -->
 <script lang="ts">
     import type {BenchmarkCatalog} from "#lib/holdings/benchmarks.js";
     import type {BenchmarkState} from "#lib/stores/benchmarks.svelte.js";
@@ -16,6 +24,8 @@
         states,
         onToggle,
         onRetry,
+        active = true,
+        onActivate,
     }: {
         /** The engine's catalog, in slot order (empty until it loads). */
         catalog: BenchmarkCatalog;
@@ -25,7 +35,25 @@
         states: ReadonlyMap<string, BenchmarkState>;
         onToggle: (symbol: string, on: boolean) => void;
         onRetry: (symbol: string) => void;
+        /** Whether the chart can draw comparisons now (Performance). */
+        active?: boolean;
+        /** Make the chart able to (switch to Performance); called when Compare is pressed while inactive. */
+        onActivate?: () => void;
     } = $props();
+
+    let open = $state(false);
+    // The panel belongs to the Performance chart: leaving it closes the panel.
+    $effect(() => {
+        if (!active) open = false;
+    });
+
+    /** While inactive, Compare switches the chart over and opens, rather than toggling a panel for a chart that draws no benchmarks. */
+    function onSummaryClick(event: MouseEvent): void {
+        if (active) return;
+        event.preventDefault();
+        onActivate?.();
+        open = true;
+    }
 
     const failing = $derived(picked.filter((symbol) => states.get(symbol)?.status === "error").length);
 </script>
@@ -33,14 +61,19 @@
 <!-- `static`: the panel hangs from the chart's heading row (PeriodLineChart's
      `relative` row), not from the button, so it stays on screen wherever the
      row wrapped the button to. -->
-<details class="dropdown static dropdown-end" data-testid="benchmark-picker">
-    <summary class="btn gap-1 btn-ghost font-normal btn-xs" title="Compare against what the same money would have done in an index fund">
+<details class="dropdown static dropdown-end" data-testid="benchmark-picker" bind:open>
+    <summary
+        class="btn gap-1 btn-primary btn-xs"
+        title={active ? "Compare your return with an index fund's" : "Compare your return with an index fund's (switches to Performance)"}
+        onclick={onSummaryClick}
+        data-testid="benchmark-compare"
+    >
         Compare
         {#if picked.length > 0}<span class="badge badge-xs badge-neutral">{picked.length}</span>{/if}
         {#if failing > 0}<span class="text-warning" aria-label="{failing} comparison could not load">!</span>{/if}
     </summary>
     <div class="dropdown-content z-10 mt-1 w-72 max-w-full rounded-box bg-base-200 p-2 shadow-lg">
-        <p class="mb-1 px-1 text-xs text-base-content/60">Your contributions and withdrawals, on the same dates, into a fund instead. Dividends reinvested.</p>
+        <p class="mb-1 px-1 text-xs text-muted">Each fund's total return since the chart's first point, dividends reinvested, beside your own.</p>
         <ul class="flex flex-col">
             {#each catalog as benchmark (benchmark.symbol)}
                 {@const checked = picked.includes(benchmark.symbol)}
@@ -56,10 +89,9 @@
                         />
                         <span class="grow">{benchmark.label}</span>
                         {#if state?.status === "loading"}
-                            <span class="loading loading-xs loading-spinner text-base-content/50" aria-label="Loading {benchmark.label}"></span>
+                            <span class="loading loading-xs loading-spinner text-muted" aria-label="Loading {benchmark.label}"></span>
                         {:else if state?.status === "ready" && state.line.stale}
-                            <span class="text-xs text-base-content/50" title="Couldn't refresh from Yahoo Finance; drawn from prices saved earlier">cached</span
-                            >
+                            <span class="text-xs text-muted" title="Couldn't refresh from Yahoo Finance; drawn from prices saved earlier">cached</span>
                         {/if}
                     </label>
                     {#if state?.status === "error"}

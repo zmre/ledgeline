@@ -39,7 +39,7 @@
             Sync now
         </button>
         {#if quota !== null}
-            <span class="max-w-xs text-right text-xs {quota.blocked ? 'text-error' : 'text-warning'}" data-testid="sync-quota">{quota.text}</span>
+            <span class="max-w-xs text-right text-xs {quota.blocked ? 'text-error-text' : 'text-warning'}" data-testid="sync-quota">{quota.text}</span>
         {/if}
     </div>
 {/if}

@@ -32,6 +32,17 @@ describe("UNIT resolveBindings", () => {
         expect(active.find((b) => b.keys === "j")?.label).toBe("tree down");
     });
 
+    it("lets any page layer shadow the app layer, whichever registered last", () => {
+        const resolved = resolveBindings(
+            stack(
+                {id: "page", priority: PRIORITY.page, bindings: [binding("n", "page new")]},
+                {id: "app", priority: PRIORITY.app, bindings: [binding("n", "app new"), binding("?", "help")]}
+            )
+        );
+        expect(resolved.filter((b) => b.keys === "n").map((b) => b.label)).toEqual(["page new"]);
+        expect(resolved.map((b) => b.keys)).toContain("?");
+    });
+
     it("breaks a priority tie on registration order, later wins", () => {
         const layers = stack(
             {id: "first", priority: PRIORITY.widget, bindings: [binding("j", "first")]},

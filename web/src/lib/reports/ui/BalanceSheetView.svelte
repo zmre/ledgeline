@@ -240,14 +240,14 @@
      one `·`-joined run: a run of three is wider than a period column, and the
      boxes' columns then stop lining up with each other. -->
 {#snippet amount(c: AmountCell, size: string)}
-    <span class="{size} {c.negative ? 'text-error' : ''}">{c.text}</span>
+    <span class="{size} {c.negative ? 'text-error-text' : ''}">{c.text}</span>
     {#if c.extras.length > 0}
         {#if multi}
             {#each c.extras as extra (extra)}
-                <span class="block text-xs font-normal text-base-content/50">{extra}</span>
+                <span class="block text-xs font-normal text-muted">{extra}</span>
             {/each}
         {:else}
-            <span class="block text-xs font-normal text-base-content/50">{c.extras.join(" · ")}</span>
+            <span class="block text-xs font-normal text-muted">{c.extras.join(" · ")}</span>
         {/if}
     {/if}
 {/snippet}
@@ -281,7 +281,7 @@
         fixed={multi}
         compareLabel={comparing ? compareLabel : null}
     />
-    <tr class="text-[0.65rem] text-base-content/40">
+    <tr class="text-[0.65rem] text-muted">
         <th class="{label} font-normal"><span class="sr-only">{name}</span></th>
         {#each sheet.columns as column, at (column.key)}
             <th class="{figureWidth} {projectedEdge(at, edgeAt)} text-right font-normal" title={multi ? `as of ${column.to}` : undefined}
@@ -318,7 +318,7 @@
 {/snippet}
 
 <div class="flex flex-col gap-4" data-testid="balance-sheet">
-    <p class="-mb-1 text-xs text-base-content/50">{valuationLabel} {asOfLabel}</p>
+    <p class="-mb-1 text-xs text-muted">{valuationLabel} {asOfLabel}</p>
 
     <!-- Multi-column: one sideways scroller, one width, so every block keeps the
          same column edges. Single-date: `contents`, exactly as before. -->
@@ -368,7 +368,7 @@
                                  that closes it, and printing it twice would invite the
                                  reader to look for a difference between them. -->
                                     <tr class="bg-base-200/40" data-bs-row={row.key} data-testid="bs-subsection-{section.kind}-{row.term}">
-                                        <th class="{label} pt-3 text-[0.7rem] font-semibold tracking-widest text-base-content/60 uppercase">{row.label}</th>
+                                        <th class="{label} pt-3 text-[0.7rem] font-semibold tracking-widest text-muted uppercase">{row.label}</th>
                                         <td colspan={span}></td>
                                     </tr>
                                 {:else if row.kind === "subtotal"}
@@ -396,12 +396,12 @@
                                                 {#if row.expandable}
                                                     <button
                                                         type="button"
-                                                        class="flex cursor-pointer items-center gap-1.5 text-left font-medium hover:text-primary"
+                                                        class="flex cursor-pointer items-center gap-1.5 text-left font-medium hover:text-primary-text"
                                                         aria-expanded={row.expanded}
                                                         onclick={() => toggle(row.key)}
                                                     >
                                                         <span
-                                                            class="inline-block w-3 shrink-0 text-[0.65rem] text-base-content/40 transition-transform {row.expanded
+                                                            class="inline-block w-3 shrink-0 text-[0.65rem] text-muted transition-transform {row.expanded
                                                                 ? 'rotate-90'
                                                                 : ''}"
                                                             aria-hidden="true">▶</span
@@ -419,18 +419,18 @@
                                             {:else}
                                                 <!-- Inline padding, not a class: the depth is data, and `ReportTable`
                                              indents its own rows the same way (1rem per level). -->
-                                                <span class="whitespace-nowrap text-base-content/70" style="padding-left: {row.indent}rem" title={row.account}
+                                                <span class="whitespace-nowrap text-muted" style="padding-left: {row.indent}rem" title={row.account}
                                                     >{row.label}</span
                                                 >
                                             {/if}
                                         </th>
-                                        {@render figures(row.amount, row.kind === "group" ? "font-medium" : "text-base-content/70")}
+                                        {@render figures(row.amount, row.kind === "group" ? "font-medium" : "text-muted")}
                                     </tr>
                                 {/if}
                             {/each}
                             {#if section.groups.length === 0}
                                 <tr>
-                                    <th class="{label} font-normal text-base-content/50">No {section.title.toLowerCase()}</th>
+                                    <th class="{label} font-normal text-muted">No {section.title.toLowerCase()}</th>
                                     <td colspan={span}></td>
                                 </tr>
                             {/if}

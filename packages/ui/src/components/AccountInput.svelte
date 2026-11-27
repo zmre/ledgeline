@@ -33,6 +33,7 @@
         onCommit,
         onCancel,
         passAltArrows = false,
+        preferred = [],
     }: {
         value?: string;
         accountNames: string[];
@@ -50,6 +51,8 @@
          * an ARIA combobox's does.
          */
         passAltArrows?: boolean;
+        /** Names offered first among equally good matches (a customer's revenue accounts). */
+        preferred?: readonly string[];
     } = $props();
 
     /** Rows to show at once before the list scrolls. */
@@ -81,7 +84,8 @@
         if (field !== null && document.activeElement !== field) onBlur();
     });
 
-    const matches = $derived(open ? matchAccounts(stem, accountNames) : []);
+    const preferredSet = $derived(new Set(preferred));
+    const matches = $derived(open ? matchAccounts(stem, accountNames, undefined, preferredSet) : []);
     // Stable across renders, unlike the `Math.random()` id the old <datalist>
     // used — which changed on every remount and could not be asserted in a test.
     const uid = $props.id();
@@ -209,7 +213,7 @@
                 hide();
                 return;
             }
-            const candidates = open ? matches : matchAccounts(value, accountNames);
+            const candidates = open ? matches : matchAccounts(value, accountNames, undefined, preferredSet);
             const completion = tabCompletion(open ? stem : value, candidates);
             if (completion !== null) {
                 event.preventDefault();

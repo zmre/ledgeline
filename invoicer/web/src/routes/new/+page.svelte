@@ -5,7 +5,8 @@
      on it. Drafts never touch the books (I2).
 
      The customer field has focus on arrival (`n` brings you here, PLAN 5k):
-     type, Enter to choose, Tab on, Enter on Create draft.
+     type, Enter to choose, Tab on, Enter on Create draft. `?customer=Name`
+     (New invoice on a customer's page) fills it in and focuses Create.
 
      New deposit invoice (`d`, the New menu; `?deposit=1`, ARCHITECTURE §4.4)
      is the same draft with one row booked to the deposit account, so the
@@ -32,7 +33,8 @@
 
     let options = $state<EditorOptions | null>(null);
     let templates = $state<TemplateEntry[]>([]);
-    let customer = $state("");
+    /** `?customer=Name` (the customer page's New invoice) chooses it. */
+    let customer = $state(page.url.searchParams.get("customer") ?? "");
     let template = $state("");
     let templateTouched = $state(false);
     let date = $state(localToday());
@@ -52,7 +54,8 @@
     let formEl = $state<HTMLFormElement | null>(null);
 
     onMount(() => {
-        formEl?.querySelector<HTMLInputElement>('[data-testid="new-customer"]')?.focus();
+        // With the customer already chosen, Enter creates the draft.
+        formEl?.querySelector<HTMLElement>(customer.trim() === "" ? '[data-testid="new-customer"]' : '[data-testid="new-create"]')?.focus();
         loadOptions();
         fetchTemplates()
             .then((t) => (templates = t.filter((entry) => entry.kinds.includes("invoice"))))

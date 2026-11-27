@@ -1,0 +1,287 @@
+{# invoicer: name="Classic with logo" kinds="invoice,estimate,credit-note" #}
+{% extends "_invoice_base.v1.html" %}
+{#-
+  Ledgeline Invoicer's "Classic with logo" starter template: Classic's
+  serif letterhead, ruled lines and right-aligned bill table, laid out
+  around your logo: the logo large at the top left, your company's name
+  and address beside it, and the document's title and number on the right.
+
+  It was copied into your books folder the first time an invoice used it,
+  and it is yours now: the invoicer never overwrites it. Edit freely. It is
+  an MBR page template (Tera), so it sees exactly what MBR sees:
+
+  - `frontmatter`: the invoice's frontmatter (`frontmatter.invoice_num`,
+    `frontmatter.invoicee_address`, your own custom fields, …);
+  - `markdown`: the rendered body, the bill table included.
+
+  It extends `_invoice_base.v1.html` beside it, which holds the page around
+  the sheet (MBR's chrome where it works, the print reset, the hidden books
+  column) and says what each block is for. This file changes the look
+  (`theme`), the letterhead (`header`), and puts the dates beside the
+  bill-to (`parties`; `details` is empty). For the sheet alone even in MBR,
+  add `{% block settings %}{% set chrome = false %}{% endblock settings %}`.
+
+  Your logo: put `logo: logo.png` on your company's note (the base's
+  comment says how); new invoices then carry it as `invoicer_logo`. It is
+  shown at most 2.4in wide and 1.1in tall (`.brand .logo` below).
+
+  The "Your logo" box: where an invoice has no logo, the invoicer's preview
+  shows a dashed box in the logo's place, so you can see the layout. Only
+  the preview: it renders the invoice with `invoicer_preview: true` added to
+  its frontmatter (never saved), and this file draws the box only
+  `{% if fm.invoicer_preview %}`. The PDF, MBR's pages and its static
+  build render the invoice as it is saved, without the box, and the
+  company's name and address move to the left edge. Don't add
+  `invoicer_preview` to an invoice: it would print the box.
+
+  To print on A4, change `size: letter` below to `size: A4`.
+-#}
+{% block theme %}
+  @page { size: letter; margin: 0.7in 0.75in; }
+
+  :root {
+    --ink: #1d1d1b;
+    --muted: #6b6860;
+    --rule: #cfcac0;
+    --accent: #7a2e1f;
+    --paper: #fffefb;
+    --desk: #e8e6e1;
+  }
+
+  .sheet {
+    font-family: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    font-size: 10.5pt;
+    line-height: 1.45;
+    font-variant-numeric: lining-nums tabular-nums;
+    background: var(--paper);
+  }
+
+  /* The letterhead. */
+  .letterhead {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 2rem;
+    padding-bottom: 0.9rem;
+    border-bottom: 3px double var(--ink);
+  }
+  .company-name {
+    margin: 0;
+    font-size: 20pt;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    font-variant: small-caps;
+  }
+  .company-contact { margin-top: 0.25rem; color: var(--muted); font-size: 9.5pt; }
+
+  /* The logo, large, with a rule between it and the company. */
+  .brand { display: flex; align-items: center; gap: 1.1rem; }
+  .sheet .brand .logo { flex: none; max-width: 2.4in; max-height: 1.1in; margin: 0; }
+  .brand > :is(.logo, .logo-slot) + .company { padding-left: 1.1rem; border-left: 1px solid var(--rule); }
+  /* The preview's "Your logo" box, where the invoice has no logo. */
+  .logo-slot {
+    display: flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    width: 1.8in;
+    height: 0.9in;
+    border: 1.5px dashed #b3ada1;
+    border-radius: 3px;
+    color: #8a8478;
+    font-size: 8pt;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+
+  .doc-title { text-align: right; }
+  .doc-title h1 {
+    margin: 0;
+    font-size: 13pt;
+    font-weight: 400;
+    letter-spacing: 0.32em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  .doc-number { margin-top: 0.15rem; font-size: 16pt; }
+
+  /* Who it's for, and the dates. */
+  .parties {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 2rem;
+    margin: 1.4rem 0 1.6rem;
+  }
+  .label {
+    display: block;
+    margin-bottom: 0.2rem;
+    color: var(--muted);
+    font-size: 8pt;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+  .bill-to .name { font-size: 12pt; font-weight: 600; }
+  .bill-to :is(.email, .phone) { color: var(--muted); }
+  .details { border-collapse: collapse; }
+  .details th {
+    padding: 0.1rem 1.2rem 0.1rem 0;
+    color: var(--muted);
+    font-size: 8pt;
+    font-weight: 400;
+    letter-spacing: 0.16em;
+    text-align: left;
+    text-transform: uppercase;
+    vertical-align: baseline;
+  }
+  .details td { padding: 0.1rem 0; text-align: right; vertical-align: baseline; }
+  .details :is(th, td) { border: 0; background: none; }
+
+  /* The body: prose, the bill table and any supporting tables. */
+  .body :is(section, main) > :first-child { margin-top: 0; }
+  .body p { margin: 0 0 0.8rem; }
+  .body h2 {
+    margin: 1.6rem 0 0.5rem;
+    padding-bottom: 0.2rem;
+    border-bottom: 1px solid var(--rule);
+    font-size: 8.5pt;
+    font-weight: 400;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .body h3 { margin: 1.2rem 0 0.4rem; font-size: 11pt; }
+  .body a { color: inherit; }
+  .body table { width: 100%; margin: 0.6rem 0 1.2rem; border-collapse: collapse; }
+  .body thead th {
+    padding: 0.35rem 0.5rem;
+    border-bottom: 1.5px solid var(--ink);
+    font-size: 8pt;
+    font-weight: 400;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+  .body td { padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  .body :is(th, td):first-child { padding-left: 0; }
+  .body :is(th, td):last-child { padding-right: 0; }
+  .body tr { break-inside: avoid; }
+  .body thead { display: table-header-group; }
+  /* Subtotal and total rows (their cells are bold): ruled under the label
+     and the amount only, as a ledger is; the last one is the amount due. */
+  .body tbody tr:has(td strong) td { border-bottom: none; }
+  .body tbody tr:has(td strong) td:has(strong) { border-top: 1px solid var(--ink); }
+  .body tbody tr:last-child:has(td strong) td { padding-top: 0.55rem; font-size: 12pt; }
+  .body tbody tr:last-child:has(td strong) td:has(strong) { border-top: 1.5px solid var(--ink); border-bottom: 3px double var(--ink); }
+
+  .stamp {
+    display: inline-block;
+    margin-top: 0.5rem;
+    padding: 0.1rem 0.65rem;
+    border: 2px solid currentColor;
+    border-radius: 3px;
+    font-size: 14pt;
+    letter-spacing: 0.24em;
+    text-transform: uppercase;
+    transform: rotate(-4deg);
+    opacity: 0.75;
+  }
+  .stamp.draft { color: #8a8478; }
+  .stamp.void { color: #a3271a; }
+  .stamp.paid { color: #2d6a3e; }
+
+  .footer { margin-top: 2rem; padding-top: 0.5rem; border-top: 1px solid var(--rule); color: var(--muted); font-size: 8.5pt; text-align: center; }
+
+  @media screen {
+    .sheet {
+      max-width: 8.5in;
+      min-height: 11in;
+      margin: 0 auto;
+      padding: 0.7in 0.75in;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 8px 24px rgba(0, 0, 0, 0.08);
+    }
+  }
+  @media screen and (max-width: 640px) {
+    .sheet { padding: 1.5rem 1.25rem; min-height: 0; }
+    .letterhead, .parties { display: block; }
+    .brand { flex-wrap: wrap; }
+    .brand > :is(.logo, .logo-slot) + .company { padding-left: 0; border-left: 0; }
+    .doc-title, .details td { text-align: left; }
+    .details { margin-top: 1rem; }
+  }
+  @media print {
+    .sheet { background: none; }
+  }
+{% endblock theme %}
+
+{% block header %}
+  <div class="letterhead">
+    <div class="brand">
+      {%- if fm.invoicer_logo %}
+      <img class="logo" src="{{ fm.invoicer_logo | urlencode }}" alt="{{ fm.invoicer_name | default(value="") }}">
+      {%- elif fm.invoicer_preview %}
+      <div class="logo-slot">Your logo</div>
+      {%- endif %}
+      <div class="company">
+        <p class="company-name">{{ fm.invoicer_name | default(value="") }}</p>
+        <div class="company-contact">
+          {%- if fm.invoicer_address %}{{ fm.invoicer_address | trim | escape | linebreaksbr | safe }}{% endif %}
+          {%- if fm.invoicer_email %}<br>{{ fm.invoicer_email }}{% endif %}
+          {%- if fm.invoicer_phone %}<br>{{ fm.invoicer_phone }}{% endif %}
+        </div>
+      </div>
+    </div>
+    <div class="doc-title">
+      <h1>{{ kind }}</h1>
+      <div class="doc-number">No. {{ fm.invoice_num }}</div>
+      {%- if fm.status == "void" %}
+      <div class="stamp void">Void</div>
+      {%- elif fm.status == "draft" %}
+      <div class="stamp draft">Draft</div>
+      {%- elif paid is matching("^\d{4}-\d{2}-\d{2}") %}
+      <div class="stamp paid">Paid</div>
+      {%- endif %}
+    </div>
+  </div>
+{% endblock header %}
+
+{% block parties %}
+  <section class="parties">
+    <div class="bill-to">
+      <span class="label">Bill to</span>
+      <div class="name">{{ fm.invoicee_name | default(value="") }}</div>
+      {%- if fm.invoicee_address %}
+      <div>{{ fm.invoicee_address | trim | escape | linebreaksbr | safe }}</div>
+      {%- endif %}
+      {%- if fm.invoicee_email %}
+      <div class="email">{{ fm.invoicee_email }}</div>
+      {%- endif %}
+      {%- if fm.invoicee_phone %}
+      <div class="phone">{{ fm.invoicee_phone }}</div>
+      {%- endif %}
+    </div>
+    <table class="details">
+      {%- if fm.date %}
+      <tr><th>Date</th><td>{{ fm.date | date(format="%B %-d, %Y") }}</td></tr>
+      {%- endif %}
+      {%- if fm.due_date and kind != "Credit note" %}
+      <tr><th>{% if kind == "Estimate" %}Valid until{% else %}Due{% endif %}</th><td>{{ fm.due_date | date(format="%B %-d, %Y") }}</td></tr>
+      {%- endif %}
+      {%- if fm.terms and kind == "Invoice" %}
+      <tr><th>Terms</th><td>Net {{ fm.terms }}</td></tr>
+      {%- endif %}
+      {%- if fm.reference %}
+      <tr><th>Reference</th><td>{{ fm.reference }}</td></tr>
+      {%- endif %}
+      {%- if fm.deposit_for %}
+      <tr><th>Deposit for</th><td>{{ fm.deposit_for }}</td></tr>
+      {%- endif %}
+    </table>
+  </section>
+{% endblock parties %}
+
+{% block details %}{% endblock details %}
+
+{% block footer %}
+  {%- if fm.invoicer_email %}
+  <div class="footer">Questions about this {{ kind | lower }}? Write to {{ fm.invoicer_email }}.</div>
+  {%- endif %}
+{% endblock footer %}

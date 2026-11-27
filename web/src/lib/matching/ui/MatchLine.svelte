@@ -29,17 +29,17 @@
     <span class="shrink-0 tabular-nums">{longDate(half.txn.date)}</span>
     <span class="min-w-0 truncate" title={half.txn.description}>{half.txn.description || "(no description)"}</span>
     {#if real !== null}
-        <span class="min-w-0 truncate text-xs text-base-content/55" title={real.account}>{real.account}</span>
+        <span class="min-w-0 truncate text-xs text-muted" title={real.account}>{real.account}</span>
     {/if}
     <span class="grow"></span>
     {#if gapDays !== null}
-        <span class="shrink-0 text-xs whitespace-nowrap text-base-content/50" data-testid="match-line-gap">{gapLabel(gapDays)}</span>
+        <span class="shrink-0 text-xs whitespace-nowrap text-muted" data-testid="match-line-gap">{gapLabel(gapDays)}</span>
     {/if}
     {#each flags as flag (flag)}
         <span class="badge shrink-0 badge-xs whitespace-nowrap badge-warning" data-testid="match-line-flag">{flag}</span>
     {/each}
     {#if half.file !== ""}
-        <span class="hidden shrink-0 font-mono text-xs text-base-content/45 sm:inline" title={half.file}>{half.file}</span>
+        <span class="hidden shrink-0 font-mono text-xs text-muted sm:inline" title={half.file}>{half.file}</span>
     {/if}
     <span class={["shrink-0 font-mono tabular-nums", !negative && "text-success"]} data-testid="match-line-amount"
         >{amount === null ? "—" : formatAmount(amount)}</span

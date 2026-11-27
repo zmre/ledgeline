@@ -80,7 +80,7 @@ test.describe("empty books (:5198)", () => {
         await expect(page.getByTestId("sidebar-catalog-count")).toHaveText("0 items");
         await expect(page.getByTestId("sidebar-snippets-count")).toHaveText("0 snippets");
         // Templates counts the starters the page lists (4d).
-        await expect(page.getByTestId("sidebar-templates-count")).toHaveText("2 templates");
+        await expect(page.getByTestId("sidebar-templates-count")).toHaveText("4 templates");
 
         await section(page, "Customers");
         await expect(page).toHaveURL(/\/app\/customers$/);
@@ -102,7 +102,7 @@ test.describe("empty books (:5198)", () => {
         await expect(page).toHaveURL(/\/app\/templates$/);
         await expectEmpty(page, "templates-empty", "No templates of your own yet", "New template");
         await expect(page.getByTestId("new-template")).toHaveCount(0);
-        await expect(page.getByTestId("template-row")).toHaveCount(2);
+        await expect(page.getByTestId("template-row")).toHaveCount(4);
     });
 
     test("each empty state's button starts the right thing", async ({page}) => {

@@ -54,9 +54,9 @@
         {#each links as id (id)}
             <div class="flex flex-wrap items-center gap-2" data-testid="review-match-link">
                 <span class="inline-flex items-center gap-1.5 text-info"><ReviewIcon name="link" class="h-4 w-4" /> Linked transfer</span>
-                <code class="text-xs text-base-content/55">match:{id}</code>
+                <code class="text-xs text-muted">match:{id}</code>
                 {#if armed === id}
-                    <span class="text-xs text-base-content/70">Remove this link from every posting carrying it? Both transactions stay.</span>
+                    <span class="text-xs text-muted">Remove this link from every posting carrying it? Both transactions stay.</span>
                     <button type="button" class="btn btn-warning btn-xs" disabled={blocked} onclick={() => void unlink(id)} data-testid="review-unlink-go"
                         >Unlink</button
                     >
@@ -87,11 +87,11 @@
                 >
                     <ReviewIcon name="link" class="h-3.5 w-3.5" /> Find match
                 </button>
-                <span class="text-xs text-base-content/55">A transfer half here isn't linked to its other half yet.</span>
+                <span class="text-xs text-muted">A transfer half here isn't linked to its other half yet.</span>
             </div>
         {/if}
         {#if failure !== null}
-            <p class="text-xs text-error" role="alert" data-testid="review-match-failure">Not unlinked: {failure}</p>
+            <p class="text-xs text-error-text" role="alert" data-testid="review-match-failure">Not unlinked: {failure}</p>
         {/if}
     </div>
 {/if}

@@ -70,9 +70,7 @@
 <div class="mx-auto flex w-full max-w-3xl flex-col gap-4 py-4" data-testid="new-ledger-wizard">
     <header class="flex flex-col gap-1">
         <h1 class="text-2xl font-semibold">New ledger</h1>
-        <p class="text-sm text-base-content/70">
-            Ledgeline keeps your books as plain hledger files in a folder you choose. Nothing is written until the last step.
-        </p>
+        <p class="text-sm text-muted">Ledgeline keeps your books as plain hledger files in a folder you choose. Nothing is written until the last step.</p>
     </header>
 
     {#if wizard.status !== null && !desktop}
@@ -105,7 +103,7 @@
                             onclick={() => wizard.choosePath(option.id)}
                         >
                             <span class="font-semibold">{option.title}</span>
-                            <span class="text-sm text-base-content/70">{option.blurb}</span>
+                            <span class="text-sm text-muted">{option.blurb}</span>
                         </button>
                     {/each}
                 </div>
@@ -131,7 +129,7 @@
                             onclick={() => void wizard.chooseKind(each)}
                         >
                             <span class="font-semibold">{KIND_LABELS[each].title}</span>
-                            <span class="text-sm text-base-content/70">{KIND_LABELS[each].blurb}</span>
+                            <span class="text-sm text-muted">{KIND_LABELS[each].blurb}</span>
                         </button>
                     {/each}
                 </div>
@@ -154,7 +152,7 @@
                     </select>
                 </label>
                 {#if wizard.source !== null}
-                    <p class="text-sm text-base-content/70" data-testid="new-ledger-source-howto">{wizard.source.howTo}</p>
+                    <p class="text-sm text-muted" data-testid="new-ledger-source-howto">{wizard.source.howTo}</p>
                     <label class="flex flex-col gap-1">
                         <span class="text-sm font-medium">The exported file</span>
                         <input
@@ -168,7 +166,7 @@
                     {#if warning !== null}
                         <div role="status" class="alert text-sm alert-warning" data-testid="new-ledger-source-warning">{warning}</div>
                     {/if}
-                    <p class="text-sm text-base-content/70">
+                    <p class="text-sm text-muted">
                         Ledgeline makes an empty ledger first, then opens the Imports screen with this file, where you match its accounts to yours before
                         anything is written.
                     </p>
@@ -224,7 +222,7 @@
                 </label>
                 <p class="text-sm" data-testid="new-ledger-sample-amount">
                     Amounts will look like <code class="font-mono">{sampleAmount(wizard.currency)}</code>.
-                    {#if wizard.blocker !== null}<span class="text-error">{wizard.blocker}</span>{/if}
+                    {#if wizard.blocker !== null}<span class="text-error-text">{wizard.blocker}</span>{/if}
                 </p>
             {:else if wizard.step === "accounts"}
                 <AccountReview
@@ -247,11 +245,11 @@
                         {#if wizard.folder !== null}
                             <span class="text-sm" data-testid="new-ledger-folder">
                                 In <strong>{wizard.folder.name}</strong>
-                                {#if !wizard.folder.empty}<span class="text-error"> — not empty</span>{/if}
+                                {#if !wizard.folder.empty}<span class="text-error-text"> — not empty</span>{/if}
                             </span>
                         {/if}
                     </div>
-                    <p class="text-sm text-base-content/70">
+                    <p class="text-sm text-muted">
                         Choose an empty folder, or make a new one in the picker. Ledgeline writes <code>main.journal</code> and <code>accounts.journal</code> there
                         and never overwrites a file.
                     </p>
@@ -264,7 +262,7 @@
                             value={wizard.title}
                             oninput={(event) => wizard.setTitle(event.currentTarget.value)}
                         />
-                        <span class="text-xs text-base-content/60">The first line of main.journal, and the name shown at the top of the app.</span>
+                        <span class="text-xs text-muted">The first line of main.journal, and the name shown at the top of the app.</span>
                     </label>
                 </div>
             {/if}
@@ -285,7 +283,7 @@
         </div>
         <div class="flex items-center gap-3">
             {#if wizard.step !== "details" && wizard.blocker !== null && wizard.step !== "start"}
-                <span class="text-sm text-base-content/60" data-testid="new-ledger-blocker">{wizard.blocker}</span>
+                <span class="text-sm text-muted" data-testid="new-ledger-blocker">{wizard.blocker}</span>
             {/if}
             {#if wizard.step === "create"}
                 <button

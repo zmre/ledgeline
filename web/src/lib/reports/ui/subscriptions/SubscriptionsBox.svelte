@@ -59,18 +59,18 @@
 <div class="card border border-base-content/5 bg-base-200 shadow-sm" data-testid={testid}>
     <div class="card-body gap-2 p-4">
         <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-            <span class="text-xs font-semibold tracking-wide text-base-content/60 uppercase">{title}</span>
+            <span class="text-xs font-semibold tracking-wide text-muted uppercase">{title}</span>
             {#if rows.length > 0}
                 <span class="font-mono text-xs tabular-nums" data-testid={testid ? `${testid}-total` : undefined}>
                     <span class="text-base-content/80">{fmt(base, perMonth, styles)}/mo</span>
-                    <span class="mx-1 text-base-content/40">·</span>
+                    <span class="mx-1 text-muted">·</span>
                     <span class="text-base-content/80">{fmt(base, perYear, styles)}/yr</span>
                 </span>
             {/if}
         </div>
 
         {#if rows.length === 0}
-            <div class="text-sm text-base-content/50">
+            <div class="text-sm text-muted">
                 {lookbackStart === null ? "No recurring charges found." : `No recurring charges found since ${lookbackStart}.`}
             </div>
         {:else}
@@ -92,12 +92,12 @@
                                             title="Added by a subscription:true tag">tagged</span
                                         >{/if}
                                 </span>
-                                <span class="text-xs text-base-content/50">next {row.nextExpected}</span>
+                                <span class="text-xs text-muted">next {row.nextExpected}</span>
                             </span>
                             <span class="text-right whitespace-nowrap">
                                 <span class="block font-mono tabular-nums">{fmt(base, row.typicalAmount, styles)}</span>
                                 {#if cadence === "monthly"}
-                                    <span class="font-mono text-xs text-base-content/50 tabular-nums">{fmt(base, row.annualizedCost, styles)}/yr</span>
+                                    <span class="font-mono text-xs text-muted tabular-nums">{fmt(base, row.annualizedCost, styles)}/yr</span>
                                 {/if}
                             </span>
                         </a>

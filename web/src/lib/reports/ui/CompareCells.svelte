@@ -55,16 +55,14 @@
 {:else}
     <td class="{cellClass} text-right align-top font-mono whitespace-nowrap tabular-nums" data-column="delta">
         {#if lines.length === 0}
-            <span class="text-base-content/40">0</span>
+            <span class="text-muted">0</span>
         {:else}
             {#each lines as line (line.text)}
                 <div>{line.text}</div>
             {/each}
         {/if}
     </td>
-    <td
-        class="{cellClass} text-right align-top font-mono whitespace-nowrap text-base-content/70 tabular-nums"
-        data-column="delta-pct"
-        title={comparePctTitle(cells.pct)}>{fmtComparePct(cells.pct)}</td
+    <td class="{cellClass} text-right align-top font-mono whitespace-nowrap text-muted tabular-nums" data-column="delta-pct" title={comparePctTitle(cells.pct)}
+        >{fmtComparePct(cells.pct)}</td
     >
 {/if}

@@ -23,7 +23,7 @@
 </script>
 
 <div class="flex flex-col gap-2 text-sm" data-testid="accrual-schedule-preview">
-    <p class="text-xs text-base-content/60">
+    <p class="text-xs text-muted">
         {schedule.periods.length}
         {schedule.periods.length === 1 ? "entry" : "entries"}
         {#if first !== null && last !== null}· {dayShort(first)} {first.slice(0, 4)} → {dayShort(last)} {last.slice(0, 4)}{/if}
@@ -35,8 +35,8 @@
                 {#each schedule.periods as period (period.date)}
                     <tr data-testid="accrual-period">
                         <td class="font-mono">{period.date}</td>
-                        <td class="text-xs text-base-content/60">{PART_LABEL[period.part]}</td>
-                        {#if period.status !== null}<td class="text-xs text-base-content/60">{period.status}</td>{/if}
+                        <td class="text-xs text-muted">{PART_LABEL[period.part]}</td>
+                        {#if period.status !== null}<td class="text-xs text-muted">{period.status}</td>{/if}
                         <td class="text-right tabular-nums">{shown(period.amounts)}</td>
                     </tr>
                 {/each}
@@ -44,7 +44,7 @@
         </table>
     </div>
     <details class="text-xs">
-        <summary class="cursor-pointer text-base-content/60">Rule text</summary>
+        <summary class="cursor-pointer text-muted">Rule text</summary>
         {#each schedule.rules as rule (rule.period + rule.role)}
             <pre class="mt-1 overflow-x-auto rounded bg-base-200 p-2 font-mono text-xs" data-testid="accrual-rule-text">{rule.text}</pre>
         {/each}

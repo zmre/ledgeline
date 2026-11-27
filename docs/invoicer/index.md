@@ -7,7 +7,9 @@ tags: [invoicer]
 
 # Ledgeline Invoicer
 
-Ledgeline Invoicer writes your invoices, turns them into PDFs, and books them into the hledger journal that Ledgeline reads. It is a separate app from the same project. It opens the same books folder and uses the same theme.
+Ledgeline Invoicer is a separate, optional app. You don't need it to use Ledgeline. It has its own download, and it works on the same books folder and journal as Ledgeline.
+
+The invoicer writes your invoices, turns them into PDFs, and books them into the hledger journal that Ledgeline reads. It uses the same theme as Ledgeline.
 
 Every invoice is a markdown file in your books folder, and so is every customer. You can open them in any text editor, keep them in git, or search them with `grep`. The money side lives in the journal as ordinary hledger transactions, so `hledger` and Ledgeline report on your invoices without any extra step.
 
@@ -35,8 +37,10 @@ nix profile install --accept-flake-config github:zmre/ledgeline
 To run it without installing:
 
 ```sh
-nix run --accept-flake-config github:zmre/ledgeline#invoicerWithSpa -- ~/books/books.journal
+nix shell --accept-flake-config github:zmre/ledgeline --command ledgeline-invoicer ~/books/books.journal
 ```
+
+On macOS, `nix build github:zmre/ledgeline` also gives you `result/Applications/Ledgeline Invoicer.app`, which you can open or copy to Applications.
 
 The invoicer isn't on crates.io. Without Nix, build it from the [Ledgeline repository](https://github.com/zmre/ledgeline) inside its development shell:
 

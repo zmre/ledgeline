@@ -80,6 +80,7 @@ const REPORT = decodeOtherHoldingsReport({
     // prints what the engine sent and never recomputes it.
     totals: {value: dec(19300000, 2), cost: dec(16800000, 2), change: dec(2500000, 2), changePct: 14.88},
     warnings: [],
+    liveAt: null,
 });
 
 const mount = (gainPeriod: "all" | "ytd" | "12mo" = "all") =>
@@ -226,5 +227,46 @@ describe("COMPONENT OtherHoldingsTable", () => {
 
         expect(groups).toContain("Holdings");
         expect(groups).not.toContain("Journal");
+    });
+
+    describe("click-to-filter (plan 47 D9)", () => {
+        const mountSelectable = (selected: ReadonlySet<string> = new Set()) => {
+            const onSelect = vi.fn();
+            render(OtherHoldingsTable, {holdings: [...REPORT.holdings], totals: REPORT.totals, base: REPORT.base, format, formatUnits, selected, onSelect});
+            return onSelect;
+        };
+
+        it("a click on a row filters the chart to its account, and puts the cursor there", async () => {
+            const onSelect = mountSelectable();
+            screen.getByTestId("other-holding-assets:vehicles:van").querySelector("td")?.click();
+            await tick();
+
+            expect(onSelect).toHaveBeenCalledWith("assets:vehicles:van");
+            expect(screen.getByTestId("other-holding-assets:vehicles:van").getAttribute("aria-current")).toBe("true");
+        });
+
+        it("`f` on the cursor row does the same from the keyboard", async () => {
+            const onSelect = mountSelectable();
+            await press("j");
+            await press("f");
+
+            expect(onSelect).toHaveBeenCalledWith("assets:property:house");
+        });
+
+        it("highlights the selected rows and keeps every row listed", () => {
+            mountSelectable(new Set(["assets:vehicles:van"]));
+            const rows = [...screen.getByTestId("other-holdings-table").querySelectorAll("tbody tr")];
+
+            expect(rows).toHaveLength(3);
+            expect(rows.map((row) => row.getAttribute("data-selected"))).toEqual([null, "true", null]);
+        });
+
+        it("a sort header click is a sort, not a filter", async () => {
+            const onSelect = mountSelectable();
+            screen.getByRole("button", {name: /^Value/}).click();
+            await tick();
+
+            expect(onSelect).not.toHaveBeenCalled();
+        });
     });
 });

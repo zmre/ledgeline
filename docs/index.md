@@ -17,7 +17,7 @@ Ledgeline reads the journal itself and reproduces hledger's numbers exactly, wit
 
 ## Install
 
-**macOS.** Download the `.dmg` for your Mac from the [latest GitHub release](https://github.com/zmre/ledgeline/releases/latest). Use `arm64` for Apple silicon and `x86_64` for Intel. The app is signed and notarized. Drag it to Applications.
+**macOS.** Download the `.dmg` for your Mac from the [latest GitHub release](https://github.com/zmre/ledgeline/releases/latest). Use `arm64` for Apple silicon and `x86_64` for Intel. The app is signed and notarized. Drag it to Applications. [Ledgeline Invoicer](invoicer/index.md), the optional invoicing app, is a separate download on the same page: `LedgelineInvoicer-<version>-arm64.dmg`, for Apple silicon only.
 
 **Nix (macOS and Linux).** Run it straight from the flake:
 
@@ -25,7 +25,7 @@ Ledgeline reads the journal itself and reproduces hledger's numbers exactly, wit
 nix run --accept-flake-config github:zmre/ledgeline -- ~/finance/2026.journal
 ```
 
-`--accept-flake-config` lets Nix download prebuilt binaries from the project's cache instead of compiling. On macOS, `nix build github:zmre/ledgeline` produces `result/Applications/Ledgeline.app`, which you can open or copy to Applications. The Nix package also installs [Ledgeline Invoicer](invoicer/index.md), with its own download for Apple silicon Macs.
+`--accept-flake-config` lets Nix download prebuilt binaries from the project's cache instead of compiling. On macOS, `nix build github:zmre/ledgeline` produces `result/Applications/Ledgeline.app`, which you can open or copy to Applications. The Nix package holds both apps, so `nix build` also gives you `Ledgeline Invoicer.app`, and `nix profile install` installs both. See [Getting it](invoicer/index.md#getting-it) for running the invoicer.
 
 **Cargo.** Without Nix, install from crates.io:
 

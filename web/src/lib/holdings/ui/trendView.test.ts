@@ -2,11 +2,19 @@ import {describe, expect, it} from "vitest";
 import {dec} from "#lib/domain/money.js";
 import type {BenchmarkLine} from "#lib/holdings/benchmarks.js";
 import type {HoldingsPoint, HoldingsSeries} from "#lib/holdings/types.js";
-import {benchmarkOverlays, trendLabels} from "./trendView";
+import {benchmarkOverlays, formatReturn, liveNote, trendLabels} from "./trendView";
 
-const point = (bucket: string, date: string, label = bucket): HoldingsPoint => ({date, bucket, label, marketValue: dec(100, 0), basis: null});
+const point = (bucket: string, date: string, label = bucket): HoldingsPoint => ({
+    date,
+    bucket,
+    label,
+    marketValue: dec(100, 0),
+    basis: null,
+    flow: dec(0, 0),
+    returnPct: 0,
+});
 
-const series = (points: HoldingsPoint[]): HoldingsSeries => ({base: "$", points, hasBasis: false});
+const series = (points: HoldingsPoint[]): HoldingsSeries => ({base: "$", points, hasBasis: false, anchor: null, returnAnchor: null, liveAt: null});
 
 describe("UNIT holdings trendView", () => {
     describe("trendLabels", () => {
@@ -32,25 +40,27 @@ describe("UNIT holdings trendView", () => {
         const trend = series([point("2026-08", "2026-08-31"), point("2026-09", "2026-09-28")]);
         // Label and slot as the engine serves them on each line.
         const CATALOG: Record<string, [string, number]> = {SPY: ["S&P 500 (SPY)", 0], QQQ: ["Nasdaq-100 (QQQ)", 2], GLD: ["Gold (GLD)", 7]};
-        const line = (symbol: string, dates: string[], values: (number | null)[]): BenchmarkLine => ({
+        // `returns` is what is drawn (plan 47 A1d); `value` is a decoy, ten
+        // thousand times larger, so drawing the wrong field cannot pass.
+        const line = (symbol: string, dates: string[], returns: (number | null)[]): BenchmarkLine => ({
             symbol,
             label: CATALOG[symbol][0],
             slot: CATALOG[symbol][1],
-            points: dates.map((date, i) => ({date, value: values[i] ?? null})),
+            points: dates.map((date, i) => ({date, value: (returns[i] ?? 0) * 10_000, returnPct: returns[i] ?? null})),
             stale: false,
             error: null,
         });
         const lines: Record<string, BenchmarkLine> = {
-            SPY: line("SPY", ["2026-08-31", "2026-09-28"], [100, 110]),
-            GLD: line("GLD", ["2026-08-31", "2026-09-28"], [null, 90]),
+            SPY: line("SPY", ["2026-08-31", "2026-09-28"], [0, 0.1]),
+            GLD: line("GLD", ["2026-08-31", "2026-09-28"], [null, -0.04]),
             QQQ: line("QQQ", ["2026-07-31", "2026-08-31"], [1, 2]),
         };
         const lookup = (symbol: string): BenchmarkLine | null => lines[symbol] ?? null;
 
-        it("draws each ticked line dashed, under its catalog label and in its catalog slot, keeping null gaps", () => {
+        it("draws each ticked line's RETURN dashed, under its catalog label and in its catalog slot, keeping null gaps", () => {
             expect(benchmarkOverlays(trend, ["SPY", "GLD"], lookup)).toEqual([
-                {name: "S&P 500 (SPY)", values: [100, 110], dashed: true, slot: 0},
-                {name: "Gold (GLD)", values: [null, 90], dashed: true, slot: 7},
+                {name: "S&P 500 (SPY)", values: [0, 0.1], dashed: true, slot: 0},
+                {name: "Gold (GLD)", values: [null, -0.04], dashed: true, slot: 7},
             ]);
         });
 
@@ -64,6 +74,30 @@ describe("UNIT holdings trendView", () => {
 
         it("skips a ticked benchmark that has no line yet", () => {
             expect(benchmarkOverlays(trend, ["DIA", "SPY"], lookup).map((s) => s.name)).toEqual(["S&P 500 (SPY)"]);
+        });
+    });
+
+    describe("formatReturn (plan 47 A1b)", () => {
+        it("writes a fraction as a signed percent to one decimal", () => {
+            expect(formatReturn(0.123)).toBe("+12.3%");
+            expect(formatReturn(-0.04)).toBe("−4.0%");
+            expect(formatReturn(0)).toBe("0.0%");
+        });
+    });
+
+    describe("liveNote (plan 47 D10)", () => {
+        it("says nothing while every price is a saved one", () => {
+            expect(liveNote(null)).toBe("");
+        });
+
+        it("names the quote's time, local, and that it is delayed", () => {
+            const seen: number[] = [];
+            const note = liveNote(1_795_000_000, (date) => {
+                seen.push(date.getTime());
+                return "2:35 PM";
+            });
+            expect(note).toBe(" · live 2:35 PM (delayed)");
+            expect(seen).toEqual([1_795_000_000_000]);
         });
     });
 });

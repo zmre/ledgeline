@@ -42,6 +42,40 @@ fn row(columns: &[Value], cells: &[(&str, &str)]) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn revenue_accounts_are_judged_by_declared_type_before_name() {
+    // `sales:widgets` is revenue only by its declaration; `revenue:refunds`
+    // reads as revenue by name but is declared an expense.
+    let app = crate::app::tests::app_on_prepared("accrual", None, |books| {
+        let journal = books.join("books.journal");
+        let text = std::fs::read_to_string(&journal).expect("reads");
+        std::fs::write(
+            &journal,
+            format!("account sales:widgets  ; type: R\naccount revenue:refunds  ; type: X\n{text}"),
+        )
+        .expect("writes");
+    });
+    let (status, options) = json_of(&app, authed("/api/editor/options")).await;
+    assert_eq!(status, StatusCode::OK, "{options}");
+    let revenue: Vec<&str> = options["revenue_accounts"]
+        .as_array()
+        .expect("revenue_accounts")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    assert!(revenue.contains(&"sales:widgets"), "{revenue:?}");
+    assert!(revenue.contains(&"revenue:consulting"), "{revenue:?}");
+    assert!(!revenue.contains(&"revenue:refunds"), "{revenue:?}");
+    assert!(
+        !revenue.contains(&"liabilities:deferred-revenue"),
+        "{revenue:?}"
+    );
+    assert!(
+        !revenue.contains(&"assets:accounts receivable"),
+        "{revenue:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_options_offer_what_the_pickers_need() {
     let app = app();
     let (status, options) = json_of(&app, authed("/api/editor/options")).await;

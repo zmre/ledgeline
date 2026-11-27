@@ -21,6 +21,14 @@ export interface HoldingsScope {
     asOf: ISODate;
     /** Gain window: "all" sends no gainSince (all-time), others narrow the gain to a period. */
     gainPeriod: GainPeriod;
+    /**
+     * The holdings filter (plan 47 D6): which rows the CHART and the stat tiles
+     * are narrowed to — symbols on the Stocks tab, account names on Other.
+     * Empty = every row. Switching tab clears it, so it always names rows of the
+     * tab on screen. The table, pie and gainers/losers ignore it (they keep every
+     * row so the next one is still there to click) and only highlight it.
+     */
+    holdings: ReadonlySet<string>;
 }
 
 export interface Holding {
@@ -83,6 +91,12 @@ export interface HoldingsReport {
     topLosers: Holding[];
     /** Scope-local, rendered inline on the page. */
     warnings: HoldingsWarning[];
+    /**
+     * Unix seconds of the newest intraday quote this report was valued with
+     * (plan 47 D10, `live=1`), or null when every price is a saved one. Absent
+     * on an engine from before plan 47, which decodes as null.
+     */
+    liveAt: number | null;
 }
 
 // Other holdings (plans/14): the tracked assets that are neither a security nor
@@ -163,6 +177,8 @@ export interface OtherHoldingsReport {
     totals: OtherHoldingsTotals;
     /** Scope-local, rendered inline on the page. */
     warnings: OtherHoldingsWarning[];
+    /** As `HoldingsReport.liveAt`. */
+    liveAt: number | null;
 }
 
 // Holdings-over-time series (served by GET /api/holdings/series, and by
@@ -179,6 +195,20 @@ export interface HoldingsPoint {
     marketValue: Dec;
     /** Total cost basis at `date`, null when any held lot is tainted or unpriced (same refusal as HoldingsReport.totals.basis). */
     basis: Dec | null;
+    /**
+     * Net money INTO the scoped holdings during the bucket ending at this point
+     * (plan 47 A1): buys at cost paid, sells at proceeds (negative), transfers
+     * in or out of scope. Zero on the first point. Drives the Value chart's
+     * bought/sold markers.
+     */
+    flow: Dec;
+    /**
+     * Cumulative time-weighted return since the window's first point, as a
+     * fraction (0.123 = +12.3 %), Modified Dietz per bucket, chain-linked; null
+     * before anything is held. Buying and selling do not move it (A1b). A plain
+     * number: it only ever places a line on a percent axis.
+     */
+    returnPct: number | null;
 }
 
 export interface HoldingsSeries {
@@ -187,4 +217,24 @@ export interface HoldingsSeries {
     points: HoldingsPoint[];
     /** True when at least one point has a non-null basis (so the UI knows whether to draw the basis line). */
     hasBasis: boolean;
+    /**
+     * The y-axis anchor (plan 47 D1/D2): min and max of the value over a horizon
+     * at least as long as the shown window (`anchor=1yr|5yr|all`), leading
+     * points ≤ 0 skipped, unioned with the shown points — UNPADDED (padding is
+     * presentation, `ui/yAxis.ts`). Null when the request carried no anchor,
+     * when nothing in the horizon is > 0, and on an engine from before plan 47.
+     *
+     * Numbers, not Decs: it only ever places an axis, like `gainPct` only ever
+     * labels one — no total is computed from it.
+     */
+    anchor: {min: number; max: number} | null;
+    /**
+     * The Performance chart's anchor (plan 47 A1c): min and max of the return
+     * index over the same horizon as `anchor`, REBASED to the window's first
+     * point, as fractions. Unpadded. Null when the request carried no anchor or
+     * nothing in the horizon had a return.
+     */
+    returnAnchor: {min: number; max: number} | null;
+    /** As `HoldingsReport.liveAt`: the newest intraday quote the last point was valued with. */
+    liveAt: number | null;
 }

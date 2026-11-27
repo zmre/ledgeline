@@ -100,8 +100,8 @@ Keys are lowercase with underscores, dates are `YYYY-MM-DD`, and amounts never a
 | `invoicee_address`                              | warning  | The billing address, copied the same way. Write it with `\|` so the lines stay apart.                                    |
 | `invoicee_phone`                                | no       | Copied when the customer has a phone.                                                                                    |
 | `invoicer`                                      | yes      | A link to your company's note.                                                                                           |
-| `invoicer_name`, `_email`, `_address`, `_phone` | as above | Your company's details, copied the same way from its note.                                                               |
-| `invoicer_logo`                                 | no       | Your logo's path, copied from the company note's `logo:`. See [Templates](templates.md#your-logo).                       |
+| `invoicer_name`, `_email`, `_address`, `_phone` | as above | Your company's details from its note. A draft always uses the note's current ones; sending copies them in.               |
+| `invoicer_logo`                                 | no       | Your logo's path, from the company note's `logo:`, as above. See [Templates](templates.md#your-logo).                   |
 | `terms`                                         | no       | Net days, a whole number. Copied from the customer, else the Default payment terms setting.                              |
 | `due_date`                                      | no       | The date plus the terms, unless you set it yourself. "Overdue" is worked out from it, never stored.                      |
 | `reference`                                     | no       | What the customer quotes back, such as a purchase order: `PO #PY75334`.                                                  |
@@ -114,6 +114,12 @@ Keys are lowercase with underscores, dates are `YYYY-MM-DD`, and amounts never a
 | anything else                                   | no       | Your own fields. Templates see them, and the app keeps them exactly as written.                                          |
 
 The app keeps the "written" fields up to date. If you change `paid:` by hand, the app writes back what the books say.
+
+### Your company's details
+
+A draft always uses your company note's details as they are now: its preview, its PDF and its page show them, whatever the draft's file says. Sending copies them into the file, and from then on the invoice keeps what was sent. Anything you type into a draft's `invoicer_` fields is replaced when you send it.
+
+When your company's details change after an invoice was sent, its page says so and offers **Update from company** (or press `u`). It replaces the invoice's copy of your details and re-books it; the PDF your customer has stays as it was, so export it again to send the new one. From the command line: `ledgeline-invoicer update-company 105`.
 
 The default file name is `{date} {customer} Invoice {invoice_num}.md`, and the title matches it. The `filename` [setting](settings.md) changes the pattern.
 
@@ -215,10 +221,12 @@ ledger_customer: Customer X
 contracts:
   - "[[Customer X MSA 2026]]"
   - "/customers/contracts/Customer X SOW 3 renewal (signed).pdf"
+  - "~/Documents/Legal/Customer X NDA.pdf"
 open_pos:
   - reference: "PO #PY75334"
     amount: $40,000
     expires: 2027-06-30
+    attachment: "/customers/pos/PO PY75334.pdf"
 billing_portal:
   name: Coupa
   url: https://customerx.coupahost.com/
@@ -241,12 +249,16 @@ Fred Smith is the champion.
 | `revenue_account`               | The account rows book to when nothing more specific says otherwise.                                                                                                                                                         |
 | `invoice_template`              | The template new invoices for this customer use. Without it, they use the [Default template](settings.md#new-invoices).                                                                                                     |
 | `ledger_customer`               | The customer's name in the books, the value of the `customer:` tag. Without it, the note's title. Set it before renaming a note, so the books keep one name.                                                                |
-| `contracts`                     | Links to notes, or paths to files such as signed PDFs. The customer page lists them, and `check` reports paths that don't exist.                                                                                            |
-| `open_pos`                      | Purchase orders: `reference`, `amount` and `expires`. The invoice editor suggests them for Reference, and the customer page shows how much of each is left.                                                                 |
+| `contracts`                     | Links to notes, or files such as signed PDFs: a path from the books folder (`/customers/contracts/MSA.pdf`), relative to the note, or a file outside the books folder (see below). The customer page lists them, and `check` reports any that don't exist. |
+| `open_pos`                      | Purchase orders: `reference`, `amount`, `expires` and `attachment`, a file with the PO's details written as a contract is. The invoice editor suggests them for Reference, and the customer page shows how much of each is left. |
 | `billing_portal`                | A vendor portal the customer takes invoices through: `name`, `url`, `login` (the user name only, never a password), `supplier_id`, `requires_reference` (refuse to send an invoice without a reference) and `instructions`. |
 | `snippets`                      | Snippets new invoices for this customer start with.                                                                                                                                                                         |
 
-Closing a purchase order on the customer page removes it from `open_pos` and adds a line about it under a "Closed POs" heading at the end of the note.
+The text below the frontmatter is your notes on the customer. The customer page shows them, and Edit changes them along with the other fields.
+
+Closing a purchase order on the customer page removes it from `open_pos` and adds a line about it under a "Closed POs" heading at the end of the note, naming its attachment if it had one.
+
+**Files outside the books folder.** In the desktop app, **Choose a file…** takes a contract or PO attachment from anywhere. A file under your home folder is written as `~/Documents/Legal/NDA.pdf`; anywhere else as a `file:///` address, such as `file:///Volumes/Share/NDA%202026.pdf`. The customer page marks these "outside the books". They don't travel with the books folder, so `check` warns when one is missing, and the app opens one only when a customer note names it. In a browser (`--server`), the page shows the file's name and place but can't open it.
 
 ## Your company
 

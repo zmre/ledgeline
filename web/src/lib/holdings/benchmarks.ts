@@ -28,7 +28,13 @@ export interface BenchmarkLine {
     label: string;
     /** The palette slot to draw in: the benchmark's catalog position. */
     slot: number;
-    points: readonly {date: ISODate; value: number | null}[];
+    /**
+     * `value` is the same money moved into the benchmark on the same dates (no
+     * longer drawn, plan 47 A1d); `returnPct` is the benchmark's cumulative
+     * total return since the first point (dividends reinvested) as a fraction,
+     * null where it has no price. The Performance chart draws `returnPct`.
+     */
+    points: readonly {date: ISODate; value: number | null; returnPct: number | null}[];
     /** A refresh failed and an older cache drew the line. */
     stale: boolean;
     /** Why there is no line, when there is not. */

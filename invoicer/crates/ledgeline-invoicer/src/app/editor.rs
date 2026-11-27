@@ -4,7 +4,7 @@
 //!
 //! | Route                                   | Does                                                      |
 //! |-----------------------------------------|-----------------------------------------------------------|
-//! | `GET /api/editor/options`               | What the editor's pickers offer: customers (with open POs), the catalog, the journal's accounts, custom field keys, the table words, and the default terms and template. |
+//! | `GET /api/editor/options`               | What the editor's pickers offer: customers (with open POs), the catalog, the journal's accounts (and which are revenue, by declared type), custom field keys, the table words, and the default terms and template. |
 //! | `GET /api/fields/{key}/values`          | Autocomplete for a custom frontmatter field.              |
 //! | `POST /api/invoices`                    | `new`: a draft for a customer (snapshot, terms, snippets). `deposit`: a deposit invoice. |
 //! | `GET /api/invoices/{num}/form`          | The document as the editor's form, with its revision and its computed amounts. |
@@ -200,11 +200,21 @@ async fn options(State(state): State<AppState>) -> ApiResult {
             .map(|n| json!({ "title": n.title, "link": format!("[[{}]]", n.title), "kind": n.note_type }))
             .collect();
         let journal = session.journal();
+        let accounts = ledgeline_core::wire::journal_to_accountnames(journal);
+        // The revenue accounts (and gains), by each account's declared type,
+        // else its nearest declared ancestor's, else its name: what a
+        // customer's revenue account field offers first.
+        let classes = ledgeline_core::view::Classes::of(journal);
+        let revenue_accounts: Vec<&String> = accounts
+            .iter()
+            .filter(|a| classes.is_type(a, ledgeline_core::reports::AccountType::Revenue))
+            .collect();
         let next = session.explain_next_number().ok();
         Ok(json!({
             "customers": customers,
             "catalog": catalog,
-            "accounts": ledgeline_core::wire::journal_to_accountnames(journal),
+            "accounts": accounts,
+            "revenue_accounts": revenue_accounts,
             "deposit_account": invoicer_core::books::spec::deposit_account(settings, journal),
             "revenue_account": settings.revenue_account,
             "fields": fields.into_iter().map(|(k, _)| k).collect::<Vec<_>>(),

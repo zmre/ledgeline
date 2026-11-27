@@ -671,6 +671,69 @@ fn set_edits_one_key_and_guards_the_lifecycle() {
     assert_eq!(books.read(path), unchanged);
 }
 
+/// A sent invoice keeps the company's details it was sent with; `show`
+/// says when the company has changed since, and `update-company` writes
+/// them (only those keys), re-booking it (PLAN D18).
+#[test]
+fn update_company_rewrites_a_sent_invoices_company_keys() {
+    let books = Books::of("accrual");
+    let company = books.read("company/My Company.md");
+    fs::write(
+        books.file("company/My Company.md"),
+        company.replacen("1234 Background Blvd.", "77 Harbor Way", 1),
+    )
+    .expect("writes");
+    let path = "invoices/2026-11-10 Customer X Invoice 105.md";
+    let before = books.read(path);
+    let journal = books.read("books.journal");
+
+    let shown = books.text(&["show", "105"]);
+    assert!(
+        shown.contains("Your company's details have changed since it was sent.")
+            && shown.contains("ledgeline-invoicer update-company 105"),
+        "{shown}"
+    );
+    assert_eq!(books.json(&["show", "105"], 0)["company_changed"], true);
+    // A draft follows instead: shown with the new address, file untouched.
+    let draft = books.json(&["show", "108"], 0);
+    assert_eq!(draft["company_changed"], false);
+    assert_eq!(
+        draft["invoicer"]["address"],
+        "77 Harbor Way\nAnywhere, CA 90000\n"
+    );
+    assert!(
+        books
+            .read("invoices/2026-11-17 Customer X Invoice 108.md")
+            .contains("1234 Background Blvd.")
+    );
+
+    let done = books.json(&["update-company", "105"], 0);
+    assert_eq!(done["written"], true);
+    assert_eq!(done["changed"], serde_json::json!(["invoicer_address"]));
+    assert_eq!(done["rebooked"]["changed"], false, "{done}");
+    assert_eq!(
+        books.read(path),
+        before.replacen("  1234 Background Blvd.\n", "  77 Harbor Way\n", 1)
+    );
+    assert_eq!(
+        books.read("books.journal"),
+        journal,
+        "the books already agree"
+    );
+    assert!(!books.text(&["show", "105"]).contains("update-company"));
+    assert_eq!(
+        books.text(&["update-company", "105"]),
+        format!("No change: {path}\n")
+    );
+
+    // A void invoice is history.
+    let refused = books.json(&["update-company", "103"], 2);
+    assert!(
+        refused["error"].as_str().expect("message").contains("void"),
+        "{refused}"
+    );
+}
+
 #[test]
 fn recalc_fixes_drafts_and_names_the_rest() {
     let books = Books::of("accrual");

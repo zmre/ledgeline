@@ -21,7 +21,7 @@ import {extras as nonBaseLines, fmtBase} from "./insights/format";
 export interface AmountCell {
     /** The headline figure. A real formatted zero ("$0.00") when the amount has no base part. */
     text: string;
-    /** Whether `text` is negative — the caller paints it `text-error`. */
+    /** Whether `text` is negative — the caller paints it `text-error-text`. */
     negative: boolean;
     /** Non-base commodities, formatted, sorted, zeroes dropped. */
     extras: string[];

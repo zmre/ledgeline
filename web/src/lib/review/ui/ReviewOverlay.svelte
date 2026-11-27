@@ -936,7 +936,7 @@
         >
             <h2 class="min-w-0 truncate text-sm font-semibold tracking-wide">{TITLES[kind]}</h2>
             {#if review.count > 0 && single === null}
-                <span class="shrink-0 text-sm whitespace-nowrap text-base-content/65 tabular-nums" data-testid="review-position" aria-live="polite">
+                <span class="shrink-0 text-sm whitespace-nowrap text-muted tabular-nums" data-testid="review-position" aria-live="polite">
                     {review.position} of {review.count}
                 </span>
                 <div
@@ -954,7 +954,7 @@
                 </div>
             {/if}
             {#if review.saving > 0 && single === null}
-                <span class="flex items-center gap-1.5 text-xs text-base-content/60" data-testid="review-saving" role="status">
+                <span class="flex items-center gap-1.5 text-xs text-muted" data-testid="review-saving" role="status">
                     <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-success"></span> saving…
                 </span>
             {/if}
@@ -996,7 +996,13 @@
                                 {#if single === "edit"}
                                     <!-- D37: only here, never in a queue run, where a missed key costs too much. -->
                                     <li>
-                                        <button type="button" class="text-error" onclick={armDelete} disabled={current === null} data-testid="review-delete">
+                                        <button
+                                            type="button"
+                                            class="text-error-text"
+                                            onclick={armDelete}
+                                            disabled={current === null}
+                                            data-testid="review-delete"
+                                        >
                                             <ReviewIcon name="x" /> Delete transaction <kbd class="ml-auto kbd kbd-xs">⇧X</kbd>
                                         </button>
                                     </li>
@@ -1041,7 +1047,7 @@
             data-motion={reduced ? "reduced" : "full"}
         >
             {#if review.loading}
-                <div class="{PANEL} flex items-center justify-center gap-2 py-16 text-sm text-base-content/60" role="status">
+                <div class="{PANEL} flex items-center justify-center gap-2 py-16 text-sm text-muted" role="status">
                     <span class="loading loading-sm loading-spinner"></span>
                     {single !== null ? "Loading the transaction…" : "Loading the queue…"}
                 </div>
@@ -1061,7 +1067,7 @@
                 >
                     <span class="grid h-12 w-12 place-items-center rounded-full bg-success/15 text-success"><ReviewIcon name="check" class="h-6 w-6" /></span>
                     <p class="text-lg font-medium">Nothing to review</p>
-                    <p class="text-sm text-base-content/60">
+                    <p class="text-sm text-muted">
                         {#if source !== null}
                             {kind === "unknowns" ? "Every transaction in this import has a category." : "This import has nothing to write."}
                         {:else}
@@ -1086,11 +1092,11 @@
                             <ReviewIcon name="check" class="h-7 w-7" />
                         </span>
                         <p class="text-lg font-medium">Run finished</p>
-                        <p class="text-sm text-base-content/70 tabular-nums" data-testid="review-tally">
+                        <p class="text-sm text-muted tabular-nums" data-testid="review-tally">
                             {review.tally.saved} reviewed · {review.tally.fixed} fixed via similar · {review.tally.skipped} skipped
                         </p>
                         {#if source !== null}
-                            <p class="max-w-sm text-sm text-base-content/60" data-testid="review-staged-note">
+                            <p class="max-w-sm text-sm text-muted" data-testid="review-staged-note">
                                 Nothing is written yet. These edits are applied when you press <strong class="font-medium text-base-content/80"
                                     >{writeLabel}</strong
                                 >.
@@ -1182,14 +1188,14 @@
                                     onPayeePick={adding ? (payee) => void pickPayee(payee) : undefined}
                                 />
                                 {#if errors.length > 0}
-                                    <ul class="-mt-2 list-inside list-disc text-sm text-error" role="alert" data-testid="review-errors">
+                                    <ul class="-mt-2 list-inside list-disc text-sm text-error-text" role="alert" data-testid="review-errors">
                                         {#each errors as message (message)}
                                             <li>{message}</li>
                                         {/each}
                                     </ul>
                                 {/if}
                                 {#if split}
-                                    <p class="text-xs text-base-content/50" data-testid="review-split-note">Splits aren't applied to similar transactions.</p>
+                                    <p class="text-xs text-muted" data-testid="review-split-note">Splits aren't applied to similar transactions.</p>
                                 {:else if source !== null}
                                     <!-- D24: two sources, two groups, each with its own count and check-all. -->
                                     {#if stagedRows.length > 0}

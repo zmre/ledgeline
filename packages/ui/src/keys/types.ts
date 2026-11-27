@@ -24,10 +24,18 @@ export type KeyGroup = keyof KeyGroupNames extends never ? string : keyof KeyGro
 
 /**
  * Layer priorities. Higher wins; registration order breaks ties (later beats
- * earlier). These four are the whole ladder — resist inventing a fifth, because
+ * earlier). These five are the whole ladder — resist inventing a fifth, because
  * the moment priorities are arbitrary numbers nobody can predict which `j` runs.
  */
 export const PRIORITY = {
+    /**
+     * An app's root-layout layer (help, go-to chords, New invoice): below every
+     * route, so a page's binding for the same key always shadows it. A tie on
+     * `page` can't do that: on a first load Svelte runs the page's (child's)
+     * registration effect BEFORE the layout's, so the layout registers later
+     * and wins the tie; after a client-side navigation the order flips.
+     */
+    app: -10,
     /** A route's own bindings (report tab digits, say). */
     page: 0,
     /** A widget on the page: the journal table, the rules list. */

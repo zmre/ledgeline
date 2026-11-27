@@ -30,7 +30,7 @@ import {CONF_SECTIONS, DEPTH_COMMANDS} from "#lib/settings/hledgerConfTypes.js";
 import type {ConfOrigin, ConfSection, DepthCommand, DepthSpec, HledgerConf} from "#lib/settings/hledgerConfTypes.js";
 import type {AccountReference, BudgetFile, BudgetGoal, BudgetListing, BudgetRule, CreatedBudgetFile, RulePeriod} from "#lib/budget/types.js";
 import type {AccountClass, AccountClasses, AccountType} from "#lib/domain/accountClass.js";
-import type {Dec, MixedAmount} from "#lib/domain/money.js";
+import {toNumber, type Dec, type MixedAmount} from "#lib/domain/money.js";
 import type {ISODate} from "#lib/domain/types.js";
 import type {
     Holding,
@@ -53,6 +53,7 @@ import {
     type PricesFile,
     type PricesStatus,
     type PricesUpdateResponse,
+    type IntradayResponse,
 } from "#lib/holdings/pricesTypes.js";
 import {CATEGORY_DIMENSIONS, PIE_DIMENSIONS} from "#lib/holdings/profileTypes.js";
 import {
@@ -174,6 +175,7 @@ import type {
     InvestmentPerf,
     MetricDelta,
     MoverRow,
+    PayeeRow,
     PerfPoint,
     Subscription,
     SubscriptionsReport,
@@ -781,6 +783,7 @@ interface RawHoldingsReport {
     topGainers?: RawHolding[];
     topLosers?: RawHolding[];
     warnings?: RawWarning[];
+    liveAt?: unknown;
 }
 
 interface RawOtherHolding {
@@ -814,6 +817,7 @@ interface RawOtherHoldingsReport {
     accounts?: unknown[];
     totals?: RawOtherHoldingsTotals;
     warnings?: RawOtherWarning[];
+    liveAt?: unknown;
 }
 
 interface RawHoldingsPoint {
@@ -822,12 +826,17 @@ interface RawHoldingsPoint {
     label?: string;
     marketValue?: RawDec;
     basis?: RawDec | null;
+    flow?: RawDec;
+    returnPct?: unknown;
 }
 
 interface RawHoldingsSeries {
     base?: string;
     points?: RawHoldingsPoint[];
     hasBasis?: boolean;
+    anchor?: unknown;
+    returnAnchor?: unknown;
+    liveAt?: unknown;
 }
 
 interface RawMetricDelta {
@@ -909,6 +918,14 @@ interface RawTopTxn {
     recognition?: {month?: unknown; count?: unknown};
 }
 
+interface RawPayeeRow {
+    payee?: string;
+    current?: RawDec;
+    previous?: RawDec | null;
+    delta?: RawDec | null;
+    pct?: number | null;
+}
+
 interface RawInsightsReport {
     period?: RawInsightsPeriod;
     base?: string;
@@ -923,6 +940,7 @@ interface RawInsightsReport {
     revenueChanges?: RawChangeRow[];
     movers?: RawMoverRow[];
     topTxns?: RawTopTxn[];
+    topPayees?: RawPayeeRow[];
     hasHoldings?: boolean;
 }
 
@@ -3232,6 +3250,7 @@ export function decodeHoldingsReport(raw: unknown): HoldingsReport {
         topGainers: frozen((report.topGainers ?? []).map((holding, i) => decodeHolding(holding, `topGainer #${i}`))),
         topLosers: frozen((report.topLosers ?? []).map((holding, i) => decodeHolding(holding, `topLoser #${i}`))),
         warnings: frozen((report.warnings ?? []).map((warning, i) => decodeWarning(warning, `warning #${i}`))),
+        liveAt: decodeLiveAt(report.liveAt, "holdings report liveAt"),
     });
 }
 
@@ -3321,6 +3340,7 @@ export function decodeOtherHoldingsReport(raw: unknown): OtherHoldingsReport {
         accounts: frozen(decodeStrings(report.accounts, "other holdings accounts")),
         totals: decodeOtherHoldingsTotals(report.totals, "other holdings totals"),
         warnings: frozen(report.warnings.map((warning, i) => decodeOtherWarning(warning, `other holdings warning #${i}`))),
+        liveAt: decodeLiveAt(report.liveAt, "other holdings report liveAt"),
     });
 }
 
@@ -3334,7 +3354,63 @@ function decodeHoldingsPoint(raw: RawHoldingsPoint | undefined, context: string)
         label: raw.label,
         marketValue: decodeDec(raw.marketValue, `${context} marketValue`),
         basis: decodeOptDec(raw.basis, `${context} basis`),
+        flow: decodeDec(raw.flow, `${context} flow`),
+        returnPct: decodeReturnPct(raw.returnPct, `${context} returnPct`),
     });
+}
+
+// Plan 47's additions to the holdings wire. Both keys are ALWAYS present —
+// the engine sends `null` when there is nothing to report — and a missing key
+// is a shape error, not a quiet null: the golden sweep can only notice a
+// renamed key that decodes differently, and these are `null` in every golden.
+// A value that is present must be the right shape too: a misread anchor would
+// place the axis wrong without a word.
+
+/** A key that must be on the wire, even when its value is null. */
+function present(raw: unknown, context: string): unknown {
+    if (raw === undefined) throw new ApiShapeError(`${context}: missing`);
+    return raw;
+}
+
+/** `liveAt`: unix seconds of the newest intraday quote used, or null. */
+function decodeLiveAt(raw: unknown, context: string): number | null {
+    const value = present(raw, context);
+    if (value === null) return null;
+    if (typeof value !== "number" || !Number.isFinite(value)) throw new ApiShapeError(`${context}: expected unix seconds or null`);
+    return value;
+}
+
+/** `anchor`: the y-axis horizon's unpadded min/max (wire Decs), or null. */
+function decodeAnchor(raw: unknown, context: string): HoldingsSeries["anchor"] {
+    const value = present(raw, context);
+    if (value === null) return null;
+    if (typeof value !== "object") throw new ApiShapeError(`${context}: expected {min, max} or null`);
+    const {min, max} = value as {min?: RawDec; max?: RawDec};
+    return Object.freeze({min: toNumber(decodeDec(min, `${context} min`)), max: toNumber(decodeDec(max, `${context} max`))});
+}
+
+// Plan 47 A1's additions: the same always-present rule. A return is a plain
+// JSON number (a fraction, 0.123 = +12.3 %), never a Dec — it only ever places
+// a line on a percent axis, like `gainPct` only ever labels one.
+
+/** `returnPct` (a series or benchmark point): a finite fraction, or null before anything is held. */
+function decodeReturnPct(raw: unknown, context: string): number | null {
+    const value = present(raw, context);
+    if (value === null) return null;
+    if (typeof value !== "number" || !Number.isFinite(value)) throw new ApiShapeError(`${context}: expected a fraction or null`);
+    return value;
+}
+
+/** `returnAnchor`: the Performance axis horizon's unpadded min/max (fractions), or null. */
+function decodeReturnAnchor(raw: unknown, context: string): HoldingsSeries["returnAnchor"] {
+    const value = present(raw, context);
+    if (value === null) return null;
+    if (typeof value !== "object") throw new ApiShapeError(`${context}: expected {min, max} or null`);
+    const {min, max} = value as {min?: unknown; max?: unknown};
+    if (typeof min !== "number" || !Number.isFinite(min) || typeof max !== "number" || !Number.isFinite(max)) {
+        throw new ApiShapeError(`${context}: expected numeric min/max`);
+    }
+    return Object.freeze({min, max});
 }
 
 export function decodeHoldingsSeries(raw: unknown): HoldingsSeries {
@@ -3346,6 +3422,9 @@ export function decodeHoldingsSeries(raw: unknown): HoldingsSeries {
         base: series.base,
         points: frozen(series.points.map((point, i) => decodeHoldingsPoint(point, `series point #${i}`))),
         hasBasis: series.hasBasis === true,
+        anchor: decodeAnchor(series.anchor, "holdings series anchor"),
+        returnAnchor: decodeReturnAnchor(series.returnAnchor, "holdings series returnAnchor"),
+        liveAt: decodeLiveAt(series.liveAt, "holdings series liveAt"),
     });
 }
 
@@ -3360,6 +3439,7 @@ export function decodeHoldingsSeries(raw: unknown): HoldingsSeries {
 interface RawBenchmarkPoint {
     date?: unknown;
     value?: unknown;
+    returnPct?: unknown;
 }
 
 interface RawBenchmarkLine {
@@ -3378,6 +3458,7 @@ function decodeBenchmarkLine(raw: RawBenchmarkLine | undefined, context: string)
             date: str(point?.date, `${context} point #${i} date`) as ISODate,
             // A gap is an explicit null; anything else must be a real number.
             value: point?.value === null ? null : num(point?.value, `${context} point #${i} value`),
+            returnPct: decodeReturnPct(point?.returnPct, `${context} point #${i} returnPct`),
         })
     );
     return Object.freeze({
@@ -3511,6 +3592,18 @@ function decodeTopTxn(raw: RawTopTxn | undefined, context: string): TopTxn {
     });
 }
 
+/** A Top Payees row; `previous`/`delta`/`pct` are null for a payee new this period. */
+function decodePayeeRow(raw: RawPayeeRow | undefined, context: string): PayeeRow {
+    if (raw === undefined || raw === null || typeof raw.payee !== "string") throw new ApiShapeError(`${context}: missing payee`);
+    return Object.freeze({
+        payee: raw.payee,
+        current: decodeDec(raw.current, `${context} current`),
+        previous: decodeOptDec(raw.previous, `${context} previous`),
+        delta: decodeOptDec(raw.delta, `${context} delta`),
+        pct: typeof raw.pct === "number" ? raw.pct : null,
+    });
+}
+
 /** Plan 45 Q7, additive: `{month: "YYYY-MM", count}` on a line standing for a month of recognition entries. */
 function decodeTopRecognition(raw: RawTopTxn["recognition"], context: string): {month: string; count: number} | null {
     if (raw === undefined) return null;
@@ -3587,6 +3680,7 @@ export function decodeInsightsReport(raw: unknown): InsightsReport {
         revenueChanges: frozen((report.revenueChanges ?? []).map((row, i) => decodeChangeRow(row, `insights revenueChanges[${i}]`))),
         movers: frozen((report.movers ?? []).map((row, i) => decodeMoverRow(row, `insights movers[${i}]`))),
         topTxns: frozen((report.topTxns ?? []).map((row, i) => decodeTopTxn(row, `insights topTxns[${i}]`))),
+        topPayees: frozen((report.topPayees ?? []).map((row, i) => decodePayeeRow(row, `insights topPayees[${i}]`))),
         hasHoldings: decodeBoolean(report.hasHoldings, "insights hasHoldings"),
     });
 }
@@ -5409,6 +5503,30 @@ export function decodePricesUpdateResponse(raw: unknown): PricesUpdateResponse {
     return Object.freeze({
         file: decodePricesFile(response.file, "prices update file"),
         results: frozen(response.results.map((result, i) => decodePriceResult(result, `prices update results[${i}]`))),
+    });
+}
+
+/**
+ * `POST /api/prices/intraday` → which quotes the engine now holds. Only
+ * `rateLimited` and the presence of quotes steer the page, but every field is
+ * checked: a quote the SPA cannot read is a reply it should not act on.
+ */
+export function decodeIntradayResponse(raw: unknown): IntradayResponse {
+    const body = raw as {quotes?: unknown; skipped?: unknown; rateLimited?: unknown} | null;
+    if (typeof body !== "object" || body === null || !Array.isArray(body.quotes)) throw new ApiShapeError("intraday: expected a quotes array");
+    const quotes = (body.quotes as {symbol?: unknown; price?: unknown; time?: unknown; currency?: unknown}[]).map((quote, i) =>
+        Object.freeze({
+            symbol: str(quote?.symbol, `intraday quotes[${i}] symbol`),
+            price: toNumber(decodeDec(quote?.price as RawDec | undefined, `intraday quotes[${i}] price`)),
+            time: num(quote?.time, `intraday quotes[${i}] time`),
+            // Yahoo does not always name one; the engine then trusts the quote (D11).
+            currency: quote?.currency === null ? null : str(quote?.currency, `intraday quotes[${i}] currency`),
+        })
+    );
+    return Object.freeze({
+        quotes: frozen(quotes),
+        skipped: frozen(decodeStrings(Array.isArray(body.skipped) ? body.skipped : [], "intraday skipped")),
+        rateLimited: body.rateLimited === true,
     });
 }
 

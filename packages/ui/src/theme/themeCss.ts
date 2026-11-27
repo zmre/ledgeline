@@ -99,3 +99,37 @@ export function contrastRatio(a: string, b: string): number {
     const [hi, lo] = [relativeLuminance(a), relativeLuminance(b)].sort((x, y) => y - x);
     return (hi + 0.05) / (lo + 0.05);
 }
+
+// ── color-mix(in oklab, …) ───────────────────────────────────────────────────
+
+/** A theme colour (`#rrggbb` or `oklch(L C H)`) in OKLab. */
+function oklab(color: string): [number, number, number] {
+    const value = color.trim().toLowerCase();
+    const lch = /^oklch\(\s*([\d.]+)(%?)\s+([\d.]+)\s+([\d.]+)\s*\)$/.exec(value);
+    if (lch !== null) {
+        const l = lch[2] === "%" ? Number(lch[1]) / 100 : Number(lch[1]);
+        const h = (Number(lch[4]) * Math.PI) / 180;
+        return [l, Number(lch[3]) * Math.cos(h), Number(lch[3]) * Math.sin(h)];
+    }
+    const hex = /^#([0-9a-f]{6})$/.exec(value);
+    if (hex === null) throw new Error(`unsupported colour syntax: ${color}`);
+    const n = Number.parseInt(hex[1], 16);
+    const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((x) => srgbToLinear(x / 255));
+    const lc = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+    const mc = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+    const sc = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+    return [
+        0.2104542553 * lc + 0.793617785 * mc - 0.0040720468 * sc,
+        1.9779984951 * lc - 2.428592205 * mc + 0.4505937099 * sc,
+        0.0259040371 * lc + 0.7827717662 * mc - 0.808675766 * sc,
+    ];
+}
+
+/** CSS `color-mix(in oklab, a share, b)` (`share` 0…1 of `a`), as an `oklch()` string. */
+export function mixOklab(a: string, share: number, b: string): string {
+    const [x, y] = [oklab(a), oklab(b)];
+    const [l, aa, bb] = x.map((v, i) => v * share + y[i] * (1 - share));
+    const c = Math.hypot(aa, bb);
+    const h = ((Math.atan2(bb, aa) * 180) / Math.PI + 360) % 360;
+    return `oklch(${l} ${c} ${h})`;
+}
