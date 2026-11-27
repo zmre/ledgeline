@@ -36,11 +36,11 @@ const MODIFIER_ORDER = ["ctrl", "alt", "meta", "shift"] as const;
  * (Tab, Enter, ArrowUp…) are more than one character, so they keep `shift+`.
  *
  * The one printable exception is a digit read from the physical key (see
- * `physicalDigit`): there Shift did not pick the character, it is part of the
+ * `physicalKey`): there Shift did not pick the character, it is part of the
  * chord, so `Ctrl+Shift+1` is `ctrl+shift+1` and not `ctrl+!`.
  */
 export function chordToken(event: KeyEventLike): string {
-    const digit = physicalDigit(event);
+    const digit = physicalKey(event);
     const key = digit ?? commandKey(event);
     const keepShift = digit !== undefined || key.length !== 1;
     const parts: string[] = [];
@@ -67,16 +67,20 @@ export function chordToken(event: KeyEventLike): string {
  * that IS AltGr, which types `{` on a German 7, and a binding must not eat it.
  * The top row only: numpad codes are left alone, since Shift turns those into
  * navigation keys on Windows.
+ *
+ * The period key is read the same way (plan 46's stop, ⌥⌘. and Ctrl+Shift+.):
+ * Shift+. types `>` on US and `:` on German, and Option+. types `≥`.
  */
-function physicalDigit(event: KeyEventLike): string | undefined {
+function physicalKey(event: KeyEventLike): string | undefined {
     if (!(event.ctrlKey || event.metaKey) || !(event.shiftKey || event.altKey)) return undefined;
     if (event.ctrlKey && event.altKey && !event.metaKey) return undefined;
+    if (event.code === "Period") return ".";
     return /^Digit([0-9])$/.exec(event.code ?? "")?.[1];
 }
 
-/** Does a written step keep `shift+` on this printable key? Only a digit under Ctrl/Cmd (see `physicalDigit`). */
+/** Does a written step keep `shift+` on this printable key? Only a digit or `.` under Ctrl/Cmd (see `physicalKey`). */
 function keepsShift(mods: ReadonlySet<string>, key: string): boolean {
-    return /^[0-9]$/.test(key) && (mods.has("ctrl") || mods.has("meta"));
+    return /^[0-9.]$/.test(key) && (mods.has("ctrl") || mods.has("meta"));
 }
 
 /**

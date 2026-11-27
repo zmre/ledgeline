@@ -6,6 +6,7 @@
 export const INVOICER_KEY_GROUPS = [
     "Global",
     "Go to",
+    "Time",
     "Dashboard",
     "Invoices",
     "Invoice",
@@ -17,6 +18,7 @@ export const INVOICER_KEY_GROUPS = [
     "Snippets",
     "Templates",
     "Template",
+    "Track",
     "Settings",
 ] as const;
 
