@@ -1,7 +1,21 @@
 // Track's pure helpers: a running timer as people read it, the platform key
 // hints, the day card, and the optimistic toggle.
 import {describe, expect, it} from "vitest";
-import {accountLabel, addMinutes, dayCardRows, dayCardText, dayHeading, elapsedText, optimisticStop, optimisticToggle, slotHint, stopHint} from "./format.js";
+import {
+    accountLabel,
+    addMinutes,
+    dayCardRows,
+    dayCardText,
+    dayHeading,
+    elapsedText,
+    optimisticStop,
+    optimisticToggle,
+    slotAria,
+    slotHint,
+    slotName,
+    slotSeconds,
+    stopHint,
+} from "./format.js";
 import {running, trackState} from "./fixtures.js";
 
 describe("UNIT time durations", () => {
@@ -99,5 +113,20 @@ describe("UNIT the optimistic toggle", () => {
         expect(optimisticStop(before, 300).banked_today.seconds).toBe(4800);
         expect(optimisticStop(before, 300, true).banked_today.seconds).toBe(4500);
         expect(optimisticStop(before, 300, true).running).toBeNull();
+    });
+});
+
+describe("UNIT time slot names", () => {
+    it("names a slot, or what an empty one is for, and reads it out with today's total", () => {
+        const state = running(trackState(), 2, 600);
+        const [one, two, , four, five, , seven] = state.slots;
+        const other = state.slots[9];
+        expect([slotName(two), slotName(five), slotName(seven), slotName(other)]).toEqual(["Acme Corp · advisory", "Empty pin", "·", "Other…"]);
+        expect(slotSeconds(two, 600)).toBe(4200);
+        expect(slotSeconds(four, 600)).toBe(900);
+        expect(slotAria(two, slotSeconds(two, 600))).toBe("Slot 2: Acme Corp · advisory, running, 1h 10m today");
+        expect(slotAria(one, 0)).toBe("Slot 1: Acme Corp · tax return, stopped, nothing today");
+        expect(slotAria(five, 0)).toBe("Slot 5: empty, choose an account to pin");
+        expect(slotAria(other, 0)).toBe("Slot 0: choose an account");
     });
 });
