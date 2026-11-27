@@ -46,6 +46,25 @@ export function stopHint(mac: boolean): string {
     return mac ? "⌥⌘." : "Ctrl+Shift+.";
 }
 
+/** A slot's name, or what an empty one is for (Track and the lamp's panel). */
+export function slotName(slot: Slot): string {
+    if (slot.label !== null) return slot.label;
+    if (slot.key === 0) return "Other…";
+    return slot.kind === "pinned" ? "Empty pin" : "·";
+}
+
+/** A slot's seconds today, with `elapsed` (the running timer's, live) on the one that runs. */
+export function slotSeconds(slot: Slot, elapsed: number): number {
+    return slot.today.seconds + (slot.running ? elapsed : 0);
+}
+
+/** A slot button's accessible name: its key, name, state and today's total (`seconds`). */
+export function slotAria(slot: Slot, seconds: number): string {
+    if (slot.account === null) return `Slot ${slot.key}: ${slot.key === 0 ? "choose an account" : "empty, choose an account to pin"}`;
+    const total = durationText(seconds);
+    return `Slot ${slot.key}: ${slotName(slot)}, ${slot.running ? "running" : "stopped"}, ${total === "—" ? "nothing" : total} today`;
+}
+
 /** One account on the day card: its total and its notes. */
 export interface CardRow {
     account: string;

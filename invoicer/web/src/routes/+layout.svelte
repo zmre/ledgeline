@@ -48,6 +48,9 @@
     // eslint-disable-next-line svelte/no-navigation-without-resolve -- the path is resolve()d; only the query is added
     registerKeys(timeAppLayer(tracker, {pick: (key) => void goto(`${resolve("/time/track")}?pick=${key}`)}));
     keymap.setGroupOrder(INVOICER_KEY_GROUPS);
+    /** The lamp's panel found a slot empty: Track, its picker open for it. */
+    // eslint-disable-next-line svelte/no-navigation-without-resolve -- the path is resolve()d; only the query is added
+    const pickOnTrack = (key: number): void => void goto(`${resolve("/time/track")}?pick=${key}`);
 
     let books = $state<BooksInfo | null>(null);
     /** Customers with unbilled time (plan 46 B-unbilled): the Unbilled link's count; null before time is set up. */
@@ -249,7 +252,7 @@
 
 <div class="flex h-screen flex-col bg-base-100 text-base-content md:flex-row">
     <Sidebar {links} {books} {newChoices} settings={settingsLink} groups={[timeGroup]}>
-        {#snippet lamp()}<TimeLamp {tracker} trackHref={resolve("/time/track")} />{/snippet}
+        {#snippet lamp()}<TimeLamp {tracker} trackHref={resolve("/time/track")} onPick={pickOnTrack} />{/snippet}
     </Sidebar>
     <main class="min-h-0 min-w-0 flex-1 overflow-y-auto p-3 sm:p-4 md:p-6">
         {@render children()}

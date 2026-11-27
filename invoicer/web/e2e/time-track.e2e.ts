@@ -3,7 +3,9 @@
 // moves the running start back a step; `.` stops and banks the minutes; `n`
 // writes a note, warning about a word hledger reads as a tag; the lamp on
 // another page resumes with ⌥⌘digit (Ctrl+Shift+digit off a Mac) and stops
-// with ⌥⌘. (Ctrl+Shift+.), the window title showing the timer meanwhile.
+// with ⌥⌘. (Ctrl+Shift+.), the window title showing the timer meanwhile;
+// the lamp's tracker panel (`T`, or a click) starts, moves and notes a slot
+// from another page, wide and in the narrow top bar.
 //
 // Its own server: `--server` on :5194 over a scratch copy of
 // invoicer/fixtures/time (target/e2e-invoicer-time/, staged fresh per run;
@@ -105,7 +107,7 @@ test("+ moves the running start back a step; . stops and banks it", async ({page
     await page.keyboard.type("+");
     await expect(page.getByTestId("time-lamp-elapsed")).toHaveText(/^[56]m \d\ds$/);
     await page.keyboard.press(".");
-    await expect(page.getByTestId("time-lamp-stopped")).toHaveAttribute("aria-label", "Time tracking stopped. Resume Globex · audit");
+    await expect(page.getByTestId("time-lamp-stopped")).toHaveAttribute("aria-label", "Time tracking stopped, last Globex · audit");
     await expect.poll(() => read(trackFile())).toMatch(/clients:globex:audit\s+[56]m/);
     await expect.poll(() => read(trackFile())).not.toContain("running clients:globex:audit");
 });
@@ -142,13 +144,67 @@ test("the lamp on another page: the app-wide chord resumes and stops, the title 
     await expect(page.getByTestId("time-lamp-running")).toHaveAttribute("aria-label", /^Time tracking running: Internal · admin/);
 
     await page.keyboard.press(await chord(page, "Period"));
-    await expect(page.getByTestId("time-lamp-stopped")).toHaveAttribute("aria-label", "Time tracking stopped. Resume Internal · admin");
+    await expect(page.getByTestId("time-lamp-stopped")).toHaveAttribute("aria-label", "Time tracking stopped, last Internal · admin");
     await expect(page).not.toHaveTitle(/^▶/);
 
-    // A click on the lamp resumes too, and another stops.
-    await page.getByTestId("time-lamp-stopped").click();
-    await expect(page.getByTestId("time-lamp-running")).toBeVisible();
-    await page.getByTestId("time-lamp-running").click();
-    await expect(page.getByTestId("time-lamp-stopped")).toBeVisible();
     await expect.poll(() => read(trackFile())).not.toContain("running ");
+});
+
+test("the lamp is the tracker: T opens it, a digit starts, + moves, n notes, Esc closes back to the lamp", async ({page}) => {
+    await open(page, "/invoices");
+    const lamp = page.getByTestId("time-lamp-stopped");
+    await expect(lamp).toHaveAttribute("aria-expanded", "false");
+
+    await page.keyboard.press("Shift+T");
+    const panel = page.getByRole("dialog", {name: "Time tracker"});
+    await expect(panel).toBeVisible();
+    await expect(page.getByTestId("time-lamp-slots").getByRole("button")).toHaveCount(10);
+    await expect(page.getByTestId("time-lamp-slot-2")).toContainText("Acme Corp · advisory");
+
+    await page.keyboard.press("2");
+    await expect(page.getByTestId("time-lamp-slot-2")).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("time-lamp-running")).toHaveAttribute("aria-label", /^Time tracking running: Acme Corp · advisory/);
+    await expect.poll(() => read(trackFile())).toContain("running clients:acme:advisory");
+    await expect(page).toHaveURL(/\/app\/invoices$/);
+
+    await page.keyboard.type("+");
+    await expect(page.getByTestId("time-lamp-elapsed")).toHaveText(/^[56]m \d\ds$/);
+
+    await page.keyboard.press("n");
+    const input = panel.getByTestId("time-note-input");
+    await expect(input).toBeFocused();
+    await input.fill("panel note");
+    await input.press("Enter");
+    await expect(panel.getByTestId("time-note")).toHaveCount(0);
+    await expect(panel).toBeVisible();
+
+    await page.keyboard.press("Escape");
+    await expect(panel).toHaveCount(0);
+    await expect(page.getByTestId("time-lamp-running")).toBeFocused();
+
+    // A click opens it too; Stop stops; Open Track goes to the full page.
+    await page.getByTestId("time-lamp-running").click();
+    await page.getByTestId("time-lamp-stop").click();
+    await expect(page.getByTestId("time-lamp-stopped")).toBeVisible();
+    // The note sits on the account's line today (a running timer's goes on its open line).
+    await expect.poll(() => read(trackFile())).toMatch(/clients:acme:advisory\s+\S+\s+; panel note/);
+    await expect.poll(() => read(trackFile())).not.toContain("running ");
+    await page.getByTestId("time-lamp-open-track").click();
+    await expect(page).toHaveURL(/\/app\/time\/track$/);
+    await expect(panel).toHaveCount(0);
+});
+
+test("the lamp's tracker in the narrow top bar", async ({page}) => {
+    await page.setViewportSize({width: 420, height: 800});
+    await open(page, "/invoices");
+    await page.getByTestId("time-lamp-stopped").click();
+    const panel = page.getByRole("dialog", {name: "Time tracker"});
+    await expect(panel).toBeVisible();
+    // Under the bar, inside the window.
+    const box = await panel.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(420);
+    await page.keyboard.press("Escape");
+    await expect(panel).toHaveCount(0);
 });

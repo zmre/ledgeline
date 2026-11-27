@@ -30,6 +30,7 @@ A capital letter means Shift: <kbd>N</kbd> is <kbd>Shift</kbd>+<kbd>N</kbd>. A s
 | <kbd>d</kbd>                | New deposit invoice                                                            |
 | <kbd>N</kbd>                | Open the New menu (deposit invoice, customer, catalog item, snippet, template) |
 | <kbd>/</kbd>                | Search this list (on pages with a search box)                                  |
+| <kbd>T</kbd>                | Open or close the time tracker beside the sidebar's light                      |
 | <kbd>Esc</kbd>              | Leave the field you are typing in                                              |
 | <kbd>Cmd</kbd>+<kbd>,</kbd> | Open Settings, from inside a field too                                         |
 | <kbd>Cmd</kbd>+<kbd>+</kbd> | Larger text                                                                    |
@@ -55,7 +56,7 @@ The text size keys work from inside a field too, and over a dialog. The desktop 
 | <kbd>g</kbd> <kbd>u</kbd> | Unbilled time |
 | <kbd>g</kbd> <kbd>,</kbd> | Settings  |
 
-Time tracking also has keys that work on every screen, such as <kbd>Option</kbd>+<kbd>Cmd</kbd>+<kbd>1</kbd> to start slot 1, and keys of its own on each page. See [Tracking time](../time/tracking.md#keys-on-every-screen) and [Entries and accounts](../time/entries-and-accounts.md).
+Time tracking also has keys that work on every screen: <kbd>T</kbd> opens the [tracker beside the sidebar's light](../time/tracking.md#the-tracker-beside-the-light), and <kbd>Option</kbd>+<kbd>Cmd</kbd>+<kbd>1</kbd> starts slot 1. Its pages have keys of their own. See [Tracking time](../time/tracking.md#keys-on-every-screen) and [Entries and accounts](../time/entries-and-accounts.md).
 
 ## Dashboard
 

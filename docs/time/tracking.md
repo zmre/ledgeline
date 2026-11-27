@@ -90,12 +90,36 @@ Above the slots, a strip shows each day of this week, Monday to Sunday, with its
 
 At the top of the sidebar, on every screen:
 
-| State   | Shows                                                                                           | Click   |
-|---------|-------------------------------------------------------------------------------------------------|---------|
-| Running | A green ▶, the account, the running time, and its key (<kbd>Option</kbd>+<kbd>Cmd</kbd>+<kbd>2</kbd>) | Stops it  |
-| Stopped | A grey ■, the last account, and the key that resumes it                                         | Resumes it |
+| State   | Shows                                                                                           |
+|---------|-------------------------------------------------------------------------------------------------|
+| Running | A green ▶, the account, the running time, and its key (<kbd>Option</kbd>+<kbd>Cmd</kbd>+<kbd>2</kbd>) |
+| Stopped | A grey ■, the last account, and the key that resumes it                                         |
 
-Colour is never the only sign. The shape (▶ or ■) and the time show it too, and a screen reader reads "running" or "stopped". Before setup, the light is a **Set up time tracking** link, and with nothing tracked yet it reads **Not tracking**.
+Colour is never the only sign. The shape (▶ or ■) and the time show it too, and a screen reader reads "running" or "stopped". Before setup, the light reads **Set up time tracking**, and with nothing tracked yet it reads **Not tracking**.
+
+### The tracker beside the light
+
+Click the light, or press <kbd>T</kbd> (<kbd>Shift</kbd>+<kbd>T</kbd>) on any screen, and a small tracker opens beside it. You can start, switch and correct the clock from there without leaving the invoice you're on. In a narrow window, where the sidebar is a bar across the top, it opens under the bar.
+
+- At the top is the running line: the account, when it started, the running time, and **− 5m**, **+ 5m**, **Note** and **Stop**.
+- Below that are the ten slots, as on Track: each one's digit, its name and today's total.
+- At the foot, **Open Track** goes to the full page.
+
+While it's open, these keys work in it, on top of whatever the page uses them for:
+
+| Key                            | Does                                                                     |
+|--------------------------------|--------------------------------------------------------------------------|
+| <kbd>1</kbd> … <kbd>9</kbd>    | Start that slot, or stop it if it's running                              |
+| <kbd>0</kbd>                   | Choose another account (or create one) and start it                      |
+| <kbd>+</kbd> (or <kbd>=</kbd>) | Start the running clock a step earlier                                   |
+| <kbd>-</kbd>                   | Start it a step later                                                    |
+| <kbd>n</kbd>                   | Write a note on the running line                                         |
+| <kbd>.</kbd>                   | Stop the clock                                                           |
+| <kbd>T</kbd> or <kbd>Esc</kbd> | Close the tracker. The focus goes back to the light                       |
+
+A click on a slot does what its digit does. An empty slot opens Track with the account search, so you can fill it there. A click anywhere outside the tracker closes it too.
+
+Before time tracking is set up, the tracker has one button, **Set up time tracking**, which opens Track's setup.
 
 ## Keys on every screen
 
@@ -107,6 +131,7 @@ These work anywhere in the invoicer, except while you're typing in a field:
 | <kbd>Option</kbd>+<kbd>Cmd</kbd>+<kbd>.</kbd>             | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>.</kbd>              | Stop the clock                          |
 | <kbd>Option</kbd>+<kbd>Cmd</kbd>+<kbd>↑</kbd>             | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>↑</kbd>              | Start the running clock a step earlier  |
 | <kbd>Option</kbd>+<kbd>Cmd</kbd>+<kbd>↓</kbd>             | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>↓</kbd>              | Start it a step later                   |
+| <kbd>T</kbd>                                              | <kbd>T</kbd>                                               | Open or close the [tracker](#the-tracker-beside-the-light) |
 
 A slot key on an empty slot opens Track with the account search, so you can fill it.
 

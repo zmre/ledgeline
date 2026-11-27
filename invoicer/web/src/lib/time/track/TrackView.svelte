@@ -22,7 +22,7 @@
     import WeekStrip from "./WeekStrip.svelte";
     import {daysBetween, weekdayName} from "../dates.js";
     import {durationText} from "../duration.js";
-    import {clockOf, dayCardRows, dayHeading, elapsedText, type CardRow} from "./format.js";
+    import {clockOf, dayCardRows, dayHeading, elapsedText, slotAria, slotName, slotSeconds, type CardRow} from "./format.js";
     import {failureText, PIN_COUNT, type Tracker} from "./tracker.svelte.js";
 
     let {tracker, pick = null}: {tracker: Tracker; /** Open the picker for this slot at once (`?pick=0` from the app-wide keys). */ pick?: number | null} =
@@ -187,13 +187,6 @@
         })
     );
 
-    /** The slot's name, or what an empty one is for. */
-    function nameOf(slot: Slot): string {
-        if (slot.label !== null) return slot.label;
-        if (slot.key === 0) return "Other…";
-        return slot.kind === "pinned" ? "Empty pin" : "·";
-    }
-
     function lastUsed(slot: Slot): string | null {
         if (slot.last_used === null || shown === null || slot.last_used === shown.today) return null;
         const days = daysBetween(slot.last_used, shown.today);
@@ -203,14 +196,7 @@
     }
 
     function todayOf(slot: Slot): number {
-        return slot.today.seconds + (slot.running ? tracker.elapsed : 0);
-    }
-
-    function ariaOf(slot: Slot): string {
-        const name = nameOf(slot);
-        if (slot.account === null) return `Slot ${slot.key}: ${slot.key === 0 ? "choose an account" : "empty, choose an account to pin"}`;
-        const total = durationText(todayOf(slot));
-        return `Slot ${slot.key}: ${name}, ${slot.running ? "running" : "stopped"}, ${total === "—" ? "nothing" : total} today`;
+        return slotSeconds(slot, tracker.elapsed);
     }
 
     function savePerson(): void {
@@ -255,7 +241,7 @@
                             {slot.running ? 'border-success/50 bg-success/10' : 'border-base-300 hover:bg-base-200'}
                             {selected === slot.key ? 'outline-2 outline-offset-1 outline-primary' : ''}"
                         aria-pressed={slot.running}
-                        aria-label={ariaOf(slot)}
+                        aria-label={slotAria(slot, todayOf(slot))}
                         onclick={() => click(slot)}
                         onfocus={() => (selected = slot.key)}
                         data-testid="time-slot-{slot.key}"
@@ -266,7 +252,7 @@
                             <span class={slot.running ? "text-success" : "text-base-content/40"} aria-hidden="true"
                                 >{slot.running ? "▶" : slot.key === 0 ? "⋯" : "○"}</span
                             >
-                            <span class="min-w-0 flex-1 truncate {slot.account === null ? 'text-base-content/50' : 'font-medium'}">{nameOf(slot)}</span>
+                            <span class="min-w-0 flex-1 truncate {slot.account === null ? 'text-base-content/50' : 'font-medium'}">{slotName(slot)}</span>
                         </span>
                         <span class="flex w-full items-center gap-2 text-sm md:w-auto">
                             <span class="tabular-nums {slot.running ? 'font-semibold' : ''}" data-testid="time-slot-{slot.key}-today">
@@ -318,7 +304,7 @@
 
         {#if noting !== null}
             <div class="print:hidden">
-                <NoteField label={nameOf(noting)} initial={noting.last_note ?? ""} onSave={saveNote} onCancel={() => (noting = null)} />
+                <NoteField label={slotName(noting)} initial={noting.last_note ?? ""} onSave={saveNote} onCancel={() => (noting = null)} />
             </div>
         {/if}
 
