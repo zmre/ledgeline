@@ -128,7 +128,7 @@ test.describe("keyboard-first over the accrual fixture (:5199)", () => {
             ["k", /\/app\/catalog$/, "Catalog"],
             ["s", /\/app\/snippets$/, "Snippets"],
             ["t", /\/app\/templates$/, "Templates"],
-            ["d", /\/app\/$/, "Dashboard"],
+            ["d", /\/app\/$/, "Home"],
         ] as const) {
             await chord(page, "g", key);
             await expect(page).toHaveURL(path);
@@ -150,11 +150,11 @@ test.describe("keyboard-first over the accrual fixture (:5199)", () => {
         await page.keyboard.press("Escape");
         await expect(sheet).toHaveCount(0);
 
-        // The dashboard's own keys, on the dashboard.
+        // The dashboard's own keys, on Home.
         await chord(page, "g", "d");
         await expect(page.getByTestId("dashboard")).toBeVisible();
         await page.keyboard.press("?");
-        await expect(sheet.getByRole("heading", {level: 4})).toHaveText(["Global", "Go to", "Dashboard"]);
+        await expect(sheet.getByRole("heading", {level: 4})).toHaveText(["Global", "Go to", "Home"]);
         await expect(sheet).toContainText("Open the drafts");
         await page.keyboard.press("Escape");
         // 1 opens the drafts card's list.

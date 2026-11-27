@@ -39,8 +39,8 @@
     registerKeys({
         id: "dashboard-recent",
         bindings: [
-            {keys: "j", label: "Next recent invoice", group: "Dashboard", enabled: () => recent.some((r) => r.number !== null), run: () => step(1)},
-            {keys: "k", label: "Previous recent invoice", group: "Dashboard", enabled: () => recent.some((r) => r.number !== null), run: () => step(-1)},
+            {keys: "j", label: "Next recent invoice", group: "Home", enabled: () => recent.some((r) => r.number !== null), run: () => step(1)},
+            {keys: "k", label: "Previous recent invoice", group: "Home", enabled: () => recent.some((r) => r.number !== null), run: () => step(-1)},
         ],
     });
 

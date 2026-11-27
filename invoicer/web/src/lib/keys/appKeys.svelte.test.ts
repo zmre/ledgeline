@@ -48,6 +48,7 @@ describe("COMPONENT the invoicer's app keys", () => {
             ["r", "/app/time/track"],
             ["e", "/app/time/entries"],
             ["a", "/app/time/accounts"],
+            ["u", "/app/to-bill"],
         ]) {
             await press("g");
             await press(letter);

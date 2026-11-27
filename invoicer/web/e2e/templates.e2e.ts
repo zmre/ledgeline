@@ -62,6 +62,9 @@ async function open(page: Page): Promise<void> {
 }
 
 async function templatesSection(page: Page): Promise<void> {
+    // In the sidebar's Library, closed until opened (open by itself on a template's page).
+    const library = page.getByTestId("sidebar-group-library");
+    if ((await library.getAttribute("aria-expanded")) === "false") await library.click();
     // A section link's name ends with its count for screen readers ("Templates 3 templates").
     await page
         .getByTestId("sidebar")

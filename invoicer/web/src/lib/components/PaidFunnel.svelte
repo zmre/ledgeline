@@ -59,11 +59,11 @@
     registerKeys({
         id: "dashboard-funnel",
         bindings: [
-            {keys: "1", label: "Open the drafts", group: "Dashboard", run: openCard("drafts")},
-            {keys: "2", label: "Open what's outstanding", group: "Dashboard", run: openCard("outstanding")},
-            {keys: "3", label: "Open what was paid", group: "Dashboard", run: openCard("paid")},
-            {keys: "w", label: "A longer paid window", group: "Dashboard", enabled: canStep(1), run: () => stepWindow(1)},
-            {keys: "W", label: "A shorter paid window", group: "Dashboard", enabled: canStep(-1), run: () => stepWindow(-1)},
+            {keys: "1", label: "Open the drafts", group: "Home", run: openCard("drafts")},
+            {keys: "2", label: "Open what's outstanding", group: "Home", run: openCard("outstanding")},
+            {keys: "3", label: "Open what was paid", group: "Home", run: openCard("paid")},
+            {keys: "w", label: "A longer paid window", group: "Home", enabled: canStep(1), run: () => stepWindow(1)},
+            {keys: "W", label: "A shorter paid window", group: "Home", enabled: canStep(-1), run: () => stepWindow(-1)},
         ],
     });
 

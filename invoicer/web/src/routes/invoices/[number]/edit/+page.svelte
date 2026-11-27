@@ -167,7 +167,7 @@
                     ? ""
                     : voidHow === "nobill"
                       ? ` Its ${hoursWords(voidTime)} of time are marked not billed.`
-                      : ` Its ${hoursWords(voidTime)} of time are back in Unbilled.`;
+                      : ` Its ${hoursWords(voidTime)} of time are back in To bill.`;
             notice =
                 step === "send"
                     ? `Invoice ${editor.number} is sent.`

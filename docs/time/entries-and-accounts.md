@@ -53,7 +53,7 @@ Tick the box at the start of each line, or press <kbd>x</kbd> on the line under 
 | Action                  | Does                                                                                         |
 |-------------------------|----------------------------------------------------------------------------------------------|
 | **Mark billable**       | Takes the `nobill:` tag off, so written-off time counts as unbilled again.                   |
-| **Mark not billable…**  | Adds `nobill:`, with a reason if you give one. The time leaves Unbilled.                      |
+| **Mark not billable…**  | Adds `nobill:`, with a reason if you give one. The time leaves To bill.                      |
 | **Move to account…**    | Moves the lines to another account.                                                          |
 | **Set person…**         | Sets who did the work. Leave it empty for no one.                                            |
 | **Bill…**               | Bills the picked lines on an invoice draft. They must be one customer's unbilled time. See [Billing time](billing.md#billing-a-customer). <kbd>b</kbd> does the same. |
@@ -86,7 +86,7 @@ Above the list, Entries warns about:
 
 ## Accounts
 
-**Time → Accounts** (<kbd>g</kbd> <kbd>a</kbd>) shows `time-accounts.journal` as a tree. Its columns are **Account**, **Customer**, **Billable**, **Item**, **This month** and **Unbilled**. A value an account inherits from a parent says where it comes from, such as "from clients:acme". <kbd>[</kbd> and <kbd>]</kbd> step the month the hours are for.
+**Time accounts**, in the sidebar's Library (<kbd>g</kbd> <kbd>a</kbd>), shows `time-accounts.journal` as a tree. Its columns are **Account**, **Customer**, **Billable**, **Item**, **This month** and **Unbilled**. A value an account inherits from a parent says where it comes from, such as "from clients:acme". <kbd>[</kbd> and <kbd>]</kbd> step the month the hours are for.
 
 Time accounts don't have to sit under one root. Any account that has time in a file the roll-up includes is a time account, so a tree of your own such as `projects:…` or `kunden:…` works as it is.
 

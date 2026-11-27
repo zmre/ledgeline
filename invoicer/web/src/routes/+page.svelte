@@ -93,11 +93,11 @@
 </script>
 
 <svelte:head>
-    <title>Dashboard · Ledgeline Invoicer</title>
+    <title>Home · Ledgeline Invoicer</title>
 </svelte:head>
 
 <div class="@container mx-auto flex max-w-6xl flex-col gap-4">
-    <h1 class="text-2xl font-semibold tracking-tight">Dashboard</h1>
+    <h1 class="text-2xl font-semibold tracking-tight">Home</h1>
     <AsyncSection {view} value={dashboard} {error} testid="dashboard-error" label="the dashboard" loadingLabel="Loading the dashboard" onRetry={retry}>
         {#snippet children(d)}
             {#if d.invoices === 0 && d.commodities.length === 0}

@@ -202,6 +202,18 @@ async fn ui_prefs_are_the_shared_theme_and_scale() {
     let (status, _, body) = send(&app.router, patch).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body.contains("catppuccin"), "{body}");
+    // The sidebar's Library section: closed until it is opened, then saved.
+    assert_eq!(prefs["prefs"]["sidebarLibraryOpen"], false);
+    let patch = Request::patch("/api/ui-prefs")
+        .header(header::HOST, HOST)
+        .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(r#"{"sidebarLibraryOpen":true}"#))
+        .unwrap();
+    let (status, _, body) = send(&app.router, patch).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let saved: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(saved["prefs"]["sidebarLibraryOpen"], true, "{body}");
     // A key only Ledgeline knows is refused, not written.
     let patch = Request::patch("/api/ui-prefs")
         .header(header::HOST, HOST)

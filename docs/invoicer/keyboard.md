@@ -40,24 +40,26 @@ The text size keys work from inside a field too, and over a dialog. The desktop 
 
 ## Go to
 
-| Keys                      | Goes to   |
-|---------------------------|-----------|
-| <kbd>g</kbd> <kbd>d</kbd> | Dashboard |
-| <kbd>g</kbd> <kbd>i</kbd> | Invoices  |
-| <kbd>g</kbd> <kbd>c</kbd> | Customers |
-| <kbd>g</kbd> <kbd>k</kbd> | Catalog   |
-| <kbd>g</kbd> <kbd>s</kbd> | Snippets  |
-| <kbd>g</kbd> <kbd>t</kbd> | Templates |
-| <kbd>g</kbd> <kbd>w</kbd> | Time overview |
-| <kbd>g</kbd> <kbd>e</kbd> | Time entries |
-| <kbd>g</kbd> <kbd>r</kbd> | Track     |
-| <kbd>g</kbd> <kbd>a</kbd> | Time accounts |
-| <kbd>g</kbd> <kbd>u</kbd> | Unbilled time |
-| <kbd>g</kbd> <kbd>,</kbd> | Settings  |
+| Keys                      | Goes to                      |
+|---------------------------|------------------------------|
+| <kbd>g</kbd> <kbd>d</kbd> | Home (the dashboard)         |
+| <kbd>g</kbd> <kbd>i</kbd> | Invoices                     |
+| <kbd>g</kbd> <kbd>u</kbd> | To bill                      |
+| <kbd>g</kbd> <kbd>w</kbd> | Time (its overview)          |
+| <kbd>g</kbd> <kbd>e</kbd> | Time entries                 |
+| <kbd>g</kbd> <kbd>r</kbd> | Track                        |
+| <kbd>g</kbd> <kbd>c</kbd> | Customers                    |
+| <kbd>g</kbd> <kbd>k</kbd> | Catalog, in the Library      |
+| <kbd>g</kbd> <kbd>s</kbd> | Snippets, in the Library     |
+| <kbd>g</kbd> <kbd>t</kbd> | Templates, in the Library    |
+| <kbd>g</kbd> <kbd>a</kbd> | Time accounts, in the Library |
+| <kbd>g</kbd> <kbd>,</kbd> | Settings                     |
+
+The sidebar's **Library** is a button: <kbd>Tab</kbd> to it and press <kbd>Enter</kbd> or <kbd>Space</kbd> to open or close it.
 
 Time tracking also has keys that work on every screen, such as <kbd>Option</kbd>+<kbd>Cmd</kbd>+<kbd>1</kbd> to start slot 1, and keys of its own on each page. See [Tracking time](../time/tracking.md#keys-on-every-screen) and [Entries and accounts](../time/entries-and-accounts.md).
 
-## Dashboard
+## Home
 
 | Keys                                   | Does                                                                |
 |----------------------------------------|---------------------------------------------------------------------|
@@ -127,6 +129,16 @@ Inside the table, <kbd>Option</kbd>+<kbd>↑</kbd> and <kbd>Option</kbd>+<kbd>�
 | <kbd>e</kbd>                | Edit the customer                                  |
 | <kbd>Cmd</kbd>+<kbd>S</kbd> | Save, while editing                                |
 | <kbd>Esc</kbd>              | Cancel editing; asks first if something is unsaved |
+
+## To bill
+
+| Keys                         | Does                                         |
+|------------------------------|----------------------------------------------|
+| <kbd>Shift</kbd>+<kbd>B</kbd> | Bill all…: each customer's main period in turn |
+| <kbd>1</kbd> / <kbd>2</kbd>  | The To bill / To pay tab                     |
+| <kbd>←</kbd> / <kbd>→</kbd>  | The other tab, once a tab has focus          |
+
+See [Billing time](../time/billing.md).
 
 ## Catalog, snippets and templates
 

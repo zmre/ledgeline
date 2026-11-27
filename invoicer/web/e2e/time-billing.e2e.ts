@@ -1,7 +1,7 @@
 // Time billing end to end (plan 46 Phase 5): Acme Corp's October time billed
-// from Unbilled into a draft with its rows and timesheet table, the time
+// from To bill into a draft with its rows and timesheet table, the time
 // then billed in Entries and the files, the draft deleted and the time back
-// in Unbilled; then Riley's contractor time paid through accounts payable,
+// on To bill; then Riley's contractor time paid (To bill's To pay tab) through accounts payable,
 // the missing rate and expense account asked for, the bill booked and its
 // line tagged. Each write is checked in the files.
 //
@@ -59,16 +59,35 @@ async function open(page: Page, path: string): Promise<void> {
 
 const acme = (page: Page) => page.getByTestId("unbilled-customer").filter({hasText: "Acme Corp"});
 
-test("Unbilled sums each customer's suggestion and counts them in the sidebar", async ({page}) => {
-    await open(page, "/time/unbilled");
+test("To bill sums each customer's suggestion and counts them in the sidebar", async ({page}) => {
+    await open(page, "/to-bill");
     await expect(page.getByTestId("unbilled-banner")).toContainText("customers have unbilled time through October");
     await expect(page.getByTestId("unbilled-banner")).toContainText("Acme Corp 50m");
-    await expect(page.getByRole("link", {name: "Unbilled time"})).toBeVisible();
+    const link = page.getByTestId("sidebar-to-bill");
+    await expect(link).toHaveAttribute("aria-current", "page");
+    await expect(page.getByTestId("sidebar-to-bill-count")).toContainText("with unbilled time");
     await expect(page.getByTestId("unbilled-needs-customer")).toContainText("clients:orphan");
+    await expect(page.getByRole("tab", {name: /^To bill/})).toHaveAttribute("aria-selected", "true");
+
+    // The old address lands here, its query kept; 2 shows To pay.
+    await open(page, "/time/unbilled?tab=pay");
+    await expect(page).toHaveURL(/\/app\/to-bill\?tab=pay$/);
+    await expect(page.getByTestId("unpaid-person").filter({hasText: "Riley Chen"})).toBeVisible();
+    await page.keyboard.press("1");
+    await expect(page).toHaveURL(/\/app\/to-bill$/);
+    await expect(page.getByTestId("unbilled-banner")).toBeVisible();
+
+    // The New menu's Bill time… opens Bill all… on the first customer; Cancel stops it.
+    await page.getByTestId("new-toggle").click();
+    await page.getByRole("menuitem", {name: "Bill time…"}).click();
+    await expect(page.getByTestId("bill-dialog-step")).toContainText("1 of");
+    await expect(page).toHaveURL(/\/app\/to-bill$/);
+    await page.getByTestId("bill-dialog-cancel").click();
+    await expect(page.getByTestId("bill-dialog")).toHaveCount(0);
 });
 
 test("Bill… makes Acme's October draft with its row and timesheet, and the time is billed", async ({page}) => {
-    await open(page, "/time/unbilled");
+    await open(page, "/to-bill");
     await acme(page).getByRole("button", {name: "Bill Acme Corp, October 2026…"}).click();
     const dialog = page.getByTestId("bill-dialog");
     const row = dialog.getByTestId("bill-row");
@@ -96,26 +115,26 @@ test("Bill… makes Acme's October draft with its row and timesheet, and the tim
 
     await open(page, "/time/entries?period=last-month&customer=Acme+Corp");
     await expect(page.getByTestId("entry-row").filter({hasText: "year-end planning"}).getByTestId("entry-billing")).toHaveText("Invoice 102");
-    await open(page, "/time/unbilled");
+    await open(page, "/to-bill");
     await expect(acme(page).getByTestId("unbilled-period")).toHaveCount(0);
 });
 
-test("Delete draft says the time goes back, and Unbilled has it again", async ({page}) => {
+test("Delete draft says the time goes back, and To bill has it again", async ({page}) => {
     await open(page, "/invoices/102/edit");
     await page.getByTestId("editor-delete-draft").click();
     const confirm = page.getByTestId("confirm-delete-draft");
-    await expect(confirm.getByTestId("confirm-delete-draft-time")).toHaveText("Its 0.83 hours of time go back to Unbilled.");
+    await expect(confirm.getByTestId("confirm-delete-draft-time")).toHaveText("Its 0.83 hours of time go back to To bill.");
     await confirm.getByTestId("confirm-delete-draft-confirm").click();
     await expect(page).toHaveURL(/\/app\/invoices$/);
     await expect.poll(() => invoiceFile("102")).toBeNull();
     await expect.poll(() => read(PAT_OCTOBER)).not.toContain("invoice: 102");
 
-    await open(page, "/time/unbilled");
+    await open(page, "/to-bill");
     await expect(acme(page).getByTestId("unbilled-period")).toContainText("October 2026 · 50m");
 });
 
 test("Riley's time is paid: the missing rate is asked for, the bill booked and the line tagged", async ({page}) => {
-    await open(page, "/time/unbilled");
+    await open(page, "/to-bill?tab=pay");
     await page.getByRole("button", {name: "Create a bill for Riley Chen…"}).click();
     const dialog = page.getByTestId("pay-dialog");
     const rate = dialog.getByTestId("pay-rate");

@@ -1,5 +1,5 @@
 <!-- Delete draft… (plan 46 T10): a draft was never in the books, so deleting
-     it only removes its file; time billed on it goes back to Unbilled, and
+     it only removes its file; time billed on it goes back to To bill, and
      the dialog says how much. Focus starts on Cancel (ConfirmDialog). -->
 <script lang="ts">
     import {onMount} from "svelte";
@@ -46,6 +46,6 @@
 >
     <p>Its file is deleted. A draft was never in the books, so nothing there changes.</p>
     {#if time !== null}
-        <p data-testid="confirm-delete-draft-time">Its {hoursWords(time)} of time go back to Unbilled.</p>
+        <p data-testid="confirm-delete-draft-time">Its {hoursWords(time)} of time go back to To bill.</p>
     {/if}
 </ConfirmDialog>
