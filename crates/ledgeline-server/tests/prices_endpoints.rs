@@ -1185,3 +1185,47 @@ P 2026-11-13 BTC $71000.00
         format!("{prices}P 2026-11-14 BTC $72000.00\n")
     );
 }
+
+/// A symbol with digits in it is written quoted, as hledger requires, and
+/// its `yahoo:` tag is read off the quoted `commodity` directive.
+#[tokio::test]
+async fn a_symbol_with_digits_is_written_quoted() {
+    let journal = r#"commodity 1. "PEPE24478"  ; type: crypto, yahoo: PEPE24478-USD
+
+2026-01-05 buy pepe
+    assets:crypto    25000000 "PEPE24478" @ $0.000004
+    assets:cash      $-100.00
+"#;
+    let tree = Tree::with(
+        journal,
+        FakeFeed::new([(
+            "PEPE24478-USD",
+            FakeQuote::Price("2026-11-26", dec(3_590_000_005_715_410, 21)),
+        )]),
+    );
+    post_json(&tree, "/api/prices/file", json!({})).await;
+    let (code, body) = post_json(
+        &tree,
+        "/api/prices/update",
+        json!({"journalId": "prices.journal"}),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    assert_eq!(result_for(&body, "PEPE24478")["outcome"], json!("updated"));
+    let written = tree.read("prices.journal");
+    assert!(
+        written.ends_with("P 2026-11-26 \"PEPE24478\" $0.00000359\n"),
+        "{written}"
+    );
+    // And a second press dedupes against the quoted line.
+    let (_, again) = post_json(
+        &tree,
+        "/api/prices/update",
+        json!({"journalId": "prices.journal"}),
+    )
+    .await;
+    assert_eq!(
+        result_for(&again, "PEPE24478")["outcome"],
+        json!("duplicate")
+    );
+}

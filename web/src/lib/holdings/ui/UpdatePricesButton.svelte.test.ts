@@ -219,7 +219,8 @@ describe("COMPONENT UpdatePricesButton", () => {
                     date: "2026-11-26",
                     price: {mantissa: "1610", places: 2},
                     name: "Grayscale Ethereum Mini Trust ETF",
-                    warning: "ETH priced as Grayscale Ethereum Mini Trust ETF (NYSEArca). If you hold the coin, add type: crypto or yahoo: ETH-USD to commodity ETH.",
+                    warning:
+                        "ETH priced as Grayscale Ethereum Mini Trust ETF (NYSEArca). If you hold the coin, add type: crypto or yahoo: ETH-USD to commodity ETH.",
                 },
                 {symbol: "BTC", yahooTicker: "BTC", outcome: "refused", warning: "BTC is tagged as a coin, but Yahoo's BTC is an ETF, not a coin."},
             ],

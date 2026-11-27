@@ -31,6 +31,26 @@ already works is documented in `docs/holdings/crypto.md` (shipped with plan
   The collision guard and the rounding fix go first, because they are
   correctness bugs that can already hit any user who holds crypto.
 
+## Build status (2026-11-27)
+
+Built on branch `2026-11-26-crypto-and-perf`, one commit per WP (WP4 merged
+from its own branch). Notes from the build:
+
+- **quoteSummary for `BTC-USD` is still unverified**: the crumb endpoint
+  answered "Too Many Requests" again. C7's fallback (the chart reply's
+  `instrumentType`, remembered per ticker) makes the answer moot.
+- **Ten decimals, not twelve.** hledger (and `Dec::parse`, `MAX_PARSE_PLACES`)
+  reads at most ten fractional digits, so fetched prices cap at ten and an
+  18-place ETH quantity is read to ten. Valuation at 10 × 10 places is exact.
+- **Two pre-existing bugs fixed in WP6:** a quoted symbol in a `commodity`
+  directive (`commodity 1. "PEPE24478"`) was parsed as a commodity literally
+  named `1. "PEPE24478"`, losing its tags and style; and Update prices wrote
+  `P … PEPE24478 …` unquoted, which hledger rejects.
+- **Holdings warnings are memory-only**: the `ticker-mismatch` warning appears
+  once some fetch this session has answered the ticker.
+- **WP4 open question:** an RSU vest booked against `income:` now counts as
+  return, not new money, exactly like a dividend (C6 read literally).
+
 ## Decisions
 
 Patrick answered the open questions on 2026-11-26. These override anything

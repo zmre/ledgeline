@@ -12,6 +12,8 @@ your journal, an account that holds one shows up on **Holdings → Stocks**, and
 its price comes from Yahoo Finance. Charts, gains, the allocation pie and
 Performance all work, provided you set up each coin as described below.
 
+![Holdings → Stocks with bitcoin, ether, two stablecoins and two tokens](images/crypto.png)
+
 ## Setting up a coin
 
 Declare each coin once, with `type: crypto`:
@@ -30,8 +32,11 @@ commodity 1.00 USDC        ; type: crypto
   the coin in the **Crypto** slice of the pie in every view: asset class,
   sector, industry, security type, category and risk (see
   [Allocation by category](allocation.md)). `assetclass: crypto` does the same.
-- **The number format** (`1.00000000`) sets how many decimals the coin's
-  quantities show. Eight places is a satoshi.
+- **The number format** (`1.00000000`) is how many decimals you write. The
+  Shares column shows each quantity as written, up to eight decimals (a
+  satoshi), with trailing zeros dropped. Ledgeline, like hledger, reads at
+  most ten decimals, so an ether quantity written to eighteen places (wei) is
+  kept to ten.
 
 A `$` ledger is taken to be in US dollars. A base currency without a single
 ISO code (`¥`) gets no pair; Update prices then looks the coin up under its own

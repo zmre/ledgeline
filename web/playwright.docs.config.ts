@@ -34,6 +34,7 @@ export const DOCS_ENGINES = {
     sync: 5216,
     syncBroken: 5217,
     accrual: 5218,
+    crypto: 5219,
 } as const;
 export type DocsJournal = keyof typeof DOCS_ENGINES;
 
@@ -47,6 +48,7 @@ const JOURNAL_FILE: Readonly<Record<DocsJournal, string>> = {
     sync: "sample.journal",
     syncBroken: "sample.journal",
     accrual: "books.journal",
+    crypto: "crypto.journal",
 };
 
 /**

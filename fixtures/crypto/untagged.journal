@@ -1,0 +1,14 @@
+; Plan 48: an UNTAGGED `BTC`. On Yahoo Finance `BTC` is the Grayscale Bitcoin
+; Mini Trust ETF, so Update prices prices this as that ETF and warns that a
+; well-known coin symbol was priced as something that is not a coin.
+
+account assets:crypto   ; type: A
+account assets:cash     ; type: C
+
+commodity 1.00000000 BTC
+
+2026-03-02 Buy bitcoin
+    assets:crypto    0.50000000 BTC @ $61,200.00
+    assets:cash
+
+P 2026-06-21 BTC $62,400.10

@@ -68,7 +68,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::response::Response;
 use futures::stream::{self, StreamExt};
 use ledgeline_core::decimal::MAX_PARSE_PLACES;
-use ledgeline_core::edit::render_amount;
+use ledgeline_core::edit::{render_amount, render_commodity};
 use ledgeline_core::holdings::{HoldingsScope, ScopeMode, compute_holdings};
 use ledgeline_core::model::{Amount, Commodity, Journal};
 use ledgeline_core::vault::{Revision, VaultError, VaultPath};
@@ -870,10 +870,12 @@ pub(crate) fn apply_update(
                     style,
                     cost: None,
                 };
+                // Quoted when it must be (`"PEPE24478"`): hledger rejects a
+                // bare symbol with a digit in it.
                 let line = format!(
                     "P {} {} {}",
                     price.date,
-                    symbol.symbol,
+                    render_commodity(&symbol.symbol),
                     render_amount(&amount)
                 );
                 new_lines.push(((price.date.clone(), symbol.symbol.clone()), line));

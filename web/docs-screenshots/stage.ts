@@ -104,6 +104,13 @@ const SETS: Readonly<Record<string, FixtureSet>> = {
     },
     // Revenue and expense recognition (plan 45), read as of 2026-11-17: the
     // books, their per-year include, the recognition file and `[books]`.
+    // Plan 48: coins tagged `type: crypto`, prices on weekends.
+    crypto: {
+        files: [
+            ["crypto/crypto.journal", "crypto.journal"],
+            ["crypto/prices.journal", "prices.journal"],
+        ],
+    },
     accrual: {
         files: [
             ["accrual/books.journal", "books.journal"],
