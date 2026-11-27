@@ -12,44 +12,55 @@ your journal, an account that holds one shows up on **Holdings → Stocks**, and
 its price comes from Yahoo Finance. Charts, gains, the allocation pie and
 Performance all work, provided you set up each coin as described below.
 
-> [!WARNING]
-> **Always give a coin a `yahoo:` tag.** Without one, Ledgeline looks the
-> commodity up under its own symbol, and on Yahoo Finance `BTC`, `ETH`, `SOL`,
-> `XRP` and `USDC` are *not* the coins. `BTC` is the Grayscale Bitcoin Mini
-> Trust ETF, at about $27 a share. Update prices would write that price for your
-> bitcoin and give no warning.
-
 ## Setting up a coin
 
-Declare each coin once, with its Yahoo ticker and `type: crypto`:
+Declare each coin once, with `type: crypto`:
 
 ```journal
-commodity 1.00000000 BTC   ; type: crypto, yahoo: BTC-USD
-commodity 1.000000 ETH     ; type: crypto, yahoo: ETH-USD
-commodity 1.000000 SOL     ; type: crypto, yahoo: SOL-USD
-commodity 1.00 USDC        ; type: crypto, yahoo: USDC-USD
+commodity 1.00000000 BTC   ; type: crypto
+commodity 1.000000 ETH     ; type: crypto
+commodity 1.000000 SOL     ; type: crypto
+commodity 1.00 USDC        ; type: crypto
 ```
 
-- **`yahoo:`** is the Yahoo Finance ticker. Coins are quoted as a pair, for example
-  `BTC-USD`. Use the pair in your journal's base currency: `BTC-USD` for a
-  dollar ledger, `BTC-EUR` for a euro one. Ledgeline writes the fetched number
-  in your base currency and does not convert it, so `BTC-EUR` in a dollar
-  ledger would record euros as dollars.
-- **`type: crypto`** puts the coin in the **Crypto** slice when the pie is
-  divided by asset class or security type (see
-  [Allocation by category](allocation.md)).
+- **`type: crypto`** tells Ledgeline the commodity is a coin. It is looked up
+  on Yahoo Finance as the coin's pair in your journal's base currency: `BTC`
+  becomes `BTC-USD` in a dollar ledger and `BTC-EUR` in a euro one, so the
+  price is Yahoo's own euro price, not a dollar price converted. It also puts
+  the coin in the **Crypto** slice of the pie (see
+  [Allocation by category](allocation.md)). `assetclass: crypto` does the same.
 - **The number format** (`1.00000000`) sets how many decimals the coin's
   quantities show. Eight places is a satoshi.
 
+A `$` ledger is taken to be in US dollars. A base currency without a single
+ISO code (`¥`) gets no pair; Update prices then looks the coin up under its own
+symbol and says so. Give such a coin a `yahoo:` tag naming its pair.
+
+> [!NOTE]
+> **Untagged coins are priced as whatever Yahoo calls that symbol.** On Yahoo
+> Finance `BTC`, `ETH` and `XRP` are ETFs and `USDC` is a stock. An untagged
+> `commodity BTC` is priced as the Grayscale Bitcoin Mini Trust ETF, about $27
+> a share, because you might hold that ETF. When a well-known coin symbol is
+> priced as something that is not a coin, Update prices and the Holdings page
+> say what it was priced as and how to fix it.
+
+### Tokens Yahoo lists under another ticker
+
 Some tokens share a symbol with another token. Yahoo then adds a number to the
-ticker, for example `UNI7083-USD` for Uniswap or `PEPE24478-USD` for Pepe. Search for the token on
-finance.yahoo.com and copy the ticker exactly as shown. hledger needs a symbol with digits in
-it quoted, so it is simpler to keep a plain symbol and put the full ticker in the
-tag:
+ticker, for example `UNI7083-USD` for Uniswap or `PEPE24478-USD` for Pepe, and
+`UNI-USD` finds nothing. Search for the token on finance.yahoo.com and copy the
+ticker exactly as shown into a `yahoo:` tag. hledger needs a symbol with digits
+in it quoted, so it is simpler to keep a plain symbol and put the full ticker in
+the tag:
 
 ```journal
 commodity 1.00 UNI   ; type: crypto, yahoo: UNI7083-USD
 ```
+
+A `yahoo:` tag always wins. Each price Update prices writes names what Yahoo
+priced ("Uniswap USD"), so a ticker that points at a different token shows up.
+If a coin-tagged commodity's ticker turns out to be a stock or an ETF, its
+price is not recorded at all, and the summary says what Yahoo answered.
 
 ## The accounts
 
@@ -86,7 +97,7 @@ They count as **Crypto** in the pie. To count one as cash instead, add
 `assetclass: cash`:
 
 ```journal
-commodity 1.00 USDC   ; type: crypto, assetclass: cash, yahoo: USDC-USD
+commodity 1.00 USDC   ; type: crypto, assetclass: cash
 ```
 
 The account stays on the Stocks tab either way. It holds a commodity, not your
@@ -130,9 +141,6 @@ base currency.
 [Plan 48](https://github.com/zmre/ledgeline/blob/main/plans/48-crypto-holdings-research.md)
 covers the gaps above:
 
-- a coin tagged `type: crypto` is looked up as `SYMBOL-<base currency>` with no
-  `yahoo:` tag needed;
-- a warning when a well-known coin symbol is priced as something that is not a coin;
 - small prices kept to their significant digits;
 - weekend closes for coins;
 - staking rewards and reinvested income counted as return rather than as new

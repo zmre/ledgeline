@@ -84,7 +84,8 @@ use crate::error::{AppError, editing_disabled};
 use crate::location::JournalLocation;
 use crate::reports_api::{WireDec, compute, today_utc};
 use crate::security::no_store_json as no_store;
-use crate::yahoo::{FetchedPrice, YahooError};
+use crate::tickers::{Tickers, Verdict, judge};
+use crate::yahoo::{FetchedPrice, Instrument, YahooError};
 
 /// The file a first price update is offered a home in, and the `include` line
 /// written for it.
@@ -154,15 +155,43 @@ pub(crate) struct WirePricesStatus {
     auto: WireAutoStatus,
 }
 
-/// One symbol that will be priced.
+/// One symbol that will be priced, resolved by [`crate::tickers::Tickers`].
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct WirePriceSymbol {
     /// The hledger commodity symbol.
     pub(crate) symbol: String,
     /// The ticker it will be looked up as on Yahoo Finance: the commodity's
-    /// `yahoo:` tag, else the symbol itself.
+    /// `yahoo:` tag; else, for a commodity tagged as a coin, the base
+    /// currency's pair (`BTC-USD`); else the symbol itself.
     pub(crate) yahoo_ticker: String,
+    /// Tagged `type: crypto` / `assetclass: crypto`.
+    #[serde(skip)]
+    pub(crate) crypto: bool,
+    /// The ticker came from a `yahoo:` tag.
+    #[serde(skip)]
+    pub(crate) explicit: bool,
+    /// The coin's pair in the base currency (`BTC-USD`), for advice.
+    #[serde(skip)]
+    pub(crate) coin_pair: String,
+    /// Why the ticker is not what the user might expect, when it is not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) note: Option<String>,
+}
+
+#[cfg(test)]
+impl WirePriceSymbol {
+    /// An untagged stock looked up as itself.
+    pub(crate) fn plain(symbol: &str) -> Self {
+        Self {
+            symbol: symbol.to_string(),
+            yahoo_ticker: symbol.to_string(),
+            crypto: false,
+            explicit: false,
+            coin_pair: format!("{symbol}-USD"),
+            note: None,
+        }
+    }
 }
 
 /// One candidate (or, in the update response, the actual) target file.
@@ -227,6 +256,15 @@ pub(crate) struct WirePriceResult {
     /// The fetched price, present for `updated` and `duplicate`.
     #[serde(skip_serializing_if = "Option::is_none")]
     price: Option<WireDec>,
+    /// What Yahoo says it priced (`Bitcoin USD`), when it says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    /// Something the user should know about this symbol's price: it was
+    /// priced as something that is not the coin its symbol suggests, it was
+    /// refused for that reason, or its ticker could not be chosen as asked
+    /// ([`crate::tickers::judge`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) warning: Option<String>,
 }
 
 /// What happened to one symbol.
@@ -241,6 +279,10 @@ pub(crate) enum Outcome {
     NotFound,
     /// The request to Yahoo Finance itself failed (network, decode, shape).
     FetchError,
+    /// Yahoo answered with an instrument that is not what the commodity is
+    /// tagged as — a coin-tagged commodity answered by an ETF — so nothing
+    /// was written (plan 48 C4). `warning` says what and how to fix it.
+    Refused,
 }
 
 // ===========================================================================
@@ -296,15 +338,19 @@ pub(crate) async fn update(
                 let result = source
                     .latest_close_and_quote(&symbol.yahoo_ticker, &as_of)
                     .await
-                    .map(|(latest, quote)| {
+                    .map(|reply| {
                         // The reply's market quote refreshes the intraday
-                        // cache for free (plan 47 D11). Memory only.
-                        if let Some(quote) = quote {
-                            quotes.record(&symbol.yahoo_ticker, Some(quote), now_seconds());
-                        }
-                        latest.into_iter().collect()
+                        // cache for free (plan 47 D11), unless the guard
+                        // refuses what it priced. Memory only.
+                        quotes.record_reply(
+                            &symbol,
+                            reply.quote,
+                            reply.instrument.clone(),
+                            now_seconds(),
+                        );
+                        (reply.data.into_iter().collect(), reply.instrument)
                     });
-                FetchOutcome { symbol, result }
+                FetchOutcome::from_reply(symbol, result)
             }
         })
         .buffer_unordered(FETCH_CONCURRENCY)
@@ -389,32 +435,13 @@ pub(crate) fn symbols_to_price(
         &scope,
     )?;
     let quote = Commodity(report.base.clone());
+    let tickers = Tickers::with_base(journal, &report.base);
     let symbols = report
         .holdings
         .iter()
-        .map(|holding| WirePriceSymbol {
-            yahoo_ticker: yahoo_ticker(&journal.commodity_tags, &holding.symbol),
-            symbol: holding.symbol.clone(),
-        })
+        .map(|holding| tickers.resolve(&holding.symbol))
         .collect();
     Ok((symbols, quote))
-}
-
-/// The Yahoo ticker for `symbol`: its commodity `yahoo:` tag, else the symbol
-/// itself. Mirrors `holdings::engine`'s own `commodity_name_map` (built for the
-/// `name:` tag) — the same shape, a different tag key. `profiles_api` looks
-/// commodities up on Yahoo under the same mapping, so a ticker is resolved one
-/// way everywhere.
-pub(crate) fn yahoo_ticker(
-    commodity_tags: &[(Commodity, Vec<(String, String)>)],
-    symbol: &str,
-) -> String {
-    commodity_tags
-        .iter()
-        .find(|(commodity, _)| commodity.0 == symbol)
-        .and_then(|(_, tags)| tags.iter().find(|(key, _)| key == "yahoo"))
-        .map(|(_, value)| value.clone())
-        .unwrap_or_else(|| symbol.to_string())
 }
 
 /// How many `P` directives each source file holds, keyed by resolved path.
@@ -740,6 +767,30 @@ pub(crate) fn plan_update(state: &AppState, id: &str) -> Result<UpdatePlan, AppE
 pub(crate) struct FetchOutcome {
     pub(crate) symbol: WirePriceSymbol,
     pub(crate) result: Result<Vec<FetchedPrice>, YahooError>,
+    /// What the reply said the instrument is, for the guard in
+    /// [`apply_update`].
+    pub(crate) instrument: Option<Instrument>,
+}
+
+impl FetchOutcome {
+    /// A fetch's closes and instrument, or its error.
+    pub(crate) fn from_reply(
+        symbol: WirePriceSymbol,
+        reply: Result<(Vec<FetchedPrice>, Option<Instrument>), YahooError>,
+    ) -> Self {
+        match reply {
+            Ok((closes, instrument)) => Self {
+                symbol,
+                result: Ok(closes),
+                instrument,
+            },
+            Err(error) => Self {
+                symbol,
+                result: Err(error),
+                instrument: None,
+            },
+        }
+    }
 }
 
 /// Phase 3: fold the fetched quotes into `plan`'s file and write it (if
@@ -761,7 +812,12 @@ pub(crate) fn apply_update(
     // Keyed `(date, symbol)` for the append order.
     let mut new_lines: Vec<((String, String), String)> = Vec::new();
 
-    for FetchOutcome { symbol, result } in fetched {
+    for FetchOutcome {
+        symbol,
+        result,
+        instrument,
+    } in fetched
+    {
         let prices = match result {
             Err(_error) => {
                 results.push(no_price(symbol, Outcome::FetchError));
@@ -772,6 +828,24 @@ pub(crate) fn apply_update(
                 continue;
             }
             Ok(prices) => prices,
+        };
+        // The guard (plan 48 C4): a coin-tagged commodity answered by
+        // something that is not a coin is never written; a well-known coin
+        // symbol priced as something else is written, and said so.
+        let name = instrument
+            .as_ref()
+            .and_then(|instrument| instrument.name.clone());
+        let warning = match judge(&symbol, instrument.as_ref()) {
+            Verdict::Refuse(message) => {
+                results.push(WirePriceResult {
+                    name,
+                    warning: Some(message),
+                    ..no_price(symbol, Outcome::Refused)
+                });
+                continue;
+            }
+            Verdict::Warn(message) => Some(message),
+            Verdict::Accept => symbol.note.clone(),
         };
         for price in prices {
             // See `MAX_FETCHED_QUOTE_PLACES`: bound the raw quote BEFORE it
@@ -810,6 +884,8 @@ pub(crate) fn apply_update(
                 outcome,
                 date: Some(price.date),
                 price: Some(WireDec::from(quantity)),
+                name: name.clone(),
+                warning: warning.clone(),
             });
         }
     }
@@ -872,11 +948,13 @@ pub(crate) fn apply_update(
 /// A symbol's result when it brought back no close at all.
 fn no_price(symbol: WirePriceSymbol, outcome: Outcome) -> WirePriceResult {
     WirePriceResult {
+        warning: symbol.note,
         symbol: symbol.symbol,
         yahoo_ticker: symbol.yahoo_ticker,
         outcome,
         date: None,
         price: None,
+        name: None,
     }
 }
 
@@ -1170,30 +1248,6 @@ mod tests {
             },
             source_file: PathBuf::from(source_file),
         }
-    }
-
-    #[test]
-    fn yahoo_ticker_falls_back_to_the_symbol_with_no_tag() {
-        let tags = vec![];
-        assert_eq!(yahoo_ticker(&tags, "AAPL"), "AAPL");
-    }
-
-    #[test]
-    fn yahoo_ticker_reads_the_commoditys_yahoo_tag() {
-        let tags = vec![(
-            CoreCommodity("BRK'B".to_string()),
-            vec![("yahoo".to_string(), "BRK-B".to_string())],
-        )];
-        assert_eq!(yahoo_ticker(&tags, "BRK'B"), "BRK-B");
-    }
-
-    #[test]
-    fn yahoo_ticker_ignores_other_tags_on_the_same_commodity() {
-        let tags = vec![(
-            CoreCommodity("VTI".to_string()),
-            vec![("name".to_string(), "Vanguard Total Market".to_string())],
-        )];
-        assert_eq!(yahoo_ticker(&tags, "VTI"), "VTI");
     }
 
     #[test]

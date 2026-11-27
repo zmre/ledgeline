@@ -62,19 +62,21 @@ commodity 1.0000 BRKB   ; yahoo: BRK-B
 commodity 1.0000 VTSAX  ; yahoo: VTSAX
 ```
 
-| Tag present | Looked up as         |
-|-------------|----------------------|
-| `yahoo: X`  | `X`                  |
-| absent      | the commodity symbol |
+| Tags on the commodity                      | Looked up as                                     |
+|--------------------------------------------|--------------------------------------------------|
+| `yahoo: X`                                 | `X`, whatever else is tagged                     |
+| `type: crypto` or `assetclass: crypto`     | the coin's pair in your base currency: `BTC-USD`, `BTC-EUR` |
+| neither                                    | the commodity symbol                             |
 
 The tag goes on the `commodity` directive line itself — not on an indented line
 under it — and lives happily beside any other tag you keep there. Anything Yahoo
 Finance quotes works: stocks, ETFs, mutual funds by their NAV, and index symbols
 like `^GSPC`.
 
-Coins need the tag. On Yahoo Finance `BTC`, `ETH` and `USDC` are other
-securities (`BTC` is a Grayscale ETF), so tag `commodity BTC ; yahoo: BTC-USD`.
-See [Crypto](crypto.md).
+A coin needs `type: crypto` (or a `yahoo:` tag naming its pair). On Yahoo
+Finance `BTC`, `ETH` and `USDC` are other securities (`BTC` is a Grayscale
+ETF), so an untagged `BTC` is priced as that ETF, and the summary and the
+Holdings page say so. See [Crypto](crypto.md).
 
 ### What a press actually does
 
@@ -83,7 +85,15 @@ See [Crypto](crypto.md).
   pressing the button repeatedly does not grow the file.
 - **Reports per symbol, fails as a whole for nothing.** A ticker Yahoo has no
   quote for, or a request that fails outright, is listed by name in the summary;
-  every other symbol is still written.
+  every other symbol is still written. Each written price names what Yahoo
+  priced ("Bitcoin USD"), so a ticker that points at the wrong instrument is
+  visible.
+- **Checks what it priced.** A commodity tagged `type: crypto` whose ticker
+  Yahoo answers with something that is not a coin (an ETF, a stock) is *not
+  recorded*, and the summary says what came back. A well-known coin symbol
+  with no tags (`BTC`, `ETH`, `SOL`, …) priced as something that is not a coin
+  is recorded, because you may hold that ETF, and the summary and the Holdings
+  page warn about it.
 - **Writes in your journal's own style.** The fetched quote is rounded to the
   precision your journal already uses for the base commodity, so an update reads
   as `P 2026-08-31 AAPL $315.23` rather than the ten-digit float Yahoo answers

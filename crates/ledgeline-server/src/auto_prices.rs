@@ -96,8 +96,9 @@ use crate::AppState;
 use crate::error::AppError;
 use crate::prices_api::{self, FetchOutcome, Outcome, WirePriceSymbol};
 use crate::reports_api::{compute, unix_now};
+use crate::tickers::Tickers;
 use crate::ui_prefs::{self, AutoPricePrefs};
-use crate::yahoo::{FetchedPrice, MarketQuote, YahooError};
+use crate::yahoo::{ChartReply, FetchedPrice, YahooError};
 
 /// How long after start-up the first check runs. Launch is busy — the journal
 /// parse, the first page's reports — and a price check is never urgent enough
@@ -617,19 +618,25 @@ fn journal_facts(state: &AppState, now: i64) -> Result<(String, JournalFacts), A
         selection: Default::default(),
     };
     let last_held = last_held_dates(&journal.transactions, &journal.accounts, &scope)?;
+    let today = scope.as_of.clone();
     Ok((
         journal.source_name.clone(),
         JournalFacts {
             editable: state.editing_enabled(),
             target,
-            symbols: held_symbols(journal, last_held),
+            symbols: held_symbols(journal, &today, last_held),
         },
     ))
 }
 
 /// Each security ever held, with its Yahoo ticker and the dates it is priced
 /// on, in one pass over the prices.
-fn held_symbols(journal: &Journal, last_held: BTreeMap<String, String>) -> Vec<HeldSymbol> {
+fn held_symbols(
+    journal: &Journal,
+    today: &str,
+    last_held: BTreeMap<String, String>,
+) -> Vec<HeldSymbol> {
+    let tickers = Tickers::for_journal(journal, today);
     let mut priced_on: HashMap<&str, BTreeSet<String>> =
         journal
             .prices
@@ -647,10 +654,7 @@ fn held_symbols(journal: &Journal, last_held: BTreeMap<String, String>) -> Vec<H
         .into_iter()
         .map(|(symbol, last_held)| HeldSymbol {
             priced_on: priced_on.remove(symbol.as_str()).unwrap_or_default(),
-            symbol: WirePriceSymbol {
-                yahoo_ticker: prices_api::yahoo_ticker(&journal.commodity_tags, &symbol),
-                symbol,
-            },
+            symbol: tickers.resolve(&symbol),
             last_held,
         })
         .collect()
@@ -695,7 +699,7 @@ impl Pacer {
 
 /// What Yahoo said about one symbol's history, and the market quote that came
 /// with it.
-type Answer = Result<(Vec<FetchedPrice>, Option<MarketQuote>), YahooError>;
+type Answer = Result<ChartReply<Vec<FetchedPrice>>, YahooError>;
 
 /// Run `fetch` for each of `items`, [`FETCH_CONCURRENCY`] at a time with
 /// request starts [`REQUEST_GAP`] apart, stopping at the first rate limit:
@@ -771,12 +775,14 @@ async fn fetch_all(state: &AppState, plan: &FetchPlan, now: i64) -> Fetched {
             // Never sent, or the rate limit itself: neither is about the symbol.
             None | Some(Err(YahooError::RateLimited(_))) => {}
             Some(Err(_)) => fetched.failed += 1,
-            Some(Ok((closes, quote))) => {
-                if let Some(quote) = quote {
-                    state
-                        .quotes()
-                        .record(&want.held.symbol.yahoo_ticker, Some(quote), now);
-                }
+            Some(Ok(reply)) => {
+                state.quotes().record_reply(
+                    &want.held.symbol,
+                    reply.quote,
+                    reply.instrument.clone(),
+                    now,
+                );
+                let closes = reply.data;
                 fetched.asked.push(MemoKey::new(
                     &want.held.symbol.symbol,
                     &plan.close,
@@ -787,6 +793,7 @@ async fn fetch_all(state: &AppState, plan: &FetchPlan, now: i64) -> Fetched {
                     fetched.outcomes.push(FetchOutcome {
                         symbol: want.held.symbol.clone(),
                         result: Ok(picked),
+                        instrument: reply.instrument,
                     });
                 }
             }
@@ -870,10 +877,7 @@ mod tests {
     /// A symbol priced on `priced_on`, last held on `last_held`.
     fn held(symbol: &str, priced_on: &[&str], last_held: &str) -> HeldSymbol {
         HeldSymbol {
-            symbol: WirePriceSymbol {
-                symbol: symbol.to_string(),
-                yahoo_ticker: symbol.to_string(),
-            },
+            symbol: WirePriceSymbol::plain(symbol),
             priced_on: priced_on.iter().map(|d| (*d).to_string()).collect(),
             last_held: last_held.to_string(),
         }

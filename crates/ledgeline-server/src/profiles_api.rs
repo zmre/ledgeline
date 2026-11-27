@@ -48,10 +48,10 @@ use std::time::Duration;
 use crate::AppState;
 use crate::commodity_profile::{Breakdown, fully_tagged, resolve};
 use crate::error::AppError;
-use crate::prices_api::yahoo_ticker;
 use crate::reports_api::unix_now;
 use crate::security::no_store_json;
 use crate::sidecar::{FETCH_CONCURRENCY, Sidecar, SidecarCache, parse_symbol_list};
+use crate::tickers::Tickers;
 use crate::yahoo_profile::{ProfileError, ProfileFeed, YahooProfile};
 
 /// The cache format. A file with any other version is ignored and replaced.
@@ -282,6 +282,7 @@ fn wire_profile(plan: Planned, cache: &ProfileCache) -> WireProfile {
 /// does not know is dropped here, so this endpoint can only ever ask Yahoo
 /// about the journal's own commodities.
 fn plan(journal: &Journal, symbols: &[&str]) -> Vec<Planned> {
+    let tickers = Tickers::for_journal(journal, &crate::reports_api::today_utc());
     let known: BTreeSet<&str> = journal
         .commodity_styles
         .iter()
@@ -304,7 +305,7 @@ fn plan(journal: &Journal, symbols: &[&str]) -> Vec<Planned> {
                 .flat_map(|(_, tags)| tags.iter().cloned())
                 .collect();
             Planned {
-                ticker: yahoo_ticker(&journal.commodity_tags, symbol),
+                ticker: tickers.resolve(symbol).yahoo_ticker,
                 wants_yahoo: !fully_tagged(&tags),
                 symbol: symbol.to_string(),
                 tags,

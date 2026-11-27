@@ -27,8 +27,8 @@ use axum::body::Body;
 use axum::http::{HeaderName, Request, StatusCode, header};
 use http_body_util::BodyExt;
 use ledgeline::{
-    AccessToken, AppDirs, AppState, FetchedPrice, PriceFeed, Security, YahooError,
-    router_with_security, router_with_state,
+    AccessToken, AppDirs, AppState, ChartReply, FetchedPrice, Instrument, PriceFeed, Security,
+    YahooError, router_with_security, router_with_state,
 };
 use ledgeline_core::Dec;
 use serde_json::{Value, json};
@@ -69,6 +69,8 @@ enum FakeHistory {
 struct FakeFeed {
     quotes: HashMap<&'static str, FakeQuote>,
     history: HashMap<&'static str, FakeHistory>,
+    /// What each ticker's reply says it is (plan 48); none by default.
+    instruments: HashMap<&'static str, Instrument>,
     requests: Arc<AtomicUsize>,
 }
 
@@ -77,8 +79,29 @@ impl FakeFeed {
         Self {
             quotes: quotes.into_iter().collect(),
             history: HashMap::new(),
+            instruments: HashMap::new(),
             requests: Arc::default(),
         }
+    }
+
+    /// Every reply for `ticker` says it is `kind` named `name`.
+    fn instrument(mut self, ticker: &'static str, kind: &str, name: &str) -> Self {
+        self.instruments.insert(
+            ticker,
+            Instrument {
+                instrument_type: Some(kind.to_string()),
+                name: Some(name.to_string()),
+                exchange: Some(
+                    if kind == "CRYPTOCURRENCY" {
+                        "CCC"
+                    } else {
+                        "NYSEArca"
+                    }
+                    .to_string(),
+                ),
+            },
+        );
+        self
     }
 
     fn with_history(history: impl IntoIterator<Item = (&'static str, FakeHistory)>) -> Self {
@@ -124,6 +147,28 @@ impl PriceFeed for FakeFeed {
             Some(FakeHistory::RateLimited) => Err(YahooError::RateLimited("fake 429".to_string())),
             None => Ok(Vec::new()),
         }
+    }
+
+    async fn latest_close_and_quote(
+        &self,
+        ticker: &str,
+        as_of: &str,
+    ) -> Result<ChartReply<Option<FetchedPrice>>, YahooError> {
+        Ok(ChartReply {
+            instrument: self.instruments.get(ticker).cloned(),
+            ..ChartReply::bare(self.latest_close(ticker, as_of).await?)
+        })
+    }
+
+    async fn daily_closes_and_quote(
+        &self,
+        ticker: &str,
+        from: &str,
+    ) -> Result<ChartReply<Vec<FetchedPrice>>, YahooError> {
+        Ok(ChartReply {
+            instrument: self.instruments.get(ticker).cloned(),
+            ..ChartReply::bare(self.daily_closes(ticker, from).await?)
+        })
     }
 }
 
@@ -866,4 +911,191 @@ async fn a_rate_limit_backs_auto_runs_off() {
 
     tree.state.run_auto_prices_once(now + 1_800).await;
     assert_eq!(tree.requests(), asked, "backing off: no request");
+}
+
+// ---------------------------------------------------------------------------
+// Crypto (plan 48 WP1): ticker resolution and the collision guard
+// ---------------------------------------------------------------------------
+
+/// A bitcoin position, tagged or not, in a ledger whose base is `base`.
+fn coin_journal(commodity: &str, base: &str) -> String {
+    format!(
+        "\
+{commodity}
+
+2026-01-05 buy bitcoin
+    assets:crypto    0.50000000 BTC @ {base}60000.00
+    assets:cash
+"
+    )
+}
+
+/// `commodity BTC ; type: crypto` is asked for as `BTC-USD` with no `yahoo:`
+/// tag, and the coin's reply is written as BTC's price.
+#[tokio::test]
+async fn a_coin_tagged_commodity_is_fetched_as_its_dollar_pair() {
+    let tree =
+        Tree::with(
+            &coin_journal("commodity 1.00000000 BTC  ; type: crypto", "$"),
+            FakeFeed::new([("BTC-USD", FakeQuote::Price("2026-11-26", dec(6_165_601, 2)))])
+                .instrument("BTC-USD", "CRYPTOCURRENCY", "Bitcoin USD"),
+        );
+    let (_, status) = get(&tree, "/api/prices/status").await;
+    assert_eq!(
+        status["symbols"],
+        json!([{"symbol": "BTC", "yahooTicker": "BTC-USD"}])
+    );
+    post_json(&tree, "/api/prices/file", json!({})).await;
+    let (code, body) = post_json(
+        &tree,
+        "/api/prices/update",
+        json!({"journalId": "prices.journal"}),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    let result = result_for(&body, "BTC");
+    assert_eq!(result["outcome"], json!("updated"), "{body}");
+    assert_eq!(result["name"], json!("Bitcoin USD"));
+    assert!(result.get("warning").is_none(), "{body}");
+    assert!(
+        tree.read("prices.journal")
+            .ends_with("P 2026-11-26 BTC $61656.01\n")
+    );
+}
+
+/// A `€` ledger asks for Yahoo's native euro pair, not the dollar one.
+#[tokio::test]
+async fn a_euro_ledger_asks_for_the_euro_pair() {
+    // A euro ledger prices its holdings in euros; with no price at all the
+    // engine's base falls back to `$`.
+    let journal = format!(
+        "{}\nP 2026-06-01 BTC €50000.00\n",
+        coin_journal("commodity 1.00000000 BTC  ; type: crypto", "€")
+    );
+    let tree = Tree::with(&journal, FakeFeed::new([]));
+    let (_, status) = get(&tree, "/api/prices/status").await;
+    assert_eq!(status["quoteCommodity"], json!("€"));
+    assert_eq!(
+        status["symbols"],
+        json!([{"symbol": "BTC", "yahooTicker": "BTC-EUR"}])
+    );
+}
+
+/// An untagged `BTC` is still looked up as `BTC` — it may really be the
+/// Grayscale ETF — and the ETF's price is written, but the result names what
+/// was priced and how to say "the coin".
+#[tokio::test]
+async fn an_untagged_coin_symbol_priced_as_an_etf_is_written_and_warned() {
+    let tree = Tree::with(
+        &coin_journal("commodity 1.00000000 BTC", "$"),
+        FakeFeed::new([("BTC", FakeQuote::Price("2026-11-26", dec(2659, 2)))]).instrument(
+            "BTC",
+            "ETF",
+            "Grayscale Bitcoin Mini Trust ETF",
+        ),
+    );
+    post_json(&tree, "/api/prices/file", json!({})).await;
+    let (code, body) = post_json(
+        &tree,
+        "/api/prices/update",
+        json!({"journalId": "prices.journal"}),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    let result = result_for(&body, "BTC");
+    assert_eq!(result["outcome"], json!("updated"));
+    assert_eq!(result["yahooTicker"], json!("BTC"));
+    let warning = result["warning"].as_str().expect("a warning");
+    assert!(
+        warning.contains("BTC priced as Grayscale Bitcoin Mini Trust ETF (NYSEArca)"),
+        "{warning}"
+    );
+    assert!(
+        warning.contains("type: crypto or yahoo: BTC-USD"),
+        "{warning}"
+    );
+    assert!(
+        tree.read("prices.journal")
+            .ends_with("P 2026-11-26 BTC $26.59\n")
+    );
+
+    // The Holdings page says the same, beside the engine's own warnings.
+    let (_, holdings) = get(&tree, "/api/holdings").await;
+    let warnings = holdings["warnings"].as_array().expect("warnings");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w["kind"] == json!("ticker-mismatch")
+                && w["symbol"] == json!("BTC")
+                && w["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("Grayscale"))),
+        "{holdings}"
+    );
+}
+
+/// A coin-tagged commodity whose ticker answers with an ETF is refused:
+/// nothing is written, and the result says why.
+#[tokio::test]
+async fn a_coin_tagged_commodity_answered_by_an_etf_is_refused() {
+    let tree = Tree::with(
+        &coin_journal("commodity 1.00000000 BTC  ; type: crypto, yahoo: BTC", "$"),
+        FakeFeed::new([("BTC", FakeQuote::Price("2026-11-26", dec(2659, 2)))]).instrument(
+            "BTC",
+            "ETF",
+            "Grayscale Bitcoin Mini Trust ETF",
+        ),
+    );
+    post_json(&tree, "/api/prices/file", json!({})).await;
+    let before = tree.read("prices.journal");
+    let (code, body) = post_json(
+        &tree,
+        "/api/prices/update",
+        json!({"journalId": "prices.journal"}),
+    )
+    .await;
+    assert_eq!(code, StatusCode::OK, "{body}");
+    let result = result_for(&body, "BTC");
+    assert_eq!(result["outcome"], json!("refused"), "{body}");
+    assert!(result.get("price").is_none());
+    assert!(
+        result["warning"]
+            .as_str()
+            .is_some_and(|w| w.contains("not a coin") && w.contains("yahoo: BTC-USD")),
+        "{body}"
+    );
+    assert_eq!(tree.read("prices.journal"), before, "nothing written");
+}
+
+/// The automatic updater goes through the same guard.
+#[tokio::test]
+async fn an_auto_run_refuses_a_coin_tagged_commodity_answered_by_an_etf() {
+    let main = "\
+commodity 1.00000000 BTC  ; type: crypto, yahoo: BTC
+
+include prices.journal
+
+2026-09-01 buy bitcoin
+    assets:crypto    0.50000000 BTC @ $60000.00
+    assets:cash
+";
+    let tree = Tree::with_files(
+        main,
+        &[
+            ("prices.journal", "P 2026-10-30 BTC $70000.00\n"),
+            ("ledgeline.toml", AUTO_ON),
+        ],
+        FakeFeed::with_history([(
+            "BTC",
+            FakeHistory::Closes(vec![("2026-11-13", dec(2659, 2))]),
+        )])
+        .instrument("BTC", "ETF", "Grayscale Bitcoin Mini Trust ETF"),
+    );
+    tree.state.run_auto_prices_once(friday_evening()).await;
+    assert_eq!(tree.requests(), 1);
+    assert_eq!(
+        tree.read("prices.journal"),
+        "P 2026-10-30 BTC $70000.00\n",
+        "the ETF's price never lands on the coin"
+    );
 }

@@ -93,6 +93,30 @@ pub fn is_us_dollar(commodity: &str) -> bool {
     matches!(commodity, "$" | "USD" | "US$")
 }
 
+/// The ISO-4217 code a journal's currency commodity stands for, when it can
+/// only mean one: `$`/`US$`/`USD` → `USD`, `€` → `EUR`, `£` → `GBP`, the
+/// prefixed dollars (`C$` → `CAD`, …), and an active ISO code as itself.
+/// `None` for anything else, including `¥` (yen or yuan).
+///
+/// Plan 48: a coin is looked up on Yahoo as `<SYMBOL>-<this>`. A `$` is taken
+/// as the US dollar, as everywhere else in the holdings engine
+/// ([`is_us_dollar`]).
+#[must_use]
+pub fn currency_iso_code(commodity: &str) -> Option<&str> {
+    match commodity {
+        "$" | "US$" => Some("USD"),
+        "€" => Some("EUR"),
+        "£" => Some("GBP"),
+        "C$" => Some("CAD"),
+        "A$" => Some("AUD"),
+        "HK$" => Some("HKD"),
+        "NZ$" => Some("NZD"),
+        "S$" => Some("SGD"),
+        code if is_iso_code(code) => Some(code),
+        _ => None,
+    }
+}
+
 /// The currency glyphs hledger journals commonly use.
 fn is_glyph(commodity: &str) -> bool {
     matches!(
@@ -278,6 +302,24 @@ mod tests {
 
     fn currencies(txns: &[Transaction]) -> Currencies {
         Currencies::from_declared(txns, &BTreeMap::new())
+    }
+
+    #[test]
+    fn a_currency_maps_to_its_iso_code_only_when_unambiguous() {
+        for (commodity, iso) in [
+            ("$", "USD"),
+            ("US$", "USD"),
+            ("USD", "USD"),
+            ("€", "EUR"),
+            ("£", "GBP"),
+            ("C$", "CAD"),
+            ("CHF", "CHF"),
+        ] {
+            assert_eq!(currency_iso_code(commodity), Some(iso), "{commodity}");
+        }
+        for commodity in ["¥", "BTC", "USDT", "VTI", ""] {
+            assert_eq!(currency_iso_code(commodity), None, "{commodity}");
+        }
     }
 
     #[test]

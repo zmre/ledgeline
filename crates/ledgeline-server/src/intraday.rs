@@ -42,7 +42,8 @@ use crate::error::AppError;
 use crate::prices_api::{self, WirePriceSymbol};
 use crate::reports_api::{WireDec, compute, today_utc};
 use crate::security::no_store_json as no_store;
-use crate::yahoo::{MarketQuote, YahooError};
+use crate::tickers::{self, Tickers};
+use crate::yahoo::{Instrument, MarketQuote, YahooError};
 
 /// How long a fetched quote (or close) keeps its ticker from being asked
 /// again, in seconds.
@@ -78,6 +79,12 @@ struct CacheState {
     /// symbol): a quote is a fact about the ticker, whichever journal symbol
     /// names it.
     entries: HashMap<String, Entry>,
+    /// What each ticker's latest chart reply said the instrument is (plan
+    /// 48), keyed like `entries`. Kept apart from them because a reply with
+    /// no quote can still say what it is. What makes a coin a coin for the
+    /// weekend schedule, the category fallback and the Holdings warning when
+    /// the journal never tagged it.
+    instruments: HashMap<String, Instrument>,
     backoff_until: Option<i64>,
 }
 
@@ -114,6 +121,36 @@ impl QuoteCache {
                 entry.quote = Some(quote);
             }
         }
+    }
+
+    /// One chart reply for `symbol`'s ticker, through the guard
+    /// ([`tickers::judge`]): what the instrument is is always remembered,
+    /// and the quote is recorded unless the guard refuses what was priced —
+    /// a coin-tagged commodity answered by an ETF must not value the coin
+    /// for even a minute.
+    pub(crate) fn record_reply(
+        &self,
+        symbol: &WirePriceSymbol,
+        quote: Option<MarketQuote>,
+        instrument: Option<Instrument>,
+        now: i64,
+    ) {
+        let refused = matches!(
+            tickers::judge(symbol, instrument.as_ref()),
+            tickers::Verdict::Refuse(_)
+        );
+        if let Some(instrument) = instrument {
+            self.lock()
+                .instruments
+                .insert(symbol.yahoo_ticker.clone(), instrument);
+        }
+        self.record(&symbol.yahoo_ticker, quote.filter(|_| !refused), now);
+    }
+
+    /// What `ticker`'s latest chart reply said the instrument is, if any
+    /// reply this process saw said.
+    pub(crate) fn instrument(&self, ticker: &str) -> Option<Instrument> {
+        self.lock().instruments.get(ticker).cloned()
     }
 
     /// Yahoo rate-limited a round at `now`.
@@ -153,10 +190,11 @@ pub(crate) fn cached_quotes(cache: &QuoteCache, journal: &Journal) -> Vec<(LiveQ
         .iter()
         .map(|price| price.commodity.0.as_str())
         .collect();
+    let tickers = Tickers::for_journal(journal, &today_utc());
     symbols
         .into_iter()
         .filter_map(|symbol| {
-            let ticker = prices_api::yahoo_ticker(&journal.commodity_tags, symbol);
+            let ticker = tickers.resolve(symbol).yahoo_ticker;
             cache.quote(&ticker).map(|quote| {
                 (
                     LiveQuote {
@@ -263,14 +301,12 @@ fn requested_symbols(
         return Ok(prices_api::symbols_to_price(journal, &today_utc())?.0);
     };
     let mut seen = BTreeSet::new();
+    let tickers = Tickers::for_journal(journal, &today_utc());
     Ok(symbols
         .into_iter()
         .map(|symbol| symbol.trim().to_string())
         .filter(|symbol| seen.insert(symbol.clone()))
-        .map(|symbol| WirePriceSymbol {
-            yahoo_ticker: prices_api::yahoo_ticker(&journal.commodity_tags, &symbol),
-            symbol,
-        })
+        .map(|symbol| tickers.resolve(&symbol))
         .collect())
 }
 
@@ -309,8 +345,15 @@ pub(crate) async fn refresh_symbols(
         .map(|(ticker, answer)| {
             let sent = match answer {
                 None | Some(Err(YahooError::RateLimited(_))) => false,
-                Some(Ok(quote)) => {
-                    cache.record(&ticker, quote, now);
+                Some(Ok(reply)) => {
+                    // Judged as the first symbol that names this ticker; a
+                    // ticker two symbols share is one instrument either way.
+                    match symbols.iter().find(|symbol| symbol.yahoo_ticker == ticker) {
+                        Some(symbol) => {
+                            cache.record_reply(symbol, reply.quote, reply.instrument, now)
+                        }
+                        None => cache.record(&ticker, reply.quote, now),
+                    }
                     true
                 }
                 // A failed request still counts as asked: the next click
@@ -329,6 +372,7 @@ pub(crate) async fn refresh_symbols(
     for WirePriceSymbol {
         symbol,
         yahoo_ticker,
+        ..
     } in symbols
     {
         if !asked.get(&yahoo_ticker).copied().unwrap_or(false) {
@@ -381,6 +425,29 @@ mod tests {
         cache.record("VTI", Some(quote(100)), 2_000);
         assert_eq!(cache.quote("VTI").map(|q| q.time), Some(200));
         assert!(cache.is_fresh("VTI", 2_000 + FRESH_FOR - 1));
+    }
+
+    #[test]
+    fn a_refused_reply_is_remembered_but_never_values_anything() {
+        let cache = QuoteCache::default();
+        let btc = WirePriceSymbol {
+            crypto: true,
+            explicit: true,
+            ..WirePriceSymbol::plain("BTC")
+        };
+        let etf = Instrument {
+            instrument_type: Some("ETF".to_string()),
+            name: Some("Grayscale Bitcoin Mini Trust ETF".to_string()),
+            exchange: None,
+        };
+        cache.record_reply(&btc, Some(quote(100)), Some(etf.clone()), 1_000);
+        assert_eq!(cache.quote("BTC"), None, "refused");
+        assert_eq!(cache.instrument("BTC"), Some(etf));
+        assert!(cache.is_fresh("BTC", 1_000), "still counts as asked");
+
+        let vti = WirePriceSymbol::plain("VTI");
+        cache.record_reply(&vti, Some(quote(100)), None, 1_000);
+        assert!(cache.quote("VTI").is_some());
     }
 
     #[test]

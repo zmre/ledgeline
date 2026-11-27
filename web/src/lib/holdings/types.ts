@@ -60,7 +60,12 @@ export interface Holding {
 
 export interface HoldingsWarning {
     symbol: string;
-    kind: "missing-basis" | "negative-shares" | "unpriced";
+    /**
+     * `ticker-mismatch` (plan 48): Yahoo answered this symbol's ticker with
+     * something that is not what the journal says it is — a coin-tagged
+     * commodity answered by an ETF, or an untagged `BTC` priced as one.
+     */
+    kind: "missing-basis" | "negative-shares" | "unpriced" | "ticker-mismatch";
     message: string;
 }
 

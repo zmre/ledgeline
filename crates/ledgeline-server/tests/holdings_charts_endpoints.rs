@@ -11,8 +11,8 @@ use axum::body::Body;
 use axum::http::{HeaderName, Request, StatusCode, header};
 use http_body_util::BodyExt;
 use ledgeline::{
-    AccessToken, AppDirs, AppState, FetchedPrice, MarketQuote, PriceFeed, Security, YahooError,
-    router_with_security, router_with_state,
+    AccessToken, AppDirs, AppState, ChartReply, FetchedPrice, MarketQuote, PriceFeed, Security,
+    YahooError, router_with_security, router_with_state,
 };
 use ledgeline_core::Dec;
 use ledgeline_core::reports::periods::iso_from_days;
@@ -90,13 +90,19 @@ impl PriceFeed for FakeFeed {
         &self,
         ticker: &str,
         _as_of: &str,
-    ) -> Result<(Option<FetchedPrice>, Option<MarketQuote>), YahooError> {
-        Ok((None, self.quote(ticker)?))
+    ) -> Result<ChartReply<Option<FetchedPrice>>, YahooError> {
+        Ok(ChartReply {
+            quote: self.quote(ticker)?,
+            ..ChartReply::bare(None)
+        })
     }
 
-    async fn market_quote(&self, ticker: &str) -> Result<Option<MarketQuote>, YahooError> {
+    async fn market_quote(&self, ticker: &str) -> Result<ChartReply<()>, YahooError> {
         self.quote_requests.fetch_add(1, Ordering::SeqCst);
-        self.quote(ticker)
+        Ok(ChartReply {
+            quote: self.quote(ticker)?,
+            ..ChartReply::bare(())
+        })
     }
 }
 

@@ -2210,7 +2210,9 @@ impl From<&Holding> for WireHolding {
 }
 
 /// A scope-local warning → `{symbol, kind, message}` (`kind` kebab-case, matching
-/// the TS union: `"missing-basis"` | `"negative-shares"` | `"unpriced"`).
+/// the TS union: `"missing-basis"` | `"negative-shares"` | `"unpriced"` |
+/// `"ticker-mismatch"`, the last one added by [`ticker_warnings`], not the
+/// engine).
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WireWarning {
@@ -2231,6 +2233,37 @@ impl From<&HoldingsWarning> for WireWarning {
             message: warning.message.clone(),
         }
     }
+}
+
+/// Plan 48 C4's Holdings half: one `ticker-mismatch` warning per row whose
+/// ticker the last chart reply this process saw judged wrong — a coin-tagged
+/// commodity answered by an ETF (refused, so the row keeps its older price),
+/// or an untagged `BTC` priced as the Grayscale ETF. Memory only, like the
+/// instrument it reads ([`crate::intraday::QuoteCache::instrument`]): nothing
+/// is said about a ticker no fetch has answered since launch.
+fn ticker_warnings(
+    quotes: &crate::intraday::QuoteCache,
+    journal: &Journal,
+    report: &HoldingsReport,
+) -> Vec<WireWarning> {
+    let tickers = crate::tickers::Tickers::with_base(journal, &report.base);
+    report
+        .holdings
+        .iter()
+        .filter_map(|holding| {
+            let symbol = tickers.resolve(&holding.symbol);
+            let instrument = quotes.instrument(&symbol.yahoo_ticker);
+            match crate::tickers::judge(&symbol, instrument.as_ref()) {
+                crate::tickers::Verdict::Accept => None,
+                crate::tickers::Verdict::Warn(message)
+                | crate::tickers::Verdict::Refuse(message) => Some(WireWarning {
+                    symbol: holding.symbol.clone(),
+                    kind: "ticker-mismatch",
+                    message,
+                }),
+            }
+        })
+        .collect()
 }
 
 /// Portfolio totals: `marketValue` always present; `basis`/`gain`/`gainPct`
@@ -4541,10 +4574,10 @@ pub(crate) async fn holdings(
                     .map(|holding| holding.symbol.as_str()),
             )
         });
-        Ok(WireHoldingsReport {
-            live_at,
-            ..WireHoldingsReport::from(&report)
-        })
+        let mut wire = WireHoldingsReport::from(&report);
+        wire.warnings
+            .extend(ticker_warnings(&quotes, journal, &report));
+        Ok(WireHoldingsReport { live_at, ..wire })
     })
     .await
 }

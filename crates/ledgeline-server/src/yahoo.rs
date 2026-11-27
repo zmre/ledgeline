@@ -94,6 +94,69 @@ pub struct MarketQuote {
     pub currency: Option<String>,
 }
 
+/// What Yahoo says an instrument IS (plan 48): the chart reply's
+/// `meta.instrumentType` (`EQUITY`, `ETF`, `CRYPTOCURRENCY`, …), its name and
+/// its exchange. Every chart reply carries these, so knowing that `BTC` was
+/// answered by an ETF costs no extra request. `pub` for the same reason as
+/// [`FetchedPrice`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Instrument {
+    /// `meta.instrumentType`, upper-case as Yahoo sends it.
+    pub instrument_type: Option<String>,
+    /// `meta.longName`, else `meta.shortName`.
+    pub name: Option<String>,
+    /// `meta.fullExchangeName`, else `meta.exchangeName`.
+    pub exchange: Option<String>,
+}
+
+impl Instrument {
+    /// Yahoo's crypto feed: `instrumentType: "CRYPTOCURRENCY"`.
+    #[must_use]
+    pub fn is_crypto(&self) -> bool {
+        self.instrument_type
+            .as_deref()
+            .is_some_and(|kind| kind.eq_ignore_ascii_case("CRYPTOCURRENCY"))
+    }
+
+    /// "Grayscale Bitcoin Mini Trust ETF (NYSEArca)", or the instrument type
+    /// when Yahoo gave no name.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        let name = self
+            .name
+            .clone()
+            .or_else(|| self.instrument_type.clone())
+            .unwrap_or_else(|| "an unknown instrument".to_string());
+        match &self.exchange {
+            Some(exchange) => format!("{name} ({exchange})"),
+            None => name,
+        }
+    }
+}
+
+/// One chart reply, as a [`PriceFeed`] hands it back: what was asked for
+/// (`data`), plus the two facts every reply's `meta` carries for free — the
+/// delayed market quote (plan 47 D11) and what the instrument is (plan 48).
+/// `pub` for the same reason as [`FetchedPrice`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChartReply<T> {
+    pub data: T,
+    pub quote: Option<MarketQuote>,
+    pub instrument: Option<Instrument>,
+}
+
+impl<T> ChartReply<T> {
+    /// A reply that carried nothing beyond `data` — all a source without a
+    /// `meta` (every test fake that predates it) can say.
+    pub fn bare(data: T) -> Self {
+        Self {
+            data,
+            quote: None,
+            instrument: None,
+        }
+    }
+}
+
 /// A failure fetching or decoding a quote. Distinct from "fetched fine but no
 /// usable candle" (that is `Ok(None)`) — this is a transport/shape failure, and
 /// the caller reports it as `fetch-error` rather than `not-found`. `pub` for
@@ -143,33 +206,34 @@ pub trait PriceFeed: Send + Sync {
     async fn daily_closes(&self, ticker: &str, from: &str)
     -> Result<Vec<FetchedPrice>, YahooError>;
 
-    /// [`Self::latest_close`], plus the market quote the same reply carried
-    /// in its `meta` — so a close fetch refreshes the intraday cache for free
-    /// (plan 47 D11). The default answers no quote, which is all a source
-    /// without one (every test fake that predates it) can say.
+    /// [`Self::latest_close`], plus the market quote and instrument the same
+    /// reply carried in its `meta` — so a close fetch refreshes the intraday
+    /// cache for free (plan 47 D11) and says what was priced (plan 48). The
+    /// default answers neither ([`ChartReply::bare`]).
     async fn latest_close_and_quote(
         &self,
         ticker: &str,
         as_of: &str,
-    ) -> Result<(Option<FetchedPrice>, Option<MarketQuote>), YahooError> {
-        Ok((self.latest_close(ticker, as_of).await?, None))
+    ) -> Result<ChartReply<Option<FetchedPrice>>, YahooError> {
+        Ok(ChartReply::bare(self.latest_close(ticker, as_of).await?))
     }
 
-    /// [`Self::daily_closes`], plus the reply's market quote; see
-    /// [`Self::latest_close_and_quote`].
+    /// [`Self::daily_closes`], plus the reply's market quote and instrument;
+    /// see [`Self::latest_close_and_quote`].
     async fn daily_closes_and_quote(
         &self,
         ticker: &str,
         from: &str,
-    ) -> Result<(Vec<FetchedPrice>, Option<MarketQuote>), YahooError> {
-        Ok((self.daily_closes(ticker, from).await?, None))
+    ) -> Result<ChartReply<Vec<FetchedPrice>>, YahooError> {
+        Ok(ChartReply::bare(self.daily_closes(ticker, from).await?))
     }
 
-    /// The latest delayed quote for `ticker` alone — `POST /api/prices/intraday`.
-    /// `Ok(None)` when the reply had none (an unknown ticker), and by default.
-    async fn market_quote(&self, ticker: &str) -> Result<Option<MarketQuote>, YahooError> {
+    /// The latest delayed quote for `ticker` alone — `POST /api/prices/intraday`
+    /// — in the reply's `quote`, with its instrument. No quote when the reply
+    /// had none (an unknown ticker), and by default.
+    async fn market_quote(&self, ticker: &str) -> Result<ChartReply<()>, YahooError> {
         let _ = ticker;
-        Ok(None)
+        Ok(ChartReply::bare(()))
     }
 }
 
@@ -191,7 +255,7 @@ impl PriceFeed for YahooClient {
         ticker: &str,
         as_of: &str,
     ) -> Result<Option<FetchedPrice>, YahooError> {
-        Ok(fetch_latest_close(&self.client, ticker, as_of).await?.0)
+        Ok(fetch_latest_close(&self.client, ticker, as_of).await?.data)
     }
 
     async fn daily_closes(
@@ -199,14 +263,14 @@ impl PriceFeed for YahooClient {
         ticker: &str,
         from: &str,
     ) -> Result<Vec<FetchedPrice>, YahooError> {
-        Ok(fetch_daily_closes(&self.client, ticker, from).await?.0)
+        Ok(fetch_daily_closes(&self.client, ticker, from).await?.data)
     }
 
     async fn latest_close_and_quote(
         &self,
         ticker: &str,
         as_of: &str,
-    ) -> Result<(Option<FetchedPrice>, Option<MarketQuote>), YahooError> {
+    ) -> Result<ChartReply<Option<FetchedPrice>>, YahooError> {
         fetch_latest_close(&self.client, ticker, as_of).await
     }
 
@@ -214,15 +278,15 @@ impl PriceFeed for YahooClient {
         &self,
         ticker: &str,
         from: &str,
-    ) -> Result<(Vec<FetchedPrice>, Option<MarketQuote>), YahooError> {
+    ) -> Result<ChartReply<Vec<FetchedPrice>>, YahooError> {
         fetch_daily_closes(&self.client, ticker, from).await
     }
 
-    async fn market_quote(&self, ticker: &str) -> Result<Option<MarketQuote>, YahooError> {
+    async fn market_quote(&self, ticker: &str) -> Result<ChartReply<()>, YahooError> {
         // The smallest reply that carries `meta`: one day of daily candles.
         let bytes =
             send_chart(&self.client, ticker, &[("interval", "1d"), ("range", "1d")]).await?;
-        parse_chart_quote(bytes.as_ref())
+        parse_chart_reply(bytes.as_ref(), ())
     }
 }
 
@@ -255,12 +319,10 @@ async fn fetch_latest_close(
     client: &reqwest::Client,
     ticker: &str,
     as_of: &str,
-) -> Result<(Option<FetchedPrice>, Option<MarketQuote>), YahooError> {
+) -> Result<ChartReply<Option<FetchedPrice>>, YahooError> {
     let bytes = send_chart(client, ticker, &[("interval", "1d"), ("range", RANGE)]).await?;
-    Ok((
-        parse_chart_response(bytes.as_ref(), as_of, now_seconds())?,
-        parse_chart_quote(bytes.as_ref())?,
-    ))
+    let latest = parse_chart_response(bytes.as_ref(), as_of, now_seconds())?;
+    parse_chart_reply(bytes.as_ref(), latest)
 }
 
 /// GET the chart endpoint for `ticker`'s daily candles from `from` until now,
@@ -274,7 +336,7 @@ async fn fetch_daily_closes(
     client: &reqwest::Client,
     ticker: &str,
     from: &str,
-) -> Result<(Vec<FetchedPrice>, Option<MarketQuote>), YahooError> {
+) -> Result<ChartReply<Vec<FetchedPrice>>, YahooError> {
     let now = now_seconds();
     let period1 = (days_from_iso(from) * SECONDS_PER_DAY).to_string();
     let period2 = (now + SECONDS_PER_DAY).to_string();
@@ -288,10 +350,8 @@ async fn fetch_daily_closes(
         ],
     )
     .await?;
-    Ok((
-        parse_chart_closes(bytes.as_ref(), now)?,
-        parse_chart_quote(bytes.as_ref())?,
-    ))
+    let closes = parse_chart_closes(bytes.as_ref(), now)?;
+    parse_chart_reply(bytes.as_ref(), closes)
 }
 
 const SECONDS_PER_DAY: i64 = 86_400;
@@ -426,6 +486,38 @@ pub(crate) struct ChartMeta {
     /// The instrument's trading currency, e.g. `USD`.
     #[serde(default)]
     pub(crate) currency: Option<String>,
+    /// What the instrument is: `EQUITY`, `ETF`, `MUTUALFUND`,
+    /// `CRYPTOCURRENCY`, … (plan 48: `BTC` is an ETF, `BTC-USD` the coin).
+    #[serde(default, rename = "instrumentType")]
+    pub(crate) instrument_type: Option<String>,
+    #[serde(default, rename = "longName")]
+    pub(crate) long_name: Option<String>,
+    #[serde(default, rename = "shortName")]
+    pub(crate) short_name: Option<String>,
+    #[serde(default, rename = "fullExchangeName")]
+    pub(crate) full_exchange_name: Option<String>,
+    #[serde(default, rename = "exchangeName")]
+    pub(crate) exchange_name: Option<String>,
+}
+
+impl ChartMeta {
+    /// What the reply says the instrument is, or `None` when it says nothing
+    /// at all.
+    fn instrument(&self) -> Option<Instrument> {
+        let text = |value: &Option<String>| {
+            value
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(str::to_string)
+        };
+        let instrument = Instrument {
+            instrument_type: text(&self.instrument_type),
+            name: text(&self.long_name).or_else(|| text(&self.short_name)),
+            exchange: text(&self.full_exchange_name).or_else(|| text(&self.exchange_name)),
+        };
+        (instrument != Instrument::default()).then_some(instrument)
+    }
 }
 
 /// `meta.currentTradingPeriod`: `pre`, `regular` and `post` sessions. Only the
@@ -580,6 +672,32 @@ pub(crate) fn parse_chart_quote(bytes: &[u8]) -> Result<Option<MarketQuote>, Yah
         date: date_from_timestamp(time, meta.gmtoffset.unwrap_or(0)),
         currency: meta.currency.filter(|currency| !currency.trim().is_empty()),
     }))
+}
+
+/// What a chart response's `meta` says the instrument is; `None` for an
+/// unknown ticker's `result: null` or a `meta` that says nothing.
+///
+/// # Errors
+/// [`YahooError::Shape`] for a body that is not the chart shape at all.
+pub(crate) fn parse_chart_instrument(bytes: &[u8]) -> Result<Option<Instrument>, YahooError> {
+    let parsed: ChartResponse =
+        serde_json::from_slice(bytes).map_err(|error| YahooError::Shape(error.to_string()))?;
+    Ok(parsed
+        .chart
+        .result
+        .into_iter()
+        .flatten()
+        .next()
+        .and_then(|result| result.meta.instrument()))
+}
+
+/// `data` with the quote and instrument `bytes`' `meta` carries.
+fn parse_chart_reply<T>(bytes: &[u8], data: T) -> Result<ChartReply<T>, YahooError> {
+    Ok(ChartReply {
+        data,
+        quote: parse_chart_quote(bytes)?,
+        instrument: parse_chart_instrument(bytes)?,
+    })
 }
 
 /// A Unix timestamp, shifted by an exchange's UTC offset, as an ISO calendar
@@ -887,6 +1005,85 @@ mod tests {
         assert_eq!(parse_chart_quote(unknown).unwrap(), None);
         let priceless = body("1", "1.0", "0");
         assert_eq!(parse_chart_quote(priceless.as_bytes()).unwrap(), None);
+    }
+
+    /// Recorded chart replies (plan 48), fetched 2026-11-27 ~10:43 UTC.
+    macro_rules! recorded {
+        ($name:literal) => {
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../fixtures/yahoo/chart_",
+                $name,
+                "_1mo_1d.json"
+            ))
+            .as_slice()
+        };
+    }
+
+    /// `regularMarketTime` in the recorded BTC-USD reply: mid UTC day.
+    const RECORDED_AT: i64 = 1_795_754_566;
+
+    #[test]
+    fn a_coins_reply_says_it_is_a_cryptocurrency() {
+        let instrument = parse_chart_instrument(recorded!("BTC-USD"))
+            .unwrap()
+            .expect("meta names the instrument");
+        assert!(instrument.is_crypto());
+        assert_eq!(instrument.describe(), "Bitcoin USD (CCC)");
+    }
+
+    #[test]
+    fn the_bare_btc_ticker_is_the_grayscale_etf() {
+        let instrument = parse_chart_instrument(recorded!("BTC"))
+            .unwrap()
+            .expect("meta names the instrument");
+        assert!(!instrument.is_crypto());
+        assert_eq!(instrument.instrument_type.as_deref(), Some("ETF"));
+        assert_eq!(
+            instrument.describe(),
+            "Grayscale Bitcoin Mini Trust ETF (NYSEArca)"
+        );
+    }
+
+    #[test]
+    fn an_unknown_coin_ticker_has_no_instrument_and_no_closes() {
+        assert_eq!(parse_chart_instrument(recorded!("UNI-USD")).unwrap(), None);
+        assert!(
+            parse_chart_closes(recorded!("UNI-USD"), NOW)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// A coin trades every day: the UTC day still forming is dropped, the
+    /// null-close day before it is skipped, and weekends are all there.
+    #[test]
+    fn a_coins_daily_closes_skip_the_forming_day_and_a_null_close() {
+        let closes = parse_chart_closes(recorded!("BTC-USD"), RECORDED_AT).unwrap();
+        let dates: Vec<&str> = closes.iter().map(|p| p.date.as_str()).collect();
+        assert_eq!(
+            dates.last(),
+            Some(&"2026-11-25"),
+            "11-27 forming, 11-26 null"
+        );
+        assert!(
+            dates.contains(&"2026-11-21") && dates.contains(&"2026-11-22"),
+            "a weekend"
+        );
+        let quote = parse_chart_quote(recorded!("BTC-EUR"))
+            .unwrap()
+            .expect("a quote");
+        assert_eq!(quote.currency.as_deref(), Some("EUR"));
+    }
+
+    /// Sub-cent closes arrive as exponent-form floats; they still parse as
+    /// exact decimals (Rust's `f64` `Display` never prints an exponent).
+    #[test]
+    fn a_micro_priced_tokens_closes_parse_as_plain_decimals() {
+        let closes = parse_chart_closes(recorded!("PEPE24478-USD"), RECORDED_AT).unwrap();
+        let last = closes.last().expect("closes");
+        assert!(last.quantity.places >= 6, "{:?}", last.quantity);
+        assert!(last.quantity.mantissa > 0);
     }
 
     /// Garbage in the body is a `Shape` error, not a panic or a silent `None`.
