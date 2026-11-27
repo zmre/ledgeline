@@ -63,6 +63,7 @@ A command that works on one invoice takes its number (`105`) or its file. A file
 | `pdf`           | Export an invoice's PDF                                                        | a PDF                    |
 | `receivables`   | Open invoices, aging, DSO and average days to pay                              | nothing                  |
 | `recognize`     | Post the recognition entries due                                               | the journal              |
+| `time`          | Time tracking: the tracker, entries, billing time and paying for it. See [Tracking time](../time/tracking.md#the-command-line) and [Billing time](../time/billing.md#from-the-command-line). | time files, drafts, the journal |
 
 ### new
 
@@ -254,6 +255,8 @@ ledgeline-invoicer void 106 --date 2026-11-20
 ```
 
 Reverses the booking on `--date` (default: today) and marks the file void with that date. A draft is only marked void.
+
+`--time release` (the default) takes the invoice's `invoice:` tags off its tracked time, so the time is unbilled again. `--time nobill` writes the time off instead. See [Releasing time](../time/billing.md#releasing-time).
 
 ### rebook
 
