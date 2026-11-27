@@ -87,6 +87,16 @@ describe("COMPONENT TimeDashboard", () => {
         expect(nav.goto).toHaveBeenLastCalledWith("/app/time?period=last-month", expect.anything());
     });
 
+    it("steps from the period it is already heading to when [ is pressed twice quickly", async () => {
+        // A navigation that hasn't landed yet: the URL still says this month.
+        nav.goto.mockReturnValue(new Promise(() => {}));
+        render(TimeDashboard, props);
+        await waitFor(() => screen.getByTestId("time-dash-period"));
+        await press("[");
+        await press("[");
+        expect(nav.goto).toHaveBeenLastCalledWith("/app/time?from=2026-09-01&to=2026-09-30", expect.anything());
+    });
+
     it("offers custom dates when Custom is picked", async () => {
         render(TimeDashboard, props);
         await waitFor(() => screen.getByTestId("time-dash-period"));

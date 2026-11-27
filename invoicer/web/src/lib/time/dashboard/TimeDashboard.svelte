@@ -141,14 +141,23 @@
     const view = $derived<DataView>(figuresError !== null ? "error" : figures !== null ? "data" : "loading");
 
     // ── The URL ─────────────────────────────────────────────────────────
+    // The URL changes only once a navigation lands, so a second `[` pressed
+    // before then would step from the old period. `pending` is the query the
+    // last navigation is heading to; steps and choices build on it.
+    let pending: DashQuery | null = null;
+    const current = (): DashQuery => pending ?? query;
+
     function navigate(next: DashQuery, options: {replace: boolean} = {replace: false}): void {
         const qs = dashQueryString(next);
-        if (qs === dashQueryString(query)) return;
+        if (qs === dashQueryString(current())) return;
+        pending = next;
         // eslint-disable-next-line svelte/no-navigation-without-resolve -- the current page's own path, only the query changes
-        void goto(`${page.url.pathname}${qs === "" ? "" : `?${qs}`}`, {replace: options.replace, reset: false});
+        void Promise.resolve(goto(`${page.url.pathname}${qs === "" ? "" : `?${qs}`}`, {replace: options.replace, reset: false})).finally(() => {
+            if (pending === next) pending = null;
+        });
     }
 
-    const step = (direction: -1 | 1): void => navigate(stepPeriod(query, today, direction));
+    const step = (direction: -1 | 1): void => navigate(stepPeriod(current(), today, direction));
 
     registerKeys({
         id: "time-dashboard",

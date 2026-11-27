@@ -16,14 +16,11 @@
 // figures here are October's (a custom range), which nothing writes.
 //
 // Written with the feature and NOT run by the agent that wrote it (agents
-// never run Playwright); the lead runs it. E2E WIRING: replace the two
-// constants below with imports of TIME_SERVER_URL from playwright.config.ts
-// once both branches are merged; the dashboard is mounted at /time.
+// never run Playwright); the lead runs it. The dashboard is mounted at /time.
 
 import {expect, test, type Page} from "@playwright/test";
-import {API_TOKEN} from "../playwright.config";
+import {API_TOKEN, TIME_SERVER_URL} from "../playwright.config";
 
-const TIME_SERVER_URL = "http://127.0.0.1:5194";
 const FIXED_NOW = new Date(2026, 10, 26, 12, 0, 0); // local 2026-11-26, the fixture's clock
 const PLACEHOLDER_MARKER = "Ledgeline Invoicer SPA not built";
 const OCTOBER = "from=2026-10-01&to=2026-10-31";

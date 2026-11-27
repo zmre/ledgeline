@@ -198,6 +198,8 @@ export default defineConfig({
         {name: "settings", testMatch: "**/settings.e2e.ts"},
         {name: "settings-new-file", testMatch: "**/settings-new-file.e2e.ts"},
         {name: "time", testMatch: "**/time-track.e2e.ts"},
+        // Same server as Track; after it, so the two never write at once.
+        {name: "time-dashboard", testMatch: "**/time-dashboard.e2e.ts", dependencies: ["time"]},
         {name: "time-entries", testMatch: "**/time-entries.e2e.ts"},
         {
             name: "pages",
@@ -211,6 +213,7 @@ export default defineConfig({
                 "**/settings.e2e.ts",
                 "**/settings-new-file.e2e.ts",
                 "**/time-track.e2e.ts",
+                "**/time-dashboard.e2e.ts",
                 "**/time-entries.e2e.ts",
                 "**/templates.e2e.ts",
                 "**/lists.e2e.ts",
