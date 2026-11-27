@@ -61,4 +61,13 @@ describe("COMPONENT time tracking's setup", () => {
         await vi.waitFor(() => expect(screen.getByTestId("time-setup-setting").textContent).toContain('file = "old/hours.timedot"'));
         expect(onDone).not.toHaveBeenCalled();
     });
+
+    it("lists the commodity lines hledger's strict check needs, without blocking", async () => {
+        const {api} = mount();
+        api.adopt.mockImplementation(async (file: string) => ({file, format: "timeclock", needs_setting: false, written: false, missing: ["commodity h"]}));
+        await fireEvent.click(screen.getByTestId("time-setup-existing"));
+        await fireEvent.click(screen.getByTestId("time-setup-check"));
+        await vi.waitFor(() => expect(screen.getByTestId("time-setup-missing").textContent).toContain("commodity h"));
+        expect(screen.getByTestId("time-setup-adopt")).toBeTruthy();
+    });
 });

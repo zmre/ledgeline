@@ -212,6 +212,14 @@
                     {adoptCheck.file} can be used{adoptCheck.format === null ? "" : ` (${adoptCheck.format})`}.
                     {#if adoptCheck.needs_setting}Your books' settings will be updated to point at it.{/if}
                 </p>
+                {#if (adoptCheck.missing ?? []).length > 0}
+                    <div class="flex flex-col gap-1 text-sm" data-testid="time-setup-missing">
+                        <p>
+                            For hledger's strict check (<code>hledger -s</code>) to pass, add these lines to {adoptCheck.file}. Ledgeline works without them.
+                        </p>
+                        <pre class="overflow-x-auto rounded bg-base-200 p-2 text-xs">{(adoptCheck.missing ?? []).join("\n")}</pre>
+                    </div>
+                {/if}
             {/if}
             {#if settingNeeded !== null}
                 <div class="alert text-sm alert-info" role="status" data-testid="time-setup-setting">

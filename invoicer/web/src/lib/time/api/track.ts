@@ -57,6 +57,8 @@ export interface AdoptAnswer {
     /** The books' settings file must name it (an unusual name). */
     needs_setting: boolean;
     written: boolean;
+    /** `commodity` lines `hledger -s` needs that the file lacks, for the person to add (fact 10). */
+    missing?: string[];
 }
 
 /** One of today's lines, for the day card. */
