@@ -351,6 +351,103 @@ async fn nothing_held_has_no_anchor_and_a_bad_anchor_is_refused() {
 }
 
 // ---------------------------------------------------------------------------
+// Flows and returns (amendment A1)
+// ---------------------------------------------------------------------------
+
+fn column<T>(series: &Value, read: impl Fn(&Value) -> T) -> Vec<T> {
+    series["points"]
+        .as_array()
+        .expect("points")
+        .iter()
+        .map(read)
+        .collect()
+}
+
+/// January–April month-ends: VTI $2,100, $2,100, then AAPL's $600 buy on
+/// 2026-03-02 lifts March to $2,940 — of which $240 is gain. Modified Dietz:
+/// 240 / (2,100 + 600 / 2) = +10 %, and April holds it.
+#[tokio::test]
+async fn series_points_carry_their_buckets_flow_and_the_chained_return() {
+    let tree = Tree::quotes();
+    let series = tree
+        .get("/api/holdings/series?asOf=2026-04-30&interval=monthly&count=4")
+        .await;
+    let point = &series["points"][0];
+    let mut keys: Vec<&str> = point
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "basis",
+            "bucket",
+            "date",
+            "flow",
+            "label",
+            "marketValue",
+            "returnPct"
+        ]
+    );
+    // The buy is money IN: positive, at its cost.
+    assert_eq!(column(&series, |p| dec(&p["flow"])), [0.0, 0.0, 600.0, 0.0]);
+    let returns = column(&series, |p| p["returnPct"].as_f64().expect("a number"));
+    assert!(returns[0].abs() < 1e-12 && returns[1].abs() < 1e-12);
+    assert!((returns[2] - 0.1).abs() < 1e-12, "{returns:?}");
+    assert!((returns[3] - 0.1).abs() < 1e-12, "{returns:?}");
+    assert_eq!(series["returnAnchor"], Value::Null, "no anchor asked for");
+
+    // Nothing held yet: no return to report.
+    let empty = tree
+        .get("/api/holdings/series?asOf=2025-12-31&interval=monthly&count=2")
+        .await;
+    assert!(
+        column(&empty, |p| p["returnPct"].is_null())
+            .into_iter()
+            .all(|null| null)
+    );
+    assert_eq!(column(&empty, |p| dec(&p["flow"])), [0.0, 0.0]);
+}
+
+/// The last April week is flat, but the year behind it is not: rebased on
+/// March's index (1.05 × 1.10), January's 1.05 sits 1/1.1 − 1 ≈ −9.1 % below
+/// the window's start. The January buy is the bucket that opens from nothing:
+/// $2,000 in, $2,100 at month end = +5 %.
+#[tokio::test]
+async fn the_return_anchor_spans_the_horizon_rebased_to_the_window() {
+    let tree = Tree::quotes();
+    let series = tree
+        .get("/api/holdings/series?asOf=2026-04-30&since=2026-04-23&interval=daily&anchor=1yr")
+        .await;
+    assert!(
+        column(&series, |p| p["returnPct"].as_f64().expect("a number"))
+            .iter()
+            .all(|r| r.abs() < 1e-12)
+    );
+    let min = series["returnAnchor"]["min"].as_f64().expect("min");
+    let max = series["returnAnchor"]["max"].as_f64().expect("max");
+    assert!((min - (1.0 / 1.1 - 1.0)).abs() < 1e-9, "{min}");
+    assert!(max.abs() < 1e-12, "{max}");
+
+    // The Other tab carries the same keys. An opening balance is no flow, so
+    // the house's return stays flat at zero.
+    let other = tree
+        .get("/api/holdings/other/series?asOf=2026-04-30&interval=monthly&count=2&anchor=5yr")
+        .await;
+    assert_eq!(column(&other, |p| dec(&p["flow"])), [0.0, 0.0]);
+    assert_eq!(other["returnAnchor"], json!({"min": 0.0, "max": 0.0}));
+
+    // Nothing ever held: no return anchor either.
+    let none = tree
+        .get("/api/holdings/series?asOf=2025-06-30&interval=monthly&count=3&anchor=all")
+        .await;
+    assert_eq!(none["returnAnchor"], Value::Null);
+}
+
+// ---------------------------------------------------------------------------
 // Intraday
 // ---------------------------------------------------------------------------
 

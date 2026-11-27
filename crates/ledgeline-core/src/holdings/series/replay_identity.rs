@@ -188,8 +188,25 @@ fn per_point_series(
             label: bucket_label(&key),
             market_value: report.totals.market_value,
             basis: report.totals.basis,
+            flow: Dec::zero(),
+            return_pct: None,
         });
     }
+    // Flows from their own (single-point) replay, then the same bucketing and
+    // chain the series uses.
+    let after = points
+        .first()
+        .map(|point: &HoldingsPoint| point.date.clone());
+    let flows = crate::holdings::holdings_flows(
+        txns,
+        prices,
+        accounts,
+        commodity_tags,
+        scope,
+        after.as_deref(),
+    )
+    .expect("flows");
+    crate::holdings::performance::attach_returns(&mut points, &flows.flows).expect("returns");
     HoldingsSeries {
         base,
         points,

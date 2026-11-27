@@ -28,9 +28,9 @@ use ledgeline_core::holdings::{
     AnchorHorizon, Holding, HoldingPrice, HoldingsPoint, HoldingsReport, HoldingsScope,
     HoldingsSeries, HoldingsTotals, HoldingsWarning, OtherHolding, OtherHoldingsReport,
     OtherHoldingsTotals, OtherHoldingsWarning, OtherInputs, OtherWarningKind, PriceSource,
-    ScopeMode, SeriesWindow, ValueRange, WarningKind, anchor_range, anchor_window, auto_interval,
-    compute_holdings, first_holding_date, holdings_series, last_held_dates, other_holdings,
-    prices_any_held, series_count,
+    ReturnRange, ScopeMode, SeriesWindow, ValueRange, WarningKind, anchor_range, anchor_window,
+    auto_interval, compute_holdings, first_holding_date, holdings_series, last_held_dates,
+    other_holdings, prices_any_held, return_anchor_range, series_count,
 };
 use ledgeline_core::model::{Commodity, Journal, PriceDirective};
 use ledgeline_core::reports::periods;
@@ -2297,6 +2297,13 @@ struct WireHoldingsPoint {
     label: String,
     market_value: WireDec,
     basis: Option<WireDec>,
+    /// Plan 47 A1: net money INTO the scoped holdings during the bucket ending
+    /// here — buys/transfers in positive, sells/transfers out negative; `0` on
+    /// the first point.
+    flow: WireDec,
+    /// Plan 47 A1b: cumulative time-weighted return since the first point, as
+    /// a fraction; `null` before anything is held.
+    return_pct: Option<f64>,
 }
 
 impl From<&HoldingsPoint> for WireHoldingsPoint {
@@ -2307,6 +2314,8 @@ impl From<&HoldingsPoint> for WireHoldingsPoint {
             label: point.label.clone(),
             market_value: point.market_value.into(),
             basis: point.basis.map(WireDec::from),
+            flow: point.flow.into(),
+            return_pct: point.return_pct,
         }
     }
 }
@@ -2322,6 +2331,10 @@ pub(crate) struct WireHoldingsSeries {
     /// these points (leading `<= 0` skipped), unpadded. `null` when no
     /// `anchor` was asked for, or nothing in either is above zero.
     anchor: Option<WireValueRange>,
+    /// Plan 47 A1c: the return range (fractions) over the `anchor=` horizon,
+    /// rebased to these points' start, unioned with their own `returnPct`.
+    /// `null` when no `anchor` was asked for, or there is no return at all.
+    return_anchor: Option<WireReturnRange>,
     /// Plan 47 `live=1`: the newest intraday quote time (Unix seconds) that
     /// valued the last point, or `null` when none did.
     live_at: Option<i64>,
@@ -2334,6 +2347,7 @@ impl From<&HoldingsSeries> for WireHoldingsSeries {
             points: series.points.iter().map(WireHoldingsPoint::from).collect(),
             has_basis: series.has_basis,
             anchor: None,
+            return_anchor: None,
             live_at: None,
         }
     }
@@ -2345,6 +2359,24 @@ impl From<&HoldingsSeries> for WireHoldingsSeries {
 struct WireValueRange {
     min: WireDec,
     max: WireDec,
+}
+
+/// `{min, max}` returns as plain fractions — display-boundary numbers, like
+/// every other percentage on this wire.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireReturnRange {
+    min: f64,
+    max: f64,
+}
+
+impl From<ReturnRange> for WireReturnRange {
+    fn from(range: ReturnRange) -> Self {
+        Self {
+            min: range.min,
+            max: range.max,
+        }
+    }
 }
 
 impl From<ValueRange> for WireValueRange {
@@ -4547,7 +4579,7 @@ pub(crate) async fn holdings_series_report(
             )
         };
         let series = series_over(&window)?;
-        let anchor = anchor_for(
+        let (anchor, return_anchor) = anchor_for(
             anchor,
             &scope.as_of,
             &series,
@@ -4568,6 +4600,7 @@ pub(crate) async fn holdings_series_report(
         };
         Ok(WireHoldingsSeries {
             anchor,
+            return_anchor,
             live_at,
             ..WireHoldingsSeries::from(&series)
         })
@@ -4709,7 +4742,7 @@ pub(crate) async fn other_holdings_series_report(
             || Ok(inputs.first_holding_date(&scope)?),
         )?;
         let series = inputs.series(&scope, &window)?;
-        let anchor = anchor_for(
+        let (anchor, return_anchor) = anchor_for(
             anchor,
             &scope.as_of,
             &series,
@@ -4725,6 +4758,7 @@ pub(crate) async fn other_holdings_series_report(
         };
         Ok(WireHoldingsSeries {
             anchor,
+            return_anchor,
             live_at,
             ..WireHoldingsSeries::from(&series)
         })
@@ -4758,20 +4792,21 @@ fn parse_anchor(raw: Option<&str>) -> Result<Option<AnchorHorizon>, AppError> {
     }
 }
 
-/// The `anchor` range for a series already computed as `shown`: a second
-/// series over the horizon ([`anchor_window`]), same scope, filter and
-/// prices, unioned with `shown` ([`anchor_range`]). `inception` is only
-/// asked for `anchor=all`; with nothing ever held there is no horizon and the
-/// range is `shown`'s alone.
+/// The `anchor` and `returnAnchor` ranges for a series already computed as
+/// `shown`: a second series over the horizon ([`anchor_window`]), same scope,
+/// filter and prices, unioned with `shown` — values by [`anchor_range`],
+/// returns rebased to `shown`'s start by [`return_anchor_range`]. `inception`
+/// is only asked for `anchor=all`; with nothing ever held there is no horizon
+/// and each range is `shown`'s alone.
 fn anchor_for(
     horizon: Option<AnchorHorizon>,
     as_of: &str,
     shown: &HoldingsSeries,
     inception: impl FnOnce() -> Option<String>,
     series_over: impl FnOnce(&SeriesWindow) -> Result<HoldingsSeries, AppError>,
-) -> Result<Option<WireValueRange>, AppError> {
+) -> Result<(Option<WireValueRange>, Option<WireReturnRange>), AppError> {
     let Some(horizon) = horizon else {
-        return Ok(None);
+        return Ok((None, None));
     };
     let extra = horizon
         .start(as_of, inception)
@@ -4783,7 +4818,14 @@ fn anchor_for(
             .map(|series| series.points.as_slice())
             .chain(std::iter::once(shown.points.as_slice())),
     );
-    Ok(range.map(WireValueRange::from))
+    let horizon_points = extra
+        .as_ref()
+        .map_or(&[][..], |series| series.points.as_slice());
+    let returns = return_anchor_range(horizon_points, &shown.points);
+    Ok((
+        range.map(WireValueRange::from),
+        returns.map(WireReturnRange::from),
+    ))
 }
 
 /// What `live=1` adds to one request (plan 47 D10): the journal's prices plus
