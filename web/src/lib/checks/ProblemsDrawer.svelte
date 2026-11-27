@@ -175,7 +175,7 @@
             >
         {/if}
         {#if fixFailure !== null && fixFailure.txnIndex === problem.txnIndex}
-            <span class="text-xs text-error" role="alert">{fixFailure.message}</span>
+            <span class="text-xs text-error-text" role="alert">{fixFailure.message}</span>
         {/if}
     </div>
 {/snippet}

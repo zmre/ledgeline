@@ -53,6 +53,6 @@
         </ul>
     {/if}
     {#if error !== null}
-        <p class="text-xs text-error" role="alert">{error}</p>
+        <p class="text-xs text-error-text" role="alert">{error}</p>
     {/if}
 </section>

@@ -237,7 +237,7 @@
     {/if}
 
     {#if sorted.length > 0}
-        <ul class="flex flex-col gap-0.5 text-sm text-error" data-testid="catalog-problems">
+        <ul class="flex flex-col gap-0.5 text-sm text-error-text" data-testid="catalog-problems">
             {#each sorted as problem, at (at)}
                 <li>Row {problem.row + 1}: {problem.message}</li>
             {/each}

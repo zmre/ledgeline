@@ -239,7 +239,7 @@
                         {#if form.postings.length > 1}
                             <button
                                 type="button"
-                                class="btn btn-ghost text-error btn-xs"
+                                class="btn btn-ghost text-error-text btn-xs"
                                 aria-label="Remove posting {at + 1} of {name}"
                                 onclick={() => dropPosting(at)}>✕</button
                             >

@@ -69,7 +69,11 @@
                     {/if}
                 </span>
                 <span
-                    class={["ml-auto shrink-0 text-right font-mono text-sm tabular-nums", negative(posting) && "text-error", posting.elided && "text-muted"]}
+                    class={[
+                        "ml-auto shrink-0 text-right font-mono text-sm tabular-nums",
+                        negative(posting) && "text-error-text",
+                        posting.elided && "text-muted",
+                    ]}
                     title={posting.elided ? "Not written in the file: the amount that balances the transaction" : undefined}>{amountText(posting)}</span
                 >
             </div>

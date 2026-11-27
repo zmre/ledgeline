@@ -144,7 +144,7 @@
                 >Expires
                 <DateInput class="w-full" bind:value={editing.expires} onkeydown={rowKey} aria-label="Expires" data-testid="po-expires" />
             </label>
-            {#if rowError !== null}<p role="alert" class="text-sm text-error sm:col-span-3" data-testid="po-error">{rowError}</p>{/if}
+            {#if rowError !== null}<p role="alert" class="text-sm text-error-text sm:col-span-3" data-testid="po-error">{rowError}</p>{/if}
             <div class="flex flex-wrap justify-end gap-2 sm:col-span-3">
                 <button type="button" class="btn btn-ghost btn-sm" disabled={busy} onclick={() => (editing = null)} data-testid="po-cancel">Cancel</button>
                 <button type="button" class="btn btn-primary btn-sm" disabled={busy} onclick={() => void saveRow()} data-testid="po-save"

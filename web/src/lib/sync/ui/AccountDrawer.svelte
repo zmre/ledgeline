@@ -235,7 +235,7 @@
                         {#each account.history.slice(0, 10) as entry (entry.at)}
                             <tr>
                                 <td>{when(entry.at, now)}</td>
-                                <td class={entry.outcome === "failed" ? "text-error" : ""}>{OUTCOME[entry.outcome]}</td>
+                                <td class={entry.outcome === "failed" ? "text-error-text" : ""}>{OUTCOME[entry.outcome]}</td>
                                 <td class="text-right">{entry.added}</td>
                                 <td class="text-right">{entry.held}</td>
                             </tr>
@@ -246,7 +246,7 @@
         </section>
 
         {#if error !== null}
-            <p class="text-sm text-error" role="alert">{error}</p>
+            <p class="text-sm text-error-text" role="alert">{error}</p>
         {/if}
 
         <section class="mt-auto flex flex-col gap-2 border-t border-base-content/10 pt-3">

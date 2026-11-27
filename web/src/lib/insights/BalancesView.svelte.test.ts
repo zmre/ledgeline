@@ -89,9 +89,9 @@ describe("COMPONENT BalancesView", () => {
 
     it("highlights an overdrawn cash account, but not an ordinary card balance", () => {
         mount(view([summary("$", USD, [row("assets:bank:checking", -100_000)], [row("liabilities:card", -45_000)])]));
-        expect(within(listRow("assets:bank:checking")).getByText("$-1,000.00").className).toContain("text-error");
+        expect(within(listRow("assets:bank:checking")).getByText("$-1,000.00").className).toContain("text-error-text");
         // Owing money on a card is the normal state of a card.
-        expect(within(listRow("liabilities:card")).getByText("$-450.00").className).not.toContain("text-error");
+        expect(within(listRow("liabilities:card")).getByText("$-450.00").className).not.toContain("text-error-text");
     });
 
     it("hides zero balances by default, and says how many are hidden", async () => {

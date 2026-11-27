@@ -124,7 +124,7 @@
                         <li>
                             <button
                                 type="button"
-                                class="text-error"
+                                class="text-error-text"
                                 onclick={() => {
                                     closeMenu();
                                     confirmDisconnect = true;
@@ -153,7 +153,7 @@
     {/each}
 
     {#if note !== null}
-        <p class="text-xs {note.error ? 'text-error' : 'text-muted'}" role={note.error ? "alert" : "status"}>{note.text}</p>
+        <p class="text-xs {note.error ? 'text-error-text' : 'text-muted'}" role={note.error ? "alert" : "status"}>{note.text}</p>
     {/if}
 
     <ul class="rounded-box border border-base-content/10">

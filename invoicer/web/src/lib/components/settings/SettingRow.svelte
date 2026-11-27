@@ -73,7 +73,7 @@
             {/if}
         </div>
         {#if problem !== null}
-            <p class="text-sm text-error" role="alert" data-testid="{testid}-problem">{problem}</p>
+            <p class="text-sm text-error-text" role="alert" data-testid="{testid}-problem">{problem}</p>
         {/if}
         {@render extra?.()}
     </div>

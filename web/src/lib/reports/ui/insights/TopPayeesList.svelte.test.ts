@@ -38,7 +38,7 @@ describe("COMPONENT TopPayeesList", () => {
         expect(costco.textContent).toContain("prev $500.00");
         expect(costco.textContent).toContain("▲ $200.00 (40.0%)");
         // Spending up is the bad direction.
-        expect(within(costco).getByText("▲ $200.00 (40.0%)").className).toContain("text-error");
+        expect(within(costco).getByText("▲ $200.00 (40.0%)").className).toContain("text-error-text");
         expect(within(rows[0]).getByText("▼ $20.00 (2.2%)").className).toContain("text-success");
     });
 

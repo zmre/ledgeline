@@ -36,5 +36,5 @@
         <a class="btn btn-xs" href={safeUrl(connection.manageUrl) ?? SIMPLEFIN_URL} target="_blank" rel="noopener noreferrer external">Open SimpleFIN ↗</a>
         <button type="button" class="btn btn-ghost btn-xs" disabled={busy} onclick={onDone}>Cancel</button>
     </div>
-    {#if error !== null}<p class="text-error" role="alert">{error}</p>{/if}
+    {#if error !== null}<p class="text-error-text" role="alert">{error}</p>{/if}
 </div>

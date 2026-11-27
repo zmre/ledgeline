@@ -145,7 +145,7 @@
         <section class="flex flex-col gap-2" aria-label="Manual downloads" bind:this={manualSection} data-testid="sync-manual">
             <h3 class="font-semibold">Manual downloads</h3>
             {#if syncStore.manualError !== null}
-                <p class="text-sm text-error" role="alert">{syncStore.manualError}</p>
+                <p class="text-sm text-error-text" role="alert">{syncStore.manualError}</p>
             {:else if syncStore.manual === null}
                 <p class="text-sm text-muted">Loading…</p>
             {:else if syncStore.manual.length === 0}

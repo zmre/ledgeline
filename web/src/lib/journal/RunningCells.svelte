@@ -66,7 +66,7 @@
             <span class="tooltip tooltip-left shrink-0" data-tip="{detail}. Click to narrow the dates to the gap.">
                 <button
                     type="button"
-                    class="cursor-pointer font-semibold text-error"
+                    class="cursor-pointer font-semibold text-error-text"
                     aria-label="Narrow to gap: {detail}"
                     data-testid="running-assertion-fail"
                     onclick={() => narrow(assertion)}>{assertionLabel(assertion, pinned)}</button
@@ -80,7 +80,7 @@
     <td class="py-1 text-right font-mono text-sm tabular-nums" data-testid="running-change">
         {#if cell !== null && cell.change !== null}
             <div
-                class={["whitespace-nowrap", cell.change.qty.m < 0n && "text-error", internal && "text-muted"]}
+                class={["whitespace-nowrap", cell.change.qty.m < 0n && "text-error-text", internal && "text-muted"]}
                 title={internal ? `Internal: moves within ${pinned}` : undefined}
             >
                 {formatAmount(cell.change)}

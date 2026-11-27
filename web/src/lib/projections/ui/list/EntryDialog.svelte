@@ -280,7 +280,7 @@
                 {/if}
                 <div aria-live="polite">
                     {#if preview.refusal !== null}
-                        <p class="text-xs text-error" role="alert" data-testid="entry-dialog-refusal">{preview.refusal}</p>
+                        <p class="text-xs text-error-text" role="alert" data-testid="entry-dialog-refusal">{preview.refusal}</p>
                     {:else if preview.failure !== null}
                         <p class="text-xs text-warning" data-testid="entry-dialog-failure">Couldn't preview the text: {preview.failure}</p>
                     {/if}

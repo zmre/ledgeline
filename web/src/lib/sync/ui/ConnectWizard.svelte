@@ -316,7 +316,7 @@
                                     {check.bridge ? "✓ " : "⚠ "}{check.note}
                                 </span>
                             {:else if check.state === "invalid"}
-                                <span class="text-xs text-error" data-testid="sync-token-check">{check.message}</span>
+                                <span class="text-xs text-error-text" data-testid="sync-token-check">{check.message}</span>
                             {:else}
                                 <span></span>
                             {/if}
@@ -400,11 +400,11 @@
             {#if failure.problem !== null}
                 <ProblemNotice problem={failure.problem} scope={{connectionId: wizard.connectionId, accountKey: null}} {onEffect} />
             {:else}
-                <p class="text-sm text-error" role="alert">{failure.message}</p>
+                <p class="text-sm text-error-text" role="alert">{failure.message}</p>
             {/if}
         {/if}
         {#if issues.length > 0}
-            <ul class="text-sm text-error" role="alert">
+            <ul class="text-sm text-error-text" role="alert">
                 {#each issues as issue (issue)}<li>{issue}</li>{/each}
             </ul>
         {/if}

@@ -427,7 +427,7 @@
                             {#if amounts.length === 0}
                                 <span class="text-muted">&mdash;</span>
                             {:else}
-                                <span class={["whitespace-nowrap", amounts[0].qty.m < 0n && "text-error"]}>{formatAmount(amounts[0])}</span>
+                                <span class={["whitespace-nowrap", amounts[0].qty.m < 0n && "text-error-text"]}>{formatAmount(amounts[0])}</span>
                                 {#if amounts.length > 1}<span class="text-xs text-muted">+{amounts.length - 1}</span>{/if}
                             {/if}
                         </span>

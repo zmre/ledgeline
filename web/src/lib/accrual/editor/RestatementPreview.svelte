@@ -39,7 +39,7 @@
     <p class="font-medium">Restate {restatement.id}</p>
     {#if restatement.ruleChange !== null}
         <div class="rounded bg-base-200 p-2 font-mono text-xs">
-            <pre class="text-error" data-testid="accrual-rule-before">− {restatement.ruleChange.before}</pre>
+            <pre class="text-error-text" data-testid="accrual-rule-before">− {restatement.ruleChange.before}</pre>
             <pre class="text-success" data-testid="accrual-rule-after">+ {restatement.ruleChange.after}</pre>
         </div>
     {/if}

@@ -194,7 +194,7 @@
         {/if}
 
         {#each issues as issue (issue)}
-            <p class="text-xs text-error">{issue}</p>
+            <p class="text-xs text-error-text">{issue}</p>
         {/each}
     {/if}
 </fieldset>

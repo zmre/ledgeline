@@ -48,7 +48,7 @@
                                 onchange={(event) => onRename(index, event.currentTarget.value)}
                             />
                             {#if problem !== undefined}
-                                <div class="mt-0.5 text-xs text-error">{problem}</div>
+                                <div class="mt-0.5 text-xs text-error-text">{problem}</div>
                             {/if}
                         </td>
                         <td class="text-xs whitespace-nowrap">{effectiveTypeName(accounts, account) ?? "—"}</td>

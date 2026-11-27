@@ -88,7 +88,7 @@
                     onEdit();
                 }}
             />
-            {#if noteError !== null}<span class="text-xs text-error">{noteError}</span>{/if}
+            {#if noteError !== null}<span class="text-xs text-error-text">{noteError}</span>{/if}
         </label>
     </div>
 
@@ -124,7 +124,7 @@
                         </label>
                         <button
                             type="button"
-                            class="btn btn-square btn-ghost text-error btn-xs"
+                            class="btn btn-square btn-ghost text-error-text btn-xs"
                             disabled={event.postings.length <= 1}
                             aria-label="Remove {name}"
                             onclick={() => dropPosting(at)}>✕</button

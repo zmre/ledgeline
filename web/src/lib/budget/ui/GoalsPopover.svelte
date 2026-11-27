@@ -123,7 +123,7 @@
 <button
     bind:this={trigger}
     type="button"
-    class="inline-flex cursor-pointer items-center gap-1.5 font-mono text-primary tabular-nums hover:underline"
+    class="inline-flex cursor-pointer items-center gap-1.5 font-mono text-primary-text tabular-nums hover:underline"
     aria-haspopup="dialog"
     aria-expanded={open}
     aria-label="Edit budget for {account} ({refs.length} goals)"
@@ -182,7 +182,7 @@
                             <button type="button" class="btn btn-ghost btn-xs" disabled={busy} onclick={() => edit(ref)}>Edit</button>
                             <button
                                 type="button"
-                                class="btn btn-ghost text-error btn-xs"
+                                class="btn btn-ghost text-error-text btn-xs"
                                 disabled={busy}
                                 onclick={() => onRemove(ref.file.journalId, ref.goal)}
                             >

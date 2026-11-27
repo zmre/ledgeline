@@ -269,12 +269,12 @@
             aria-invalid={noteError !== null}
             onchange={(e) => setAll({note: e.currentTarget.value})}
         />
-        {#if noteError !== null}<span class="text-xs text-error">{noteError}</span>{/if}
+        {#if noteError !== null}<span class="text-xs text-error-text">{noteError}</span>{/if}
     </label>
 
     {#if step !== null}
         <p class="flex flex-wrap items-center gap-x-2 text-xs text-muted" data-testid="step-info">
-            <span aria-hidden="true" class="text-primary">⛓</span>
+            <span aria-hidden="true" class="text-primary-text">⛓</span>
             Step {step.index} of {step.of} of a step change.
             {#each step.others as other (other.group)}
                 <span>The other segment runs <span class="font-mono">{other.period}</span>.</span>
@@ -371,7 +371,7 @@
                         </label>
                         <button
                             type="button"
-                            class="btn btn-square btn-ghost text-error btn-xs"
+                            class="btn btn-square btn-ghost text-error-text btn-xs"
                             disabled={lines.length <= 1}
                             aria-label="Remove {name}"
                             onclick={() => dropPosting(at)}>✕</button

@@ -996,7 +996,13 @@
                                 {#if single === "edit"}
                                     <!-- D37: only here, never in a queue run, where a missed key costs too much. -->
                                     <li>
-                                        <button type="button" class="text-error" onclick={armDelete} disabled={current === null} data-testid="review-delete">
+                                        <button
+                                            type="button"
+                                            class="text-error-text"
+                                            onclick={armDelete}
+                                            disabled={current === null}
+                                            data-testid="review-delete"
+                                        >
                                             <ReviewIcon name="x" /> Delete transaction <kbd class="ml-auto kbd kbd-xs">⇧X</kbd>
                                         </button>
                                     </li>
@@ -1182,7 +1188,7 @@
                                     onPayeePick={adding ? (payee) => void pickPayee(payee) : undefined}
                                 />
                                 {#if errors.length > 0}
-                                    <ul class="-mt-2 list-inside list-disc text-sm text-error" role="alert" data-testid="review-errors">
+                                    <ul class="-mt-2 list-inside list-disc text-sm text-error-text" role="alert" data-testid="review-errors">
                                         {#each errors as message (message)}
                                             <li>{message}</li>
                                         {/each}

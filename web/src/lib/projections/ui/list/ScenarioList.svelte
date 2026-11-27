@@ -501,7 +501,7 @@
 
 {#snippet placeholder(inline: boolean)}
     <div
-        class={["rounded-box border border-dashed border-primary/50 bg-primary/5 px-3 py-2 text-xs text-primary/80", inline && "mt-1"]}
+        class={["rounded-box border border-dashed border-primary/50 bg-primary/5 px-3 py-2 text-xs text-primary-text", inline && "mt-1"]}
         role={inline ? "note" : "listitem"}
         data-testid="entry-placeholder"
         aria-label={pendingLabel}

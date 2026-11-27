@@ -116,7 +116,7 @@
     {#snippet children(run)}
         <section class="flex flex-col gap-3 rounded-box border border-base-content/10 p-3" aria-label="Dry run" data-testid="imports-dry-run">
             {#if !run.ok}
-                <h2 class="text-sm font-semibold tracking-tight text-error">hledger refused this import.</h2>
+                <h2 class="text-sm font-semibold tracking-tight text-error-text">hledger refused this import.</h2>
                 <p class="text-xs text-muted">This is hledger's own output, unedited — it usually names the row it choked on.</p>
                 <!-- VERBATIM. See (1) at the head of this file. -->
                 <pre

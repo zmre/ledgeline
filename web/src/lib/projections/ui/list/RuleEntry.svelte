@@ -81,7 +81,7 @@
         {#if entry.step !== null && nextStep !== null}
             <button
                 type="button"
-                class="ml-auto inline-flex items-center gap-1 rounded-full border border-primary/30 px-2 font-mono text-[0.6875rem] leading-[1.125rem] text-primary/90 hover:bg-primary/10"
+                class="ml-auto inline-flex items-center gap-1 rounded-full border border-primary/30 px-2 font-mono text-[0.6875rem] leading-[1.125rem] text-primary-text hover:bg-primary/10"
                 title="Step {entry.step.index} of {entry.step.of}: go to the other segment"
                 aria-label="Step {entry.step.index} of {entry.step.of} of {entry.name}: go to step {(entry.step.index % entry.step.of) + 1}"
                 data-testid="step-chip"

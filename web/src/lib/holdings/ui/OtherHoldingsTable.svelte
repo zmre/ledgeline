@@ -120,7 +120,7 @@
     {#if v === null}
         <span class="text-muted">{EM_DASH}</span>
     {:else}
-        <span class={toNumber(v) < 0 ? "text-error" : ""}>{format(v)}</span>
+        <span class={toNumber(v) < 0 ? "text-error-text" : ""}>{format(v)}</span>
     {/if}
 {/snippet}
 

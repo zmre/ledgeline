@@ -304,7 +304,7 @@
     {#if view === null}
         <div class="flex items-center justify-center gap-2 py-10 text-sm text-muted" role="status">
             {#if accrual.error !== null}
-                <span class="text-error">Couldn't read the invoices: {accrual.error}</span>
+                <span class="text-error-text">Couldn't read the invoices: {accrual.error}</span>
             {:else}
                 <span class="loading loading-sm loading-spinner"></span> Reading invoices and payments…
             {/if}

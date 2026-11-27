@@ -219,10 +219,10 @@
     {:else if check.kind === "unavailable"}
         <span class="text-muted">The live check needs a rules file and a journal chosen for this import.</span>
     {:else if check.kind === "error"}
-        <span class="text-error" role="alert" data-testid="review-rule-error">Couldn't check this rule: {check.message}</span>
+        <span class="text-error-text" role="alert" data-testid="review-rule-error">Couldn't check this rule: {check.message}</span>
     {:else if !check.preview.ok}
         <div class="flex flex-col gap-1.5" role="alert" data-testid="review-rule-refused">
-            <span class="text-error">hledger can't use the rules file with this rule added:</span>
+            <span class="text-error-text">hledger can't use the rules file with this rule added:</span>
             <pre class="max-h-32 overflow-auto rounded-field bg-base-300 p-2 text-[0.7rem] whitespace-pre-wrap">{check.preview.stderr}</pre>
         </div>
     {:else if counted !== null}
@@ -278,7 +278,7 @@
                     <li class="rounded-field bg-base-100/60 px-2 py-1 font-mono text-[0.7rem] leading-snug" data-testid="review-rule-change">
                         <span class="block truncate text-base-content/80">{lines.title}</span>
                         {#each lines.removed as line, at (`-${at}`)}
-                            <span class="block truncate text-error/80">− {line}</span>
+                            <span class="block truncate text-error-text">− {line}</span>
                         {/each}
                         {#each lines.added as line, at (`+${at}`)}
                             <span class="block truncate text-success">+ {line}</span>
@@ -292,6 +292,6 @@
         {/if}
     {/if}
     {#if error !== null}
-        <p class="mt-1.5 text-error" role="alert" data-testid="review-rule-save-error">The rule wasn't saved: {error}</p>
+        <p class="mt-1.5 text-error-text" role="alert" data-testid="review-rule-save-error">The rule wasn't saved: {error}</p>
     {/if}
 </div>

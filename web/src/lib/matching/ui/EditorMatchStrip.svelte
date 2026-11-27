@@ -91,7 +91,7 @@
             </div>
         {/if}
         {#if failure !== null}
-            <p class="text-xs text-error" role="alert" data-testid="review-match-failure">Not unlinked: {failure}</p>
+            <p class="text-xs text-error-text" role="alert" data-testid="review-match-failure">Not unlinked: {failure}</p>
         {/if}
     </div>
 {/if}

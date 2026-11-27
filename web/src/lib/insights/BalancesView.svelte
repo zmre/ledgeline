@@ -225,7 +225,7 @@
                 {#if pinnedTrend !== null}
                     <BalanceTrend series={pinnedTrend} />
                 {:else if trendError !== null}
-                    <p class="py-6 text-center text-xs text-error">Couldn't chart {pin.account}: {trendError.message}</p>
+                    <p class="py-6 text-center text-xs text-error-text">Couldn't chart {pin.account}: {trendError.message}</p>
                 {:else}
                     <div class="flex h-full items-center justify-center" aria-label="Loading balance line"><span class="loading loading-spinner"></span></div>
                 {/if}

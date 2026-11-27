@@ -69,7 +69,7 @@
 
 <button
     type="button"
-    class="btn btn-square btn-ghost btn-xs {deferred ? 'text-primary' : ''}"
+    class="btn btn-square btn-ghost btn-xs {deferred ? 'text-primary-text' : ''}"
     aria-label={label}
     title={deferred ? "Deferred: edit the recognition" : "Defer this row's revenue"}
     onclick={show}

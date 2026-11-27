@@ -222,7 +222,7 @@
                 </label>
                 <p class="text-sm" data-testid="new-ledger-sample-amount">
                     Amounts will look like <code class="font-mono">{sampleAmount(wizard.currency)}</code>.
-                    {#if wizard.blocker !== null}<span class="text-error">{wizard.blocker}</span>{/if}
+                    {#if wizard.blocker !== null}<span class="text-error-text">{wizard.blocker}</span>{/if}
                 </p>
             {:else if wizard.step === "accounts"}
                 <AccountReview
@@ -245,7 +245,7 @@
                         {#if wizard.folder !== null}
                             <span class="text-sm" data-testid="new-ledger-folder">
                                 In <strong>{wizard.folder.name}</strong>
-                                {#if !wizard.folder.empty}<span class="text-error"> — not empty</span>{/if}
+                                {#if !wizard.folder.empty}<span class="text-error-text"> — not empty</span>{/if}
                             </span>
                         {/if}
                     </div>

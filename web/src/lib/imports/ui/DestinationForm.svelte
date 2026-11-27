@@ -59,7 +59,7 @@
         <span class="label-text-alt text-xs text-muted">Relative to the folder your journal is in. hledger keeps its import state beside this file.</span>
     </label>
     {#each problems as problem (problem)}
-        <p class="text-xs text-error" role="alert">{problem}</p>
+        <p class="text-xs text-error-text" role="alert">{problem}</p>
     {/each}
 
     {#if needsJournal}

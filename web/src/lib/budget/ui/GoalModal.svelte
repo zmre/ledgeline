@@ -185,7 +185,7 @@
                     aria-invalid={amount.trim() !== "" && parsed === null}
                 />
                 {#if amount.trim() !== "" && parsed === null}
-                    <span class="mt-1 text-xs text-error">That isn't a number.</span>
+                    <span class="mt-1 text-xs text-error-text">That isn't a number.</span>
                 {:else if reference?.inverted === true}
                     <!-- Said out loud, because it is the one place the app writes
                          a different number than the one that was typed. -->

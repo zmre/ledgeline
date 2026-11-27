@@ -57,7 +57,7 @@ describe("COMPONENT StartupMetrics — headline boxes", () => {
 
     it("colours the burn multiple by Sacks's band", () => {
         mount(startupReport({current: {...STARTUP_CURRENT, burnMultiple: 3.4}}));
-        expect(screen.getByTestId("insights-box-burnmultiple-big").className).toContain("text-error");
+        expect(screen.getByTestId("insights-box-burnmultiple-big").className).toContain("text-error-text");
         expect(screen.getByTestId("insights-box-burnmultiple").textContent).toContain("Bad");
     });
 });

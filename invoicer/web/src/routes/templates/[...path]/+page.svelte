@@ -400,7 +400,7 @@
                 </label>
                 <button type="submit" class="btn btn-primary btn-sm" disabled={copyName.trim() === ""} data-testid="duplicate-create">Duplicate</button>
                 <button type="button" class="btn btn-ghost btn-sm" onclick={() => (duplicating = false)}>Cancel</button>
-                {#if copyError !== null}<p role="alert" class="w-full text-sm text-error" data-testid="duplicate-error">{copyError}</p>{/if}
+                {#if copyError !== null}<p role="alert" class="w-full text-sm text-error-text" data-testid="duplicate-error">{copyError}</p>{/if}
             </form>
         {/if}
         {#if conflict !== null}

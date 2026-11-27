@@ -49,7 +49,7 @@
     <div class="modal-box flex max-h-[90vh] max-w-3xl flex-col gap-3 overflow-y-auto">
         <h3 id={headingId} class="text-base font-semibold">Share categorization with sync</h3>
         {#if failure !== null}
-            <p class="text-sm text-error" role="alert">{failure.message}</p>
+            <p class="text-sm text-error-text" role="alert">{failure.message}</p>
         {:else if preview === null}
             <p class="flex items-center gap-2 text-sm text-muted" role="status">
                 <span class="loading loading-xs loading-spinner"></span> Checking {fileName(manualRulesId)}…

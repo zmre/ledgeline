@@ -79,7 +79,7 @@
                 </label>
             </div>
             {#if problems.length > 0}
-                <ul class="list-inside list-disc text-xs text-error" data-testid="qb-mapping-problems">
+                <ul class="list-inside list-disc text-xs text-error-text" data-testid="qb-mapping-problems">
                     {#each problems as problem (problem)}
                         <li>{problem}</li>
                     {/each}
@@ -94,7 +94,7 @@
             Map accounts
         </button>
         {#if error !== null}
-            <span class="text-sm text-error" role="alert" data-testid="qb-mapping-error">{error}</span>
+            <span class="text-sm text-error-text" role="alert" data-testid="qb-mapping-error">{error}</span>
         {/if}
     </div>
 </section>

@@ -385,7 +385,7 @@
                                             >
                                             <button
                                                 type="button"
-                                                class="btn btn-ghost text-error btn-xs"
+                                                class="btn btn-ghost text-error-text btn-xs"
                                                 onclick={() => askDelete(rule)}
                                                 data-testid="settings-auto-delete">Delete</button
                                             >

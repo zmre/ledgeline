@@ -123,7 +123,7 @@
                     {/if}
                 </div>
                 {#if closeDate !== "" && !closeDateOk}
-                    <p class="text-xs text-error">Pick a date on or before today.</p>
+                    <p class="text-xs text-error-text">Pick a date on or before today.</p>
                 {/if}
             {:else}
                 <div class="flex flex-wrap items-center gap-2 rounded border border-warning/40 px-3 py-2 text-sm" role="alert" data-testid="books-confirm">
@@ -143,7 +143,7 @@
                 </div>
             {/if}
             {#if failure !== null}
-                <p class="text-sm text-error" role="alert" data-testid="books-failure">Not saved: {failure}</p>
+                <p class="text-sm text-error-text" role="alert" data-testid="books-failure">Not saved: {failure}</p>
             {/if}
         </section>
 

@@ -156,7 +156,7 @@ export const BURN_MULTIPLE_BANDS: readonly BurnBand[] = [
     {upTo: 1, label: "Very efficient", klass: "text-success"},
     {upTo: 2, label: "Good", klass: ""},
     {upTo: 3, label: "Suspect", klass: "text-warning"},
-    {upTo: Infinity, label: "Bad", klass: "text-error"},
+    {upTo: Infinity, label: "Bad", klass: "text-error-text"},
 ];
 
 /** The band a burn multiple falls in: exactly 1 is Good, exactly 2 still Good, exactly 3 still Suspect. */

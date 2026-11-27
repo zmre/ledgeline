@@ -601,7 +601,7 @@ describe("COMPONENT ProjectionReports — Compare vs actuals", () => {
         const checking = assets?.querySelector('[data-account="assets:checking"] [data-column="delta"]');
         // $11,600 actual (Jul) against $13,200 as projected.
         expect(checking?.textContent).toContain("-1,600.00");
-        expect(checking?.className).not.toContain("text-error");
+        expect(checking?.className).not.toContain("text-error-text");
         const rent = screen.getByTestId("projection-accounts").querySelector('[data-account="expenses:rent"] [data-column="delta"]');
         expect(rent?.textContent?.trim()).toBe("$0.00");
         expect(screen.getByTestId("projection-accounts").querySelector('[data-column="summary"]')).toBeNull();

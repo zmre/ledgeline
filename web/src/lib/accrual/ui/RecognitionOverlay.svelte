@@ -375,7 +375,7 @@
                     {#if due === null}
                         <div class="flex items-center justify-center gap-2 py-12 text-sm text-muted" role="status">
                             {#if accrual.error !== null}
-                                <span class="text-error">Couldn't read the due entries: {accrual.error}</span>
+                                <span class="text-error-text">Couldn't read the due entries: {accrual.error}</span>
                             {:else}
                                 <span class="loading loading-sm loading-spinner"></span> Reading due entries…
                             {/if}
