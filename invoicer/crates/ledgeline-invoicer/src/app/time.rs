@@ -16,7 +16,7 @@
 //! | `POST /api/time/entries/bulk`           | `{ids, op, …}`: billable, nobill, move, person.                          |
 //! | `GET /api/time/accounts`                | The account tree, tags resolved with their source, hours.               |
 //! | `POST /api/time/accounts/{declare,set-tag,archive,rename}` | The Accounts page's actions.                         |
-//! | `GET /api/time/summary`                 | Time by any one or two groupings, depth, top N, a period series.        |
+//! | `GET /api/time/summary`                 | Time by any groupings (note too), depth, top N, a period series; the roll-up's `file`. |
 //! | `GET /api/time/unbilled`                | Per customer, with suggested periods; needs-a-customer; orphan tags.    |
 //! | `POST /api/time/bill`                   | Preview (`preview: true`) or create an invoice draft from time.         |
 //! | `POST /api/time/release`                | `{invoice, how}`: take `invoice: N` off its time (or make it nobill).   |
@@ -836,8 +836,8 @@ struct SummaryParams {
     customer: Option<String>,
     billable: Option<bool>,
     account: Option<String>,
-    /// `account,person`: one or two of account, branch, customer, person,
-    /// billable, billed, day, week, month, quarter, year.
+    /// `account,person`: one or more of account, branch, customer, person,
+    /// billable, billed, note, day, week, month, quarter, year.
     group: Option<String>,
     depth: Option<usize>,
     top: Option<usize>,
@@ -888,7 +888,7 @@ async fn summary(State(state): State<AppState>, Query(params): Query<SummaryPara
                 .collect();
             return Ok(json!({ "tree": rows }));
         }
-        to_value(report::summary(
+        let mut value = to_value(report::summary(
             &book,
             &SummaryQuery {
                 filter,
@@ -897,7 +897,10 @@ async fn summary(State(state): State<AppState>, Query(params): Query<SummaryPara
                 top: params.top,
                 series,
             },
-        ))
+        ))?;
+        // The roll-up, for the `hledger -f …` commands the dashboard shows.
+        value["file"] = json!(time.config.file());
+        Ok(value)
     })
     .await
 }

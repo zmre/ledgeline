@@ -35,13 +35,16 @@ pub enum Group {
     Billable,
     /// `unbilled`, `invoiced`, `nobill`, `not-billable`.
     Billed,
+    /// The entry's note, trimmed (`""`: none): the dashboard's most
+    /// frequent notes.
+    Note,
     /// A period bucket (`2026-11`, `2026-W48`, …).
     Period(Interval),
 }
 
 impl Group {
-    /// `account`, `branch`, `customer`, `person`, `billable`, `billed`, `day`,
-    /// `week`, `month`, `quarter`, `year`.
+    /// `account`, `branch`, `customer`, `person`, `billable`, `billed`,
+    /// `note`, `day`, `week`, `month`, `quarter`, `year`.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
         Some(match text.trim() {
@@ -51,6 +54,7 @@ impl Group {
             "person" => Self::Person,
             "billable" => Self::Billable,
             "billed" => Self::Billed,
+            "note" => Self::Note,
             other => Self::Period(interval(other)?),
         })
     }
@@ -139,6 +143,7 @@ fn key_part(book: &TimeBook, entry: &TimeEntry, group: Group, depth: Option<usiz
             super::entries::Billed::NotBillable => "not-billable",
         }
         .to_string(),
+        Group::Note => entry.note.trim().to_string(),
         Group::Period(interval) => bucket_key(&entry.date, interval),
     }
 }
