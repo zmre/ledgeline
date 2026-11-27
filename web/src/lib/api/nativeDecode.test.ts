@@ -200,7 +200,7 @@ describe("UNIT nativeDecode — BalanceSheetReport (grouped)", () => {
             return raw;
         };
         expect(() => decodeBalanceSheetReport(broken({kind: "total"}))).toThrow(/kind/);
-        expect(() => decodeBalanceSheetReport(broken({level: undefined}))).toThrow(/label\/level/);
+        expect(() => decodeBalanceSheetReport(broken({level: undefined}))).toThrow(/level/);
         expect(() => decodeBalanceSheetReport(broken({amount: undefined}))).toThrow(/amount/);
     });
 
