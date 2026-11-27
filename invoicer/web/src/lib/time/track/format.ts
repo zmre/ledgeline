@@ -50,7 +50,7 @@ export function stopHint(mac: boolean): string {
 export function slotName(slot: Slot): string {
     if (slot.label !== null) return slot.label;
     if (slot.key === 0) return "Other…";
-    return slot.kind === "pinned" ? "Empty pin" : "·";
+    return slot.kind === "pinned" ? "Empty pin" : "Empty";
 }
 
 /** A slot's seconds today, with `elapsed` (the running timer's, live) on the one that runs. */

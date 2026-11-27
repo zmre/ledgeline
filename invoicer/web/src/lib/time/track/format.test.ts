@@ -121,7 +121,7 @@ describe("UNIT time slot names", () => {
         const state = running(trackState(), 2, 600);
         const [one, two, , four, five, , seven] = state.slots;
         const other = state.slots[9];
-        expect([slotName(two), slotName(five), slotName(seven), slotName(other)]).toEqual(["Acme Corp · advisory", "Empty pin", "·", "Other…"]);
+        expect([slotName(two), slotName(five), slotName(seven), slotName(other)]).toEqual(["Acme Corp · advisory", "Empty pin", "Empty", "Other…"]);
         expect(slotSeconds(two, 600)).toBe(4200);
         expect(slotSeconds(four, 600)).toBe(900);
         expect(slotAria(two, slotSeconds(two, 600))).toBe("Slot 2: Acme Corp · advisory, running, 1h 10m today");
