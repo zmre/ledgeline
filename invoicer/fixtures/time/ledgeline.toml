@@ -1,0 +1,7 @@
+# Ledgeline settings for the invoicer's time fixture (synthetic).
+
+[invoicer]
+company = "[[My Company]]"
+receivable-account = "assets:accounts receivable"
+revenue-account = "revenue:consulting"
+default-template = "/invoices/tpl/myco-default.html"

@@ -1,0 +1,10 @@
+# Sam Lee's timesheet, November 2026: a contractor, paid through
+# accounts payable (the bill: tag) and partly rebilled to Acme.
+
+2026-11-04 Wed
+    clients:acme:advisory           150m  ; second opinion on the K-1
+    clients:globex:audit             4h  ; fieldwork
+
+2026-11-05 Thu
+    clients:globex:audit            270m  ; fieldwork
+    internal:admin                   30m
