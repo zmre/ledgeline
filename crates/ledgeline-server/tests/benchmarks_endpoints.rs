@@ -221,6 +221,39 @@ async fn the_line_is_the_same_money_into_the_benchmark() {
     assert_eq!(spy["error"], Value::Null);
 }
 
+/// Plan 47 A1d: beside the simulated value, each point carries the
+/// benchmark's own total return since the line's first point — the adjusted
+/// close's growth from January's $100: +10 % in February, +32 % in March,
+/// untouched by the portfolio's March buy.
+#[tokio::test]
+async fn each_point_carries_the_benchmarks_total_return() {
+    let tree = Tree::with(JOURNAL, FakeHistory::new([("SPY", spy())]));
+    let (status, body) = tree
+        .get(&format!("/api/holdings/benchmarks?symbols=SPY&{WINDOW}"))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let returns: Vec<f64> = body["benchmarks"][0]["points"]
+        .as_array()
+        .expect("points")
+        .iter()
+        .map(|point| point["returnPct"].as_f64().expect("a number"))
+        .collect();
+    assert_eq!(returns.len(), 3);
+    assert!(returns[0].abs() < 1e-12, "{returns:?}");
+    assert!((returns[1] - 0.1).abs() < 1e-12, "{returns:?}");
+    assert!((returns[2] - 0.32).abs() < 1e-12, "{returns:?}");
+
+    // A line with no history has no return either: null, like its value.
+    let (_, body) = tree
+        .get(&format!("/api/holdings/benchmarks?symbols=QQQ&{WINDOW}"))
+        .await;
+    let points = body["benchmarks"][0]["points"].as_array().expect("points");
+    assert!(
+        points.iter().all(|point| point["returnPct"].is_null()),
+        "{body}"
+    );
+}
+
 /// A dated window (the gain period's) seeds the line at `since` itself — the
 /// value the gain is measured against — not at the end of `since`'s month.
 /// On 2025-01-02 the ten VTI just bought are valued at their $100 cost (no `P`

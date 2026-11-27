@@ -97,6 +97,25 @@ pub fn simulate_benchmark(
     values
 }
 
+/// The benchmark's own cumulative TOTAL return at each point (plan 47 A1d), as
+/// a fraction, since the first point it can price: `close(point) /
+/// close(first) − 1`. The closes are dividend-adjusted, so this is the return
+/// with dividends reinvested — directly comparable to the portfolio's
+/// time-weighted `return_pct`. `None` before the first priced point (a gap,
+/// as in [`simulate_benchmark`]).
+#[must_use]
+pub fn benchmark_returns(points: &[HoldingsPoint], closes: &[Close]) -> Vec<Option<f64>> {
+    let mut first: Option<f64> = None;
+    points
+        .iter()
+        .map(|point| {
+            let close = close_at(closes, &point.date)?;
+            let start = *first.get_or_insert(close);
+            Some(close / start - 1.0).filter(|r| r.is_finite())
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +128,8 @@ mod tests {
             label: date.to_string(),
             market_value: Dec::new(i128::from(value), 0),
             basis: None,
+            flow: Dec::zero(),
+            return_pct: None,
         }
     }
 
@@ -225,6 +246,21 @@ mod tests {
         // 10 units, then a −$1000 sale at $10 would be −100 units: empty at 0.
         // The March buy of $50 at Feb's $5 close = 10 units, worth $100 at $10.
         assert_eq!(approx(&line), vec![Some(10_000), Some(0), Some(10_000)]);
+    }
+
+    #[test]
+    fn benchmark_returns_are_total_return_since_the_first_priced_point() {
+        let points = [
+            point("2026-01-02", 0),
+            point("2026-01-31", 0),
+            point("2026-02-28", 0),
+        ];
+        let prices = closes(&[("2026-01-30", 50.0), ("2026-02-27", 55.0)]);
+        let returns = benchmark_returns(&points, &prices);
+        assert_eq!(returns[0], None);
+        assert_eq!(returns[1], Some(0.0));
+        assert!((returns[2].unwrap() - 0.1).abs() < 1e-12);
+        assert_eq!(benchmark_returns(&points, &[]), vec![None, None, None]);
     }
 
     #[test]
