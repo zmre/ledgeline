@@ -180,7 +180,7 @@ fn problems_block(problems: &[Problem]) -> String {
 
 /// `show`.
 pub fn show(detail: &DocDetail<'_>) -> String {
-    let h = detail.header;
+    let h: &Header = &detail.header;
     let kind = h.doc_type.map_or("document", |t| t.as_str());
     let number = h
         .number
@@ -224,6 +224,13 @@ pub fn show(detail: &DocDetail<'_>) -> String {
         ("Void", opt(h.void_date.as_deref())),
         ("Deposit for", opt(h.deposit_for.as_deref())),
     ]));
+    if detail.company_changed {
+        let _ = writeln!(
+            out,
+            "\nYour company's details have changed since it was sent. To use them: \
+             ledgeline-invoicer update-company {number}"
+        );
+    }
     match &detail.table {
         None => out.push_str("\n(no readable bill table)\n"),
         Some(table) => {

@@ -485,12 +485,15 @@ fn a_deposit_is_income_on_receipt_and_a_covered_final_books_a_zero_marker() {
     );
     let (removed, added) = diff(&before, &read(&dir, "books.journal"));
     assert_eq!((removed.as_str(), added), ("", format!("\n{booked}")));
+    // The draft's copy of the company was older than the company note:
+    // sending freezes the note's details (the whole address, the phone).
     assert_eq!(
         read(&dir, final_209),
         replace_once(
             &replace_once(&markdown, "status: draft\n", "status: sent\n"),
             "  1234 Background Blvd.\n---\n",
-            "  1234 Background Blvd.\nsent_date: 2026-11-17\npaid: 2026-11-17\n---\n"
+            "  1234 Background Blvd.\n  Anywhere, CA 90000\ninvoicer_phone: +1 (555) 010-2000\n\
+             sent_date: 2026-11-17\npaid: 2026-11-17\n---\n"
         )
     );
     assert!(

@@ -202,3 +202,12 @@ export function chooseTemplate(number: string, template: string): Promise<Templa
 export async function recalculate(number: string, options: {rebook?: boolean} = {}): Promise<void> {
     await call("POST", `/api/invoices/${encodeURIComponent(number)}/recalc`, {rebook: options.rebook ?? false, today: localToday()});
 }
+
+/**
+ * `POST /api/invoices/{number}/company`: Update from company. Its copy of
+ * your company's details becomes the company note's; a sent invoice is
+ * re-booked too, and the server refuses one dated in a closed period.
+ */
+export async function updateFromCompany(number: string): Promise<void> {
+    await call("POST", `/api/invoices/${encodeURIComponent(number)}/company`, {today: localToday()});
+}

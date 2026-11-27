@@ -48,6 +48,12 @@
 //! there can read what the gate lets it read but send it nowhere.
 //! `frame-ancestors 'self'` lets the SPA show a page in a frame (browse and
 //! preview modes).
+//!
+//! **Drafts.** A draft follows the company note ([`invoicer_core::company`]),
+//! which MBR, rendering the file as written, can't do. So a page request for
+//! a draft whose file holds an older copy of the company is answered here
+//! with [`super::preview::draft_page`] under the same policies; every other
+//! page is MBR's.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -55,7 +61,7 @@ use std::time::{Duration, Instant};
 
 use axum::Extension;
 use axum::extract::{Path, Request, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use ledgeline_shell::security::{self, AccessToken, SecurityError};
 use mbr_core::csp::{ContentClass, ContentSecurityPolicy};
@@ -296,6 +302,20 @@ pub(crate) async fn fallback(
     request.headers_mut().remove(header::AUTHORIZATION);
     let path_class = ContentClass::for_path(request.uri().path());
     let pass = export_pass(request.uri().query()).map(str::to_string);
+    // A draft follows the company, which MBR can't do from the file: its
+    // page is rendered here when the file holds an older copy
+    // ([`super::preview::draft_page`]).
+    if path_class == ContentClass::Pages && matches!(*request.method(), Method::GET | Method::HEAD)
+    {
+        let page = Arc::clone(&books);
+        let path = request.uri().path().to_string();
+        if let Ok(Some(html)) =
+            tokio::task::spawn_blocking(move || super::preview::draft_page(&page, &path)).await
+        {
+            let strict = pass.is_some_and(|pass| gate.spend_pass(&pass));
+            return draft_response(html, strict);
+        }
+    }
     let mut response = match books.mbr().clone().oneshot(request).await {
         Ok(response) => response,
         Err(never) => match never {},
@@ -331,6 +351,24 @@ pub(crate) async fn fallback(
             .or_insert(HeaderValue::from_static(SANDBOXED_CSP));
     }
     response
+}
+
+/// A draft's page rendered here ([`fallback`]), with the policy MBR's page
+/// would have had: [`STRICT_CSP`] for the page a PDF export prints (its
+/// export pass spent), else [`SANDBOXED_CSP`].
+fn draft_response(html: String, strict: bool) -> Response {
+    let policy = if strict { STRICT_CSP } else { SANDBOXED_CSP };
+    (
+        [
+            (header::CACHE_CONTROL, security::no_store()),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                HeaderValue::from_static(policy),
+            ),
+        ],
+        Html(html),
+    )
+        .into_response()
 }
 
 /// The export pass in a request's query, if it carries one.

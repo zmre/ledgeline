@@ -47,6 +47,8 @@ export interface InvoiceDetail {
     paid: Paid | null;
     open: boolean;
     overdue: boolean;
+    /** Sent, and your company's details have changed since: Update from company would rewrite its copy. */
+    company_changed: boolean;
     table: TableDetail | null;
 }
 

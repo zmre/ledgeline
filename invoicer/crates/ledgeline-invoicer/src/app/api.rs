@@ -21,6 +21,7 @@
 //! | `POST /api/invoices/{num}/portal` | Open its customer's billing portal (3c).  |
 //! | `POST /api/invoices/{num}/template` | Use a template: write `template:`, copy a starter in ([`super::edits`]). |
 //! | `POST /api/invoices/{num}/recalc` | Rewrite its amounts; a sent one is re-booked too ([`super::edits`]). |
+//! | `POST /api/invoices/{num}/company` | Update from company: its `invoicer_*` keys from the company note; a sent one is re-booked too ([`super::edits`]). |
 //! | `POST /api/pdf/share`, `/api/pdf/copy` | Share… or Copy file an exported PDF (3c). |
 //! | `POST /api/pdf/open`        | Open an exported PDF in the default viewer.    |
 //! | `GET /api/events`           | Change events (server-sent events), see [`events`]. |
@@ -85,6 +86,10 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/api/invoices/{number}/portal", post(pdf::open_portal))
         .route("/api/invoices/{number}/template", post(edits::use_template))
         .route("/api/invoices/{number}/recalc", post(edits::recalc))
+        .route(
+            "/api/invoices/{number}/company",
+            post(edits::update_company),
+        )
         .route("/api/pdf/share", post(pdf::share))
         .route("/api/pdf/copy", post(pdf::copy_file))
         .route("/api/pdf/open", post(pdf::open_pdf))

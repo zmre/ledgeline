@@ -9,8 +9,13 @@
      Cash books: Apply payment… (`a`) in the Books panel re-splits an imported
      deposit onto the invoice (I17; ApplyPaymentDialog), then says what it did.
 
+     A sent invoice whose copy of your company differs from the company note
+     now offers Update from company (CompanyNotice, PLAN D18); a draft uses the
+     company's current details anyway.
+
      Keyboard (PLAN 5k): `e` edits it; Shift+P exports its PDF (SendPanel); `a`
-     applies a payment (cash books, a sent invoice not paid in full). -->
+     applies a payment (cash books, a sent invoice not paid in full); `u`
+     updates a sent invoice from your company when its details have changed. -->
 <script lang="ts">
     import {onMount} from "svelte";
     import {goto} from "$app/navigation";
@@ -19,9 +24,10 @@
     import AsyncSection from "#ui/components/AsyncSection.svelte";
     import {registerKeys} from "#ui/keys/keymap.svelte.js";
     import type {DataView} from "#ui/ui/dataView.js";
-    import {ensureSession, fetchInvoice, fetchInvoiceBooks, fetchTemplates, chooseTemplate, recalculate} from "#lib/api.js";
+    import {ensureSession, fetchInvoice, fetchInvoiceBooks, fetchTemplates, chooseTemplate, recalculate, updateFromCompany} from "#lib/api.js";
     import {kindLabel, mismatches, pageUrl, previewUrl, type InvoiceBooks, type InvoiceDetail, type TemplateEntry} from "#lib/invoices.js";
     import BooksPanel from "#lib/components/BooksPanel.svelte";
+    import CompanyNotice from "#lib/components/CompanyNotice.svelte";
     import InvoiceFrame from "#lib/components/InvoiceFrame.svelte";
     import SendSection from "#lib/components/SendSection.svelte";
     import TemplatePicker from "#lib/components/TemplatePicker.svelte";
@@ -52,6 +58,13 @@
                 group: "Invoice",
                 enabled: () => canApplyPayment(books) && !applying,
                 run: () => openApplyPayment(),
+            },
+            {
+                keys: "u",
+                label: "Update from your company…",
+                group: "Invoice",
+                enabled: () => detail?.status === "sent" && detail.company_changed && editing === null,
+                run: () => (confirmingCompany = true),
             },
         ],
     });
@@ -140,10 +153,12 @@
         loadTemplates();
     });
 
-    // The invoice's own writes: its template, its amounts (F9, F10).
-    let editing = $state<"template" | "recalc" | null>(null);
+    // The invoice's own writes: its template, its amounts (F9, F10), its copy of your company (D18).
+    let editing = $state<"template" | "recalc" | "company" | null>(null);
     let templateError = $state<string | null>(null);
     let recalcError = $state<string | null>(null);
+    let companyError = $state<string | null>(null);
+    let confirmingCompany = $state(false);
     const mismatched = $derived(mismatches(detail?.table ?? null));
 
     function loadTemplates(): void {
@@ -182,11 +197,27 @@
         }
     }
 
+    async function onUpdateFromCompany(): Promise<void> {
+        const target = number;
+        editing = "company";
+        companyError = null;
+        try {
+            await updateFromCompany(target);
+            refreshAll(target);
+        } catch (e: unknown) {
+            companyError = asError(e).message;
+        } finally {
+            editing = null;
+        }
+    }
+
     $effect(() => {
         const target = number;
         chosen = "";
         templateError = null;
         recalcError = null;
+        companyError = null;
+        confirmingCompany = false;
         applying = false;
         applied = null;
         loadDetail(target);
@@ -235,6 +266,15 @@
             <SendSection {number} reload={sendReload} onChanged={() => refreshAll(number)} />
 
             <section class="flex min-w-0 flex-col gap-2" aria-label="The invoice">
+                <CompanyNotice
+                    number={doc.number ?? number}
+                    status={doc.status}
+                    changed={doc.company_changed}
+                    busy={editing === "company"}
+                    error={companyError}
+                    bind:confirming={confirmingCompany}
+                    onUpdate={onUpdateFromCompany}
+                />
                 <TotalsNotice
                     number={doc.number ?? number}
                     status={doc.status}

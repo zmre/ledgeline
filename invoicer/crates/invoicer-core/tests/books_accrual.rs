@@ -21,6 +21,7 @@ const INV_105: &str = "invoices/2026-11-10 Customer X Invoice 105.md";
 const INV_106: &str = "invoices/2026-08-01 Wingtip Invoice 106.md";
 const INV_108: &str = "invoices/2026-11-17 Customer X Invoice 108.md";
 const INV_102: &str = "invoices/2026-09-15 Fabrikam Invoice 102.md";
+const COMPANY: &str = "company/My Company.md";
 
 /// What sending 108 books (`recognition:` ids blanked).
 const BOOKED_108: &str = "\
@@ -142,6 +143,71 @@ fn sending_books_exactly_what_the_fixture_holds() {
     // Again: it is sent.
     let again = books.send(&mut index, &send("105"));
     assert!(matches!(again, Err(BooksError::Status { .. })), "{again:?}");
+}
+
+/// A draft follows the company note; Send freezes the copy; a sent invoice
+/// keeps it when the company changes again (invoicer PLAN D18).
+#[test]
+fn sending_freezes_the_company_as_it_is_now() {
+    let dir = scratch("accrual", "company-freeze");
+    // 108 was drafted before the company had a logo, and the company has
+    // moved since.
+    let draft = replace_once(
+        &read(&dir, INV_108),
+        "invoicer_logo: /company/logo.png\n",
+        "",
+    );
+    write(&dir, INV_108, &draft);
+    let company = read(&dir, COMPANY);
+    write(
+        &dir,
+        COMPANY,
+        &replace_once(&company, "1234 Background Blvd.", "77 Harbor Way"),
+    );
+    let (books, mut index) = open(&dir);
+    let shown = invoicer_core::company::as_shown(&index, books.vault(), &draft);
+    assert!(
+        shown.contains("invoicer_logo: /company/logo.png\n") && shown.contains("  77 Harbor Way\n"),
+        "{shown}"
+    );
+    assert_eq!(read(&dir, INV_108), draft, "showing a draft writes nothing");
+
+    books.send(&mut index, &send("108")).expect("sends");
+    let sent_md = read(&dir, INV_108);
+    assert_eq!(
+        sent_md,
+        replace_once(
+            &replace_once(
+                &replace_once(&draft, "status: draft\n", "status: sent\n"),
+                "  1234 Background Blvd.\n",
+                "  77 Harbor Way\n"
+            ),
+            "kept byte for byte\n---\n",
+            "kept byte for byte\ninvoicer_logo: /company/logo.png\nsent_date: 2026-11-17\npaid: \
+             no\n---\n"
+        ),
+        "the company's details are frozen in the send's one write"
+    );
+
+    // The company moves again: the sent invoice keeps what was sent, and
+    // says it differs.
+    write(
+        &dir,
+        COMPANY,
+        &replace_once(&company, "1234 Background Blvd.", "1 Elsewhere Rd."),
+    );
+    let (books, index) = reopen(books);
+    assert_eq!(
+        invoicer_core::company::as_shown(&index, books.vault(), &sent_md),
+        sent_md
+    );
+    let invoice = Invoice::parse(sent_md.as_str(), &Words::default());
+    assert!(invoicer_core::company::differs(
+        &index,
+        books.vault(),
+        &invoice
+    ));
+    assert_eq!(read(&dir, INV_108), sent_md);
 }
 
 #[test]
