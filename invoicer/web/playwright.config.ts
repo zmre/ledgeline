@@ -10,6 +10,7 @@ import {defineConfig} from "@playwright/test";
  *   - 5197: the cash books with an import appended (cash.e2e.ts);
  *   - 5196: the cash books for the Settings page (settings.e2e.ts);
  *   - 5195: books with no ledgeline.toml (settings-new-file.e2e.ts);
+ *   - 5193: the time books for Entries and Accounts (time-entries.e2e.ts);
  *   - 4273: this SPA's `vite preview`, proxying to 5199.
  *
  * Run it with `just invoicer-e2e` (it builds the SPA, then the debug binary,
@@ -69,6 +70,15 @@ export const SETTINGS_COPY = "../../target/e2e-invoicer-settings";
 export const NEW_FILE_SERVER_URL = "http://127.0.0.1:5195";
 export const NEW_FILE_COPY = "../../target/e2e-invoicer-no-settings";
 
+/**
+ * The sixth server (plan 46 Phase 4): `--server` on 5193 over a scratch copy
+ * of invoicer/fixtures/time, for time-entries.e2e.ts, which adds, edits,
+ * writes off and deletes time and renames an account. Like CASH_SERVER_URL,
+ * its spec loads the SPA the server embeds.
+ */
+export const TIME_ENTRIES_SERVER_URL = "http://127.0.0.1:5193";
+export const TIME_ENTRIES_COPY = "../../target/e2e-invoicer-time-entries";
+
 const BIN = process.env.LEDGELINE_INVOICER_BIN ?? "../../target/debug/ledgeline-invoicer";
 
 /**
@@ -125,6 +135,13 @@ export default defineConfig({
             url: `${NEW_FILE_SERVER_URL}/app/`,
             reuseExistingServer: false,
         },
+        {
+            // The time books (plan 46), staged fresh like the others.
+            command: `rm -rf ${TIME_ENTRIES_COPY} && mkdir -p ../../target && cp -R ../fixtures/time ${TIME_ENTRIES_COPY} && exec ${BIN} --server ${TIME_ENTRIES_COPY}/books.journal --port 5193`,
+            env: SERVER_ENV,
+            url: `${TIME_ENTRIES_SERVER_URL}/app/`,
+            reuseExistingServer: false,
+        },
         {command: "bun run build && bun run preview", port: 4273},
     ],
     // timezoneId matches vitest's pin (vite.config.ts); dark, like Ledgeline's suite.
@@ -155,7 +172,8 @@ export default defineConfig({
     //      since every figure above would see it.
     // empty.e2e.ts has its own server and books (5198), so it runs alongside;
     // so do cash.e2e.ts (5197, the cash books), settings.e2e.ts (5196, its
-    // own cash books) and settings-new-file.e2e.ts (5195, no settings file).
+    // own cash books), settings-new-file.e2e.ts (5195, no settings file) and
+    // time-entries.e2e.ts (5193, the time books).
     projects: [
         {name: "dashboard", testMatch: "**/dashboard.e2e.ts"},
         {name: "customers", testMatch: "**/customers.e2e.ts", dependencies: ["dashboard"]},
@@ -163,6 +181,7 @@ export default defineConfig({
         {name: "cash", testMatch: "**/cash.e2e.ts"},
         {name: "settings", testMatch: "**/settings.e2e.ts"},
         {name: "settings-new-file", testMatch: "**/settings-new-file.e2e.ts"},
+        {name: "time-entries", testMatch: "**/time-entries.e2e.ts"},
         {
             name: "pages",
             testIgnore: [
@@ -174,6 +193,7 @@ export default defineConfig({
                 "**/cash.e2e.ts",
                 "**/settings.e2e.ts",
                 "**/settings-new-file.e2e.ts",
+                "**/time-entries.e2e.ts",
                 "**/templates.e2e.ts",
                 "**/lists.e2e.ts",
                 "**/keyboard.e2e.ts",

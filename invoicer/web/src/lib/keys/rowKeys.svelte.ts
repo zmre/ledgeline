@@ -39,6 +39,19 @@ export interface RowKeysOptions<T> {
 /** The control a cursored row hands focus to. */
 const ROW_CONTROL = "a[data-row-link], button";
 
+/**
+ * After the ring moves: the cursored row in `root` into view and its
+ * control focused. For a list's own moves beyond `j`/`k` (a tree's ←/→).
+ */
+export function revealCursored(root: () => HTMLElement | null): void {
+    void tick().then(() => {
+        const row = root()?.querySelector<HTMLElement>("[data-cursor]") ?? null;
+        if (row === null) return;
+        row.scrollIntoView?.({block: "nearest"});
+        (row.querySelector<HTMLElement>(ROW_CONTROL) ?? row).focus({preventScroll: true});
+    });
+}
+
 export function rowKeys<T>(options: RowKeysOptions<T>): ListCursor<T> {
     const {id, group, noun, items, keyOf, root} = options;
     const cursor = listCursor<T>(items, (item) => keyOf(item));
@@ -47,19 +60,9 @@ export function rowKeys<T>(options: RowKeysOptions<T>): ListCursor<T> {
         return root()?.querySelector<HTMLElement>("[data-cursor]") ?? null;
     }
 
-    /** After the ring moves: the row into view and its control focused. */
-    function reveal(): void {
-        void tick().then(() => {
-            const row = cursoredRow();
-            if (row === null) return;
-            row.scrollIntoView?.({block: "nearest"});
-            (row.querySelector<HTMLElement>(ROW_CONTROL) ?? row).focus({preventScroll: true});
-        });
-    }
-
     const go = (move: () => void) => (): void => {
         move();
-        reveal();
+        revealCursored(root);
     };
 
     function openCursored(): void {

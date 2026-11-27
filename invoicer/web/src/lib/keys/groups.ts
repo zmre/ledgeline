@@ -18,6 +18,9 @@ export const INVOICER_KEY_GROUPS = [
     "Templates",
     "Template",
     "Settings",
+    // Time tracking (plan 46).
+    "Time entries",
+    "Time accounts",
 ] as const;
 
 export type InvoicerKeyGroup = (typeof INVOICER_KEY_GROUPS)[number];
