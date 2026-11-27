@@ -33,14 +33,15 @@ use ledgeline_core::holdings::{
     last_held_dates, other_holdings, prices_any_held, return_anchor_range, series_count,
 };
 use ledgeline_core::model::{Commodity, Journal, PriceDirective};
+use ledgeline_core::reports::outline::{OutlineKind, account_names};
 use ledgeline_core::reports::periods;
 use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
     Amounts, BalanceSheetColumns, BalanceSheetReport, BarLabel, BsColumnGroup, BsColumnRow,
-    BsColumnSection, BsColumnSubsection, BsGroup, BsOpts, BsSection, BsSectionKind, BsSubsection,
-    BsTerm, BucketSpan, BudgetBar, BudgetCell, BudgetGaps, BudgetHealth, BudgetOpts, BudgetReport,
-    BudgetRow, BudgetSection, BudgetSectionKind, BudgetSummary, Cadence, CashFlowStatement,
-    CfLineSource, CfOpts, CfTags, ChangeKind, ChangeRow, Columns, CostOfLiving,
+    BsColumnSection, BsColumnSubsection, BsGroup, BsOpts, BsRow, BsSection, BsSectionKind,
+    BsSubsection, BsTerm, BucketSpan, BudgetBar, BudgetCell, BudgetGaps, BudgetHealth, BudgetOpts,
+    BudgetReport, BudgetRow, BudgetSection, BudgetSectionKind, BudgetSummary, Cadence,
+    CashFlowStatement, CfLineSource, CfOpts, CfTags, ChangeKind, ChangeRow, Columns, CostOfLiving,
     DEFAULT_EXCLUDE_DESC, DateRange, FlowGraph, FlowLink, FlowNode, FlowOpts, FlowReport, FlowSide,
     GapRow, GroupSource, IS_GROUP_TAG, IncomeStatementReport, InsightsOpts, InsightsPeriod,
     InsightsReport, Interval, InvestmentPerf, IsGroup, IsOpts, IsRow, IsSection, IsSectionKind,
@@ -52,7 +53,7 @@ use ledgeline_core::reports::{
     compared_windows, declared_groups, declared_types, detect_subscriptions, gap_totals,
     income_statement, income_statement_columns, income_statement_flows, income_statement_grouped,
     insights, interval_windows, net_worth, pivot_balance_sheets, prices_any_on_sheet,
-    prices_any_on_sheets, prices_any_on_statement, range_buckets,
+    prices_any_on_sheets, prices_any_on_statement, range_buckets, range_goals,
 };
 use ledgeline_core::reports::{
     BillingCustomers, Bridge, BridgeCustomers, COVERAGE_MIN_DEFAULT, CustomerMove, CustomerRow,
@@ -207,19 +208,60 @@ struct WireBsGroup {
     /// `"current" | "noncurrent"`, or null when the split is off (and always
     /// null for the synthetic equity lines).
     term: Option<&'static str>,
-    /// Empty for the `computed` lines, which stand for no accounts.
-    rows: Vec<WireReportRow>,
+    /// The group's outline rows (plan 50). Empty for the `computed` lines,
+    /// which stand for no accounts.
+    rows: Vec<WireBsRow<WireMixed>>,
     total: WireMixed,
 }
 
-impl From<&BsGroup> for WireBsGroup {
-    fn from(group: &BsGroup) -> Self {
-        Self {
+impl WireBsGroup {
+    fn new(group: &BsGroup, names: &BTreeMap<String, String>) -> Result<Self, ReportError> {
+        Ok(Self {
             name: group.name.clone(),
             term: group.term.map(BsTerm::code),
             source: group_source(group.source),
-            rows: group.rows.iter().map(WireReportRow::from).collect(),
+            rows: group.rows(names)?.iter().map(WireBsRow::from).collect(),
             total: wire_mixed(&group.total),
+        })
+    }
+}
+
+/// One outline row of a balance sheet group (plan 50 D7):
+/// `{kind, label, account, level, amount}`. `amount` is one figure on the
+/// single-date sheet and one per column on the multi-column one; a `heading`'s
+/// is its subtree's sum and is not for display (D4).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireBsRow<A> {
+    /// `"heading" | "account" | "other"`.
+    kind: &'static str,
+    label: String,
+    /// The full account path: hover text and the journal drill-down.
+    account: String,
+    level: usize,
+    amount: A,
+}
+
+impl From<&BsRow<MixedAmount>> for WireBsRow<WireMixed> {
+    fn from(row: &BsRow<MixedAmount>) -> Self {
+        Self {
+            kind: outline_kind(row.kind),
+            label: row.label.clone(),
+            account: row.account.clone(),
+            level: row.level,
+            amount: wire_mixed(&row.amount),
+        }
+    }
+}
+
+impl From<&BsColumnRow> for WireBsRow<Vec<WireMixed>> {
+    fn from(row: &BsColumnRow) -> Self {
+        Self {
+            kind: outline_kind(row.kind),
+            label: row.label.clone(),
+            account: row.account.clone(),
+            level: row.level,
+            amount: row.amount.iter().map(wire_mixed).collect(),
         }
     }
 }
@@ -233,6 +275,17 @@ fn group_source(source: GroupSource) -> &'static str {
         GroupSource::Commodity => "commodity",
         GroupSource::Segment => "segment",
         GroupSource::Computed => "computed",
+    }
+}
+
+/// The one `OutlineKind` → wire spelling, shared by every statement that
+/// sends outline rows (plan 50): P&L, Cash Flow and Balance Sheet.
+fn outline_kind(kind: OutlineKind) -> &'static str {
+    match kind {
+        OutlineKind::Heading => "heading",
+        OutlineKind::Account => "account",
+        OutlineKind::Other => "other",
+        OutlineKind::Total => "total",
     }
 }
 
@@ -277,19 +330,23 @@ struct WireBsSection {
     total: WireMixed,
 }
 
-impl From<&BsSection> for WireBsSection {
-    fn from(section: &BsSection) -> Self {
-        Self {
+impl WireBsSection {
+    fn new(section: &BsSection, names: &BTreeMap<String, String>) -> Result<Self, ReportError> {
+        Ok(Self {
             kind: bs_section_kind(section.kind),
             title: section.title.clone(),
-            groups: section.groups.iter().map(WireBsGroup::from).collect(),
+            groups: section
+                .groups
+                .iter()
+                .map(|group| WireBsGroup::new(group, names))
+                .collect::<Result<_, _>>()?,
             subsections: section
                 .subsections
                 .iter()
                 .map(WireBsSubsection::from)
                 .collect(),
             total: wire_mixed(&section.total),
-        }
+        })
     }
 }
 
@@ -332,18 +389,27 @@ pub(crate) struct WireBalanceSheetReport {
 
 impl WireBalanceSheetReport {
     /// `value` is the request's own spelling, so the response says which basis
-    /// produced the numbers it carries.
-    fn new(report: &BalanceSheetReport, value: &'static str) -> Self {
-        Self {
+    /// produced the numbers it carries. `names` are the accounts' own `name:`
+    /// tags, for the outline labels.
+    fn new(
+        report: &BalanceSheetReport,
+        value: &'static str,
+        names: &BTreeMap<String, String>,
+    ) -> Result<Self, ReportError> {
+        Ok(Self {
             as_of: report.as_of.clone(),
             base: report.base.as_ref().map(|base| base.0.clone()),
             value,
-            sections: report.sections.iter().map(WireBsSection::from).collect(),
+            sections: report
+                .sections
+                .iter()
+                .map(|section| WireBsSection::new(section, names))
+                .collect::<Result<_, _>>()?,
             net_worth: wire_mixed(&report.net_worth),
             check: wire_mixed(&report.check),
             balanced: report.balanced,
             meta: WireReportMeta::from(&report.meta),
-        }
+        })
     }
 }
 
@@ -357,34 +423,13 @@ impl WireBalanceSheetReport {
 // later columns reads `{}` in the earlier ones rather than being missing, and
 // every client shows the same rows in the same order.
 
-/// One account row: `own` and `inclusive` per column.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WireBsColumnRow {
-    account: String,
-    depth: usize,
-    own: Vec<WireMixed>,
-    inclusive: Vec<WireMixed>,
-}
-
-impl From<&BsColumnRow> for WireBsColumnRow {
-    fn from(row: &BsColumnRow) -> Self {
-        Self {
-            account: row.account.clone(),
-            depth: row.depth,
-            own: row.own.iter().map(wire_mixed).collect(),
-            inclusive: row.inclusive.iter().map(wire_mixed).collect(),
-        }
-    }
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WireBsColumnGroup {
     name: String,
     source: &'static str,
     term: Option<&'static str>,
-    rows: Vec<WireBsColumnRow>,
+    rows: Vec<WireBsRow<Vec<WireMixed>>>,
     total: Vec<WireMixed>,
 }
 
@@ -394,7 +439,7 @@ impl From<&BsColumnGroup> for WireBsColumnGroup {
             name: group.name.clone(),
             source: group_source(group.source),
             term: group.term.map(BsTerm::code),
-            rows: group.rows.iter().map(WireBsColumnRow::from).collect(),
+            rows: group.rows.iter().map(WireBsRow::from).collect(),
             total: group.total.iter().map(wire_mixed).collect(),
         }
     }
@@ -603,13 +648,29 @@ impl From<&DateRange> for WireDateRange {
     }
 }
 
-/// One account inside an expanded group.
+/// One outline row inside an expanded group (plan 50): `kind` is
+/// `"heading" | "account" | "other"`, `label` what to print, `level` the
+/// indent within the group, `account` the full path for hover.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WireIsRow {
+    kind: &'static str,
+    label: String,
+    level: usize,
     account: String,
     depth: usize,
     amounts: WireAmounts,
+    /// Present only with `budget=1`: see [`wire_budget`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    budget: Option<Option<WireMixed>>,
+}
+
+/// A Budget-column figure (plan 50 D13): ABSENT when the column is off, so
+/// those bytes don't move, and `null` when the column is on but no goal sits
+/// here. The same absent-vs-null split as `prior`/`buckets`: the report's
+/// `netIncomeBudget` key is the switch.
+fn wire_budget(budgeted: bool, budget: Option<&MixedAmount>) -> Option<Option<WireMixed>> {
+    budgeted.then(|| budget.map(wire_mixed))
 }
 
 impl<A> From<&IsRow<A>> for WireIsRow
@@ -618,9 +679,25 @@ where
 {
     fn from(row: &IsRow<A>) -> Self {
         Self {
+            kind: outline_kind(row.kind),
+            label: row.label.clone(),
+            level: row.level,
             account: row.account.clone(),
             depth: row.depth,
             amounts: WireAmounts::from(&row.amounts),
+            budget: None,
+        }
+    }
+}
+
+impl WireIsRow {
+    fn new<A>(row: &IsRow<A>, budgeted: bool) -> Self
+    where
+        for<'a> WireAmounts: From<&'a A>,
+    {
+        Self {
+            budget: wire_budget(budgeted, row.budget.as_ref()),
+            ..Self::from(row)
         }
     }
 }
@@ -634,19 +711,26 @@ struct WireIsGroup {
     /// three [`GroupSource`] spellings cannot occur here.
     source: &'static str,
     total: WireAmounts,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    budget: Option<Option<WireMixed>>,
     rows: Vec<WireIsRow>,
 }
 
-impl<A> From<&IsGroup<A>> for WireIsGroup
-where
-    for<'a> WireAmounts: From<&'a A>,
-{
-    fn from(group: &IsGroup<A>) -> Self {
+impl WireIsGroup {
+    fn new<A>(group: &IsGroup<A>, budgeted: bool) -> Self
+    where
+        for<'a> WireAmounts: From<&'a A>,
+    {
         Self {
             name: group.name.clone(),
             source: group_source(group.source),
             total: WireAmounts::from(&group.total),
-            rows: group.rows.iter().map(WireIsRow::from).collect(),
+            budget: wire_budget(budgeted, group.budget.as_ref()),
+            rows: group
+                .rows
+                .iter()
+                .map(|row| WireIsRow::new(row, budgeted))
+                .collect(),
         }
     }
 }
@@ -668,13 +752,15 @@ struct WireIsSubtotal {
     kind: &'static str,
     label: String,
     total: WireAmounts,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    budget: Option<Option<WireMixed>>,
 }
 
-impl<A> From<&IsSubtotal<A>> for WireIsSubtotal
-where
-    for<'a> WireAmounts: From<&'a A>,
-{
-    fn from(subtotal: &IsSubtotal<A>) -> Self {
+impl WireIsSubtotal {
+    fn new<A>(subtotal: &IsSubtotal<A>, budgeted: bool) -> Self
+    where
+        for<'a> WireAmounts: From<&'a A>,
+    {
         Self {
             kind: match subtotal.kind {
                 IsSubtotalKind::GrossProfit => "grossProfit",
@@ -684,6 +770,7 @@ where
             },
             label: subtotal.label.clone(),
             total: WireAmounts::from(&subtotal.total),
+            budget: wire_budget(budgeted, subtotal.budget.as_ref()),
         }
     }
 }
@@ -699,13 +786,27 @@ struct WireIsSection {
     total: WireAmounts,
     /// Subtotals printed AFTER this box; `[]` for most of them.
     trailing: Vec<WireIsSubtotal>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    budget: Option<Option<WireMixed>>,
+    /// Present only with `budget=1`: goals spread over several groups, shown
+    /// in this box's total only (plan 50 D14).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    budget_unplaced: Option<Vec<WireUnplacedBudget>>,
 }
 
-impl<A> From<&IsSection<A>> for WireIsSection
-where
-    for<'a> WireAmounts: From<&'a A>,
-{
-    fn from(section: &IsSection<A>) -> Self {
+/// A D14 footnote entry.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WireUnplacedBudget {
+    account: String,
+    label: String,
+}
+
+impl WireIsSection {
+    fn new<A>(section: &IsSection<A>, budgeted: bool) -> Self
+    where
+        for<'a> WireAmounts: From<&'a A>,
+    {
         Self {
             kind: match section.kind {
                 IsSectionKind::Revenue => "revenue",
@@ -717,9 +818,28 @@ where
                 IsSectionKind::Other => "other",
             },
             title: section.title.clone(),
-            groups: section.groups.iter().map(WireIsGroup::from).collect(),
+            groups: section
+                .groups
+                .iter()
+                .map(|group| WireIsGroup::new(group, budgeted))
+                .collect(),
             total: WireAmounts::from(&section.total),
-            trailing: section.trailing.iter().map(WireIsSubtotal::from).collect(),
+            trailing: section
+                .trailing
+                .iter()
+                .map(|subtotal| WireIsSubtotal::new(subtotal, budgeted))
+                .collect(),
+            budget: wire_budget(budgeted, section.budget.as_ref()),
+            budget_unplaced: budgeted.then(|| {
+                section
+                    .budget_unplaced
+                    .iter()
+                    .map(|goal| WireUnplacedBudget {
+                        account: goal.account.clone(),
+                        label: goal.label.clone(),
+                    })
+                    .collect()
+            }),
         }
     }
 }
@@ -754,9 +874,17 @@ pub(crate) struct WireIncomeStatementReport {
     /// Whether the GAAP ladder materialised — which is also what decides whether
     /// `opex` is titled "Expenses" or "Operating expenses".
     multi_step: bool,
+    /// The deepest member account's segment count, unclipped: the Depth
+    /// slider's max (plan 50 D8). `0` when the statement has no members.
+    max_depth: usize,
     /// Non-empty sections only, in ladder order.
     sections: Vec<WireIsSection>,
     net_income: WireAmounts,
+    /// The Budget column's switch (plan 50 D12): ABSENT without `budget=1`;
+    /// with it, the goals' net income or `null`, and every row, group,
+    /// section and subtotal then carries a `budget` key too.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    net_income_budget: Option<Option<WireMixed>>,
     /// Always present, because the unpriced banner keys off it on every request.
     meta: WireReportMeta,
 }
@@ -776,8 +904,14 @@ impl WireIncomeStatementReport {
             base: report.base.as_ref().map(|base| base.0.clone()),
             value,
             multi_step: report.multi_step,
-            sections: report.sections.iter().map(WireIsSection::from).collect(),
+            max_depth: report.max_depth,
+            sections: report
+                .sections
+                .iter()
+                .map(|section| WireIsSection::new(section, report.budgeted))
+                .collect(),
             net_income: WireAmounts::from(&report.net_income),
+            net_income_budget: wire_budget(report.budgeted, report.net_income_budget.as_ref()),
             meta: WireReportMeta::from(&report.meta),
         }
     }
@@ -3288,6 +3422,12 @@ pub(crate) struct IncomeStatementGroupedQuery {
     /// `weekly`). Anything but `total` reports one column per bucket across
     /// `[from, to]` plus their Total.
     interval: Option<String>,
+    /// Clip each group's rows to this many account segments (plan 50 D8),
+    /// `hledger is --depth N`. Absent = unlimited; `0` = no rows (totals only).
+    depth: Option<usize>,
+    /// `1` adds the Budget column (plan 50 D12): every row and total gains a
+    /// `budget` figure from the journal's `~` goals over `[from, to]`.
+    budget: Option<String>,
 }
 
 /// `?from=&to=&valueIn=` for the income statement's flow graphs.
@@ -3552,16 +3692,22 @@ pub(crate) async fn balancesheet(
 /// `check` line that is `{}` exactly when the journal balances.
 ///
 /// - `asOf=YYYY-MM-DD` (default: today)
-/// - `depth=N` (range `0..=100`; ABSENT means no clamp at all) — clamps the
-///   expandable ROWS only; every total is summed over members, so none of them
-///   move with it. The SPA omits it: the balance sheet reads as groups, the
-///   accounts inside one are a drill-down, and a drill-down that stops part-way
-///   down the tree just hides accounts with no way to ask for them.
+/// - `depth=N` (range `0..=100`; ABSENT means no clamp at all) — clips each
+///   group's accounts into their ancestor at that depth before the rows are
+///   laid out, so it moves the ROWS only; every total is summed over members,
+///   so none of them move with it. The SPA omits it: the balance sheet reads
+///   as groups, the accounts inside one are a drill-down, and a drill-down
+///   that stops part-way down the tree just hides accounts with no way to ask
+///   for them.
 /// - `value=market|cost|none` (default: `market`)
 /// - `valueIn=$` (default: the journal's `D` commodity when it prices
 ///   something on the sheet, else the price table's own base commodity). A
 ///   `valueIn` pricing NOTHING the sheet displays is a `400`; see
 ///   [`resolve_grouped_value_in`].
+///
+/// Each group's `rows` are the plan 50 outline (`{kind, label, account, level,
+/// amount}`): headings only over two or more of the group's accounts, labels
+/// from the account's own `name:` tag else its humanized last segment.
 ///
 /// Prices come from the journal's `P` directives alone, matching `hledger bs
 /// -V`. Commodities no price reaches stay on the row as share counts and are
@@ -3614,7 +3760,11 @@ pub(crate) async fn balancesheet_grouped(
             &shape.bs_groups,
             &shape.bs_terms,
         )?;
-        Ok(WireBalanceSheetReport::new(&report, label))
+        Ok(WireBalanceSheetReport::new(
+            &report,
+            label,
+            &account_names(journal),
+        )?)
     })
     .await
 }
@@ -3689,7 +3839,7 @@ pub(crate) async fn balancesheet_columns(
             &shape.bs_terms,
         )?;
         Ok(WireBalanceSheetColumns::new(
-            &pivot_balance_sheets(&sheets),
+            &pivot_balance_sheets(&sheets, &account_names(journal))?,
             &spans,
             label,
         ))
@@ -3754,6 +3904,14 @@ pub(crate) async fn incomestatement(
 ///   of the columns. Interval mode has no comparison, so `compare` must be
 ///   absent or `none` (`previous` is a `400`), and the range may not be
 ///   backwards or span more than `MAX_BUCKETS` columns.
+/// - `depth=N` (default: unlimited) — clip each group's outline rows to `N`
+///   account segments, as `hledger is --depth N` (plan 50 D8). Totals never
+///   move. The response's `maxDepth` is the deepest member account, the
+///   slider's max.
+///
+/// Each group's `rows` are its readable outline (plan 50): `{kind, label,
+/// level, account, depth, amounts}`, headings where two or more rows share an
+/// ancestor, labels from the account's own `name:` tag or its last segment.
 ///
 /// An untagged journal gets two boxes and a Net income figure, with no ladder at
 /// all; `sections` carries only the boxes that have members, so there are never
@@ -3792,6 +3950,16 @@ pub(crate) async fn incomestatement_grouped(
         check_range(&from, &to, grain)?;
     }
     let raw_value_in = query.value_in;
+    let depth = query.depth;
+    let with_budget = match query.budget.as_deref() {
+        None | Some("0") => false,
+        Some("1") => true,
+        Some(other) => {
+            return Err(AppError::BadRequest(format!(
+                "budget={other}: expected 1 or 0"
+            )));
+        }
+    };
 
     compute(move || {
         let journal = &snapshot.journal;
@@ -3799,6 +3967,7 @@ pub(crate) async fn incomestatement_grouped(
             declared,
             is_sections: sections,
             is_groups: groups,
+            names,
             ..
         } = StatementShape::of(journal);
         // The admission test asks about exactly the windows the statement will
@@ -3828,13 +3997,19 @@ pub(crate) async fn incomestatement_grouped(
                 )
             },
         )?;
+        // The Budget column covers the Total column's span (plan 50 D12/D15).
+        let goals = with_budget
+            .then(|| range_goals(&journal.periodic_transactions, &from, &to))
+            .transpose()?;
         let opts = IsOpts {
             from: &from,
             to: &to,
             value,
             value_in,
             compare,
-            depth: None,
+            depth,
+            names: &names,
+            budget: goals.as_ref(),
         };
         Ok(match grain {
             None => WireIncomeStatementReport::new(
@@ -4168,10 +4343,16 @@ fn wire_cf_source(source: CfLineSource) -> &'static str {
     }
 }
 
+/// One outline row of a line (plan 50): `kind` is `"heading"` (label only,
+/// its amounts not printed), `"account"` or `"other"`; `account` is the full
+/// path, for hover; `level` indents within the line.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct WireCfRow {
     account: String,
+    kind: &'static str,
+    label: String,
+    level: usize,
     amounts: WireCfColumns,
 }
 
@@ -4181,6 +4362,10 @@ struct WireCfLine {
     name: String,
     /// `"group"` (a `cfgroup:` tag) or `"account"` (the account at depth).
     source: &'static str,
+    /// What to print: the group name, or the account's D2 label.
+    label: String,
+    /// The line's account (full path, for hover); null for a group line.
+    account: Option<String>,
     total: WireCfColumns,
     rows: Vec<WireCfRow>,
 }
@@ -4199,6 +4384,9 @@ struct WireCfSection {
 #[serde(rename_all = "camelCase")]
 struct WireCfCashRow {
     account: String,
+    kind: &'static str,
+    label: String,
+    level: usize,
     beginning: WireCfColumns,
     ending: WireCfColumns,
 }
@@ -4208,6 +4396,8 @@ struct WireCfCashRow {
 struct WireCfCashLine {
     name: String,
     source: &'static str,
+    label: String,
+    account: Option<String>,
     beginning: WireCfColumns,
     ending: WireCfColumns,
     rows: Vec<WireCfCashRow>,
@@ -4229,6 +4419,8 @@ pub(crate) struct WireCashFlow {
     beginning_cash: WireCfColumns,
     ending_cash: WireCfColumns,
     reconciles: bool,
+    /// Segments in the deepest account behind any line: the Depth control's max.
+    max_depth: usize,
 }
 
 impl From<&CashFlowStatement> for WireCashFlow {
@@ -4250,12 +4442,17 @@ impl From<&CashFlowStatement> for WireCashFlow {
                         .map(|line| WireCfLine {
                             name: line.name.clone(),
                             source: wire_cf_source(line.source),
+                            label: line.label.clone(),
+                            account: line.account.clone(),
                             total: WireCfColumns::from(&line.total),
                             rows: line
                                 .rows
                                 .iter()
                                 .map(|row| WireCfRow {
                                     account: row.account.clone(),
+                                    kind: outline_kind(row.kind),
+                                    label: row.label.clone(),
+                                    level: row.level,
                                     amounts: WireCfColumns::from(&row.amounts),
                                 })
                                 .collect(),
@@ -4272,6 +4469,8 @@ impl From<&CashFlowStatement> for WireCashFlow {
                 .map(|line| WireCfCashLine {
                     name: line.name.clone(),
                     source: wire_cf_source(line.source),
+                    label: line.label.clone(),
+                    account: line.account.clone(),
                     beginning: WireCfColumns::from(&line.beginning),
                     ending: WireCfColumns::from(&line.ending),
                     rows: line
@@ -4279,6 +4478,9 @@ impl From<&CashFlowStatement> for WireCashFlow {
                         .iter()
                         .map(|row| WireCfCashRow {
                             account: row.account.clone(),
+                            kind: outline_kind(row.kind),
+                            label: row.label.clone(),
+                            level: row.level,
                             beginning: WireCfColumns::from(&row.beginning),
                             ending: WireCfColumns::from(&row.ending),
                         })
@@ -4288,6 +4490,7 @@ impl From<&CashFlowStatement> for WireCashFlow {
             beginning_cash: WireCfColumns::from(&report.beginning_cash),
             ending_cash: WireCfColumns::from(&report.ending_cash),
             reconciles: report.reconciles,
+            max_depth: report.max_depth,
         }
     }
 }

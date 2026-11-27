@@ -206,6 +206,7 @@ import type {
     BsColumnSection,
     BsColumnSubsection,
     BsGroup,
+    BsRow,
     BsSection,
     BsSectionKind,
     BsSubsection,
@@ -231,6 +232,8 @@ import type {
     FlowNode,
     FlowReport,
     FlowSide,
+    OutlineFields,
+    OutlineKind,
     GapRow,
     GroupSource,
     IncomeStatementReport,
@@ -242,6 +245,7 @@ import type {
     IsSectionKind,
     IsSubtotal,
     IsSubtotalKind,
+    UnplacedBudget,
     PeriodReport,
     PeriodRow,
     PeriodRowKind,
@@ -294,12 +298,21 @@ interface RawSectionedReport {
     grandTotal?: RawMixed;
 }
 
+/** A plan 50 outline row of a balance sheet group; `A` is one figure or one per column. */
+interface RawBsRow<A> {
+    kind?: string;
+    label?: string;
+    account?: string;
+    level?: number;
+    amount?: A;
+}
+
 interface RawBsGroup {
     name?: string;
     source?: string;
     // `null` = unclassified (the untagged journal); ABSENT is a broken contract.
     term?: string | null;
-    rows?: RawReportRow[];
+    rows?: RawBsRow<RawMixed>[];
     total?: RawMixed;
 }
 
@@ -319,18 +332,11 @@ interface RawBsSection {
 }
 
 /** The multi-column balance sheet: `RawBalanceSheetReport`'s tree with every figure an array. */
-interface RawBsColumnRow {
-    account?: string;
-    depth?: number;
-    own?: RawMixed[];
-    inclusive?: RawMixed[];
-}
-
 interface RawBsColumnGroup {
     name?: string;
     source?: string;
     term?: string | null;
-    rows?: RawBsColumnRow[];
+    rows?: RawBsRow<RawMixed[]>[];
     total?: RawMixed[];
 }
 
@@ -379,9 +385,13 @@ interface RawAmounts {
 }
 
 interface RawIsRow {
+    kind?: string;
+    label?: string;
+    level?: number;
     account?: string;
     depth?: number;
     amounts?: RawAmounts;
+    budget?: RawMixed | null;
 }
 
 interface RawIsGroup {
@@ -389,12 +399,14 @@ interface RawIsGroup {
     source?: string;
     rows?: RawIsRow[];
     total?: RawAmounts;
+    budget?: RawMixed | null;
 }
 
 interface RawIsSubtotal {
     kind?: string;
     label?: string;
     total?: RawAmounts;
+    budget?: RawMixed | null;
 }
 
 interface RawIsSection {
@@ -403,6 +415,8 @@ interface RawIsSection {
     groups?: RawIsGroup[];
     total?: RawAmounts;
     trailing?: RawIsSubtotal[];
+    budget?: RawMixed | null;
+    budgetUnplaced?: {account?: string; label?: string}[];
 }
 
 interface RawDateRange {
@@ -424,7 +438,9 @@ interface RawIncomeStatementReport {
     value?: string;
     sections?: RawIsSection[];
     netIncome?: RawAmounts;
+    netIncomeBudget?: RawMixed | null;
     multiStep?: boolean;
+    maxDepth?: number;
     meta?: RawReportMeta | null;
 }
 
@@ -1724,6 +1740,12 @@ const GROUP_SOURCES: readonly GroupSource[] = ["tag", "type", "commodity", "segm
 const BS_VALUATIONS: readonly BsValuation[] = ["market", "cost", "none"];
 const BS_TERMS: readonly BsTerm[] = ["current", "noncurrent"];
 
+/** One balance sheet outline row, its figure decoded by `amount`. */
+function decodeBsRow<R, A>(raw: RawBsRow<R> | undefined, context: string, amount: (figure: R | undefined) => A): BsRow<A> {
+    if (raw === undefined || typeof raw.account !== "string") throw new ApiShapeError(`${context}: missing account`);
+    return Object.freeze({...decodeOutlineFields(raw, context), account: raw.account, amount: amount(raw.amount)});
+}
+
 /**
  * A closed enum off the wire.
  *
@@ -1791,7 +1813,7 @@ function decodeBsGroup(raw: RawBsGroup | undefined, context: string): BsGroup {
         name: raw.name,
         source: decodeEnum(GROUP_SOURCES, raw.source, `${context} source`),
         term: decodeNullableEnum(BS_TERMS, raw.term, `${context} term`),
-        rows: frozen(raw.rows.map((row, i) => decodeReportRow(row, `${context} row #${i}`))),
+        rows: frozen(raw.rows.map((row, i) => decodeBsRow(row, `${context} row #${i}`, (figure) => decodeMixed(figure, `${context} row #${i} amount`)))),
         total: decodeMixed(raw.total, `${context} total`),
     });
 }
@@ -1889,16 +1911,8 @@ function decodeColumnFigures(raw: RawMixed[] | undefined, context: string, colum
     return frozen(raw.map((value, i) => decodeMixed(value, `${context}[${i}]`)));
 }
 
-function decodeBsColumnRow(raw: RawBsColumnRow | undefined, context: string, columns: number): BsColumnRow {
-    if (raw === undefined || typeof raw.account !== "string" || typeof raw.depth !== "number") {
-        throw new ApiShapeError(`${context}: missing account/depth`);
-    }
-    return Object.freeze({
-        account: raw.account,
-        depth: raw.depth,
-        own: decodeColumnFigures(raw.own, `${context} own`, columns),
-        inclusive: decodeColumnFigures(raw.inclusive, `${context} inclusive`, columns),
-    });
+function decodeBsColumnRow(raw: RawBsRow<RawMixed[]> | undefined, context: string, columns: number): BsColumnRow {
+    return decodeBsRow(raw, context, (figures) => decodeColumnFigures(figures, `${context} amount`, columns));
 }
 
 function decodeBsColumnGroup(raw: RawBsColumnGroup | undefined, context: string, columns: number): BsColumnGroup {
@@ -1977,6 +1991,12 @@ export function decodeBalanceSheetColumns(raw: unknown): BalanceSheetColumns {
 const IS_SECTION_KINDS: readonly IsSectionKind[] = ["revenue", "cogs", "opex", "depreciation", "interest", "tax", "other"];
 const IS_SUBTOTAL_KINDS: readonly IsSubtotalKind[] = ["grossProfit", "ebitda", "operatingIncome", "pretaxIncome"];
 
+/** `maxDepth`: required, a non-negative integer — the P&L's Depth slider is sized by it. */
+function decodeIsMaxDepth(raw: number | undefined): number {
+    if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0) throw new ApiShapeError("income statement maxDepth: expected a non-negative integer");
+    return raw;
+}
+
 /**
  * Which figures every `Amounts` in an income statement must carry, read once
  * off the report's two switches: `prior` (a window → every figure has a prior)
@@ -1986,6 +2006,34 @@ interface AmountsMode {
     comparing: boolean;
     /** The bucket count in interval mode, or null in Total mode. */
     columns: number | null;
+    /** The Budget column is on (`netIncomeBudget` sent): every figure's `budget` key must be too. */
+    budgeted: boolean;
+}
+
+/**
+ * A Budget-column figure (plan 50 D13), checked against the report's mode the
+ * way `prior` is: with the column on the key MUST be present (`null` = no goal
+ * here); without it, it must be absent, since there would be no column.
+ */
+function decodeBudget(raw: RawMixed | null | undefined, context: string, mode: AmountsMode): MixedAmount | null {
+    if (!mode.budgeted) {
+        if (raw !== undefined) throw new ApiShapeError(`${context}: sent a budget figure on a report with no Budget column`);
+        return null;
+    }
+    if (raw === undefined) throw new ApiShapeError(`${context}: missing (expected a figure or null)`);
+    return raw === null ? null : decodeMixed(raw, context);
+}
+
+/** A section's D14 footnote list: required with the Budget column, absent without. */
+function decodeBudgetUnplaced(raw: RawIsSection["budgetUnplaced"], context: string, mode: AmountsMode): UnplacedBudget[] {
+    if (!mode.budgeted) {
+        if (raw !== undefined) throw new ApiShapeError(`${context}: sent on a report with no Budget column`);
+        return frozen([]);
+    }
+    if (!Array.isArray(raw)) throw new ApiShapeError(`${context}: expected an array`);
+    return frozen(
+        raw.map((goal, i) => Object.freeze({account: str(goal?.account, `${context} #${i} account`), label: str(goal?.label, `${context} #${i} label`)}))
+    );
 }
 
 /**
@@ -2034,7 +2082,13 @@ function decodeIsRow(raw: RawIsRow | undefined, context: string, mode: AmountsMo
     if (raw === undefined || typeof raw.account !== "string" || typeof raw.depth !== "number") {
         throw new ApiShapeError(`${context}: missing account/depth`);
     }
-    return Object.freeze({account: raw.account, depth: raw.depth, amounts: decodeAmounts(raw.amounts, `${context} amounts`, mode)});
+    return Object.freeze({
+        ...decodeOutlineFields(raw, context),
+        account: raw.account,
+        depth: raw.depth,
+        amounts: decodeAmounts(raw.amounts, `${context} amounts`, mode),
+        budget: decodeBudget(raw.budget, `${context} budget`, mode),
+    });
 }
 
 function decodeIsGroup(raw: RawIsGroup | undefined, context: string, mode: AmountsMode): IsGroup {
@@ -2048,6 +2102,7 @@ function decodeIsGroup(raw: RawIsGroup | undefined, context: string, mode: Amoun
         source: decodeEnum(GROUP_SOURCES, raw.source, `${context} source`),
         rows: frozen(raw.rows.map((row, i) => decodeIsRow(row, `${context} row #${i}`, mode))),
         total: decodeAmounts(raw.total, `${context} total`, mode),
+        budget: decodeBudget(raw.budget, `${context} budget`, mode),
     });
 }
 
@@ -2057,6 +2112,7 @@ function decodeIsSubtotal(raw: RawIsSubtotal | undefined, context: string, mode:
         kind: decodeEnum(IS_SUBTOTAL_KINDS, raw.kind, `${context} kind`),
         label: raw.label,
         total: decodeAmounts(raw.total, `${context} total`, mode),
+        budget: decodeBudget(raw.budget, `${context} budget`, mode),
     });
 }
 
@@ -2073,6 +2129,8 @@ function decodeIsSection(raw: RawIsSection | undefined, context: string, mode: A
         groups: frozen(raw.groups.map((group, i) => decodeIsGroup(group, `${context} group #${i}`, mode))),
         total: decodeAmounts(raw.total, `${context} total`, mode),
         trailing: frozen(raw.trailing.map((subtotal, i) => decodeIsSubtotal(subtotal, `${context} subtotal #${i}`, mode))),
+        budget: decodeBudget(raw.budget, `${context} budget`, mode),
+        budgetUnplaced: decodeBudgetUnplaced(raw.budgetUnplaced, `${context} budgetUnplaced`, mode),
     });
 }
 
@@ -2128,7 +2186,9 @@ export function decodeIncomeStatementReport(raw: unknown): IncomeStatementReport
     if (prior !== null && buckets !== null) {
         throw new ApiShapeError("income statement: an interval statement cannot also carry a prior window");
     }
-    const mode: AmountsMode = {comparing: prior !== null, columns: buckets?.length ?? null};
+    // The third switch: `netIncomeBudget` is present (a figure or null) exactly
+    // when the Budget column was asked for (plan 50 D12).
+    const mode: AmountsMode = {comparing: prior !== null, columns: buckets?.length ?? null, budgeted: report.netIncomeBudget !== undefined};
     const out: IncomeStatementReport = {
         kind: "incomeStatement",
         from: report.from as ISODate,
@@ -2140,9 +2200,12 @@ export function decodeIncomeStatementReport(raw: unknown): IncomeStatementReport
         value: decodeEnum(BS_VALUATIONS, report.value, "income statement value"),
         sections: frozen(report.sections.map((section, i) => decodeIsSection(section, `income statement section #${i}`, mode))),
         netIncome: decodeAmounts(report.netIncome, "income statement netIncome", mode),
+        budgeted: mode.budgeted,
+        netIncomeBudget: decodeBudget(report.netIncomeBudget, "income statement netIncomeBudget", mode),
         // Required, not defaulted: it decides whether `opex` reads "Expenses" or
         // "Operating expenses", so a missing one would silently relabel a box.
         multiStep: decodeBoolean(report.multiStep, "income statement multiStep"),
+        maxDepth: decodeIsMaxDepth(report.maxDepth),
     };
     // Omitted (`skip_serializing_if = "Option::is_none"`) when nothing is unpriced.
     if (report.meta !== undefined && report.meta !== null) {
@@ -2160,11 +2223,20 @@ interface RawCfColumns {
     total?: RawMixed;
 }
 
+/** Plan 50 outline fields on a statement row. */
+interface RawOutlineFields {
+    kind?: string;
+    label?: string;
+    level?: number;
+}
+
 interface RawCfLine {
     name?: string;
     source?: string;
+    label?: string;
+    account?: string | null;
     total?: RawCfColumns;
-    rows?: {account?: string; amounts?: RawCfColumns}[];
+    rows?: (RawOutlineFields & {account?: string; amounts?: RawCfColumns})[];
 }
 
 interface RawCfSection {
@@ -2177,9 +2249,11 @@ interface RawCfSection {
 interface RawCfCashLine {
     name?: string;
     source?: string;
+    label?: string;
+    account?: string | null;
     beginning?: RawCfColumns;
     ending?: RawCfColumns;
-    rows?: {account?: string; beginning?: RawCfColumns; ending?: RawCfColumns}[];
+    rows?: (RawOutlineFields & {account?: string; beginning?: RawCfColumns; ending?: RawCfColumns})[];
 }
 
 interface RawCashFlowStatement {
@@ -2194,6 +2268,17 @@ interface RawCashFlowStatement {
     beginningCash?: RawCfColumns;
     endingCash?: RawCfColumns;
     reconciles?: boolean;
+    maxDepth?: number;
+}
+
+// Plan 50 outline fields, shared by the P&L, Cash Flow and Balance Sheet rows.
+const OUTLINE_KINDS: readonly OutlineKind[] = ["heading", "account", "other", "total"];
+
+/** `{kind, label, level}` of an outline row, every one demanded. */
+function decodeOutlineFields(raw: RawOutlineFields, context: string): OutlineFields {
+    const level = num(raw.level, `${context} level`);
+    if (!Number.isInteger(level) || level < 0) throw new ApiShapeError(`${context} level: expected a whole number ≥ 0`);
+    return {kind: decodeEnum(OUTLINE_KINDS, raw.kind, `${context} kind`), label: str(raw.label, `${context} label`), level};
 }
 
 const CF_SECTION_KINDS: readonly CfSectionKind[] = ["operating", "investing", "financing"];
@@ -2248,10 +2333,13 @@ export function decodeCashFlowStatement(raw: unknown): CashFlowStatement {
                             Object.freeze({
                                 name: str(line.name, `${at} line #${j} name`),
                                 source: decodeEnum(CF_LINE_SOURCES, line.source, `${at} line #${j} source`),
+                                label: str(line.label, `${at} line #${j} label`),
+                                account: decodeNullableStr(line.account, `${at} line #${j} account`),
                                 total: columns(line.total, `${at} line #${j} total`),
                                 rows: frozen(
                                     decodeCfArray(line.rows, `${at} line #${j} rows`).map((row, k) =>
                                         Object.freeze({
+                                            ...decodeOutlineFields(row, `${at} line #${j} row #${k}`),
                                             account: str(row.account, `${at} line #${j} row #${k} account`),
                                             amounts: columns(row.amounts, `${at} line #${j} row #${k} amounts`),
                                         })
@@ -2272,11 +2360,14 @@ export function decodeCashFlowStatement(raw: unknown): CashFlowStatement {
                 return Object.freeze({
                     name: str(line.name, `${at} name`),
                     source: decodeEnum(CF_LINE_SOURCES, line.source, `${at} source`),
+                    label: str(line.label, `${at} label`),
+                    account: decodeNullableStr(line.account, `${at} account`),
                     beginning: columns(line.beginning, `${at} beginning`),
                     ending: columns(line.ending, `${at} ending`),
                     rows: frozen(
                         decodeCfArray(line.rows, `${at} rows`).map((row, k) =>
                             Object.freeze({
+                                ...decodeOutlineFields(row, `${at} row #${k}`),
                                 account: str(row.account, `${at} row #${k} account`),
                                 beginning: columns(row.beginning, `${at} row #${k} beginning`),
                                 ending: columns(row.ending, `${at} row #${k} ending`),
@@ -2289,6 +2380,7 @@ export function decodeCashFlowStatement(raw: unknown): CashFlowStatement {
         beginningCash: columns(report.beginningCash, "cash flow beginningCash"),
         endingCash: columns(report.endingCash, "cash flow endingCash"),
         reconciles: decodeBoolean(report.reconciles, "cash flow reconciles"),
+        maxDepth: num(report.maxDepth, "cash flow maxDepth"),
     });
 }
 

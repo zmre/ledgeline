@@ -26,6 +26,8 @@ use ledgeline_core::reports::{
 };
 use ledgeline_core::{Dec, parse_journal};
 
+static NO_NAMES: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+
 fn opts(from: &'static str, to: &'static str, value: Valuation) -> IsOpts<'static> {
     IsOpts {
         from,
@@ -34,6 +36,8 @@ fn opts(from: &'static str, to: &'static str, value: Valuation) -> IsOpts<'stati
         value_in: None,
         compare: false,
         depth: None,
+        names: &NO_NAMES,
+        budget: None,
     }
 }
 

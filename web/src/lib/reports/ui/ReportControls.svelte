@@ -4,7 +4,17 @@
 <script lang="ts">
     import FoldedControls from "#ui/components/FoldedControls.svelte";
     import DepthSlider from "#lib/insights/DepthSlider.svelte";
-    import {bsMultiPeriod, controlsSummary, intervalLabel, MAX_COUNT, rangeKeys, TAB_CONTROLS, type ReportParams} from "./params";
+    import {
+        bsMultiPeriod,
+        controlsSummary,
+        intervalLabel,
+        isDepthFromSlider,
+        isDepthShown,
+        MAX_COUNT,
+        rangeKeys,
+        TAB_CONTROLS,
+        type ReportParams,
+    } from "./params";
 
     let {params = $bindable(), maxDepth}: {params: ReportParams; maxDepth: number} = $props();
 
@@ -84,7 +94,22 @@
              and the browser clamps the input's value to that max without updating the bound
              state; remounting once the real max arrives re-applies the bound depth. -->
         {#key maxDepth}
-            <DepthSlider bind:depth={params.depth} max={maxDepth} />
+            <!-- Plan 50: the P&L's slider edits its own depth, the max meaning unlimited. -->
+            {#if params.tab === "is"}
+                <DepthSlider
+                    bind:depth={() => isDepthShown(params, maxDepth), (value) => (params.isDepth = isDepthFromSlider(value, maxDepth))}
+                    max={maxDepth}
+                />
+            {:else}
+                <DepthSlider bind:depth={params.depth} max={maxDepth} />
+            {/if}
         {/key}
+    {/if}
+    {#if config.budget}
+        <!-- Plan 50 D12: the P&L's italic Budget column, from the journal's `~` goals over From–To. -->
+        <label class="label cursor-pointer gap-2 pb-1.5 text-sm">
+            <input type="checkbox" class="checkbox checkbox-sm" bind:checked={params.isBudget} data-testid="is-budget-toggle" />
+            Budget
+        </label>
     {/if}
 </FoldedControls>

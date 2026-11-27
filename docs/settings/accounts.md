@@ -34,6 +34,7 @@ The first part is a field for each tag a Ledgeline report reads. Most take a fix
 | Field | Tag | Values | Read by |
 | --- | --- | --- | --- |
 | Type | `type:` | Asset (`A`), Liability (`L`), Equity (`E`), Revenue (`R`), Expense (`X`), Cash (`C`), Conversion (`V`), Gain (`G`) | Every report. See [account types](#account-types) below |
+| Display name | `name:` | Free text | Row labels on the [P&L](../reports/income-statement.md#how-accounts-inside-a-line-are-laid-out), [Balance sheet](../reports/balance-sheet.md) and [Cash flow](../reports/cash-flow.md); not inherited by sub-accounts. [Holdings › Other](../holdings/index.md) also reads it, and there a sub-account does inherit it |
 | Income statement section | `issection:` | `revenue`, `cogs`, `opex`, `depreciation`, `interest`, `tax`, `other` | [Income statement](../reports/income-statement.md) |
 | Income statement line | `isgroup:` | Free text | [Income statement](../reports/income-statement.md) |
 | Balance sheet line | `bsgroup:` | Free text, with suggestions such as "Cash and cash equivalents" and "Investments" | [Balance sheet](../reports/balance-sheet.md) |

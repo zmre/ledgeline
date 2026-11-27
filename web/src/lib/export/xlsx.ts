@@ -43,9 +43,9 @@ import type {
     SectionedReport,
 } from "#lib/reports/types.js";
 import {asColumns, bsColumnSummaries, columnSectionRows} from "#lib/reports/ui/balanceSheetRows.js";
-import {compressIsRows, compressPeriodRows, compressSectionRows} from "#lib/reports/ui/displayRows.js";
+import {compressPeriodRows, compressSectionRows} from "#lib/reports/ui/displayRows.js";
 import {cfDisplayModel, type CfDisplayRow} from "#lib/reports/ui/cashFlowRows.js";
-import {amountsPct, isSummary} from "#lib/reports/ui/incomeStatementRows.js";
+import {amountsPct, budgetFootnote, isSummary} from "#lib/reports/ui/incomeStatementRows.js";
 import {periodTable} from "#lib/reports/ui/periodTable.js";
 import {accountDisplaySections, DELTA, summaryHeading} from "#lib/reports/ui/accountReportRows.js";
 import {compareCells, type WindowReading} from "#lib/reports/ui/compareColumns.js";
@@ -176,6 +176,11 @@ function labelCell(ws: Worksheet, rowIx: number, label: string, indent: number, 
 
 // --- Grouped balance sheet (plans/12) ---------------------------------------
 
+/** Plan 50 D6: the full account path behind an outline label, as an Excel cell note. */
+function accountNote(ws: Worksheet, rowIx: number, account: string | null): void {
+    if (account !== null) ws.getCell(rowIx, 1).note = account;
+}
+
 /**
  * Section fills, matching the on-screen accents (daisyUI success / warning /
  * info) at a darkness that reads against white with the same white bold text
@@ -235,7 +240,8 @@ function ruleAbove(ws: Worksheet, rowIx: number, style: "thin" | "medium", width
 
 /**
  * The grouped balance sheet: a coloured header per box, a bold row per group
- * with its subtotal, the group's indented accounts beneath it, a ruled section
+ * with its subtotal, the group's outline beneath it (plan 50: headings with no
+ * figure, the full account path as a cell note on every label), a ruled section
  * total, then the same tie-out the screen shows — the three section totals,
  * `Liabilities + equity` against `Total assets`, the verdict, and net worth as
  * its own figure below.
@@ -291,9 +297,15 @@ function addBalanceSheet(ws: Worksheet, sheet: BalanceSheetColumns): void {
                     labelCell(ws, rowIx, row.label, groupIndent, true);
                     put(rowIx, row.amount, true);
                     break;
-                case "account":
-                    // `row.indent` is the compression indent plus one, below its group.
+                case "heading":
+                    // Plan 50 D4: an outline heading carries no figure.
                     labelCell(ws, rowIx, row.label, row.indent + groupIndent);
+                    accountNote(ws, rowIx, row.account);
+                    break;
+                case "account":
+                    // `row.indent` is the outline level plus one, below its group.
+                    labelCell(ws, rowIx, row.label, row.indent + groupIndent);
+                    accountNote(ws, rowIx, row.account);
                     put(rowIx, row.amount, false);
                     break;
                 case "subtotal":
@@ -400,10 +412,16 @@ interface IsColumn {
  *   percentage, exactly as on screen. The extras column is the TOTAL's
  *   leftovers: a pair of columns per bucket would double the sheet's width for
  *   commodities the Total already names.
+ *
+ * With the Budget column on (plan 50 D12) an italic Budget column follows the
+ * Total (Total mode: Amount) and everything after it shifts one right, as on
+ * screen.
  */
 interface IsColumns {
     label: number;
     money: IsColumn[];
+    /** The Budget column, when the report carries one. */
+    budget: number | null;
     /** The % change column, when the report compares. */
     pct: number | null;
     /** Unconverted leftovers, one column per money column that has its own. */
@@ -415,14 +433,18 @@ const current: Pick = (amounts) => amounts.current;
 const prior: Pick = (amounts) => amounts.prior;
 
 function isColumns(report: IncomeStatementReport): IsColumns {
+    // The Budget column sits right after the Total, so it shifts what follows.
+    const b = report.budgeted ? 1 : 0;
+    const budgetAt = (col: number): number | null => (report.budgeted ? col : null);
     if (report.buckets !== null) {
         const total = report.buckets.length + 2;
         return {
             label: 1,
             money: [...report.buckets.map((_, i): IsColumn => ({col: i + 2, pick: (amounts) => amounts.values?.[i]})), {col: total, pick: current}],
+            budget: budgetAt(total + 1),
             pct: null,
-            extras: [{col: total + 1, pick: current}],
-            count: total + 1,
+            extras: [{col: total + 1 + b, pick: current}],
+            count: total + 1 + b,
         };
     }
     return report.prior !== null
@@ -430,16 +452,31 @@ function isColumns(report: IncomeStatementReport): IsColumns {
               label: 1,
               money: [
                   {col: 2, pick: current},
-                  {col: 3, pick: prior},
+                  {col: 3 + b, pick: prior},
               ],
-              pct: 4,
+              budget: budgetAt(3),
+              pct: 4 + b,
               extras: [
-                  {col: 5, pick: current},
-                  {col: 6, pick: prior},
+                  {col: 5 + b, pick: current},
+                  {col: 6 + b, pick: prior},
               ],
-              count: 6,
+              count: 6 + b,
           }
-        : {label: 1, money: [{col: 2, pick: current}], pct: null, extras: [{col: 3, pick: current}], count: 3};
+        : {label: 1, money: [{col: 2, pick: current}], budget: budgetAt(3), pct: null, extras: [{col: 3 + b, pick: current}], count: 3 + b};
+}
+
+/**
+ * A line's Budget figure (plan 50 D13), in italics. Empty when no goal sits
+ * there. A real number in `base` like the money columns; a goal holding any
+ * other commodity is written as text instead, so nothing is dropped.
+ */
+function setIsBudget(ws: Worksheet, rowIx: number, cols: IsColumns, budget: MixedAmount | null, base: string | null, bold: boolean): void {
+    if (cols.budget === null || budget === null) return;
+    const cell = ws.getCell(rowIx, cols.budget);
+    const others = [...budget.keys()].some((commodity) => commodity !== base);
+    if (base === null || others) setAmount(cell, budget);
+    else setDec(cell, base, budget.get(base) ?? ZERO_MONEY);
+    cell.font = {italic: true, bold};
 }
 
 /**
@@ -540,12 +577,21 @@ function addIncomeStatement(ws: Worksheet, report: IncomeStatementReport, cols: 
         for (const group of section.groups) {
             labelCell(ws, rowIx, group.name, 1, true);
             setIsAmounts(ws, rowIx, cols, group.total, pct(group.total), base, true);
+            setIsBudget(ws, rowIx, cols, group.budget, base, true);
             rowIx += 1;
-            // The same compression the screen applies, so a single-child chain is
-            // one row in both places.
-            for (const {label, indent, row} of compressIsRows(group.rows)) {
-                labelCell(ws, rowIx, label, indent + 2);
-                setIsAmounts(ws, rowIx, cols, row.amounts, pct(row.amounts), base, false);
+            // The engine's outline (plan 50), exactly as the screen indents it:
+            // a heading prints its label and no figure, and every label carries
+            // its full account path as a cell note (the screen's hover). A
+            // budgeted heading's `total` row is ruled, as on screen.
+            for (const row of group.rows) {
+                const total = row.kind === "total";
+                if (total) rule(rowIx, "thin");
+                labelCell(ws, rowIx, row.label, row.level + 2, total);
+                ws.getCell(rowIx, cols.label).note = row.account;
+                if (row.kind !== "heading") {
+                    setIsAmounts(ws, rowIx, cols, row.amounts, pct(row.amounts), base, total);
+                    setIsBudget(ws, rowIx, cols, row.budget, base, total);
+                }
                 rowIx += 1;
             }
         }
@@ -553,7 +599,16 @@ function addIncomeStatement(ws: Worksheet, report: IncomeStatementReport, cols: 
         rule(rowIx, "thin");
         labelCell(ws, rowIx, `Total ${section.title}`, 0, true);
         setIsAmounts(ws, rowIx, cols, section.total, pct(section.total), base, true);
+        setIsBudget(ws, rowIx, cols, section.budget, base, true);
         rowIx += 1;
+        // Plan 50 D14: the goals counted only in that total, footnoted under it.
+        if (report.budgeted) {
+            for (const goal of section.budgetUnplaced) {
+                labelCell(ws, rowIx, budgetFootnote(goal), 0);
+                ws.getCell(rowIx, cols.label).font = {italic: true, size: 9, color: {argb: "FF64748B"}};
+                rowIx += 1;
+            }
+        }
 
         // The ladder, between the boxes exactly as on screen — a subtotal spans
         // everything above it, so writing it inside a box would claim otherwise.
@@ -562,6 +617,7 @@ function addIncomeStatement(ws: Worksheet, report: IncomeStatementReport, cols: 
             rule(rowIx, "medium");
             labelCell(ws, rowIx, subtotal.label, 0, true);
             setIsAmounts(ws, rowIx, cols, subtotal.total, pct(subtotal.total), base, true);
+            setIsBudget(ws, rowIx, cols, subtotal.budget, base, true);
             rowIx += 1;
         }
         rowIx += 1; // a blank row between boxes, as the screen puts a gap between them
@@ -575,6 +631,7 @@ function addIncomeStatement(ws: Worksheet, report: IncomeStatementReport, cols: 
     rule(rowIx, "medium");
     labelCell(ws, rowIx, "Net income (revenue − expenses)", 0, true);
     setIsAmounts(ws, rowIx, cols, summary.netIncome, summary.netPct, base, true);
+    setIsBudget(ws, rowIx, cols, summary.netBudget, base, true);
 }
 
 /**
@@ -739,13 +796,18 @@ export async function buildIncomeStatementWorkbook(report: IncomeStatementReport
     // both headed "Other commodities" would put the ambiguity the split removes
     // from the cells straight back into the headers.
     const priorExtrasHeader = report.prior === null ? [] : [`Other commodities (${report.prior.from} … ${report.prior.to})`];
+    const budgetHeader = report.budgeted ? [`Budget${inBase}`] : [];
     const headers =
         report.buckets !== null
-            ? ["Account", ...report.buckets.map((bucket) => bucket.label), `Total${inBase}`, "Other commodities"]
+            ? ["Account", ...report.buckets.map((bucket) => bucket.label), `Total${inBase}`, ...budgetHeader, "Other commodities"]
             : report.prior !== null
-              ? ["Account", `Amount${inBase}`, ...priorHeader, "% change", "Other commodities", ...priorExtrasHeader]
-              : ["Account", `Amount${inBase}`, "Other commodities"];
+              ? ["Account", `Amount${inBase}`, ...budgetHeader, ...priorHeader, "% change", "Other commodities", ...priorExtrasHeader]
+              : ["Account", `Amount${inBase}`, ...budgetHeader, "Other commodities"];
     addTitleRows(ws, meta, headers);
+    if (cols.budget !== null) {
+        const head = ws.getCell(4, cols.budget);
+        head.font = {...head.font, italic: true};
+    }
     for (const {col} of cols.extras) ws.getColumn(col).width = 24; // "5 GLD, -2 TSLA" needs more room than a money column
     ws.views = [{state: "frozen", ySplit: 4}];
     addIncomeStatement(ws, report, cols);
@@ -754,9 +816,11 @@ export async function buildIncomeStatementWorkbook(report: IncomeStatementReport
 
 /**
  * Statement of cash flows workbook (plans/27): the screen's own rows, from the
- * same display model, so the workbook shows exactly what the page shows. Every
- * line is opened, because a workbook has no disclosure to click; the cash
- * detail is there as on screen.
+ * same display model, so the workbook shows exactly what the page shows, at
+ * the screen's depth. Every line is opened, because a workbook has no
+ * disclosure to click; the cash detail is there as on screen. Outline rows
+ * indent by level, headings carry no figures, and each label's full account
+ * path is a cell note (plan 50).
  *
  * One money column per period plus Total (or a single Amount), in `base`.
  * Anything in another commodity goes to an "Other commodities" column for the
@@ -776,8 +840,14 @@ export async function buildCashFlowWorkbook(report: CashFlowStatement, meta: {ti
     ws.views = [{state: "frozen", ySplit: 4}];
 
     let rowIx = 5;
-    const write = (label: string, indent: number, columns: CfColumns, bold: boolean): void => {
+    const write = (label: string, indent: number, columns: CfColumns | null, bold: boolean, path: string | null = null): void => {
         labelCell(ws, rowIx, label, indent, bold);
+        // The full account path rides on the label as an Excel note, as hover does on screen (plan 50 D6).
+        accountNote(ws, rowIx, path);
+        if (columns === null) {
+            rowIx += 1; // an outline heading: its rows below carry the money (plan 50 D4)
+            return;
+        }
         const figures = periods.length > 0 ? [...columns.values, columns.total] : [columns.total];
         figures.forEach((ma, i) => {
             const cell = ws.getCell(rowIx, i + 2);
@@ -792,7 +862,7 @@ export async function buildCashFlowWorkbook(report: CashFlowStatement, meta: {ti
         rowIx += 1;
     };
     const writeRows = (rows: readonly CfDisplayRow[], indent: number): void => {
-        for (const row of rows) write(row.label, indent + row.indent, row.amounts, false);
+        for (const row of rows) write(row.label, indent + row.indent, row.amounts, false, row.path);
     };
 
     for (const box of model.boxes) {

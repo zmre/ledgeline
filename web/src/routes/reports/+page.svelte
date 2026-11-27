@@ -39,6 +39,7 @@
         budgetRedirect,
         bsMultiPeriod,
         confDepthDefault,
+        confIsDepth,
         defaultReportParams,
         INTERVAL_LABELS,
         paramsToSearch,
@@ -87,6 +88,7 @@
         }
         if (search !== "") Object.assign(params, searchToParams(search, defaultReportParams()));
         urlDepth = searchNamesDepth(search);
+        urlIsDepth = params.tab === "is" && urlDepth; // Plan 50
         activeTab = params.tab; // the restored/initial tab keeps its (URL or default) interval/count
         // A URL end wins (and is remembered); otherwise the session's end applies.
         Object.assign(params, endSync.restore(params, search));
@@ -115,24 +117,46 @@
     const conf = $derived(hledgerConf.value);
 
     // Cash Flow and Net Worth take the config's depth as their control's
-    // default — once per tab activation and config revision, so it never
-    // fights a depth the user then picks. A URL `depth=` wins for the tab it
-    // was opened on. Plain `let`s, not `$state`: the effect must not depend on
-    // its own latch.
+    // default — once per tab and config revision, so it never fights a depth
+    // the user then picks, and switching tabs back and forth leaves it alone.
+    // A URL `depth=` wins for the tab it was opened on. Plain `let`s, not
+    // `$state`: the effect must not depend on its own latch.
     let urlDepth = false;
-    let confApplied: string | null = null;
+    // Plan 50: every tab|revision already seeded, not just the
+    // last one — a single latch re-seeded on each return to the tab (D9).
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- a latch: the effect must not depend on it
+    const confApplied = new Set<string>();
     $effect(() => {
         const tab = params.tab;
         if (!restored || conf === null) return;
         const key = `${tab}|${conf.handle ?? ""}|${conf.revision}`;
-        if (key === confApplied) return;
-        confApplied = key;
+        if (confApplied.has(key)) return;
+        confApplied.add(key);
         if (urlDepth) {
             urlDepth = false;
             return;
         }
         const depth = confDepthDefault(tab, conf.effectiveDepth);
         if (depth !== null) params.depth = depth;
+    });
+
+    // Plan 50: `[incomestatement] --depth` seeds the P&L's own
+    // depth once per config revision — not per tab activation, so switching
+    // away and back never undoes a depth the user picked. A P&L link's
+    // `depth=` wins over the first seed.
+    let urlIsDepth = false;
+    let isConfApplied: string | null = null;
+    $effect(() => {
+        if (!restored || conf === null) return;
+        const key = `${conf.handle ?? ""}|${conf.revision}`;
+        if (key === isConfApplied) return;
+        isConfApplied = key;
+        if (urlIsDepth) {
+            urlIsDepth = false;
+            return;
+        }
+        const depth = confIsDepth(conf.effectiveDepth);
+        if (depth !== null) params.isDepth = depth;
     });
 
     // The shared end date: remember the active tab's end when the user moves
@@ -179,7 +203,18 @@
     // journal round lands is fine, because `formatTotals` falls back per
     // commodity. The engine computes them (`/api/journal` reportStyles).
     const styles = $derived(journal.reportStyles);
-    const maxDepth = $derived(journal.accountNames.reduce((max, name) => Math.max(max, name.split(":").length), 1));
+    const journalMaxDepth = $derived(journal.accountNames.reduce((max, name) => Math.max(max, name.split(":").length), 1));
+    // Plan 50 D8/D9: the P&L and Cash Flow sliders top out at the deepest
+    // account in the report itself (the engine's `maxDepth`), not the journal's
+    // deepest, which the statement may never list. Read off the last report
+    // the store holds, so a refetch mid-drag does not resize (remount) it.
+    const maxDepth = $derived.by(() => {
+        const held = reports.report;
+        if (held === null || !("kind" in held)) return journalMaxDepth;
+        if (params.tab === "is" && held.kind === "incomeStatement") return Math.max(held.maxDepth, 1);
+        if (params.tab === "cf" && held.kind === "cashFlow") return held.maxDepth;
+        return journalMaxDepth;
+    });
 
     const report = $derived(reports.report);
 
@@ -281,13 +316,11 @@
                       }
                     : {title: "Balance Sheet", params: `as of ${params.asOf}`, filename: `balance-sheet-${params.asOf}.xlsx`};
             case "is":
-                // No depth, for the reason `bs` has none: the tab dropped that
-                // control and asks the engine for an unclamped report, so stamping
-                // one on the workbook would advertise a setting the reader cannot
-                // see or reproduce.
+                // The depth only when one is set (plan 50 D10): the workbook
+                // follows the screen, and unlimited is the P&L's plain reading.
                 return {
                     title: "Income Statement",
-                    params: `${params.from} to ${params.to}, ${grain}`,
+                    params: `${params.from} to ${params.to}, ${grain}${params.isDepth === null ? "" : `, depth ${params.isDepth}`}${params.isBudget ? ", with budget" : ""}`,
                     filename: `income-statement-${params.from}-to-${params.to}-${params.interval}.xlsx`,
                 };
             case "cf":

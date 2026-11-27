@@ -6,7 +6,7 @@ import type {CompareSheetRow} from "#lib/export/xlsx.js";
 import type {AccountReport, BalanceSheetColumns, CashFlowStatement, IncomeStatementReport} from "#lib/reports/types.js";
 import {accountDisplaySections} from "#lib/reports/ui/accountReportRows.js";
 import {bsColumnSummaries, columnSectionRows} from "#lib/reports/ui/balanceSheetRows.js";
-import {cfDisplayModel, type CfDisplayRow} from "#lib/reports/ui/cashFlowRows.js";
+import {cfDisplayModel, isOutlineRow, type CfDisplayRow} from "#lib/reports/ui/cashFlowRows.js";
 import type {WindowReading} from "#lib/reports/ui/compareColumns.js";
 import {isDisplayModel} from "#lib/reports/ui/incomeStatementRows.js";
 
@@ -27,6 +27,8 @@ export function balanceSheetCompareRows(sheet: BalanceSheetColumns): CompareShee
         rows.push(heading(section.title));
         for (const row of columnSectionRows(section, () => true)) {
             if (row.kind === "subsection") rows.push(line(row.label, 1, true, null));
+            // Plan 50 D4: an outline heading carries no figure.
+            else if (row.kind === "heading") rows.push(line(row.label, row.indent + 1, false, null));
             else rows.push(line(row.label, row.kind === "account" ? row.indent + 1 : 1, row.kind !== "account", row.amount));
         }
         rows.push(line(`Total ${section.title}`, 0, true, section.total));
@@ -80,7 +82,8 @@ export function incomeStatementCompareRows(report: IncomeStatementReport): Compa
     });
     for (const box of model.boxes) {
         rows.push(heading(box.title));
-        for (const row of box.rows) rows.push(line(row.label, row.indent + 1, row.kind === "group", row.amounts.values ?? []));
+        // An outline heading (plan 50) has no figures: `null`, as a section heading row.
+        for (const row of box.rows) rows.push(line(row.label, row.indent + 1, row.kind === "group", row.amounts === null ? null : (row.amounts.values ?? [])));
         rows.push(line(`Total ${box.title}`, 0, true, box.total.values ?? []));
         for (const subtotal of box.trailing) rows.push(line(subtotal.label, 0, true, subtotal.amounts.values ?? []));
     }
@@ -92,11 +95,12 @@ export function incomeStatementCompareRows(report: IncomeStatementReport): Compa
 export function cashFlowCompareRows(report: CashFlowStatement): CompareSheetRow[] {
     const model = cfDisplayModel(report, () => true);
     const rows: CompareSheetRow[] = [];
+    // An outline heading carries no figures (plan 50 D4); only lines are bold.
     const cfRow = (row: CfDisplayRow, reading: WindowReading): CompareSheetRow => ({
         label: row.label,
         indent: row.indent + 1,
-        bold: row.kind !== "account",
-        values: row.amounts.values,
+        bold: !isOutlineRow(row),
+        values: row.amounts?.values ?? null,
         reading,
     });
     for (const box of model.boxes) {

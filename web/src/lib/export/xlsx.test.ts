@@ -8,9 +8,15 @@ import {Workbook, type Worksheet} from "exceljs";
 import {decodeBalanceSheetColumns, decodeBalanceSheetReport, decodeIncomeStatementReport} from "#lib/api/nativeDecode.js";
 import {dec, type MixedAmount} from "#lib/domain/money.js";
 import type {Holding, HoldingsReport} from "#lib/holdings/types.js";
-import type {BudgetBar, BudgetReport, PeriodReport, SectionedReport} from "#lib/reports/types.js";
+import type {BudgetBar, BudgetReport, CashFlowStatement, CfLine, PeriodReport, SectionedReport} from "#lib/reports/types.js";
 import {CLASSIFIED_BALANCE_SHEET, GROUPED_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "#lib/testing/balanceSheetFixture.js";
-import {GROUPED_INCOME_STATEMENT, MULTI_STEP_INCOME_STATEMENT, UNCOMPARED_INCOME_STATEMENT} from "#lib/testing/incomeStatementFixture.js";
+import {
+    BUDGETED_INCOME_STATEMENT,
+    GROUPED_INCOME_STATEMENT,
+    MULTI_STEP_INCOME_STATEMENT,
+    OUTLINED_INCOME_STATEMENT,
+    UNCOMPARED_INCOME_STATEMENT,
+} from "#lib/testing/incomeStatementFixture.js";
 import {
     buildBalanceSheetWorkbook,
     buildBudgetWorkbook,
@@ -22,7 +28,7 @@ import {
     numberFormat,
     SAAS_SHEETS,
 } from "./xlsx";
-import {CASH_FLOW, CASH_FLOW_TOTAL} from "#lib/testing/cashFlowFixture.js";
+import {CASH_FLOW, CASH_FLOW_TOTAL, cfRow, flow} from "#lib/testing/cashFlowFixture.js";
 import type {SaasReport} from "#lib/reports/saasTypes.js";
 import {billingReport, householdReport, startupReport, usd as dollars} from "#lib/testing/saasFixture.js";
 import {periodsOf} from "#lib/reports/test-helpers.js";
@@ -267,19 +273,15 @@ describe("UNIT export/xlsx", () => {
             expect(ws.getCell("A1").value).toBe("Balance Sheet");
             expect([ws.getCell("A4").value, ws.getCell("B4").value, ws.getCell("C4").value]).toEqual(["Account", "Amount ($)", "Other commodities"]);
 
-            expect(column(ws, 5, 10)).toEqual([
+            expect(column(ws, 5, 9)).toEqual([
                 "Assets",
                 "Cash and cash equivalents",
-                "assets:bank",
-                "checking",
-                "savings",
-                // One row, not two: the report is unclamped now, and
-                // `compressSectionRows` folds the postingless `assets:bank:wise`
-                // into its only child — the workbook shows exactly what the
-                // screen does.
-                "wise:eur",
+                // The engine's outline labels (plan 50), exactly as on screen.
+                "Checking",
+                "Savings",
+                "Eur",
                 "Investments",
-                "assets:broker:taxable",
+                "Taxable",
                 "Total Assets",
                 null, // a blank row between boxes, matching the gap on screen
             ]);
@@ -288,8 +290,9 @@ describe("UNIT export/xlsx", () => {
             expect(ws.getCell("A5").fill).toMatchObject({type: "pattern", fgColor: {argb: "FF14532D"}});
             expect(ws.getCell("A5").font.bold).toBe(true);
             expect(ws.getCell("A6").font.bold).toBe(true); // group row
-            expect(ws.getCell("A8").alignment?.indent).toBe(3); // account row, indented under its group
-            expect(ws.getCell("A13").border?.top?.style).toBe("thin"); // the subtotal rule
+            expect(ws.getCell("A8").alignment?.indent).toBe(2); // account row, indented under its group
+            expect(ws.getCell("A8").note).toBe("assets:bank:savings"); // D6: the full path behind the label
+            expect(ws.getCell("A12").border?.top?.style).toBe("thin"); // the subtotal rule
         });
 
         it("writes every figure as a real number rounded exactly as the screen rounds it", async () => {
@@ -297,13 +300,13 @@ describe("UNIT export/xlsx", () => {
 
             expect(ws.getCell("B6").value).toBe(42450.24);
             expect(ws.getCell("B6").numFmt).toBe('"$"#,##0.00');
-            expect(ws.getCell("B8").value).toBe(28292.81);
+            expect(ws.getCell("B7").value).toBe(28292.81);
             // FE-6: $17,162.375 exactly. Rounded on the Dec (half away from zero)
             // before it becomes a float, so the workbook cannot print .37 where
             // the screen printed .38.
-            expect(ws.getCell("B11").value).toBe(17162.38);
-            expect(ws.getCell("B13").value).toBe(59612.62); // $59,612.615
-            expect(ws.getCell("B13").font.bold).toBe(true);
+            expect(ws.getCell("B10").value).toBe(17162.38);
+            expect(ws.getCell("B12").value).toBe(59612.62); // $59,612.615
+            expect(ws.getCell("B12").font.bold).toBe(true);
         });
 
         it("surfaces the commodities the valuation could not convert instead of dropping them", async () => {
@@ -311,9 +314,9 @@ describe("UNIT export/xlsx", () => {
 
             // GLD and TSLA have no `P` directive in the fixture journal. They are
             // not in the Amount column and they must not be nowhere.
-            expect(ws.getCell("C11").value).toBe("5 GLD, -2 TSLA");
-            expect(ws.getCell("C13").value).toBe("5 GLD, -2 TSLA");
-            expect(ws.getCell("C13").font.bold).toBe(true);
+            expect(ws.getCell("C10").value).toBe("5 GLD, -2 TSLA");
+            expect(ws.getCell("C12").value).toBe("5 GLD, -2 TSLA");
+            expect(ws.getCell("C12").font.bold).toBe(true);
         });
 
         it("writes a real $0.00 for a line with no base-commodity part", async () => {
@@ -321,10 +324,10 @@ describe("UNIT export/xlsx", () => {
 
             // "Transfers" is 5 GLD and no dollars. A blank cell would read as
             // "no data" rather than "no dollars".
-            expect(ws.getCell("A23").value).toBe("Transfers");
-            expect(ws.getCell("B23").value).toBe(0);
-            expect(ws.getCell("B23").numFmt).toBe('"$"#,##0.00');
-            expect(ws.getCell("C23").value).toBe("5 GLD");
+            expect(ws.getCell("A22").value).toBe("Transfers");
+            expect(ws.getCell("B22").value).toBe(0);
+            expect(ws.getCell("B22").numFmt).toBe('"$"#,##0.00');
+            expect(ws.getCell("C22").value).toBe("5 GLD");
         });
 
         it("degrades to the shared text fallback under a bare Amount header when there is no base", async () => {
@@ -343,42 +346,42 @@ describe("UNIT export/xlsx", () => {
             // …including one whose only commodity is no currency at all — the
             // sole commodity leads, exactly as the screen's `amountCell`
             // promotes the first in sort order.
-            expect(ws.getCell("A23").value).toBe("Transfers");
-            expect(ws.getCell("B23").value).toBe(5);
-            expect(ws.getCell("B23").numFmt).toBe('#,##0 "GLD"');
+            expect(ws.getCell("A22").value).toBe("Transfers");
+            expect(ws.getCell("B22").value).toBe(5);
+            expect(ws.getCell("B22").numFmt).toBe('#,##0 "GLD"');
             // A multi-commodity line joins every commodity in the ONE Amount
             // cell, sorted, rounded on the Dec — the same figures the screen
             // renders as headline-plus-footnotes for this fixture.
-            expect(ws.getCell("B11").value).toBe("17162.38 $, 5 GLD, -2 TSLA");
-            expect(ws.getCell("B13").value).toBe("59612.62 $, 5 GLD, -2 TSLA"); // Total Assets
-            expect(ws.getCell("B25").value).toBe("42998.91 $, -933.25 EUR"); // Retained earnings
+            expect(ws.getCell("B10").value).toBe("17162.38 $, 5 GLD, -2 TSLA");
+            expect(ws.getCell("B12").value).toBe("59612.62 $, 5 GLD, -2 TSLA"); // Total Assets
+            expect(ws.getCell("B24").value).toBe("42998.91 $, -933.25 EUR"); // Retained earnings
             // And the extras column is written NOWHERE: the leftovers are in the
             // Amount cells, and repeating them would print them twice. (Each of
             // these C cells carries text when base is "$" — see the tests above.)
-            for (const row of [11, 13, 23, 25, 36]) expect(ws.getCell(row, 3).value, `C${row}`).toBeNull();
+            for (const row of [10, 12, 22, 24, 35]) expect(ws.getCell(row, 3).value, `C${row}`).toBeNull();
         });
 
         it("writes the computed equity lines, which have a total and no accounts", async () => {
             const ws = await readBack(await build(), "Balance Sheet");
 
-            expect(column(ws, 20, 8)).toEqual([
+            expect(column(ws, 19, 8)).toEqual([
                 "Equity",
                 "Opening",
-                "equity:opening",
+                "Opening", // the group's one account, under its own label
                 "Transfers",
-                "equity:transfers",
+                "Transfers",
                 "Retained earnings", // computed: no account rows beneath it
                 "Valuation adjustment",
                 "Total Equity",
             ]);
-            expect(ws.getCell("B25").value).toBe(42998.91);
-            expect(ws.getCell("C25").value).toBe("-933.25 EUR");
+            expect(ws.getCell("B24").value).toBe(42998.91);
+            expect(ws.getCell("C24").value).toBe("-933.25 EUR");
         });
 
         it("ends with the same tie-out the screen shows, and freezes the header", async () => {
             const ws = await readBack(await build(), "Balance Sheet");
 
-            expect(column(ws, 29, 7)).toEqual([
+            expect(column(ws, 28, 7)).toEqual([
                 "Total Assets",
                 "Total Liabilities",
                 "Total Equity",
@@ -387,9 +390,9 @@ describe("UNIT export/xlsx", () => {
                 "Balanced",
                 null, // nothing after the verdict: no net-worth line, as on screen
             ]);
-            expect(ws.getCell("A36").value).toBeNull(); // where net worth used to sit, after a blank row
-            expect(ws.getCell("A29").border?.top?.style).toBe("medium");
-            expect(ws.getCell("A32").border?.top?.style).toBe("thin"); // the tie-out rule
+            expect(ws.getCell("A35").value).toBeNull(); // where net worth used to sit, after a blank row
+            expect(ws.getCell("A28").border?.top?.style).toBe("medium");
+            expect(ws.getCell("A31").border?.top?.style).toBe("thin"); // the tie-out rule
             expect(ws.views[0]).toMatchObject({state: "frozen", ySplit: 4});
         });
 
@@ -399,9 +402,9 @@ describe("UNIT export/xlsx", () => {
             // $531.15 + $59,081.465 = $59,612.615 → $59,612.62, the same cell
             // Total assets holds. The unpriced holdings tie out too and must be
             // on the tie-out rows, not only up in the boxes.
+            expect(ws.getCell("B31").value).toBe(59612.62);
+            expect(ws.getCell("C31").value).toBe("5 GLD, -2 TSLA");
             expect(ws.getCell("B32").value).toBe(59612.62);
-            expect(ws.getCell("C32").value).toBe("5 GLD, -2 TSLA");
-            expect(ws.getCell("B33").value).toBe(59612.62);
         });
 
         it("writes the check line when it is non-zero, at a precision that shows the imbalance", async () => {
@@ -410,13 +413,13 @@ describe("UNIT export/xlsx", () => {
             // The two tie-out figures still PRINT the same $59,612.62 — the
             // imbalance is half a cent. The verdict comes from the engine's exact
             // `check`, which is why the workbook says so anyway.
+            expect(ws.getCell("B31").value).toBe(59612.62);
             expect(ws.getCell("B32").value).toBe(59612.62);
-            expect(ws.getCell("B33").value).toBe(59612.62);
-            expect(ws.getCell("A34").value).toBe("Out of balance (assets − liabilities − equity)");
+            expect(ws.getCell("A33").value).toBe("Out of balance (assets − liabilities − equity)");
             // Half a cent, rounded away from zero to $0.01 — visible, rather than
             // rounded into the $0.00 that would read as balanced.
-            expect(ws.getCell("B34").value).toBe(0.01);
-            expect(ws.getCell("A34").font.bold).toBe(true);
+            expect(ws.getCell("B33").value).toBe(0.01);
+            expect(ws.getCell("A33").font.bold).toBe(true);
         });
 
         // The current/non-current axis. Indentation is the workbook's only
@@ -428,23 +431,20 @@ describe("UNIT export/xlsx", () => {
             it("heads each band and closes it with the engine's own subtotal", async () => {
                 const ws = await readBack(await classified(), "Balance Sheet");
 
-                expect(column(ws, 5, 16)).toEqual([
+                expect(column(ws, 5, 15)).toEqual([
                     "Assets",
                     "Current",
                     "Cash and cash equivalents",
-                    "assets:bank",
-                    "checking",
-                    "savings",
+                    "Checking",
+                    "Savings",
                     "Accounts receivable",
-                    "assets:ar",
+                    "Accounts receivable",
                     "Total current assets",
                     "Non-current",
                     "Property",
-                    // One row, not two: `compressSectionRows` folds the chain
-                    // inside a band exactly as it does outside one.
-                    "assets:property:house",
+                    "House",
                     "Long-term investments",
-                    "assets:broker:ira",
+                    "Ira",
                     "Total non-current assets",
                     "Total Assets", // the section total, below both bands
                 ]);
@@ -453,11 +453,11 @@ describe("UNIT export/xlsx", () => {
             it("writes the band subtotals as real numbers, from the engine and not from the group cells", async () => {
                 const ws = await readBack(await classified(), "Balance Sheet");
 
-                expect(ws.getCell("B13").value).toBe(62500); // Total current assets
-                expect(ws.getCell("B19").value).toBe(537500); // Total non-current assets
-                expect(ws.getCell("B20").value).toBe(600000); // the section total, still the whole
-                expect(ws.getCell("A13").font.bold).toBe(true);
-                expect(ws.getCell("A13").border?.top?.style).toBe("thin"); // ruled like a subtotal
+                expect(ws.getCell("B12").value).toBe(62500); // Total current assets
+                expect(ws.getCell("B18").value).toBe(537500); // Total non-current assets
+                expect(ws.getCell("B19").value).toBe(600000); // the section total, still the whole
+                expect(ws.getCell("A12").font.bold).toBe(true);
+                expect(ws.getCell("A12").border?.top?.style).toBe("thin"); // ruled like a subtotal
             });
 
             it("indents the band, then its groups, then their accounts", async () => {
@@ -466,7 +466,7 @@ describe("UNIT export/xlsx", () => {
                 expect(ws.getCell("A6").alignment?.indent).toBe(1); // "Current"
                 expect(ws.getCell("A7").alignment?.indent).toBe(2); // a group inside it
                 expect(ws.getCell("A8").alignment?.indent).toBe(3); // an account inside that
-                expect(ws.getCell("A13").alignment?.indent).toBe(1); // the band's subtotal, back at its heading
+                expect(ws.getCell("A12").alignment?.indent).toBe(1); // the band's subtotal, back at its heading
             });
 
             it("leaves equity unbanded and its groups where they have always been", async () => {
@@ -474,9 +474,9 @@ describe("UNIT export/xlsx", () => {
 
                 // Equity's groups sit at indent 1 — the unbanded level — in the
                 // same workbook where the other two boxes are at 2.
-                expect(column(ws, 35, 5)).toEqual(["Equity", "Opening", "equity:opening", "Retained earnings", "Total Equity"]);
-                expect(ws.getCell("A36").alignment?.indent).toBe(1);
-                expect(ws.getCell("A37").alignment?.indent).toBe(2);
+                expect(column(ws, 34, 5)).toEqual(["Equity", "Opening", "Opening", "Retained earnings", "Total Equity"]);
+                expect(ws.getCell("A35").alignment?.indent).toBe(1);
+                expect(ws.getCell("A36").alignment?.indent).toBe(2);
             });
 
             // The adaptive guarantee, in the workbook: the untagged layout is
@@ -500,8 +500,31 @@ describe("UNIT export/xlsx", () => {
             const dusty = {...(GROUPED_BALANCE_SHEET as object), check: {$: {mantissa: "22797", places: 7}}, balanced: true};
             const ws = await readBack(await build(decodeBalanceSheetReport(dusty)), "Balance Sheet");
 
-            expect(ws.getCell("A34").value).toBe("Balanced");
-            expect(ws.getCell("B34").value).toBeNull();
+            expect(ws.getCell("A33").value).toBe("Balanced");
+            expect(ws.getCell("B33").value).toBeNull();
+        });
+
+        it("writes an outline heading with no figure and its path as a note (plan 50 D4, D6)", async () => {
+            // The cash group as two banks: `Bank A` and `Bank B` each head
+            // their checking and savings.
+            const raw = JSON.parse(JSON.stringify(GROUPED_BALANCE_SHEET)) as {sections: {groups: {rows: unknown[]}[]}[]};
+            const usd = (cents: string) => ({$: {mantissa: cents, places: 2}});
+            const line = (kind: string, label: string, account: string, level: number, cents: string) => ({kind, label, account, level, amount: usd(cents)});
+            raw.sections[0].groups[0].rows = [
+                line("heading", "Bank A", "assets:bank:a", 0, "3000"),
+                line("account", "Checking", "assets:bank:a:checking", 1, "1000"),
+                line("account", "Savings", "assets:bank:a:savings", 1, "2000"),
+                line("heading", "Bank B", "assets:bank:b", 0, "7000"),
+                line("account", "Checking", "assets:bank:b:checking", 1, "3000"),
+                line("account", "Savings", "assets:bank:b:savings", 1, "4000"),
+            ];
+            const ws = await readBack(await build(decodeBalanceSheetReport(raw)), "Balance Sheet");
+
+            expect(column(ws, 7, 6)).toEqual(["Bank A", "Checking", "Savings", "Bank B", "Checking", "Savings"]);
+            expect([ws.getCell("A7").alignment?.indent, ws.getCell("A8").alignment?.indent]).toEqual([2, 3]);
+            expect(ws.getCell("B7").value).toBeNull(); // the heading's subtree sum is never printed
+            expect(ws.getCell("B8").value).toBe(10);
+            expect([ws.getCell("A7").note, ws.getCell("A11").note]).toEqual(["assets:bank:a", "assets:bank:b:checking"]);
         });
     });
 
@@ -568,9 +591,10 @@ describe("UNIT export/xlsx", () => {
                 // Groups sort by name, so Dividends precedes Salary — the
                 // engine's order, not `hledger is`'s. See the fixture's note.
                 "Dividends",
-                "income:dividends",
+                // The group's one account, by its outline label (plan 50).
+                "Dividends",
                 "Salary",
-                "income:salary",
+                "Salary",
                 "Total Revenue",
                 null, // a blank row between boxes, matching the gap on screen
                 "Expenses",
@@ -581,6 +605,10 @@ describe("UNIT export/xlsx", () => {
             expect(ws.getCell("A5").font.bold).toBe(true);
             expect(ws.getCell("A6").font.bold).toBe(true); // group row
             expect(ws.getCell("A7").alignment?.indent).toBe(2); // account row, indented under its group
+            // The full account path rides on every outline label as a cell note:
+            // the workbook's version of the screen's hover (plan 50 D6).
+            expect(ws.getCell("A7").note).toBe("income:dividends");
+            expect(ws.getCell("A6").note).toBeUndefined(); // the group row is not an account
             expect(ws.getCell("A10").border?.top?.style).toBe("thin"); // the subtotal rule
             expect(ws.views[0]).toMatchObject({state: "frozen", ySplit: 4});
         });
@@ -591,11 +619,10 @@ describe("UNIT export/xlsx", () => {
             expect(ws.getCell("B10").value).toBe(34010); // Total Revenue
             expect(ws.getCell("B10").numFmt).toBe('"$"#,##0.00');
             expect(ws.getCell("C10").value).toBe(39397.5); // the prior window's
-            // Row 34 → 36: the Depreciation group inserts its heading and its one
-            // account row directly under the Expenses header.
-            expect(ws.getCell("B36").value).toBe(28626.48); // Total Expenses
-            expect(ws.getCell("C36").value).toBe(28516.71);
-            expect(ws.getCell("B36").font.bold).toBe(true);
+            // Row 33: the outline's rows end at Utilities' one account.
+            expect(ws.getCell("B33").value).toBe(28626.48); // Total Expenses
+            expect(ws.getCell("C33").value).toBe(28516.71);
+            expect(ws.getCell("B33").font.bold).toBe(true);
         });
 
         it("writes the % change as a real percent, not as pre-rendered text", async () => {
@@ -604,8 +631,8 @@ describe("UNIT export/xlsx", () => {
             // Excel's % format multiplies by 100, so 0.004 renders "0.4%" — and
             // stays sortable, chartable and re-totalable, which "0.4%" as a
             // string is not. Expenses $28,626.48 against $28,516.71.
-            expect(ws.getCell("D36").value).toBe(0.004);
-            expect(ws.getCell("D36").numFmt).toBe("0.0%");
+            expect(ws.getCell("D33").value).toBe(0.004);
+            expect(ws.getCell("D33").numFmt).toBe("0.0%");
             expect(ws.getCell("D10").value).toBe(-0.137); // revenue, against $39,397.50
             // …and it is free of the float noise `pct / 100` would leave behind:
             // Utilities fell 11.3%, which that division stores as
@@ -618,12 +645,56 @@ describe("UNIT export/xlsx", () => {
             expect(ws.getCell(unknown, 4).value).toBeNull();
         });
 
-        it("compresses single-child chains exactly as the screen does", async () => {
+        it("prints a lone child as one row under its own label, as the screen does", async () => {
             const ws = await readBack(await build(), "Income Statement");
 
-            // `expenses:housing` has one child with the same figure in both
-            // windows, so the workbook shows the one row the screen shows.
-            expect(column(ws, 19, 2)).toEqual(["Housing", "expenses:housing:rent"]);
+            // `expenses:housing:rent` is Housing's only account: the engine's
+            // outline prints it as one `Rent` row, no `Housing` heading over it.
+            expect(column(ws, 18, 2)).toEqual(["Housing", "Rent"]);
+            expect(ws.getCell("A19").note).toBe("expenses:housing:rent");
+        });
+
+        it("indents the engine's outline by level, a heading with no figure", async () => {
+            const ws = await readBack(await build(decodeIncomeStatementReport(OUTLINED_INCOME_STATEMENT)), "Income Statement");
+            const at = column(ws, 1, 40).indexOf("Travel") + 1;
+
+            expect(column(ws, at, 5)).toEqual(["Travel", "Flights", "Lodging", "Lodging (other)", "Hotels"]);
+            expect([1, 2, 3, 4].map((i) => ws.getCell(at + i, 1).alignment?.indent)).toEqual([2, 2, 3, 3]);
+            // The heading prints its label only: its subtree is already in the
+            // rows under it and in the group's total, so a figure would count it twice.
+            expect(ws.getCell(at + 2, 2).value).toBeNull();
+            expect(ws.getCell(at + 2, 1).note).toBe("expenses:travel:lodging");
+            expect([ws.getCell(at + 1, 2).value, ws.getCell(at + 3, 2).value, ws.getCell(at + 4, 2).value]).toEqual([412.8, 43.6, 200]);
+            expect(ws.getCell(at + 4, 1).note).toBe("expenses:travel:lodging:hotels");
+            // The group row still carries the group total.
+            expect(ws.getCell(at, 2).value).toBe(656.4);
+        });
+
+        it("adds an italic Budget column after Amount, a ruled Total row and the D14 footnote (plan 50)", async () => {
+            const ws = await readBack(await build(decodeIncomeStatementReport(BUDGETED_INCOME_STATEMENT)), "Income Statement");
+            expect([1, 2, 3, 4].map((col) => ws.getCell(4, col).value)).toEqual(["Account", "Amount ($)", "Budget ($)", "Other commodities"]);
+            expect(ws.getCell(4, 3).font?.italic).toBe(true);
+
+            const at = column(ws, 1, 60).indexOf("Travel") + 1;
+            expect(column(ws, at, 6)).toEqual(["Travel", "Flights", "Lodging", "Lodging (other)", "Hotels", "Total Lodging"]);
+            expect(column(ws, at, 6, 3)).toEqual([800, 500, null, null, null, 300]);
+            expect(ws.getCell(at + 1, 3).font?.italic).toBe(true);
+            // The Total row: the heading's subtree beside its goal, ruled and bold.
+            const total = at + 5;
+            expect(ws.getCell(total, 2).value).toBe(243.6);
+            expect(ws.getCell(total, 1).font?.bold).toBe(true);
+            expect(ws.getCell(total, 1).border?.top?.style).toBe("thin");
+            expect(ws.getCell(total, 1).note).toBe("expenses:travel:lodging");
+
+            const labels = column(ws, 1, 60);
+            const sectionTotal = labels.indexOf("Total Expenses") + 1;
+            expect(ws.getCell(sectionTotal, 3).value).toBe(1000);
+            expect(ws.getCell(sectionTotal + 1, 1).value).toBe("Budget for People spans groups: shown in section total only.");
+            expect(ws.getCell(sectionTotal + 1, 1).font?.italic).toBe(true);
+            const net = labels.indexOf("Net income (revenue − expenses)") + 1;
+            expect(ws.getCell(net, 3).value).toBe(-1000);
+            // Revenue has no goal: its total's Budget cell stays empty.
+            expect(ws.getCell(labels.indexOf("Total Revenue") + 1, 3).value).toBeNull();
         });
 
         it("writes every group EXPANDED, whatever is collapsed on screen", async () => {
@@ -632,16 +703,16 @@ describe("UNIT export/xlsx", () => {
             // A disclosure triangle is a way to read a long statement on a
             // screen; an exported statement missing the accounts the reader
             // happened to have closed is just an incomplete document.
-            expect(column(ws, 21, 4)).toEqual(["Taxes", "expenses:taxes", "federal", "state"]);
+            expect(column(ws, 20, 4)).toEqual(["Taxes", "Federal", "State", "Transport"]);
         });
 
         it("keeps a line that ran in only one period, with an explicit zero on the other side", async () => {
             const ws = await readBack(await build(), "Income Statement");
 
             // `expenses:travel:flights` is current-only, `…:activities` prior-only.
-            expect(column(ws, 29, 3)).toEqual(["activities", "flights", "lodging"]);
-            expect([ws.getCell("B29").value, ws.getCell("C29").value]).toEqual([0, 39.6]);
-            expect([ws.getCell("B30").value, ws.getCell("C30").value]).toEqual([412.8, 0]);
+            expect(column(ws, 26, 3)).toEqual(["Activities", "Flights", "Lodging"]);
+            expect([ws.getCell("B26").value, ws.getCell("C26").value]).toEqual([0, 39.6]);
+            expect([ws.getCell("B27").value, ws.getCell("C27").value]).toEqual([412.8, 0]);
         });
 
         it("ends on net income, and restates nothing above it", async () => {
@@ -652,15 +723,15 @@ describe("UNIT export/xlsx", () => {
             // figures is already a `Total …` row above, so the block was
             // duplicated totals in a document whose whole point is that nothing
             // is printed twice.
-            expect(column(ws, 38, 3)).toEqual(["Net income (revenue − expenses)", null, null]);
-            expect(ws.getCell("A38").border?.top?.style).toBe("medium");
+            expect(column(ws, 35, 3)).toEqual(["Net income (revenue − expenses)", null, null]);
+            expect(ws.getCell("A35").border?.top?.style).toBe("medium");
             // `isSummary` is shared with the view precisely so the workbook cannot
             // claim a different bottom line — or a different margin — from the
             // page it was exported from.
-            expect(ws.getCell("B38").value).toBe(5383.52);
-            expect(ws.getCell("C38").value).toBe(10880.79);
-            expect(ws.getCell("D38").value).toBe(-0.505);
-            expect(ws.getCell("A38").font.bold).toBe(true);
+            expect(ws.getCell("B35").value).toBe(5383.52);
+            expect(ws.getCell("C35").value).toBe(10880.79);
+            expect(ws.getCell("D35").value).toBe(-0.505);
+            expect(ws.getCell("A35").font.bold).toBe(true);
         });
 
         it("writes each section total exactly once, in its own box's footer", async () => {
@@ -749,10 +820,10 @@ describe("UNIT export/xlsx", () => {
             });
             const ws = await readBack(await build(unpriced), "Income Statement");
 
-            expect(ws.getCell("A38").value).toBe("Net income (revenue − expenses)");
-            expect(ws.getCell("B38").value).toBe(5383.52);
-            expect(ws.getCell("C38").value).toBe("5 GLD"); // no prior and no % here, so the extras are in C
-            expect(ws.getCell("D38").value).toBeNull();
+            expect(ws.getCell("A35").value).toBe("Net income (revenue − expenses)");
+            expect(ws.getCell("B35").value).toBe(5383.52);
+            expect(ws.getCell("C35").value).toBe("5 GLD"); // no prior and no % here, so the extras are in C
+            expect(ws.getCell("D35").value).toBeNull();
         });
 
         it("attributes each period's unconverted commodities to that period's own column", async () => {
@@ -771,9 +842,9 @@ describe("UNIT export/xlsx", () => {
             });
             const ws = await readBack(await build(unpriced), "Income Statement");
 
-            expect(ws.getCell("A38").value).toBe("Net income (revenue − expenses)");
-            expect(ws.getCell("E38").value).toBe("5 GLD"); // the current window's, and ONLY the current window's — not "5 GLD, 3 GLD"
-            expect(ws.getCell("F38").value).toBe("3 GLD"); // the prior window's
+            expect(ws.getCell("A35").value).toBe("Net income (revenue − expenses)");
+            expect(ws.getCell("E35").value).toBe("5 GLD"); // the current window's, and ONLY the current window's — not "5 GLD, 3 GLD"
+            expect(ws.getCell("F35").value).toBe("3 GLD"); // the prior window's
             // A line with nothing unconverted writes neither cell.
             expect(ws.getCell("E10").value).toBeNull();
             expect(ws.getCell("F10").value).toBeNull();
@@ -808,14 +879,14 @@ describe("UNIT export/xlsx", () => {
             // …and a multi-commodity one joins in ONE cell, per period, sorted
             // and rounded on the Dec — the same figures the screen renders as
             // headline-plus-footnotes for a no-base report.
-            expect(ws.getCell("B38").value).toBe("5383.52 $, 5 GLD");
-            expect(ws.getCell("C38").value).toBe("10880.79 $, 3 GLD");
+            expect(ws.getCell("B35").value).toBe("5383.52 $, 5 GLD");
+            expect(ws.getCell("C35").value).toBe("10880.79 $, 3 GLD");
             // No base: no single figure to take a change of (`pctChange` is
             // null, as on screen) and NO extras column written — the leftovers are in
             // the Amount cells, and repeating them would print them twice.
-            expect(ws.getCell("D38").value).toBeNull();
-            expect(ws.getCell("E38").value).toBeNull();
-            expect(ws.getCell("F38").value).toBeNull();
+            expect(ws.getCell("D35").value).toBeNull();
+            expect(ws.getCell("E35").value).toBeNull();
+            expect(ws.getCell("F35").value).toBeNull();
         });
     });
 
@@ -1081,6 +1152,9 @@ describe("statement of cash flows workbook", () => {
     const title = "Statement of Cash Flows";
     const build = (report = CASH_FLOW) => buildCashFlowWorkbook(report, {title, params: "2026-01-01 to 2026-03-31, monthly"}, "$");
     const column = (ws: Worksheet, from: number, count: number, col = 1) => Array.from({length: count}, (_, i) => ws.getCell(from + i, col).value);
+    /** A cell note's text: exceljs reads a note back as rich text. */
+    const noteText = (note: unknown): string | undefined =>
+        typeof note === "string" ? note : (note as {texts?: {text: string}[]} | undefined)?.texts?.map((t) => t.text).join("");
 
     it("heads a column per month, a Total and the other commodities", async () => {
         const ws = await readBack(await build(), title);
@@ -1094,13 +1168,13 @@ describe("statement of cash flows workbook", () => {
         expect(column(ws, 5, 11)).toEqual([
             "Operating activities",
             "Net income",
-            "assets:equipment:accum-depreciation",
-            "assets:prepaid",
-            "assets:receivable",
+            "Accum Depreciation",
+            "Prepaid",
+            "Receivable",
             "Payables",
-            "liabilities:card",
-            "liabilities:payable",
-            "liabilities:deferred-revenue",
+            "Card",
+            "Payable",
+            "Deferred Revenue",
             "Net cash from operating activities",
             null,
         ]);
@@ -1118,6 +1192,31 @@ describe("statement of cash flows workbook", () => {
         expect(ws.getCell(row("Beginning cash"), 5).value).toBe(10000);
         expect(ws.getCell(row("Ending cash"), 5).value).toBe(19500);
         expect(ws.getCell(row("Net change in cash"), 5).font?.bold).toBe(true);
+    });
+
+    it("indents outline rows by level, leaves a heading's figures blank, and notes each label's full path", async () => {
+        const receivable: CfLine = {
+            name: "assets:receivable",
+            source: "account",
+            label: "Receivable",
+            account: "assets:receivable",
+            total: flow([-700, 0, 0]),
+            rows: [
+                {...cfRow("assets:receivable:clients", "Clients", flow([-700, 0, 0])), kind: "heading"},
+                cfRow("assets:receivable:clients:acme", "Acme", flow([-500, 0, 0]), 1),
+                cfRow("assets:receivable:clients:globex", "Globex", flow([-200, 0, 0]), 1),
+            ],
+        };
+        const report: CashFlowStatement = {...CASH_FLOW, sections: [{...CASH_FLOW.sections[0], lines: [receivable]}]};
+        const ws = await readBack(await build(report), title);
+        expect(column(ws, 7, 4)).toEqual(["Receivable", "Clients", "Acme", "Globex"]);
+        // Under the section (indent 1): the line, then the heading one in, its clients two in.
+        expect([7, 8, 9, 10].map((row) => ws.getCell(row, 1).alignment?.indent)).toEqual([1, 2, 3, 3]);
+        expect([2, 3, 4, 5].map((col) => ws.getCell(8, col).value ?? null)).toEqual([null, null, null, null]);
+        expect(ws.getCell(9, 5).value).toBe(-500);
+        expect(noteText(ws.getCell(7, 1).note)).toBe("assets:receivable");
+        expect(noteText(ws.getCell(8, 1).note)).toBe("assets:receivable:clients");
+        expect(noteText(ws.getCell(10, 1).note)).toBe("assets:receivable:clients:globex");
     });
 
     it("has a single Amount column on Interval = Total", async () => {

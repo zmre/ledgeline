@@ -201,9 +201,12 @@ describe("COMPONENT BalanceSheetView", () => {
             await tick();
 
             const accounts = [...container.querySelectorAll("[data-account]")].map((el) => el.getAttribute("data-account"));
-            // `assets:bank:wise:eur`, not `assets:bank:wise`: the tab asks for an
-            // unclamped report and the empty parent folds into it (compressSectionRows).
-            expect(accounts).toEqual(["assets:bank", "assets:bank:checking", "assets:bank:savings", "assets:bank:wise:eur"]);
+            // The engine's outline (plan 50): the shared `assets:bank` is the
+            // group line itself, and the lone `wise` → `eur` chain is one row.
+            expect(accounts).toEqual(["assets:bank:checking", "assets:bank:savings", "assets:bank:wise:eur"]);
+            // D6: the label reads as written, the full path is its hover text.
+            const eur = container.querySelector('[data-account="assets:bank:wise:eur"] th span');
+            expect([eur?.textContent?.trim(), eur?.getAttribute("title")]).toEqual(["Eur", "assets:bank:wise:eur"]);
             expect(disclosure("Cash and cash equivalents").getAttribute("aria-expanded")).toBe("true");
         });
 
@@ -272,12 +275,12 @@ describe("COMPONENT BalanceSheetView", () => {
             mount();
             await press("j");
             await press("Enter"); // expand the cash group
-            await press("j"); // onto assets:bank
+            await press("j"); // onto assets:bank:checking
             await press("Enter");
 
             // `preset: "all"`, not the report's as-of date: that date lives in the
             // controls, not in the row, so narrowing to it would read as data loss.
-            expect(openJournal).toHaveBeenCalledWith({accounts: ["assets:bank"], preset: "all", pin: {account: "assets:bank"}});
+            expect(openJournal).toHaveBeenCalledWith({accounts: ["assets:bank:checking"], preset: "all", pin: {account: "assets:bank:checking"}});
         });
 
         it("walks to the last row with G and back to the first with gg", async () => {
@@ -677,9 +680,19 @@ describe("COMPONENT BalanceSheetView — the Reports tab's multi-period sheet", 
         mountSheet();
         await press("j");
         await press("Enter"); // expand the cash group
-        await press("j"); // onto its first account
+        await press("j"); // past the `Bank` heading (not a cursor stop), onto its first account
         await press("Enter");
-        expect(openJournal).toHaveBeenCalledWith({accounts: ["assets:bank"], preset: "all", pin: {account: "assets:bank"}});
+        expect(openJournal).toHaveBeenCalledWith({accounts: ["assets:bank:checking"], preset: "all", pin: {account: "assets:bank:checking"}});
+    });
+
+    it("prints an outline heading with no figure and its path on hover (plan 50 D4, D6)", async () => {
+        mountSheet();
+        await press("j");
+        await press("Enter"); // expand the cash group
+        const heading = screen.getAllByTestId("bs-heading")[0];
+        expect(heading.querySelector("th span")?.textContent?.trim()).toBe("Bank");
+        expect(heading.querySelector("th span")?.getAttribute("title")).toBe("assets:bank");
+        expect([...heading.querySelectorAll("td")].map((td) => td.textContent?.trim())).toEqual([""]);
     });
 
     it("keeps the current / non-current bands, each with a subtotal per column", () => {

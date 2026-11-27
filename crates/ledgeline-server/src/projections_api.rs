@@ -82,8 +82,8 @@ use ledgeline_core::projections::{
 use ledgeline_core::reports::account_types::{AccountType, AccountTypes, parse_account_type_tag};
 use ledgeline_core::reports::periods::MAX_BUCKETS;
 use ledgeline_core::reports::{
-    BudgetOpts, Interval, Valuation, account_decls, declared_types, periods::bucket_label,
-    pivot_balance_sheets, signed_entry,
+    BudgetOpts, Interval, ReportError, Valuation, account_decls, declared_types,
+    outline::account_names, periods::bucket_label, pivot_balance_sheets, signed_entry,
 };
 use ledgeline_core::vault::{Revision, VaultError};
 use ledgeline_core::view::rows::{Row, RowContext, haystack};
@@ -900,22 +900,29 @@ struct WireCompareCash {
 /// [`reference_statements`]: ledgeline_core::projections::reference_statements
 /// [`StatementShape`]: ledgeline_core::reports::StatementShape
 /// [`CfTags::from_journal`]: ledgeline_core::reports::CfTags::from_journal
+///
+/// `names` are the journal's own `name:` tags, for the balance sheet's outline
+/// labels (plan 50).
 fn wire_statements(
     statements: &ProjectedStatements,
-) -> (
-    WireBalanceSheetColumns,
-    WireIncomeStatementReport,
-    WireCashFlow,
-) {
+    names: &BTreeMap<String, String>,
+) -> Result<
     (
+        WireBalanceSheetColumns,
+        WireIncomeStatementReport,
+        WireCashFlow,
+    ),
+    ReportError,
+> {
+    Ok((
         WireBalanceSheetColumns::new(
-            &pivot_balance_sheets(&statements.balance_sheet),
+            &pivot_balance_sheets(&statements.balance_sheet, names)?,
             &statements.spans,
             "market",
         ),
         WireIncomeStatementReport::columns(&statements.income_statement, "market"),
         WireCashFlow::from(&statements.cash_flow),
-    )
+    ))
 }
 
 /// The Journal reading: the generated transactions only, in the journal
@@ -2008,6 +2015,8 @@ pub(crate) async fn run(
         // natural signs. With `empty`, the known accounts are
         // `known_accounts`: hledger's `-E --declared`, widened to every
         // account the journal ever posts to.
+        // Plan 50: the balance sheet's outline labels.
+        let names = account_names(journal);
         let statement_opts = StatementOpts {
             valuation: Valuation::Market,
             bs_depth: None,
@@ -2060,7 +2069,7 @@ pub(crate) async fn run(
                     })
                     .transpose()?;
                 let (balance_sheet, income_statement, cash_flow) =
-                    wire_statements(&compared_as_projected(compared));
+                    wire_statements(&compared_as_projected(compared), &names)?;
                 Some(WireComparison {
                     from: backtest_key.cutoff.clone(),
                     actuals_end: projection.start.clone(),
@@ -2083,7 +2092,7 @@ pub(crate) async fn run(
             accounts,
             journal: generated,
             compare,
-            ..WireProjection::new(&projection, wire_statements(&statements))
+            ..WireProjection::new(&projection, wire_statements(&statements, &names)?)
         })
     })
     .await

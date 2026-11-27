@@ -49,9 +49,10 @@ export type ReportQuery =
     // at `asOf`. A separate variant, not optional keys, so a single-date query
     // never changes identity when the (inert) start moves.
     | {tab: "bs"; asOf: string; from: string; interval: PeriodInterval}
-    // No `depth`: the grouped income statement has no such control and its
-    // endpoint takes no such param (plans/13), exactly as `bs` dropped it.
-    | {tab: "is"; from: string; to: string; interval: ReportInterval}
+    // `depth` null = unlimited, which the endpoint spells by omitting it
+    // (plan 50 D8); a number clips each group's outline rows.
+    // `budget`: the Budget column (plan 50 D12), so toggling it refetches.
+    | {tab: "is"; from: string; to: string; interval: ReportInterval; depth: number | null; budget: boolean}
     // From/To, not End + Periods (plans/24): only the range and its grain.
     | {tab: "cf"; from: string; to: string; interval: ReportInterval; depth: number}
     | {tab: "nw"; end: string; interval: ReportInterval; count: number; depth: number}
@@ -70,7 +71,7 @@ export function buildReportQuery(params: ReportParams): ReportQuery {
                 ? {tab: "bs", asOf: params.asOf, from: params.bsFrom, interval: params.interval}
                 : {tab: "bs", asOf: params.asOf};
         case "is":
-            return {tab: "is", from: params.from, to: params.to, interval: params.interval};
+            return {tab: "is", from: params.from, to: params.to, interval: params.interval, depth: params.isDepth, budget: params.isBudget};
         case "cf":
             return {tab: "cf", from: params.cfFrom, to: params.cfTo, interval: params.interval, depth: params.depth};
         case "nw":
@@ -124,9 +125,8 @@ async function fetchReport(api: LedgelineApi, query: ReportQuery): Promise<AnyRe
             // `/api/reports/incomestatement` still exists and is still
             // golden-tested — it is just no longer what the tab renders.
             //
-            // No `depth`, and no `compare` control: on Total the engine's
-            // default (the previous equal-length window) is what the comparison
-            // column shows. Any other interval is one column per bucket with NO
+            // No `compare` control: on Total the engine's default (the previous
+            // equal-length window) is what the comparison column shows. Any other interval is one column per bucket with NO
             // comparison, which the engine requires be said out loud.
             return decodeIncomeStatementReport(
                 await api.incomeStatementGrouped({
@@ -134,6 +134,8 @@ async function fetchReport(api: LedgelineApi, query: ReportQuery): Promise<AnyRe
                     to: query.to,
                     interval: query.interval,
                     compare: query.interval === "total" ? undefined : "none",
+                    depth: query.depth ?? undefined,
+                    budget: query.budget,
                 })
             );
         case "cf":

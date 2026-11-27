@@ -37,7 +37,7 @@ export function widenSheet(sheet: BalanceSheetColumns, columns: IsBucket[]): Bal
             ...section,
             groups: section.groups.map((group) => ({
                 ...group,
-                rows: group.rows.map((row) => ({...row, own: across(row.own), inclusive: across(row.inclusive)})),
+                rows: group.rows.map((row) => ({...row, amount: across(row.amount)})),
                 total: across(group.total),
             })),
             subsections: section.subsections.map((band) => ({...band, total: across(band.total)})),
@@ -230,7 +230,8 @@ export function journalFixture(n = 2): ForecastJournal {
 // ---------------------------------------------------------------------------
 
 /** The per-column arrays of a decoded report: re-picked, and a picked column in the second half keyed `projected:`. */
-const COLUMN_ARRAYS = new Set(["buckets", "columns", "periods", "values", "own", "inclusive", "total", "totals", "netWorth", "check", "balanced"]);
+// Plan 50: `amount` is the balance sheet outline row's per-column figure.
+const COLUMN_ARRAYS = new Set(["buckets", "columns", "periods", "values", "own", "inclusive", "amount", "total", "totals", "netWorth", "check", "balanced"]);
 
 /**
  * `report` with every per-column array (of length `width`) re-picked by

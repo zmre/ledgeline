@@ -77,6 +77,29 @@ export type BsSectionKind = "assets" | "liabilities" | "equity";
  */
 export type GroupSource = "tag" | "type" | "commodity" | "segment" | "computed";
 
+/**
+ * Plan 50 outline fields, carried by every statement row the engine lays out
+ * (P&L, Cash Flow, Balance Sheet). The engine decides structure and labels;
+ * the UI only indents by `level`, hides amounts on headings, and shows
+ * `account` (the full path) on hover.
+ *
+ * - `heading`: a grouping row; print the label, no amount.
+ * - `account`: an account, or a depth-clipped ancestor standing for its subtree.
+ * - `other`: a heading account's own postings, labelled "<label> (other)".
+ * - `total`: "Total <heading>", closing a heading's children. Only the P&L
+ *   sends one, and only for a budgeted heading with the Budget column on
+ *   (plan 50 D4 exception): it carries the heading's subtree and its goal.
+ */
+export type OutlineKind = "heading" | "account" | "other" | "total";
+
+export interface OutlineFields {
+    kind: OutlineKind;
+    /** What to print: own `name:` tag, else a humanized last segment. */
+    label: string;
+    /** Indent within the line; 0 = directly under the line's heading. */
+    level: number;
+}
+
 /** Which valuation produced the figures. Mirrors the `value=` query parameter. */
 export type BsValuation = "market" | "cost" | "none";
 
@@ -115,6 +138,17 @@ export interface BsSubsection {
     total: MixedAmount;
 }
 
+/**
+ * One outline row of a balance sheet group (plan 50). `amount` is the sum of
+ * the accounts the row stands for; on a `heading` it is the subtree's sum and
+ * is NOT displayed (D4: the group's total covers it).
+ */
+export interface BsRow<A = MixedAmount> extends OutlineFields {
+    /** The full account path: the hover text and the journal drill-down. */
+    account: string;
+    amount: A;
+}
+
 /** One named bucket of accounts within a section, with its own subtotal. */
 export interface BsGroup {
     name: string;
@@ -131,12 +165,12 @@ export interface BsGroup {
      */
     term: BsTerm | null;
     /**
-     * The depth-clamped member rows, ancestors included and lexically sorted
-     * (as every other report's rows are), so `compressSectionRows` applies.
-     * EMPTY for a computed group — "Retained earnings" summarizes accounts that
-     * are not on the balance sheet at all, so it has a total and no rows.
+     * The group's outline (plan 50), in display order, laid out and labelled by
+     * the engine. EMPTY for a computed group — "Retained earnings" summarizes
+     * accounts that are not on the balance sheet at all, so it has a total and
+     * no rows.
      */
-    rows: ReportRow[];
+    rows: BsRow[];
     /** Summed over MEMBERS, not over displayed rows, so it is depth-independent (RPT-1/RPT-4). */
     total: MixedAmount;
 }
@@ -205,13 +239,8 @@ export interface BalanceSheetReport {
 // reads as an empty amount in the earlier ones rather than being missing, and
 // every consumer shows the same rows in the same order.
 
-/** One account row across every column. */
-export interface BsColumnRow {
-    account: string;
-    depth: number;
-    own: MixedAmount[];
-    inclusive: MixedAmount[];
-}
+/** One outline row across every column: one amount per column. */
+export type BsColumnRow = BsRow<MixedAmount[]>;
 
 /** One group across every column. Keyed, like `BsGroup`, by section, term and name. */
 export interface BsColumnGroup {
@@ -266,8 +295,9 @@ export interface BalanceSheetColumns {
 //      prior period beside the current one.
 //   2. A section can trail SUBTOTALS (Gross profit, EBITDA, …), which print
 //      between the boxes rather than inside them.
-//   3. Rows carry one rolled-up figure, not the `own`/`inclusive` pair, so
-//      chain compression tests amounts rather than `own` (`compressIsRows`).
+//   3. Rows carry one figure, not the `own`/`inclusive` pair, and arrive as
+//      the engine's readable outline (plan 50): headings, labels and indent
+//      are decided in Rust, so nothing here compresses chains.
 //
 // `kind` is added by the decoder and is not on the wire. THREE report types now
 // carry a `sections` array (this one, `SectionedReport`, `BalanceSheetReport`),
@@ -354,22 +384,41 @@ export type IsSectionKind = "revenue" | "cogs" | "opex" | "depreciation" | "inte
  */
 export type IsSubtotalKind = "grossProfit" | "ebitda" | "operatingIncome" | "pretaxIncome";
 
-/** One account inside a group. `amounts` is the subaccount-INCLUSIVE roll-up. */
-export interface IsRow {
+/**
+ * One outline row inside a group (plan 50). `amounts` is the figure of the
+ * members the row stands for: a heading's or a depth-clipped account's whole
+ * subtree within the group, an `other` row's own postings. Headings print no
+ * amount; `account` is the full path, shown on hover.
+ */
+export interface IsRow extends OutlineFields {
     account: string;
     /** Number of `:`-separated segments in `account`. */
     depth: number;
     amounts: Amounts;
+    /**
+     * The Budget column (plan 50 D13): the goals placed on this row or beneath
+     * it over the whole `[from, to]`, display-signed. Null when no goal sits
+     * here, and always null when `IncomeStatementReport.budgeted` is false.
+     */
+    budget: MixedAmount | null;
+}
+
+/** A goal shown only in its section's total, because its accounts span groups (plan 50 D14). */
+export interface UnplacedBudget {
+    account: string;
+    label: string;
 }
 
 /** One named line within a section, with its own subtotal. */
 export interface IsGroup {
     name: string;
     source: GroupSource;
-    /** Member rows, ancestors included and lexically sorted, so chain compression applies. */
+    /** Outline rows in display order: indent by `level`, headings carry no amount. */
     rows: IsRow[];
     /** Summed over MEMBERS, never over displayed rows, so collapsing a group cannot change it. */
     total: Amounts;
+    /** Every goal placed in this group, or null (see `IsRow.budget`). */
+    budget: MixedAmount | null;
 }
 
 /**
@@ -381,6 +430,8 @@ export interface IsSubtotal {
     kind: IsSubtotalKind;
     label: string;
     total: Amounts;
+    /** The same running total over the boxes' goals, or null. */
+    budget: MixedAmount | null;
 }
 
 /**
@@ -399,6 +450,10 @@ export interface IsSection {
     total: Amounts;
     /** Ladder lines printed below this box. Usually empty; never null. */
     trailing: IsSubtotal[];
+    /** Every goal in this box, placed in a group or not, or null. */
+    budget: MixedAmount | null;
+    /** Goals counted only in `budget` because their accounts span groups (plan 50 D14). Empty without the Budget column. */
+    budgetUnplaced: UnplacedBudget[];
 }
 
 /** The grouped, valued income statement: ladder-ordered boxes and a bottom line. */
@@ -429,6 +484,10 @@ export interface IncomeStatementReport {
     sections: IsSection[];
     /** The bottom line, display-signed (positive = a profit). */
     netIncome: Amounts;
+    /** Whether the Budget column was asked for (`budget=1`): the wire's `netIncomeBudget` key is present. */
+    budgeted: boolean;
+    /** The goals' net income, or null (no goal on the statement, or no Budget column). */
+    netIncomeBudget: MixedAmount | null;
     /**
      * Whether any member resolved to a section other than revenue/opex — i.e.
      * whether the journal asked for the GAAP ladder at all.
@@ -438,6 +497,8 @@ export interface IncomeStatementReport {
      * guessing that would relabel a box the engine had already named.
      */
     multiStep: boolean;
+    /** The deepest member account's segment count, unclipped: the Depth slider's max (plan 50 D8). 0 with no members. */
+    maxDepth: number;
     /** Present only when something noteworthy happened (commodities with no price to `base`). */
     meta?: ReportMeta;
 }
@@ -720,15 +781,26 @@ export type CfLineSource = "group" | "account";
 
 export type CfSectionKind = "operating" | "investing" | "financing";
 
-/** One account inside a line: its contribution (−Δ) per column. */
-export interface CfRow {
+/**
+ * One outline row inside a line (plan 50): an account, a heading over two or
+ * more of the line's accounts, or a heading's own postings. Its contribution
+ * (−Δ) per column is the sum of the accounts it stands for; a heading's is
+ * not printed.
+ */
+export interface CfRow extends OutlineFields {
+    /** Full account path, for hover. */
     account: string;
     amounts: CfColumns;
 }
 
 export interface CfLine {
+    /** The fold key's name: the `cfgroup:` value, or the account path at the report's depth. */
     name: string;
     source: CfLineSource;
+    /** What to print: the group name, or the account's own `name:` / humanized last segment. */
+    label: string;
+    /** The line's account (full path, for hover); null for a group line. */
+    account: string | null;
     total: CfColumns;
     rows: CfRow[];
 }
@@ -742,7 +814,8 @@ export interface CfSection {
     total: CfColumns;
 }
 
-export interface CfCashRow {
+/** One outline row inside a cash line, as `CfRow`. */
+export interface CfCashRow extends OutlineFields {
     account: string;
     beginning: CfColumns;
     ending: CfColumns;
@@ -751,6 +824,10 @@ export interface CfCashRow {
 export interface CfCashLine {
     name: string;
     source: CfLineSource;
+    /** As `CfLine.label`. */
+    label: string;
+    /** As `CfLine.account`. */
+    account: string | null;
     beginning: CfColumns;
     ending: CfColumns;
     rows: CfCashRow[];
@@ -773,4 +850,6 @@ export interface CashFlowStatement {
     endingCash: CfColumns;
     /** Net change equals ending − beginning cash in every column. False only when a posting date splits a transaction across columns. */
     reconciles: boolean;
+    /** Segments in the deepest account behind any line: the Depth control's max (plan 50 D9). */
+    maxDepth: number;
 }

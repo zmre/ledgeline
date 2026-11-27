@@ -947,6 +947,10 @@ export interface GroupedIncomeStatementQuery {
      * comparison — so it must travel with `compare: "none"`.
      */
     interval?: string;
+    /** Clip each group's outline rows to this many account segments (plan 50 D8). Absent = unlimited. */
+    depth?: number;
+    /** Add the Budget column (plan 50 D12): every row and total gains a `budget` figure. */
+    budget?: boolean;
 }
 /**
  * The flow graphs' query (the Sankey diagrams above the P&L's boxes). Note what
@@ -1557,6 +1561,8 @@ export class LedgelineApi {
                 valueIn: query.valueIn,
                 compare: query.compare,
                 interval: query.interval,
+                depth: query.depth,
+                budget: query.budget === true ? "1" : undefined,
             })}`
         );
     }

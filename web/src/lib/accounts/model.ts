@@ -42,12 +42,13 @@ export interface SpecialTagSpec {
 /**
  * Every special tag this app's reports classify accounts by, in the order
  * they read most naturally as a form: what the account fundamentally IS
- * (`type`), which statement box and line it lands in (`issection`/`isgroup`
+ * (`type`), what reports call it (`name`), which statement box and line it lands in (`issection`/`isgroup`
  * for the income statement, `bsgroup`/`bsterm` for the balance sheet,
  * `cfsection`/`cfgroup` for the cash flow statement), then the
  * holdings-specific pair, then `kpi` for Insights' startup metrics.
  *
  * Sourced from `reports/account_types.rs::parse_account_type_tag`,
+ * `reports/outline.rs` (row labels, plan 50),
  * `reports/income_statement.rs::parse_is_section_tag`,
  * `reports/account_groups.rs::parse_bs_term_tag`,
  * `reports/cash_flow_statement.rs::parse_cf_section_tag`,
@@ -70,6 +71,12 @@ export const SPECIAL_TAGS: readonly SpecialTagSpec[] = [
             {value: "V", label: "Conversion"},
             {value: "G", label: "Gain"},
         ],
+    },
+    {
+        key: "name",
+        label: "Display name",
+        help: "Display name in reports; not inherited.",
+        kind: "free",
     },
     {
         key: "issection",

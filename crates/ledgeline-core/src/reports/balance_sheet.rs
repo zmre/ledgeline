@@ -9,13 +9,13 @@ use super::account_groups::{
 use super::account_types::{AccountType, AccountTypes};
 use super::aggregate::{PostingFilter, account_totals, add_posting, at_depth, roll_up};
 use super::mixed_amount::MixedAmount;
+use super::outline::{OutlineKind, clip, outline};
 use super::prices::{PriceDb, ValuationMeta, priced_count, value_at};
 use super::sections::build_section;
-use super::types::{ReportMeta, ReportRow, SectionedReport};
+use super::types::{ReportMeta, SectionedReport};
 use crate::decimal::Dec;
 use crate::model::{Amount, Commodity, Posting, PriceDirective, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::Bound;
 
 /// Asset + liability balances as of `as_of` (INCLUSIVE: postings dated ≤
 /// `as_of`). Presentation matches `hledger bs`: liabilities are sign-flipped
@@ -144,12 +144,89 @@ pub struct BsGroup {
     /// receivable due this year and one due in five is genuinely two lines on a
     /// real statement.
     pub term: Option<BsTerm>,
-    /// The group's accounts, rolled up and clamped to `depth`. Empty for the
-    /// synthetic (`Computed`) lines, which stand for no accounts.
-    pub rows: Vec<ReportRow>,
-    /// Summed over the group's MEMBERS, not over `rows` — so it is
-    /// depth-independent (RPT-1/RPT-4).
+    /// The group's member accounts, each clipped to `depth` (a deeper account
+    /// folds into its ancestor, hledger's `--depth`), with its OWN figure on
+    /// the display basis, signed as displayed. Empty for the synthetic
+    /// (`Computed`) lines, which stand for no accounts, and at `Some(0)`.
+    ///
+    /// Data, not layout: [`Self::rows`] lays the plan 50 outline over it, and
+    /// [`pivot_balance_sheets`] lays one outline over every column's members.
+    pub members: BTreeMap<String, MixedAmount>,
+    /// Summed over the group's unclipped MEMBERS, so it is depth-independent
+    /// (RPT-1/RPT-4).
     pub total: MixedAmount,
+}
+
+impl BsGroup {
+    /// The group's outline rows (plan 50 D1–D6): headings only where two or
+    /// more members share an ancestor inside this group, labels from the
+    /// accounts' own `name:` tags (`names`) else a humanized last segment.
+    ///
+    /// # Errors
+    /// Returns [`ReportError`] on decimal overflow.
+    pub fn rows(
+        &self,
+        names: &BTreeMap<String, String>,
+    ) -> Result<Vec<BsRow<MixedAmount>>, ReportError> {
+        outline_rows(&self.members, names, MixedAmount::is_zero, |figures| {
+            Ok(figures
+                .into_iter()
+                .try_fold(MixedAmount::new(), |acc, ma| acc.ma_add(ma))?)
+        })
+    }
+}
+
+/// One outline row of a group (plan 50 D7): what the screen and the workbook
+/// print, already structured and labelled. `A` is one figure on a single-date
+/// sheet, one per column on a pivoted one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BsRow<A> {
+    /// Heading, account, or a heading account's own postings.
+    pub kind: OutlineKind,
+    /// What to print.
+    pub label: String,
+    /// The full account path the row stands for (hover, journal drill-down).
+    pub account: String,
+    /// Indent below the group line, 0 = directly under it.
+    pub level: usize,
+    /// The row's members summed. On a HEADING this is its subtree's sum, which
+    /// D4 says is never printed (the group total covers it); it is carried so
+    /// no consumer has to re-add rounded rows to get it.
+    pub amount: A,
+}
+
+/// The outline over `members` (each account's own figure, of type `A`), each
+/// row's amount being `sum` over the figures of the members it shows.
+///
+/// A member that `is_zero` (on a pivot: zero in EVERY column) is left out
+/// before the outline is built, so a closed account with nothing in the shown
+/// dates is not listed, and a heading it alone would have earned is not
+/// either. Totals are summed over members elsewhere, so dropping zeros can't
+/// move them.
+fn outline_rows<A>(
+    members: &BTreeMap<String, A>,
+    names: &BTreeMap<String, String>,
+    is_zero: impl Fn(&A) -> bool,
+    sum: impl Fn(Vec<&A>) -> Result<A, ReportError>,
+) -> Result<Vec<BsRow<A>>, ReportError> {
+    let accounts: BTreeSet<String> = members
+        .iter()
+        .filter(|(_, figure)| !is_zero(figure))
+        .map(|(account, _)| account.clone())
+        .collect();
+    outline(&accounts, None, names)
+        .into_iter()
+        .map(|node| {
+            let amount = sum(node.members.iter().filter_map(|m| members.get(m)).collect())?;
+            Ok(BsRow {
+                kind: node.kind,
+                label: node.label,
+                account: node.account,
+                level: node.level,
+                amount,
+            })
+        })
+        .collect()
 }
 
 /// One half of a box: its subheading and its subtotal.
@@ -664,14 +741,8 @@ impl<'a> SheetBuilder<'a> {
             } else {
                 bs_terms
             };
-            let mut section_groups = build_groups(
-                &members,
-                &display,
-                &account_groups,
-                self.depth,
-                flip,
-                section_terms,
-            )?;
+            let mut section_groups =
+                build_groups(&members, &account_groups, self.depth, flip, section_terms)?;
             if kind == BsSectionKind::Equity {
                 // Retained earnings is a real line even at zero; the valuation
                 // adjustment only exists when the display basis moved off cost.
@@ -687,7 +758,7 @@ impl<'a> SheetBuilder<'a> {
                         name: name.to_string(),
                         source: GroupSource::Computed,
                         term: None,
-                        rows: Vec::new(),
+                        members: BTreeMap::new(),
                         total: amount.clone(),
                     });
                 }
@@ -1098,19 +1169,9 @@ fn group_order(term: Option<BsTerm>, name: &str, source: GroupSource) -> (usize,
 // Pivoted columns — plans/28-projected-statements.md, Phase 4
 // ===========================================================================
 
-/// One account row across every column: `own` and `inclusive` per column,
-/// empty where the column's group had no such row.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BsColumnRow {
-    /// Full, colon-delimited account name.
-    pub account: String,
-    /// Number of `:`-separated segments in `account`.
-    pub depth: usize,
-    /// [`ReportRow::own`], per column.
-    pub own: Vec<MixedAmount>,
-    /// [`ReportRow::inclusive`], per column.
-    pub inclusive: Vec<MixedAmount>,
-}
+/// One outline row across every column: its amount per column, empty where
+/// the column has none of the row's members.
+pub type BsColumnRow = BsRow<Vec<MixedAmount>>;
 
 /// One group across every column. A group present in only some columns has
 /// an empty total in the others.
@@ -1122,7 +1183,8 @@ pub struct BsColumnGroup {
     pub source: GroupSource,
     /// [`BsGroup::term`]. Part of the group's identity, as it is there.
     pub term: Option<BsTerm>,
-    /// The union of every column's rows, lexically ordered.
+    /// ONE outline over the union of every column's members, so every column
+    /// shows the same rows under the same headings.
     pub rows: Vec<BsColumnRow>,
     /// [`BsGroup::total`], per column.
     pub total: Vec<MixedAmount>,
@@ -1184,14 +1246,22 @@ pub struct BalanceSheetColumns {
 }
 
 /// Join `reports` into one [`BalanceSheetColumns`]: the union of their groups
-/// (keyed by section, term and name), bands (by term) and rows (by account),
-/// each carrying one figure per report and an empty amount where a report had
-/// no such node.
+/// (keyed by section, term and name) and bands (by term), each carrying one
+/// figure per report and an empty amount where a report had no such node.
+/// Each group's rows are the plan 50 outline over the union of its members
+/// across the columns (`names`: the accounts' own `name:` tags), so a member
+/// that exists in only some columns cannot give the columns different
+/// headings.
 ///
 /// Group order is the single-date order ([`group_order`]); since every
 /// column is already sorted by it, the union is too.
-#[must_use]
-pub fn pivot_balance_sheets(reports: &[BalanceSheetReport]) -> BalanceSheetColumns {
+///
+/// # Errors
+/// Returns [`ReportError`] on decimal overflow.
+pub fn pivot_balance_sheets(
+    reports: &[BalanceSheetReport],
+    names: &BTreeMap<String, String>,
+) -> Result<BalanceSheetColumns, ReportError> {
     let columns = reports.len();
     let empty = || vec![MixedAmount::new(); columns];
     let kinds: Vec<(BsSectionKind, String)> = reports
@@ -1211,8 +1281,10 @@ pub fn pivot_balance_sheets(reports: &[BalanceSheetReport]) -> BalanceSheetColum
             let mut total = empty();
             let mut groups: BTreeMap<(usize, usize, String, Option<BsTerm>), BsColumnGroup> =
                 BTreeMap::new();
-            let mut rows: BTreeMap<(Option<BsTerm>, String), BTreeMap<String, BsColumnRow>> =
-                BTreeMap::new();
+            let mut members: BTreeMap<
+                (Option<BsTerm>, String),
+                BTreeMap<String, Vec<MixedAmount>>,
+            > = BTreeMap::new();
             let mut subsections: BTreeMap<usize, BsColumnSubsection> = BTreeMap::new();
             for (column, report) in reports.iter().enumerate() {
                 let Some(section) = report.sections.iter().find(|s| s.kind == kind) else {
@@ -1232,19 +1304,10 @@ pub fn pivot_balance_sheets(reports: &[BalanceSheetReport]) -> BalanceSheetColum
                             total: empty(),
                         });
                     entry.total[column] = group.total.clone();
-                    let by_account = rows.entry((group.term, group.name.clone())).or_default();
-                    for row in &group.rows {
-                        let pivoted =
-                            by_account
-                                .entry(row.account.clone())
-                                .or_insert_with(|| BsColumnRow {
-                                    account: row.account.clone(),
-                                    depth: row.depth,
-                                    own: empty(),
-                                    inclusive: empty(),
-                                });
-                        pivoted.own[column] = row.own.clone();
-                        pivoted.inclusive[column] = row.inclusive.clone();
+                    let by_account = members.entry((group.term, group.name.clone())).or_default();
+                    for (account, figure) in &group.members {
+                        by_account.entry(account.clone()).or_insert_with(empty)[column] =
+                            figure.clone();
                     }
                 }
                 for band in &section.subsections {
@@ -1262,28 +1325,41 @@ pub fn pivot_balance_sheets(reports: &[BalanceSheetReport]) -> BalanceSheetColum
             let groups = groups
                 .into_values()
                 .map(|mut group| {
-                    group.rows = rows
+                    let by_account = members
                         .remove(&(group.term, group.name.clone()))
-                        .map(|by_account| by_account.into_values().collect())
                         .unwrap_or_default();
-                    group
+                    group.rows = outline_rows(
+                        &by_account,
+                        names,
+                        |per: &Vec<MixedAmount>| per.iter().all(MixedAmount::is_zero),
+                        |figures| {
+                            (0..columns).try_fold(empty(), |mut acc, column| {
+                                acc[column] =
+                                    figures.iter().try_fold(MixedAmount::new(), |sum, per| {
+                                        sum.ma_add(&per[column])
+                                    })?;
+                                Ok(acc)
+                            })
+                        },
+                    )?;
+                    Ok(group)
                 })
-                .collect();
-            BsColumnSection {
+                .collect::<Result<_, ReportError>>()?;
+            Ok(BsColumnSection {
                 kind,
                 title,
                 groups,
                 subsections: subsections.into_values().collect(),
                 total,
-            }
+            })
         })
-        .collect();
+        .collect::<Result<_, ReportError>>()?;
 
     let unpriced: BTreeSet<Commodity> = reports
         .iter()
         .flat_map(|report| report.meta.unpriced.iter().cloned())
         .collect();
-    BalanceSheetColumns {
+    Ok(BalanceSheetColumns {
         as_of: reports.iter().map(|report| report.as_of.clone()).collect(),
         base: reports.iter().find_map(|report| report.base.clone()),
         sections,
@@ -1296,10 +1372,10 @@ pub fn pivot_balance_sheets(reports: &[BalanceSheetReport]) -> BalanceSheetColum
         meta: ReportMeta {
             unpriced: unpriced.into_iter().collect(),
         },
-    }
+    })
 }
 
-/// Partition `members` into groups, each rolled up and clamped to `depth`.
+/// Partition `members` into groups, each with its members clipped to `depth`.
 ///
 /// When two accounts resolve to the same NAME by different steps (a `bsgroup:
 /// Investments` tag beside a commodity-detected `Investments`), the group keeps
@@ -1315,7 +1391,6 @@ pub fn pivot_balance_sheets(reports: &[BalanceSheetReport]) -> BalanceSheetColum
 /// them.
 fn build_groups(
     members: &BTreeMap<String, MixedAmount>,
-    sheet: &BTreeMap<String, MixedAmount>,
     groups: &AccountGroups,
     depth: Option<usize>,
     flip: bool,
@@ -1346,7 +1421,7 @@ fn build_groups(
                 name,
                 source,
                 term,
-                rows: group_rows(&group_members, sheet, depth, flip)?,
+                members: clipped(&group_members, depth, flip)?,
                 total: signed(&sum_all(&group_members)?, flip)?,
             })
         })
@@ -1387,119 +1462,32 @@ fn build_subsections(
     Ok(out)
 }
 
-/// One group's rows: its members rolled up into their ancestors, clamped to
-/// `depth`, with the ancestors that are not the group's own dropped.
+/// One group's members as the outline reads them: each clipped to `depth`
+/// (an account deeper than the clip folds its figure into its ancestor, so the
+/// outline shows the ancestor standing for its subtree, as hledger's
+/// `--depth`), signed as displayed. `Some(0)` is hledger's totals-only: no
+/// members, so no rows.
 ///
-/// # Which ancestors survive
-///
-/// Rolling up inside a group synthesizes every ancestor of every member,
-/// including ones the group does not own. `assets` appears in the "Cash and cash
-/// equivalents" group only because the cash accounts happen to live under it —
-/// and the row it produces is a PARTIAL subtotal of a subtree it shares with
-/// "Investments", carrying the group's own total and so merely restating the
-/// group header. A row is therefore ELIGIBLE only when it is
-///
-/// - a member itself (a real account with real postings — its `own` is a fact
-///   about the journal, whatever else lives beneath it), or
-/// - an ancestor no OTHER balance-sheet account sits beneath, which makes its
-///   rolled total unambiguously this group's.
-///
-/// `assets:bank` passes the second test when every account under it is cash;
-/// `assets`, `assets:broker` and `assets:broker:taxable` all fail it.
-///
-/// # Roots outrank the depth clamp
-///
-/// The group's ROOTS are the eligible rows with no eligible ancestor. Every
-/// member sits under exactly one of them, so **the roots always sum to the group
-/// total** — and that is why they are emitted whatever `depth` says. Without
-/// that exemption a group whose accounts all live deeper than the clamp would
-/// expand to nothing at all: `sample.journal`'s securities sit at
-/// `assets:broker:taxable:aapl`, four segments down, under a parent shared with
-/// the brokerage's cash, so "Investments" would be empty at a depth of 3 while
-/// still reporting a five-figure total. `depth` then means "levels within the
-/// group", which is what a collapsed group's disclosure triangle implies.
-/// `Some(0)` remains hledger's totals-only: no rows at all. `None` is no clamp,
-/// which is what the SPA asks for — expanding a group shows all of it.
-///
-/// Totals are summed over members and never over rows, so nothing here can move
-/// a number. `own` reads from the group's members, so a parent shared with
-/// another group contributes only what was posted directly to it here.
-fn group_rows(
+/// Only THIS group's accounts are folded: an ancestor shared with another
+/// group carries only what this group put under it, so a clipped row can never
+/// restate another group's money. Totals are summed over the unclipped members
+/// elsewhere, so nothing here can move a number.
+fn clipped(
     members: &BTreeMap<String, MixedAmount>,
-    sheet: &BTreeMap<String, MixedAmount>,
     depth: Option<usize>,
     flip: bool,
-) -> Result<Vec<ReportRow>, ReportError> {
+) -> Result<BTreeMap<String, MixedAmount>, ReportError> {
     if depth == Some(0) {
-        return Ok(Vec::new());
+        return Ok(BTreeMap::new());
     }
-    let rolled = roll_up(members)?;
-    let eligible: BTreeSet<&str> = rolled
-        .keys()
-        .filter(|account| {
-            members.contains_key(*account) || covers_only_members(sheet, members, account)
+    members
+        .iter()
+        .try_fold(BTreeMap::new(), |mut acc, (account, ma)| {
+            let name = depth.map_or(account.as_str(), |d| clip(account, d));
+            let entry: &mut MixedAmount = acc.entry(name.to_string()).or_default();
+            *entry = entry.ma_add(&signed(ma, flip)?)?;
+            Ok(acc)
         })
-        .map(String::as_str)
-        .collect();
-    let kept: Vec<String> = rolled
-        .keys()
-        .filter(|account| eligible.contains(account.as_str()))
-        .filter(|account| {
-            depth.is_none_or(|clamp| account.split(':').count() <= clamp)
-                || is_group_root(account, &eligible)
-        })
-        .cloned()
-        .collect();
-
-    kept.into_iter()
-        .map(|account| {
-            let inclusive = rolled.get(&account).cloned().unwrap_or_default();
-            let own = members.get(&account).cloned().unwrap_or_default();
-            let segments = account.split(':').count();
-            Ok(ReportRow {
-                account,
-                depth: segments,
-                own: signed(&own, flip)?,
-                inclusive: signed(&inclusive, flip)?,
-            })
-        })
-        .collect()
-}
-
-/// True when no proper ancestor of `account` is itself an eligible row — i.e.
-/// `account` is one of the group's topmost rows. Walking up by `rfind(':')` is
-/// [`AccountGroups::resolve`]'s own loop.
-fn is_group_root(account: &str, eligible: &BTreeSet<&str>) -> bool {
-    let mut name = account;
-    while let Some(cut) = name.rfind(':') {
-        name = &name[..cut];
-        if eligible.contains(name) {
-            return false;
-        }
-    }
-    true
-}
-
-/// True when every balance-sheet account at or below `account` is a member of
-/// this group — i.e. the group owns that whole subtree.
-///
-/// The subtree is a contiguous `BTreeMap` range: `account` itself, then its
-/// `account:`-prefixed descendants. Taking while the name is still prefixed
-/// spans it, and the `:` test then rejects the siblings that merely share the
-/// opening letters (`assetsx` for `assets`) — the same walk
-/// `resolve_account_type`'s descendant scan uses, and for the same reason.
-fn covers_only_members(
-    sheet: &BTreeMap<String, MixedAmount>,
-    members: &BTreeMap<String, MixedAmount>,
-    account: &str,
-) -> bool {
-    sheet
-        .range::<str, _>((Bound::Included(account), Bound::Unbounded))
-        .take_while(|(name, _)| name.starts_with(account))
-        .filter(|(name, _)| {
-            name.len() == account.len() || name.as_bytes().get(account.len()) == Some(&b':')
-        })
-        .all(|(name, _)| members.contains_key(name))
 }
 
 #[cfg(test)]
@@ -1962,29 +1950,32 @@ mod tests {
             }
         }
         // ... and the rows really do move, so the test above is not vacuous.
-        // `assets` is shared with Investments, so it is not the cash group's own
-        // and never appears; `assets:bank` is.
-        assert_eq!(
-            group(&baseline, 0, CASH_GROUP)
-                .rows
-                .iter()
-                .map(|row| row.account.as_str())
-                .collect::<Vec<_>>(),
-            ["assets:bank", "assets:bank:checking"]
-        );
-        assert_eq!(
-            grouped(Valuation::Market, Some(2), &BTreeMap::new()).sections[0]
+        // Unclipped, the cash group is its one account; at depth 2 it folds
+        // into `assets:bank`, carrying only this group's money.
+        let accounts = |report: &BalanceSheetReport| -> Vec<String> {
+            report.sections[0]
                 .groups
                 .iter()
-                .map(|g| g.rows.len())
+                .flat_map(|g| g.members.keys().cloned())
+                .collect()
+        };
+        assert_eq!(
+            group(&baseline, 0, CASH_GROUP)
+                .members
+                .keys()
+                .map(String::as_str)
                 .collect::<Vec<_>>(),
-            [1, 1]
+            ["assets:bank:checking"]
+        );
+        assert_eq!(
+            accounts(&grouped(Valuation::Market, Some(2), &BTreeMap::new())),
+            ["assets:bank", "assets:broker"]
         );
         assert!(
             grouped(Valuation::Market, Some(0), &BTreeMap::new()).sections[0]
                 .groups
                 .iter()
-                .all(|g| g.rows.is_empty()),
+                .all(|g| g.members.is_empty()),
             "depth 0 is totals-only"
         );
     }
@@ -2357,5 +2348,298 @@ mod tests {
         // Past i128's reach, one unit exceeds every representable mantissa.
         assert!(under_one_unit(Dec::new(i128::MAX, 60), 2));
         assert!(under_one_unit(Dec::new(i128::MIN, 60), 2));
+    }
+
+    // ---- plan 50 outline rows -------------------------------------------
+
+    /// Two banks with checking and savings each; bank A also takes postings
+    /// of its own; a `Reserves` group that spans two subtrees.
+    fn banks() -> Vec<Transaction> {
+        [
+            ("2026-01-02", "assets:bank:a", 5_000),
+            ("2026-01-02", "assets:bank:a:checking", 100_000),
+            ("2026-01-02", "assets:bank:a:savings", 200_000),
+            ("2026-01-02", "assets:bank:b:checking", 300_000),
+            ("2026-01-02", "assets:bank:b:savings", 400_000),
+            ("2026-01-02", "assets:bank:b:reserve", 50_000),
+            ("2026-01-02", "assets:broker:mm", 60_000),
+            ("2026-03-02", "assets:broker:cd", 70_000),
+        ]
+        .into_iter()
+        .zip(1..)
+        .map(|((date, account, cents), index)| {
+            txn(
+                index,
+                date,
+                vec![
+                    (account, vec![usd(cents)]),
+                    ("equity:opening", vec![usd(-cents)]),
+                ],
+            )
+        })
+        .collect()
+    }
+
+    fn bank_groups() -> BTreeMap<String, String> {
+        [
+            ("assets:bank", "Cash"),
+            ("assets:bank:b:reserve", "Reserves"),
+            ("assets:broker", "Reserves"),
+        ]
+        .into_iter()
+        .map(|(account, name)| (account.to_string(), name.to_string()))
+        .collect()
+    }
+
+    fn bank_names() -> BTreeMap<String, String> {
+        [("assets:bank:a", "Bank A"), ("assets:bank:b", "Bank B")]
+            .into_iter()
+            .map(|(account, name)| (account.to_string(), name.to_string()))
+            .collect()
+    }
+
+    fn bank_opts(as_of: &str) -> BsOpts<'_> {
+        BsOpts {
+            as_of,
+            depth: None,
+            value: Valuation::Cost,
+            value_in: None,
+        }
+    }
+
+    fn bank_sheet() -> BalanceSheetReport {
+        balance_sheet_grouped(
+            &banks(),
+            &[],
+            &bank_opts("2026-12-31"),
+            &BTreeMap::new(),
+            &bank_groups(),
+            &BTreeMap::new(),
+        )
+        .expect("grouped balance sheet")
+    }
+
+    /// `"<indent><marker> <label> <amount>"`; headings print no amount.
+    fn lines<A>(rows: &[BsRow<A>], amount: impl Fn(&A) -> String) -> Vec<String> {
+        rows.iter()
+            .map(|row| {
+                let indent = "  ".repeat(row.level);
+                match row.kind {
+                    OutlineKind::Heading => format!("{indent}# {}", row.label),
+                    OutlineKind::Account => {
+                        format!("{indent}- {} {}", row.label, amount(&row.amount))
+                    }
+                    OutlineKind::Other => {
+                        format!("{indent}~ {} {}", row.label, amount(&row.amount))
+                    }
+                    OutlineKind::Total => {
+                        format!("{indent}= {} {}", row.label, amount(&row.amount))
+                    }
+                }
+            })
+            .collect()
+    }
+
+    fn cents(ma: &MixedAmount) -> String {
+        // Every figure here is whole cents, written at two places.
+        ma.get(&c("$")).map_or_else(
+            || "-".to_string(),
+            |q| {
+                assert_eq!(q.places, 2, "{q:?}");
+                format!("{}.{:02}", q.mantissa / 100, q.mantissa % 100)
+            },
+        )
+    }
+
+    #[test]
+    fn two_banks_read_as_banks_with_their_accounts() {
+        let sheet = bank_sheet();
+        let cash = group(&sheet, 0, "Cash");
+        assert_eq!(
+            lines(&cash.rows(&bank_names()).unwrap(), cents),
+            [
+                "# Bank A",
+                "  ~ Bank A (other) 50.00",
+                "  - Checking 1000.00",
+                "  - Savings 2000.00",
+                "# Bank B",
+                "  - Checking 3000.00",
+                "  - Savings 4000.00",
+            ]
+        );
+        // Without `name:` the code-like segment is the label.
+        let unnamed = cash.rows(&BTreeMap::new()).unwrap();
+        assert_eq!(
+            unnamed
+                .iter()
+                .filter(|row| row.kind == OutlineKind::Heading)
+                .map(|row| (row.label.as_str(), row.account.as_str()))
+                .collect::<Vec<_>>(),
+            [("A", "assets:bank:a"), ("B", "assets:bank:b")]
+        );
+        // A heading carries its subtree's sum (never printed, D4); the group
+        // total is unchanged and equals the non-heading rows.
+        assert_eq!(cents(&unnamed[0].amount), "3050.00");
+        assert_eq!(cents(&cash.total), "10050.00");
+    }
+
+    #[test]
+    fn a_cross_subtree_group_heads_only_shared_ancestors() {
+        let sheet = bank_sheet();
+        assert_eq!(
+            lines(
+                &group(&sheet, 0, "Reserves").rows(&bank_names()).unwrap(),
+                cents
+            ),
+            // `assets:bank:b:reserve` has no sibling in this group, so its
+            // chain collapses into it, labelled with the chain's first level
+            // (`assets:bank`); Bank B's own name is not borrowed.
+            [
+                "- Bank · Reserve 500.00",
+                "# Broker",
+                "  - Cd 700.00",
+                "  - Mm 600.00"
+            ]
+        );
+    }
+
+    /// `banks()` plus two closures: `assets:bank:b:old` opens and closes in
+    /// January, `assets:broker:mm` is emptied in February.
+    fn banks_with_closed_accounts() -> Vec<Transaction> {
+        let closures = [
+            ("2026-01-05", "assets:bank:b:old", 10_000),
+            ("2026-01-20", "assets:bank:b:old", -10_000),
+            ("2026-02-15", "assets:broker:mm", -60_000),
+        ];
+        banks()
+            .into_iter()
+            .chain(
+                closures
+                    .into_iter()
+                    .zip(100..)
+                    .map(|((date, account, cents), index)| {
+                        txn(
+                            index,
+                            date,
+                            vec![
+                                (account, vec![usd(cents)]),
+                                ("equity:opening", vec![usd(-cents)]),
+                            ],
+                        )
+                    }),
+            )
+            .collect()
+    }
+
+    /// A closed account is not listed: zero on a single date, zero in EVERY
+    /// column of a pivot. Zero in only some columns keeps it.
+    #[test]
+    fn zero_accounts_are_not_listed() {
+        let journal = banks_with_closed_accounts();
+        let sheet = balance_sheet_grouped(
+            &journal,
+            &[],
+            &bank_opts("2026-12-31"),
+            &BTreeMap::new(),
+            &bank_groups(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        // `mm` is zero: the Broker heading it earned goes with it.
+        assert_eq!(
+            lines(
+                &group(&sheet, 0, "Reserves").rows(&BTreeMap::new()).unwrap(),
+                cents
+            ),
+            ["- Bank · Reserve 500.00", "- Broker · Cd 700.00"]
+        );
+        assert!(
+            group(&sheet, 0, "Cash")
+                .rows(&bank_names())
+                .unwrap()
+                .iter()
+                .all(|row| row.account != "assets:bank:b:old")
+        );
+
+        let ends = ["2026-01-31".to_string(), "2026-03-31".to_string()];
+        let reports = balance_sheet_columns(
+            &journal,
+            &[],
+            &bank_opts("2026-03-31"),
+            &ends,
+            &BTreeMap::new(),
+            &bank_groups(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let pivot = pivot_balance_sheets(&reports, &bank_names()).unwrap();
+        let rows_of = |name: &str| {
+            let group = pivot.sections[0]
+                .groups
+                .iter()
+                .find(|g| g.name == name)
+                .unwrap();
+            lines(&group.rows, |figures: &Vec<MixedAmount>| {
+                figures.iter().map(cents).collect::<Vec<_>>().join("|")
+            })
+        };
+        // `mm` had money in January, so it stays; `old` never did at a column end.
+        assert_eq!(
+            rows_of("Reserves"),
+            [
+                "- Bank · Reserve 500.00|500.00",
+                "# Broker",
+                "  - Cd -|700.00",
+                "  - Mm 600.00|-",
+            ]
+        );
+        assert!(rows_of("Cash").iter().all(|line| !line.contains("Old")));
+    }
+
+    /// The pivot lays ONE outline over every column's members, so a member
+    /// that only appears later gives every column the same rows.
+    #[test]
+    fn the_pivot_shares_one_outline_across_columns() {
+        let ends = ["2026-01-31".to_string(), "2026-03-31".to_string()];
+        let reports = balance_sheet_columns(
+            &banks(),
+            &[],
+            &bank_opts("2026-03-31"),
+            &ends,
+            &BTreeMap::new(),
+            &bank_groups(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        // In January the Reserves group is one broker account and one bank
+        // account: no Broker heading yet.
+        assert_eq!(
+            lines(
+                &group(&reports[0], 0, "Reserves")
+                    .rows(&BTreeMap::new())
+                    .unwrap(),
+                cents
+            ),
+            ["- Bank · Reserve 500.00", "- Broker · Mm 600.00"]
+        );
+        let pivot = pivot_balance_sheets(&reports, &bank_names()).unwrap();
+        let reserves = pivot.sections[0]
+            .groups
+            .iter()
+            .find(|g| g.name == "Reserves")
+            .unwrap();
+        assert_eq!(
+            lines(&reserves.rows, |figures: &Vec<MixedAmount>| figures
+                .iter()
+                .map(cents)
+                .collect::<Vec<_>>()
+                .join("|")),
+            [
+                "- Bank · Reserve 500.00|500.00",
+                "# Broker",
+                "  - Cd -|700.00",
+                "  - Mm 600.00|600.00"
+            ]
+        );
     }
 }

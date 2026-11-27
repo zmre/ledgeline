@@ -18,14 +18,20 @@
 // allowed to print a negative total.
 
 import {EM_DASH} from "#lib/format/amounts.js";
-import type {Amounts, IncomeStatementReport, IsBucket, IsSection, IsSectionKind, IsSubtotalKind} from "#lib/reports/types.js";
-import {compressIsRows} from "./displayRows";
+import type {MixedAmount} from "#lib/domain/money.js";
+import type {Amounts, IncomeStatementReport, IsBucket, IsSection, IsSectionKind, IsSubtotalKind, UnplacedBudget} from "#lib/reports/types.js";
 import {pctChange} from "./percent";
 
 export {amountCell, type AmountCell} from "./amountCell";
 
-/** A group heading (always shown) or one of its accounts (only when expanded). */
-export type IsRowKind = "group" | "account";
+/**
+ * A group heading (always shown), or one of its outline rows (only when the
+ * group is expanded): an outline `heading` (label only, no figure), an
+ * `account` (an account, a depth-clipped ancestor, or a heading's `(other)`),
+ * or a `total` ("Total <heading>", a budgeted heading's ruled subtotal, plan 50
+ * D4 exception).
+ */
+export type IsRowKind = "group" | "heading" | "account" | "total";
 
 export interface IsDisplayRow {
     kind: IsRowKind;
@@ -36,14 +42,23 @@ export interface IsDisplayRow {
      * refetch replaces the report with an equal-but-not-identical one.
      */
     key: string;
-    /** The group's name, or the compressed account label relative to its displayed parent. */
+    /** The group's name, or the engine's outline label (own `name:` tag, else a humanized segment). */
     label: string;
-    /** 0 for a group heading; 1 + the compression indent for its accounts. */
+    /** 0 for a group heading; 1 + the outline `level` for the rows inside it. */
     indent: number;
-    /** The account this row stands for — `data-account` and the journal drill-down. Null for a group. */
+    /**
+     * The full account path this row stands for — the label's hover text,
+     * `data-account` and the journal drill-down. Null for a group.
+     */
     account: string | null;
-    /** The figure(s) on the right: current, plus the prior period's when comparing, or one per bucket in interval mode. */
-    amounts: Amounts;
+    /**
+     * The figure(s) on the right: current, plus the prior period's when
+     * comparing, or one per bucket in interval mode. Null on an outline
+     * heading, which prints no amount (plan 50 D4): the group's Total says it.
+     */
+    amounts: Amounts | null;
+    /** The Budget column's figure (plan 50 D13), or null: no goal here, a heading, or no Budget column. */
+    budget: MixedAmount | null;
     /** This line's % change against the prior period, or null when there is none (see `pctChange`). */
     pct: number | null;
     /** Group rows: whether the disclosure is currently open. Always false for an account row. */
@@ -57,6 +72,7 @@ export interface IsSubtotalLine {
     kind: IsSubtotalKind;
     label: string;
     amounts: Amounts;
+    budget: MixedAmount | null;
     pct: number | null;
 }
 
@@ -67,9 +83,12 @@ export interface IsBox {
     /** Visible rows, in visual order. The cursor list is exactly the concatenation of these. */
     rows: IsDisplayRow[];
     total: Amounts;
+    totalBudget: MixedAmount | null;
     totalPct: number | null;
     /** Ladder lines below this box. Usually empty. */
     trailing: IsSubtotalLine[];
+    /** The D14 footnotes under the box, one per goal shown only in its total (see `budgetFootnote`). */
+    footnotes: string[];
 }
 
 /**
@@ -90,6 +109,7 @@ export interface IsBox {
  */
 export interface IsSummary {
     netIncome: Amounts;
+    netBudget: MixedAmount | null;
     /** Net income's % change against the prior period, or null when there is none. */
     netPct: number | null;
 }
@@ -106,6 +126,17 @@ export interface IsDisplayModel {
      * prior and no percentage.
      */
     buckets: IsBucket[] | null;
+    /**
+     * The Budget column is on (plan 50 D12): an italic Budget figure follows
+     * the Total (Total mode: Amount) on every line. One whole-range goal, so it
+     * sits after the Total in interval mode, never once per bucket.
+     */
+    budgeted: boolean;
+}
+
+/** The D14 footnote for a goal whose accounts span groups. Shared with the xlsx export. */
+export function budgetFootnote(goal: UnplacedBudget): string {
+    return `Budget for ${goal.label} spans groups: shown in section total only.`;
 }
 
 // There was a `sectionSign()` here, mapping each section kind to +1/−1. It went
@@ -151,11 +182,11 @@ export function fmtPct(pct: number | null): string {
 
 /**
  * One section's visible rows, in visual order: every group heading, each
- * followed by its accounts when it is expanded.
+ * followed by its outline rows when it is expanded.
  *
- * Account rows go through `compressIsRows`, so a single-child chain
- * (`expenses:housing` → `expenses:housing:rent`) reads as one row here exactly
- * as it does in every other report table.
+ * The outline is the engine's (plan 50): it decides headings, labels and
+ * levels, so a lone child already reads as one row and nothing here
+ * compresses or relabels anything. This only indents and keys.
  */
 export function sectionDisplayRows(section: IsSection, isExpanded: (key: string) => boolean, base: string | null): IsDisplayRow[] {
     const out: IsDisplayRow[] = [];
@@ -170,20 +201,27 @@ export function sectionDisplayRows(section: IsSection, isExpanded: (key: string)
             indent: 0,
             account: null,
             amounts: group.total,
+            budget: group.budget,
             pct: amountsPct(group.total, base),
             expanded,
             expandable,
         });
         if (!expanded) continue;
-        for (const display of compressIsRows(group.rows)) {
+        for (const row of group.rows) {
+            const heading = row.kind === "heading";
             out.push({
-                kind: "account",
-                key: `${key}/${display.row.account}`,
-                label: display.label,
-                indent: display.indent + 1,
-                account: display.row.account,
-                amounts: display.row.amounts,
-                pct: amountsPct(display.row.amounts, base),
+                kind: heading ? "heading" : row.kind === "total" ? "total" : "account",
+                // A heading with its own postings shares its account with its
+                // `(other)` row, and a budgeted heading with its `total` row, so
+                // those are told apart by a suffix.
+                key: `${key}/${row.account}${row.kind === "other" || row.kind === "total" ? `#${row.kind}` : ""}`,
+                label: row.label,
+                indent: row.level + 1,
+                account: row.account,
+                amounts: heading ? null : row.amounts,
+                // A heading prints nothing; its `total` row carries the goal.
+                budget: heading ? null : row.budget,
+                pct: heading ? null : amountsPct(row.amounts, base),
                 expanded: false,
                 expandable: false,
             });
@@ -200,6 +238,7 @@ export function sectionDisplayRows(section: IsSection, isExpanded: (key: string)
 export function isSummary(report: IncomeStatementReport): IsSummary {
     return {
         netIncome: report.netIncome,
+        netBudget: report.netIncomeBudget,
         netPct: amountsPct(report.netIncome, report.base),
     };
 }
@@ -220,17 +259,21 @@ export function isDisplayModel(report: IncomeStatementReport, isExpanded: (key: 
             title: section.title,
             rows: sectionDisplayRows(section, isExpanded, base),
             total: section.total,
+            totalBudget: section.budget,
             totalPct: amountsPct(section.total, base),
             trailing: section.trailing.map((subtotal) => ({
                 kind: subtotal.kind,
                 label: subtotal.label,
                 amounts: subtotal.total,
+                budget: subtotal.budget,
                 pct: amountsPct(subtotal.total, base),
             })),
+            footnotes: section.budgetUnplaced.map(budgetFootnote),
         })),
         summary: isSummary(report),
         comparing: report.prior !== null,
         buckets: report.buckets,
+        budgeted: report.budgeted,
     };
 }
 

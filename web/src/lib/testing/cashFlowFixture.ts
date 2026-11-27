@@ -7,7 +7,7 @@
 // Q1 2026 monthly), so the two test suites describe one business.
 
 import {dec, type MixedAmount} from "#lib/domain/money.js";
-import type {CashFlowStatement, CfColumns, CfLine} from "#lib/reports/types.js";
+import type {CashFlowStatement, CfCashRow, CfColumns, CfLine, CfRow} from "#lib/reports/types.js";
 
 export const usd = (n: number): MixedAmount => (n === 0 ? new Map() : new Map([["$", dec(Math.round(n * 100), 2)]]));
 
@@ -21,8 +21,18 @@ export function balance(values: number[], edge: "first" | "last"): CfColumns {
     return {values: values.map(usd), total: usd(edge === "first" ? values[0] : values[values.length - 1])};
 }
 
-function accountLine(account: string, values: number[]): CfLine {
-    return {name: account, source: "account", total: flow(values), rows: [{account, amounts: flow(values)}]};
+/** An outline row as the engine sends it (plan 50): a leaf, at level 0 unless said. */
+export function cfRow(account: string, label: string, amounts: CfColumns, level = 0): CfRow {
+    return {account, kind: "account", label, level, amounts};
+}
+
+function cashRow(account: string, label: string, beginning: CfColumns, ending: CfColumns): CfCashRow {
+    return {account, kind: "account", label, level: 0, beginning, ending};
+}
+
+/** A line that is one account at the report's depth, labelled as the engine labels it. */
+function accountLine(account: string, label: string, values: number[]): CfLine {
+    return {name: account, source: "account", label, account, total: flow(values), rows: [cfRow(account, label, flow(values))]};
 }
 
 const BUCKETS = [
@@ -42,24 +52,23 @@ export const CASH_FLOW: CashFlowStatement = {
             kind: "operating",
             title: "Operating activities",
             lines: [
-                accountLine("assets:equipment:accum-depreciation", [0, 100, 0]),
-                accountLine("assets:prepaid", [-1200, 0, 0]),
-                accountLine("assets:receivable", [-5000, 5000, 0]),
+                accountLine("assets:equipment:accum-depreciation", "Accum Depreciation", [0, 100, 0]),
+                accountLine("assets:prepaid", "Prepaid", [-1200, 0, 0]),
+                accountLine("assets:receivable", "Receivable", [-5000, 5000, 0]),
                 {
                     name: "Payables",
                     source: "group",
+                    label: "Payables",
+                    account: null,
                     total: flow([200, 300, -200]),
-                    rows: [
-                        {account: "liabilities:card", amounts: flow([200, 0, -200])},
-                        {account: "liabilities:payable", amounts: flow([0, 300, 0])},
-                    ],
+                    rows: [cfRow("liabilities:card", "Card", flow([200, 0, -200])), cfRow("liabilities:payable", "Payable", flow([0, 300, 0]))],
                 },
-                accountLine("liabilities:deferred-revenue", [2200, 0, 0]),
+                accountLine("liabilities:deferred-revenue", "Deferred Revenue", [2200, 0, 0]),
             ],
             total: flow([-300, 5000, -200]),
         },
-        {kind: "investing", title: "Investing activities", lines: [accountLine("assets:equipment", [0, -3000, 0])], total: flow([0, -3000, 0])},
-        {kind: "financing", title: "Financing activities", lines: [accountLine("liabilities:note", [0, 0, 8000])], total: flow([0, 0, 8000])},
+        {kind: "investing", title: "Investing activities", lines: [accountLine("assets:equipment", "Equipment", [0, -3000, 0])], total: flow([0, -3000, 0])},
+        {kind: "financing", title: "Financing activities", lines: [accountLine("liabilities:note", "Note", [0, 0, 8000])], total: flow([0, 0, 8000])},
     ],
     exchange: flow([0, 0, 0]),
     netChange: flow([-300, 2000, 7800]),
@@ -67,24 +76,29 @@ export const CASH_FLOW: CashFlowStatement = {
         {
             name: "Operating cash",
             source: "group",
+            label: "Operating cash",
+            account: null,
             beginning: balance([10000, 9700, 11700], "first"),
             ending: balance([9700, 11700, 19450], "last"),
             rows: [
-                {account: "assets:bank:checking", beginning: balance([10000, 9700, 11700], "first"), ending: balance([9700, 11700, 11450], "last")},
-                {account: "assets:bank:savings", beginning: balance([0, 0, 0], "first"), ending: balance([0, 0, 8000], "last")},
+                cashRow("assets:bank:checking", "Checking", balance([10000, 9700, 11700], "first"), balance([9700, 11700, 11450], "last")),
+                cashRow("assets:bank:savings", "Savings", balance([0, 0, 0], "first"), balance([0, 0, 8000], "last")),
             ],
         },
         {
             name: "assets:petty-cash",
             source: "account",
+            label: "Petty Cash",
+            account: "assets:petty-cash",
             beginning: balance([0, 0, 0], "first"),
             ending: balance([0, 0, 50], "last"),
-            rows: [{account: "assets:petty-cash", beginning: balance([0, 0, 0], "first"), ending: balance([0, 0, 50], "last")}],
+            rows: [cashRow("assets:petty-cash", "Petty Cash", balance([0, 0, 0], "first"), balance([0, 0, 50], "last"))],
         },
     ],
     beginningCash: balance([10000, 9700, 11700], "first"),
     endingCash: balance([9700, 11700, 19500], "last"),
     reconciles: true,
+    maxDepth: 3,
 };
 
 /** The same statement as a single Total column (Interval = Total). */

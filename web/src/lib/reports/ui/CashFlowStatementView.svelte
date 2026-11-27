@@ -17,7 +17,9 @@
      columns.
 
      Cash lines start OPEN (the per-account cash detail this tab used to show);
-     section lines start closed. Keyboard: j/k walk every visible row, Enter opens
+     section lines start closed. An open line lists the engine's outline of its
+     accounts (plan 50): indented by level, headings without amounts, and the
+     full account path on hover over every label. Keyboard: j/k walk every visible row, Enter opens
      a line or shows an account's postings for the report's dates. -->
 <script lang="ts">
     import HScroll from "#ui/components/HScroll.svelte";
@@ -29,7 +31,7 @@
     import type {CashFlowStatement, CfColumns, CfSectionKind} from "#lib/reports/types.js";
     import {listCursor} from "#ui/ui/listCursor.svelte.js";
     import {amountCell, type AmountCell} from "./amountCell";
-    import {cfCursorRows, cfDisplayModel, cfFoldKey, type CfDisplayRow} from "./cashFlowRows";
+    import {cfCursorRows, cfDisplayModel, cfFoldKey, isOutlineRow, type CfDisplayRow} from "./cashFlowRows";
     import CompareCells from "./CompareCells.svelte";
     import {AS_PROJECTED_SR} from "./compareColumns";
     import type {WindowReading} from "./compareColumns";
@@ -160,6 +162,20 @@
     {/if}
 {/snippet}
 
+<!-- A heading's row: its label groups the rows beneath it, so every figure cell is empty (plan 50 D4). -->
+{#snippet blankFigures()}
+    {#if buckets !== null}
+        {#each buckets as bucket, i (bucket.key)}<td class="w-28 min-w-28 {projectedEdge(i, edgeAt)}"></td>{/each}
+        {#if versus}
+            <CompareCells values={[]} {split} reading="flow" base={base ?? compareBase} {styles} blank />
+        {:else}
+            <td class="w-32 min-w-32" data-column="total"></td>
+        {/if}
+    {:else}
+        <td class="w-32"></td>
+    {/if}
+{/snippet}
+
 {#snippet template()}
     {#if buckets !== null}<FigureColgroup periods={buckets.length} total={!versus} compare={versus} />{/if}
 {/snippet}
@@ -184,7 +200,7 @@
 
 {#snippet rowCells(row: CfDisplayRow, reading: WindowReading = "flow")}
     <tr
-        class="scroll-mt-10 {cursor.key === row.key ? 'bg-primary/25' : ''} {row.kind === 'account' ? '' : 'font-medium'}"
+        class="scroll-mt-10 {cursor.key === row.key ? 'bg-primary/25' : ''} {isOutlineRow(row) ? '' : 'font-medium'}"
         aria-current={cursor.key === row.key ? "true" : undefined}
         data-cf-row={row.key}
         data-account={row.account ?? undefined}
@@ -195,6 +211,7 @@
                     type="button"
                     class="flex cursor-pointer items-center gap-1.5 text-left font-medium hover:text-primary-text"
                     aria-expanded={row.expanded}
+                    title={row.path ?? undefined}
                     onclick={() => toggle(row)}
                 >
                     <span class="inline-block w-3 shrink-0 text-[0.65rem] text-muted transition-transform {row.expanded ? 'rotate-90' : ''}" aria-hidden="true"
@@ -202,15 +219,23 @@
                     >
                     {row.label}
                 </button>
-            {:else if row.kind === "account"}
-                <span class="whitespace-nowrap text-muted" style="padding-left: {row.indent * 1.25}rem" title={row.account}>{row.label}</span>
+            {:else if isOutlineRow(row)}
+                <span
+                    class="whitespace-nowrap {row.kind === 'heading' ? 'font-medium text-base-content/80' : 'text-muted'}"
+                    style="padding-left: {row.indent * 1.25}rem"
+                    title={row.path ?? undefined}>{row.label}</span
+                >
             {:else}
-                <span class="flex items-center gap-1.5 font-medium" title={row.account ?? undefined}>
+                <span class="flex items-center gap-1.5 font-medium" title={row.path ?? undefined}>
                     <span class="inline-block w-3 shrink-0" aria-hidden="true"></span>{row.label}
                 </span>
             {/if}
         </th>
-        {@render figures(row.amounts, row.kind === "account" ? "text-muted" : "font-medium", reading)}
+        {#if row.amounts === null}
+            {@render blankFigures()}
+        {:else}
+            {@render figures(row.amounts, isOutlineRow(row) ? "text-muted" : "font-medium", reading)}
+        {/if}
     </tr>
 {/snippet}
 

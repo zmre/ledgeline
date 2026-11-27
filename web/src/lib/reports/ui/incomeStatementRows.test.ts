@@ -13,8 +13,14 @@ import {decodeIncomeStatementReport} from "#lib/api/nativeDecode.js";
 import {dec, type MixedAmount} from "#lib/domain/money.js";
 import {fmt} from "#lib/format/amounts.js";
 import type {IncomeStatementReport, IsSection} from "#lib/reports/types.js";
-import {GROUPED_INCOME_STATEMENT, MULTI_STEP_INCOME_STATEMENT, UNCOMPARED_INCOME_STATEMENT} from "#lib/testing/incomeStatementFixture.js";
-import {amountsPct, fmtPct, isCursorRows, isDisplayModel, isGroupKey, isSummary, pctChange, sectionDisplayRows} from "./incomeStatementRows";
+import {
+    BUDGETED_INCOME_STATEMENT,
+    GROUPED_INCOME_STATEMENT,
+    MULTI_STEP_INCOME_STATEMENT,
+    OUTLINED_INCOME_STATEMENT,
+    UNCOMPARED_INCOME_STATEMENT,
+} from "#lib/testing/incomeStatementFixture.js";
+import {amountsPct, budgetFootnote, fmtPct, isCursorRows, isDisplayModel, isGroupKey, isSummary, pctChange, sectionDisplayRows} from "./incomeStatementRows";
 
 const REPORT = decodeIncomeStatementReport(GROUPED_INCOME_STATEMENT);
 const MULTI = decodeIncomeStatementReport(MULTI_STEP_INCOME_STATEMENT);
@@ -52,8 +58,8 @@ describe("UNIT reports/ui/incomeStatementRows — sectionDisplayRows", () => {
         // the claim here is about Food's subtotal rather than about the first row.
         const food = rowsOf(EXPENSES, NONE).find((r) => r.label === "Food");
 
-        expect(food?.amounts.current.get("$")).toEqual({m: 165438n, p: 2});
-        expect(food?.amounts.prior?.get("$")).toEqual({m: 154635n, p: 2});
+        expect(food?.amounts?.current.get("$")).toEqual({m: 165438n, p: 2});
+        expect(food?.amounts?.prior?.get("$")).toEqual({m: 154635n, p: 2});
         expect(food?.account).toBeNull(); // a group heading is not an account
     });
 
@@ -66,21 +72,20 @@ describe("UNIT reports/ui/incomeStatementRows — sectionDisplayRows", () => {
 
         // Groups sort by name, so Dividends leads — see the fixture's note.
         expect(rows.map((r) => r.account)).toEqual([null, "income:dividends", null, "income:salary"]);
-        expect(rows.filter((r) => r.amounts.current.get("$")?.m === 3401000n)).toEqual([]);
+        expect(rows.filter((r) => r.amounts?.current.get("$")?.m === 3401000n)).toEqual([]);
     });
 
     it("expands one group without expanding its neighbours", () => {
         const rows = rowsOf(EXPENSES, only(isGroupKey("opex", "Food")));
 
-        // Labels are relative to the displayed PARENT, as in every other report
-        // table: the group's own root keeps its full path, its children are named
-        // by the segments below it.
+        // Labels are the engine's outline labels (plan 50): the group's
+        // accounts by their own humanized segment, no `expenses:food` path and
+        // no Food heading repeating the group's own name.
         expect(rows.map((r) => r.label)).toEqual([
             "Depreciation",
             "Food",
-            "expenses:food",
-            "groceries",
-            "restaurants",
+            "Groceries",
+            "Restaurants",
             "Housing",
             "Taxes",
             "Transport",
@@ -92,20 +97,41 @@ describe("UNIT reports/ui/incomeStatementRows — sectionDisplayRows", () => {
         // either side of it, which is the claim — expanding one opens exactly one.
         expect(rows[1].expanded).toBe(true);
         expect(rows[0].expanded).toBe(false);
-        expect(rows[5].expanded).toBe(false);
-        expect(rows[5].kind).toBe("group"); // the neighbour is still just its heading
+        expect(rows[4].expanded).toBe(false);
+        expect(rows[4].kind).toBe("group"); // the neighbour is still just its heading
     });
 
-    it("compresses single-child chains, testing BOTH periods before folding one", () => {
-        // `expenses:housing` has one child and the same figure in both windows, so
-        // the pair reads as one row rather than two lines carrying an identical
-        // balance. Folding on the current period alone would drop a parent that
-        // had postings of its own in the prior one.
+    it("prints a lone child as one row, labelled by the engine, its path kept for hover", () => {
+        // `expenses:housing:rent` is Housing's only account: the engine's
+        // outline sends one `Rent` row and no heading, and this adds nothing.
         const rows = rowsOf(EXPENSES, only(isGroupKey("opex", "Housing")));
         const accounts = rows.filter((r) => r.kind === "account");
 
         expect(accounts.map((r) => r.account)).toEqual(["expenses:housing:rent"]);
-        expect(accounts[0].label).toBe("expenses:housing:rent");
+        expect(accounts[0].label).toBe("Rent");
+        expect(accounts[0].indent).toBe(1);
+    });
+
+    it("indents by the engine's level, and gives a heading no figure", () => {
+        const outlined = decodeIncomeStatementReport(OUTLINED_INCOME_STATEMENT);
+        const opex = outlined.sections[1];
+        const rows = rowsOf(opex, only(isGroupKey("opex", "Travel")), outlined).filter((r) => r.kind !== "group");
+
+        expect(rows.map((r) => [r.kind, r.label, r.indent])).toEqual([
+            ["account", "Flights", 1],
+            ["heading", "Lodging", 1],
+            ["account", "Lodging (other)", 2],
+            ["account", "Hotels", 2],
+        ]);
+        // A heading prints its label only (plan 50 D4): no figure, no change.
+        const heading = rows[1];
+        expect(heading.amounts).toBeNull();
+        expect(heading.pct).toBeNull();
+        expect(heading.account).toBe("expenses:travel:lodging");
+        // The heading and its `(other)` row share an account; their keys do not.
+        expect(rows[2].account).toBe(heading.account);
+        expect(rows[2].key).not.toBe(heading.key);
+        expect(rows[2].amounts?.current.get("$")).toEqual({m: 4360n, p: 2});
     });
 
     it("keeps a row that exists in only one period, with an explicit zero on the other side", () => {
@@ -115,10 +141,10 @@ describe("UNIT reports/ui/incomeStatementRows — sectionDisplayRows", () => {
         // `MixedAmount` is what "nothing here" looks like on the wire.
         const accounts = rowsOf(EXPENSES, only(isGroupKey("opex", "Travel"))).filter((r) => r.kind === "account");
 
-        expect(accounts.map((r) => r.account)).toEqual(["expenses:travel", "expenses:travel:activities", "expenses:travel:flights", "expenses:travel:lodging"]);
+        expect(accounts.map((r) => r.account)).toEqual(["expenses:travel:activities", "expenses:travel:flights", "expenses:travel:lodging"]);
         const flights = accounts.find((r) => r.account === "expenses:travel:flights");
-        expect(flights?.amounts.current.get("$")).toEqual({m: 41280n, p: 2});
-        expect(flights?.amounts.prior?.size).toBe(0);
+        expect(flights?.amounts?.current.get("$")).toEqual({m: 41280n, p: 2});
+        expect(flights?.amounts?.prior?.size).toBe(0);
     });
 
     it("indents account rows beneath their group", () => {
@@ -137,9 +163,11 @@ describe("UNIT reports/ui/incomeStatementRows — sectionDisplayRows", () => {
         const rowless: IsSection = {
             kind: "other",
             title: "Other income & expense",
-            groups: [{name: "Rounding", source: "computed", rows: [], total: {current: new Map()}}],
+            groups: [{name: "Rounding", source: "computed", rows: [], total: {current: new Map()}, budget: null}],
             total: {current: new Map()},
             trailing: [],
+            budget: null,
+            budgetUnplaced: [],
         };
         const [row] = rowsOf(rowless, ALL);
 
@@ -148,7 +176,7 @@ describe("UNIT reports/ui/incomeStatementRows — sectionDisplayRows", () => {
     });
 
     it("renders a section with no groups as an empty list, not a throw", () => {
-        const empty: IsSection = {kind: "tax", title: "Income taxes", groups: [], total: {current: new Map()}, trailing: []};
+        const empty: IsSection = {kind: "tax", title: "Income taxes", groups: [], total: {current: new Map()}, trailing: [], budget: null, budgetUnplaced: []};
         expect(rowsOf(empty, ALL)).toEqual([]);
     });
 });
@@ -335,7 +363,8 @@ describe("UNIT reports/ui/incomeStatementRows — isSummary", () => {
         // already in a box footer and every intermediate figure is already a rung
         // of the ladder, so repeating them was the duplicate-totals complaint
         // this redesign exists to fix, one panel further down.
-        expect(Object.keys(summary).sort()).toEqual(["netIncome", "netPct"]);
+        // `netBudget` is the Budget column's bottom line (plan 50), not a restatement.
+        expect(Object.keys(summary).sort()).toEqual(["netBudget", "netIncome", "netPct"]);
     });
 
     it("takes net income's change against its OWN prior figure", () => {
@@ -358,7 +387,7 @@ describe("UNIT reports/ui/incomeStatementRows — isSummary", () => {
         expect(isSummary(uncompared).netIncome.prior).toBeUndefined();
         // Absent, never a zero: a zero would be a claim about a period that was
         // never computed.
-        expect(isCursorRows(isDisplayModel(uncompared, ALL)).every((r) => r.amounts.prior === undefined)).toBe(true);
+        expect(isCursorRows(isDisplayModel(uncompared, ALL)).every((r) => r.amounts?.prior === undefined)).toBe(true);
     });
 
     it("hands the model the very same object, so the panel and the workbook cannot diverge", () => {
@@ -440,10 +469,58 @@ describe("UNIT reports/ui/incomeStatementRows — interval mode", () => {
 
     it("gives every line one figure per bucket, its Total the same net income as the Total statement", () => {
         const model = isDisplayModel(MONTHLY, ALL);
-        expect(isCursorRows(model).every((r) => r.amounts.values?.length === 7)).toBe(true);
+        expect(isCursorRows(model).every((r) => r.amounts === null || r.amounts.values?.length === 7)).toBe(true);
         // Market-valued, but nothing on this journal is revalued between the
         // month ends and the range's end, so the sum of the months IS the
         // whole-range figure: $5,383.52.
         expect(fmt("$", model.summary.netIncome.current.get("$") ?? dec(0, 0), new Map())).toBe(fmt("$", dec(538352, 2), new Map()));
+    });
+});
+
+describe("UNIT reports/ui/incomeStatementRows — the Budget column (plan 50)", () => {
+    const budgeted = decodeIncomeStatementReport(BUDGETED_INCOME_STATEMENT);
+    const cents = (ma: MixedAmount | null | undefined): bigint | null => ma?.get("$")?.m ?? null;
+
+    it("is off, with no figures or footnotes, on a report that did not ask for it", () => {
+        const model = isDisplayModel(REPORT, ALL);
+        expect(model.budgeted).toBe(false);
+        expect(isCursorRows(model).every((row) => row.budget === null)).toBe(true);
+        expect(model.boxes.every((box) => box.totalBudget === null && box.footnotes.length === 0)).toBe(true);
+        expect(model.summary.netBudget).toBeNull();
+    });
+
+    it("carries each row's goal, a ruled `total` row for a budgeted heading, and no figure on the heading", () => {
+        const model = isDisplayModel(budgeted, only(isGroupKey("opex", "Travel")));
+        expect(model.budgeted).toBe(true);
+        const opex = model.boxes[1];
+        const travel = opex.rows.slice(opex.rows.findIndex((row) => row.label === "Travel"));
+        expect(travel.slice(0, 6).map((row) => [row.kind, row.label, cents(row.budget)])).toEqual([
+            ["group", "Travel", 80000n],
+            ["account", "Flights", 50000n],
+            // A heading prints nothing (D4); its Total row carries the goal.
+            ["heading", "Lodging", null],
+            ["account", "Lodging (other)", null],
+            ["account", "Hotels", null],
+            ["total", "Total Lodging", 30000n],
+        ]);
+        const total = travel[5];
+        expect(total.indent).toBe(1);
+        expect(total.amounts?.current.get("$")).toEqual({m: 24360n, p: 2});
+        expect(total.account).toBe("expenses:travel:lodging");
+        // Three rows share the heading's account; their keys do not.
+        const keys = isCursorRows(model).map((row) => row.key);
+        expect(new Set(keys).size).toBe(keys.length);
+    });
+
+    it("totals the box and the bottom line, and footnotes a goal that spans groups", () => {
+        const model = isDisplayModel(budgeted, NONE);
+        expect(cents(model.boxes[1].totalBudget)).toBe(100000n);
+        expect(model.boxes[0].totalBudget).toBeNull();
+        expect(model.boxes[1].footnotes).toEqual(["Budget for People spans groups: shown in section total only."]);
+        expect(model.boxes[0].footnotes).toEqual([]);
+        expect(cents(model.summary.netBudget)).toBe(-100000n);
+        expect(budgetFootnote({account: "expenses:people-costs", label: "People Costs"})).toBe(
+            "Budget for People Costs spans groups: shown in section total only."
+        );
     });
 });

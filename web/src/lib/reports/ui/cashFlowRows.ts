@@ -14,22 +14,42 @@
 // up from deeper accounts, can open to show them; it starts closed. A cash line
 // starts OPEN: the cash balances by account are what this tab used to show, and
 // the detail is kept on screen (plans/27, "Answers").
+//
+// OUTLINE (plan 50). The engine lays each line's accounts out as an outline and
+// labels every row; this file only folds, indents by `level` and keeps
+// headings' amounts off the page. Every label carries its full account path for
+// hover (`path`).
 
-import type {CashFlowStatement, CfCashLine, CfColumns, CfLine, CfSectionKind, IsBucket, PeriodReport, PeriodRow} from "#lib/reports/types.js";
+import type {
+    CashFlowStatement,
+    CfCashLine,
+    CfColumns,
+    CfLine,
+    CfSectionKind,
+    IsBucket,
+    OutlineFields,
+    OutlineKind,
+    PeriodReport,
+    PeriodRow,
+} from "#lib/reports/types.js";
 import {CF_EXCHANGE_PIN, CF_PIN} from "./cashFlowColors";
 
-export type CfRowKind = "netIncome" | "line" | "account";
+/** `line`: a statement line; the outline kinds: the rows inside an open line. */
+export type CfRowKind = "netIncome" | "line" | OutlineKind;
 
 export interface CfDisplayRow {
     kind: CfRowKind;
     /** Stable across refetches: the `{#each}` key, the fold state's key and the cursor's anchor. */
     key: string;
     label: string;
-    /** 0 for a line, 1 for an account inside an open line. */
+    /** 0 for a line; 1 + the outline level for a row inside an open line. */
     indent: number;
-    /** The real account behind an account row, or a single-account line; null otherwise. */
+    /** The account Enter opens in the journal: an account or `(other)` row, or a single-account line; null otherwise. */
     account: string | null;
-    amounts: CfColumns;
+    /** The full account path shown on hover, or null when the row has none (net income, a group line). */
+    path: string | null;
+    /** Null for a heading: it groups rows, the line's total carries the money (plan 50 D4). */
+    amounts: CfColumns | null;
     expanded: boolean;
     expandable: boolean;
 }
@@ -66,86 +86,88 @@ export type IsOpen = (key: string, startsOpen: boolean) => boolean;
 
 const isZero = (columns: CfColumns): boolean => columns.values.every((value) => [...value.values()].every((dec) => dec.m === 0n));
 
-/** `account` relative to the line it sits in: the remainder under an account line, else the whole name. */
-function rowLabel(account: string, line: string): string {
-    return account.startsWith(`${line}:`) ? account.slice(line.length + 1) : account;
+/** Whether a row sits inside an open line (an outline row), rather than being a line itself. */
+export function isOutlineRow(row: CfDisplayRow): boolean {
+    return row.kind !== "line" && row.kind !== "netIncome";
+}
+
+/** What `lineRows` needs of a section line or a cash line. */
+interface FoldLine<R> {
+    name: string;
+    source: CfLine["source"];
+    label: string;
+    account: string | null;
+    rows: readonly R[];
 }
 
 /**
- * Whether a line can open, and what it is called.
+ * Whether a line can open.
  *
  * An account line (rolled up to the report's depth) that turns out to stand
- * for exactly ONE account is printed as that account, in full, with nothing to
- * open: `assets:fidelity:ira` folding over a lone `cash` was a disclosure that
- * hid one row and then showed it. A `cfgroup:` line keeps its name and its
- * arrow even with one account, because there the name is the user's own and
- * the account behind it is information the line does not show.
+ * for exactly ONE account has nothing to open: `assets:fidelity:ira` folding
+ * over a lone `cash` was a disclosure that hid one row and then showed it. It
+ * keeps its own label and shows that account's path on hover. A `cfgroup:`
+ * line keeps its arrow even with one account, because there the name is the
+ * user's own and the account behind it is information the line does not show.
  */
-function folding(line: {name: string; source: CfLine["source"]; rows: readonly {account: string}[]}): {label: string; canOpen: boolean} {
-    if (line.source === "account" && line.rows.length === 1) return {label: line.rows[0].account, canOpen: false};
-    return {label: line.name, canOpen: line.rows.length > 1 || line.rows[0]?.account !== line.name};
+function canOpen(line: FoldLine<{account: string}>): boolean {
+    if (line.source === "account" && line.rows.length === 1) return false;
+    return line.rows.length > 1 || line.rows[0]?.account !== line.name;
 }
 
-function lineRows(prefix: string, line: CfLine, isOpen: IsOpen): CfDisplayRow[] {
-    const key = `${prefix}/${line.source}/${line.name}`;
-    const {label, canOpen} = folding(line);
-    const open = canOpen && isOpen(key, false);
+/**
+ * A line's head row, then (when open) its outline rows, all keyed under
+ * `key` (the cash blocks prefix their edge, so the two lists' keys differ
+ * while `cfFoldKey` still finds one fold for both).
+ */
+function lineRows<R extends OutlineFields & {account: string}>(
+    line: FoldLine<R>,
+    key: string,
+    figures: {line: CfColumns; row: (row: R) => CfColumns},
+    open: (openable: boolean) => boolean
+): CfDisplayRow[] {
+    const openable = canOpen(line);
+    const expanded = open(openable);
+    const lone = openable ? null : (line.rows[0]?.account ?? null);
     const head: CfDisplayRow = {
         kind: "line",
         key,
-        label,
+        label: line.label,
         indent: 0,
-        account: canOpen ? null : (line.rows[0]?.account ?? null),
-        amounts: line.total,
-        expanded: open,
-        expandable: canOpen,
+        account: lone,
+        path: lone ?? line.account,
+        amounts: figures.line,
+        expanded,
+        expandable: openable,
     };
-    if (!open) return [head];
+    if (!expanded) return [head];
     return [
         head,
         ...line.rows.map((row): CfDisplayRow => ({
-            kind: "account",
-            key: `${key}/${row.account}`,
-            label: rowLabel(row.account, line.name),
-            indent: 1,
-            account: row.account,
-            amounts: row.amounts,
+            kind: row.kind,
+            // A heading and its `(other)` row share an account; the kind tells them apart.
+            key: `${key}/${row.account}${row.kind === "account" ? "" : `#${row.kind}`}`,
+            label: row.label,
+            indent: 1 + row.level,
+            account: row.kind === "heading" ? null : row.account,
+            path: row.account,
+            amounts: row.kind === "heading" ? null : figures.row(row),
             expanded: false,
             expandable: false,
         })),
     ];
+}
+
+function sectionLineRows(prefix: string, line: CfLine, isOpen: IsOpen): CfDisplayRow[] {
+    const key = `${prefix}/${line.source}/${line.name}`;
+    return lineRows(line, key, {line: line.total, row: (row) => row.amounts}, (openable) => openable && isOpen(key, false));
 }
 
 function cashRows(edge: "beginning" | "ending", line: CfCashLine, isOpen: IsOpen): CfDisplayRow[] {
     const key = `cash/${line.source}/${line.name}`;
-    const {label, canOpen} = folding(line);
     // One fold for both blocks: opening "Mercury" under Beginning cash opens it
     // under Ending cash too, so the two lists always line up.
-    const open = canOpen && isOpen(key, true);
-    const head: CfDisplayRow = {
-        kind: "line",
-        key: `${edge}/${key}`,
-        label,
-        indent: 0,
-        account: canOpen ? null : (line.rows[0]?.account ?? null),
-        amounts: line[edge],
-        expanded: open,
-        expandable: canOpen,
-    };
-    if (!open) return [head];
-    return [
-        head,
-        ...line.rows.map((row): CfDisplayRow => ({
-            kind: "account",
-            key: `${edge}/${key}/${row.account}`,
-            label: rowLabel(row.account, line.name),
-            indent: 1,
-            account: row.account,
-            amounts: row[edge],
-            expanded: false,
-            expandable: false,
-        })),
-    ];
+    return lineRows(line, `${edge}/${key}`, {line: line[edge], row: (row) => row[edge]}, (openable) => openable && isOpen(key, true));
 }
 
 /** The fold key a row toggles: cash rows share one key across the Beginning and Ending blocks. */
@@ -161,7 +183,7 @@ const TOTAL_LABELS: Record<CfSectionKind, string> = {
 
 export function cfDisplayModel(report: CashFlowStatement, isOpen: IsOpen): CfDisplayModel {
     const boxes = report.sections.map((section): CfBox => {
-        const lines = section.lines.flatMap((line) => lineRows(section.kind, line, isOpen));
+        const lines = section.lines.flatMap((line) => sectionLineRows(section.kind, line, isOpen));
         const rows: CfDisplayRow[] =
             section.kind === "operating"
                 ? [
@@ -171,6 +193,7 @@ export function cfDisplayModel(report: CashFlowStatement, isOpen: IsOpen): CfDis
                           label: "Net income",
                           indent: 0,
                           account: null,
+                          path: null,
                           amounts: report.netIncome,
                           expanded: false,
                           expandable: false,

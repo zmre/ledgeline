@@ -43,6 +43,7 @@ use ledgeline_core::projections::{
 use ledgeline_core::reports::account_types::AccountType;
 use ledgeline_core::reports::balance_sheet::BalanceSheetReport;
 use ledgeline_core::reports::income_statement::{Columns, IncomeStatementReport};
+use ledgeline_core::reports::outline::OutlineKind;
 use ledgeline_core::reports::{
     AccountPeriodsOpts, AccountReportOpts, AccountSection, AccountTypes, BalanceMode, BsOpts,
     BsSectionKind, BucketSpan, CfOpts, CfTags, IS_GROUP_TAG, Interval, IsOpts, MixedAmount,
@@ -1770,8 +1771,8 @@ impl Parity {
                 } else {
                     &mut sheet
                 };
-                for row in section.groups.iter().flat_map(|group| &group.rows) {
-                    put(table, &row.account, &row.own, column, sheets.len());
+                for (account, own) in section.groups.iter().flat_map(|group| &group.members) {
+                    put(table, account, own, column, sheets.len());
                 }
             }
         }
@@ -1790,6 +1791,8 @@ impl Parity {
                 value_in: self.forecast.target.clone(),
                 compare: false,
                 depth: None,
+                names: &declared_groups(&self.journal, "name"),
+                budget: None,
             },
             self.cadence.interval,
             &self.declared,
@@ -1821,7 +1824,14 @@ impl Parity {
         assert!(statement.reconciles, "{}: cf does not reconcile", self.file);
         let columns = statement.buckets.len();
         let mut table = Table::new();
-        for row in statement.cash.iter().flat_map(|line| &line.rows) {
+        // Outline headings stand for their subtree; their accounts' own rows
+        // are the per-account figures hledger lists.
+        for row in statement
+            .cash
+            .iter()
+            .flat_map(|line| &line.rows)
+            .filter(|row| row.kind != OutlineKind::Heading)
+        {
             for column in 0..columns {
                 let change = row.ending.values[column]
                     .ma_add(&row.beginning.values[column].ma_neg().expect("neg"))

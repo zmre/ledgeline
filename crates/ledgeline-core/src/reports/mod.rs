@@ -38,6 +38,7 @@ pub mod insights;
 pub mod kpi;
 pub mod mixed_amount;
 pub mod net_worth;
+pub mod outline;
 pub mod periods;
 pub mod prices;
 pub mod reference;
@@ -77,13 +78,13 @@ pub use accounts::{RootCategory, account_matches, categorize};
 pub use aggregate::{PostingFilter, account_totals, at_depth, effective_date, roll_up};
 pub use balance_sheet::{
     BalanceSheetColumns, BalanceSheetReport, BsColumnGroup, BsColumnRow, BsColumnSection,
-    BsColumnSubsection, BsGroup, BsOpts, BsSection, BsSectionKind, BsSubsection, Valuation,
+    BsColumnSubsection, BsGroup, BsOpts, BsRow, BsSection, BsSectionKind, BsSubsection, Valuation,
     balance_sheet, balance_sheet_columns, balance_sheet_grouped, pivot_balance_sheets,
     prices_any_on_sheet, prices_any_on_sheets,
 };
 pub use budget::{
     BudgetCell, BudgetGaps, BudgetOpts, BudgetReport, BudgetRow, GapRow, UNBUDGETED, budget_gaps,
-    budget_report,
+    budget_report, range_goals,
 };
 pub use budget_summary::{
     BarLabel, BudgetBar, BudgetHealth, BudgetLine, BudgetSection, BudgetSectionKind, BudgetSummary,
@@ -100,9 +101,9 @@ pub use flows::{
 };
 pub use income_statement::{
     Amounts, Columns, DateRange, IS_SECTION_TAG, IncomeStatementReport, IsGroup, IsOpts, IsRow,
-    IsSection, IsSectionKind, IsSubtotal, IsSubtotalKind, account_sections, account_sections_from,
-    compared_windows, income_statement, income_statement_columns, income_statement_grouped,
-    interval_windows, parse_is_section_tag, prices_any_on_statement,
+    IsSection, IsSectionKind, IsSubtotal, IsSubtotalKind, UnplacedBudget, account_sections,
+    account_sections_from, compared_windows, income_statement, income_statement_columns,
+    income_statement_grouped, interval_windows, parse_is_section_tag, prices_any_on_statement,
 };
 pub use insights::{
     ChangeKind, ChangeRow, CostOfLiving, InsightsOpts, InsightsPeriod, InsightsReport,

@@ -26,6 +26,9 @@ pub struct StatementShape {
     pub is_sections: BTreeMap<String, IsSectionKind>,
     /// Declared `isgroup:` per account.
     pub is_groups: BTreeMap<String, String>,
+    /// Each account's OWN `name:` tag (not inherited): outline row labels
+    /// (plan 50 D2).
+    pub names: BTreeMap<String, String>,
 }
 
 impl StatementShape {
@@ -38,6 +41,7 @@ impl StatementShape {
             bs_terms: bs_terms(journal),
             is_sections: account_sections(journal),
             is_groups: declared_groups(journal, IS_GROUP_TAG),
+            names: super::outline::account_names(journal),
         }
     }
 }

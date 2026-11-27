@@ -37,7 +37,7 @@ const engine = (url: string): unknown =>
             : period();
 
 const BS: ReportQuery = {tab: "bs", asOf: "2025-12-31"};
-const IS: ReportQuery = {tab: "is", from: "2026-01-01", to: "2026-12-31", interval: "total"};
+const IS: ReportQuery = {tab: "is", from: "2026-01-01", to: "2026-12-31", interval: "total", depth: null, budget: false};
 
 describe("UNIT reports store tags each report with the query it came from (FE-1)", () => {
     beforeEach(() => {
@@ -98,32 +98,45 @@ describe("UNIT sameReportQuery gates the export on an exact match", () => {
         // The export names the file and titles the sheet from the CURRENT
         // controls: `income-statement-2026-01-01-to-2026-12-31.xlsx` holding last
         // year's figures is exactly the failure this prevents.
-        expect(sameReportQuery(IS, {tab: "is", from: "2025-01-01", to: "2025-12-31", interval: "total"})).toBe(false);
+        expect(sameReportQuery(IS, {tab: "is", from: "2025-01-01", to: "2025-12-31", interval: "total", depth: null, budget: false})).toBe(false);
     });
 
     it("rejects the same P&L range at a different interval", () => {
         // A Total workbook and a monthly one are different documents.
-        expect(sameReportQuery(IS, {tab: "is", from: "2026-01-01", to: "2026-12-31", interval: "monthly"})).toBe(false);
+        expect(sameReportQuery(IS, {tab: "is", from: "2026-01-01", to: "2026-12-31", interval: "monthly", depth: null, budget: false})).toBe(false);
     });
 
-    it.each([
-        ["bs", (params: ReturnType<typeof defaultReportParams>) => buildReportQuery({...params, tab: "bs" as const, depth: 3})],
-        ["is", (params: ReturnType<typeof defaultReportParams>) => buildReportQuery({...params, tab: "is" as const, depth: 3})],
-    ])("builds the %s query without a depth, whatever the shared field holds", (_tab, build) => {
-        // Both statements ask the engine for an UNCLAMPED report — expanding a
-        // group has to show all of it — and absent is how those endpoints spell
+    it("builds the bs query without a depth, whatever the shared field holds", () => {
+        // The balance sheet asks the engine for an UNCLAMPED report — expanding
+        // a group has to show all of it — and absent is how that endpoint spells
         // "no clamp" (`depth=0` is already totals-only). A stale `?depth=` from a
         // bookmark still lands in the shared param for cf/nw, and must not leak
-        // back into either request.
-        const params = defaultReportParams();
-        expect(build(params)).not.toHaveProperty("depth");
-        expect(build({...params, depth: 1})).toEqual(build({...params, depth: 9}));
+        // back into its request.
+        const build = (depth: number) => buildReportQuery({...defaultReportParams(), tab: "bs", depth});
+        expect(build(3)).not.toHaveProperty("depth");
+        expect(build(1)).toEqual(build(9));
+    });
+
+    it("builds the is query from the P&L's OWN depth, never the shared one (plan 50 D8)", () => {
+        const params = {...defaultReportParams(), tab: "is" as const};
+        // Unlimited by default, whatever the period reports' depth holds.
+        expect(buildReportQuery({...params, depth: 1})).toEqual(buildReportQuery({...params, depth: 9}));
+        expect(buildReportQuery(params)).toMatchObject({depth: null});
+        expect(buildReportQuery({...params, isDepth: 2})).toMatchObject({depth: 2});
+        expect(sameReportQuery(buildReportQuery(params), buildReportQuery({...params, isDepth: 2}))).toBe(false);
     });
 
     it("builds the bs and is queries from the params each tab actually shows", () => {
         const params = defaultReportParams();
         expect(buildReportQuery({...params, tab: "bs", interval: "total"})).toEqual({tab: "bs", asOf: params.asOf});
-        expect(buildReportQuery({...params, tab: "is", interval: "quarterly"})).toEqual({tab: "is", from: params.from, to: params.to, interval: "quarterly"});
+        expect(buildReportQuery({...params, tab: "is", interval: "quarterly"})).toEqual({
+            tab: "is",
+            from: params.from,
+            to: params.to,
+            interval: "quarterly",
+            depth: null,
+            budget: false,
+        });
     });
 
     it("builds the multi-period balance sheet query from its own start, As of and grain", () => {
@@ -177,10 +190,14 @@ describe("UNIT sameReportQuery gates the export on an exact match", () => {
         await reports.load("http://engine", IS);
 
         expect(seen.some((url) => url.includes("/api/reports/incomestatement/grouped"))).toBe(true);
-        // No depth, and no `compare`: the engine's default is the previous
-        // equal-length window, which is what the comparison column shows.
+        // No depth (unlimited is spelled by omission), and no `compare`: the
+        // engine's default is the previous equal-length window, which is what
+        // the comparison column shows.
         expect(seen.every((url) => !url.includes("depth="))).toBe(true);
         expect(reports.report).toMatchObject({kind: "incomeStatement"});
+
+        await reports.load("http://engine", {...IS, depth: 2});
+        expect(seen.at(-1)).toContain("depth=2");
         vi.unstubAllGlobals();
     });
 

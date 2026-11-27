@@ -10,7 +10,7 @@ import {describe, expect, it} from "vitest";
 import {decodeBalanceSheetReport} from "#lib/api/nativeDecode.js";
 import {dec, type MixedAmount} from "#lib/domain/money.js";
 import type {AmountStyle} from "#lib/domain/types.js";
-import type {BsSection} from "#lib/reports/types.js";
+import type {BsColumnSection, BsSection} from "#lib/reports/types.js";
 import {CLASSIFIED_BALANCE_SHEET, GROUPED_BALANCE_SHEET, STRADDLING_BALANCE_SHEET, UNBALANCED_BALANCE_SHEET} from "#lib/testing/balanceSheetFixture.js";
 import {
     asColumns,
@@ -74,25 +74,20 @@ describe("UNIT reports/ui/balanceSheetRows — sectionDisplayRows", () => {
     it("expands one group without expanding its neighbours", () => {
         const rows = sectionDisplayRows(ASSETS, only(bsGroupKey("assets", "Cash and cash equivalents")));
 
-        // Labels are relative to the displayed PARENT, as in every other report
-        // table: the group's own root keeps its full path, its children are named
-        // by the segments below it. `wise:eur` is one row, not two: the engine
-        // is asked for an unclamped report now, and `assets:bank:wise` has no
-        // postings of its own, so `compressSectionRows` folds the chain.
-        expect(rows.map((r) => r.label)).toEqual(["Cash and cash equivalents", "assets:bank", "checking", "savings", "wise:eur", "Investments"]);
+        // The labels are the engine's outline labels (plan 50), passed through:
+        // the shared `assets:bank` is absorbed by the group line, and the lone
+        // `wise` → `eur` chain is one row.
+        expect(rows.map((r) => r.label)).toEqual(["Cash and cash equivalents", "Checking", "Savings", "Eur", "Investments"]);
         expect(rows[0].expanded).toBe(true);
-        expect(rows[5].expanded).toBe(false);
-        expect(rows[5].kind).toBe("group"); // the neighbour is still just its heading
+        expect(rows[4].expanded).toBe(false);
+        expect(rows[4].kind).toBe("group"); // the neighbour is still just its heading
     });
 
-    it("compresses single-child chains exactly as every other report table does", () => {
-        // `assets:broker` has one child and nothing of its own, so the pair reads
-        // as one row rather than two lines carrying the identical balance.
+    it("labels an account row with the engine's label and keeps the full path for hover", () => {
         const rows = sectionDisplayRows(ASSETS, only(bsGroupKey("assets", "Investments")));
         const accounts = rows.filter((r) => r.kind === "account");
 
-        expect(accounts.map((r) => r.account)).toEqual(["assets:broker:taxable"]);
-        expect(accounts[0].label).toBe("assets:broker:taxable");
+        expect(accounts.map((r) => [r.label, r.account])).toEqual([["Taxable", "assets:broker:taxable"]]);
     });
 
     it("indents account rows beneath their group", () => {
@@ -205,14 +200,13 @@ describe("UNIT reports/ui/balanceSheetRows — current / non-current bands", () 
             expect(shape(BANDED_LIABILITIES, ALL)).toEqual([
                 ["subsection", "Current"],
                 ["group", "Credit cards"],
-                // `liabilities:cc` holds nothing itself, so the chain folds.
-                ["account", "liabilities:cc:visa"],
+                ["account", "Visa"],
                 ["group", "Accounts payable"],
-                ["account", "liabilities:ap"],
+                ["account", "Accounts payable"],
                 ["subtotal", "Total current liabilities"],
                 ["subsection", "Non-current"],
                 ["group", "Long-term debt"],
-                ["account", "liabilities:mortgage"],
+                ["account", "Mortgage"],
                 ["subtotal", "Total non-current liabilities"],
             ]);
         });
@@ -247,7 +241,7 @@ describe("UNIT reports/ui/balanceSheetRows — current / non-current bands", () 
             expect(heading.account).toBeNull();
         });
 
-        it("compresses a single-child chain inside a band exactly as everywhere else", () => {
+        it("shows a group's outline inside a band exactly as everywhere else", () => {
             const rows = sectionDisplayRows(BANDED_ASSETS, only(bsGroupKey("assets", "Property", "noncurrent")));
             const accounts = rows.filter((r) => r.kind === "account");
 
@@ -582,36 +576,70 @@ describe("UNIT balanceSheetRows — columns (plan 28)", () => {
         }
     });
 
-    it("does not fold a parent that has postings of its own in ANY column", () => {
-        // `assets` → `assets:bank` is a chain only while the parent is empty in
-        // every column; with money of its own in the second column, folding it
-        // would drop that money from that column.
+    describe("plan 50 outline rows", () => {
         const usd = (n: number): MixedAmount => new Map([["$", dec(n, 0)]]);
-        const chain = (parentOwn: MixedAmount[]) =>
-            columnSectionRows(
+        const row = (kind: "heading" | "account" | "other", label: string, account: string, level: number, n: number) => ({
+            kind,
+            label,
+            account,
+            level,
+            amount: [usd(n), usd(n)],
+        });
+        // Two banks with checking and savings each; Bank A has postings of its own.
+        const BANKS: BsColumnSection = {
+            kind: "assets",
+            title: "Assets",
+            subsections: [],
+            total: [usd(105), usd(105)],
+            groups: [
                 {
-                    kind: "assets",
-                    title: "Assets",
-                    subsections: [],
-                    total: [usd(1), usd(2)],
-                    groups: [
-                        {
-                            name: "Cash",
-                            source: "type",
-                            term: null,
-                            total: [usd(1), usd(2)],
-                            rows: [
-                                {account: "assets", depth: 1, own: parentOwn, inclusive: [usd(1), usd(2)]},
-                                {account: "assets:bank", depth: 2, own: [usd(1), usd(1)], inclusive: [usd(1), usd(1)]},
-                            ],
-                        },
+                    name: "Cash",
+                    source: "tag",
+                    term: null,
+                    total: [usd(105), usd(105)],
+                    rows: [
+                        row("heading", "Bank A", "assets:bank:a", 0, 35),
+                        row("other", "Bank A (other)", "assets:bank:a", 1, 5),
+                        row("account", "Checking", "assets:bank:a:checking", 1, 10),
+                        row("account", "Savings", "assets:bank:a:savings", 1, 20),
+                        row("heading", "Bank B", "assets:bank:b", 0, 70),
+                        row("account", "Checking", "assets:bank:b:checking", 1, 30),
+                        row("account", "Savings", "assets:bank:b:savings", 1, 40),
                     ],
                 },
-                ALL
-            )
-                .filter((row) => row.kind === "account")
-                .map((row) => row.label);
-        expect(chain([new Map(), new Map()])).toEqual(["assets:bank"]);
-        expect(chain([new Map(), usd(1)])).toEqual(["assets", "bank"]);
+            ],
+        };
+        const rows = columnSectionRows(BANKS, ALL);
+
+        it("indents each level once under its heading", () => {
+            expect(rows.map((r) => [r.kind, r.label, r.indent])).toEqual([
+                ["group", "Cash", 0],
+                ["heading", "Bank A", 1],
+                ["account", "Bank A (other)", 2],
+                ["account", "Checking", 2],
+                ["account", "Savings", 2],
+                ["heading", "Bank B", 1],
+                ["account", "Checking", 2],
+                ["account", "Savings", 2],
+            ]);
+        });
+
+        it("gives a heading no figure (D4) but keeps its path for hover", () => {
+            const headings = rows.filter((r) => r.kind === "heading");
+            expect(headings.map((r) => [r.amount, r.account])).toEqual([
+                [[], "assets:bank:a"],
+                [[], "assets:bank:b"],
+            ]);
+            expect(rows.filter((r) => r.kind === "account").every((r) => r.amount.length === 2)).toBe(true);
+        });
+
+        it("keys an (other) row apart from the heading that shares its account", () => {
+            const keys = rows.map((r) => r.key);
+            expect(new Set(keys).size).toBe(keys.length);
+        });
+
+        it("keeps headings off the cursor: there is nothing to drill on one", () => {
+            expect(bsCursorRows(rows).map((r) => r.label)).toEqual(["Cash", "Bank A (other)", "Checking", "Savings", "Checking", "Savings"]);
+        });
     });
 });
