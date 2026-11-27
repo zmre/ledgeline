@@ -826,6 +826,8 @@ interface RawHoldingsPoint {
     label?: string;
     marketValue?: RawDec;
     basis?: RawDec | null;
+    flow?: RawDec;
+    returnPct?: unknown;
 }
 
 interface RawHoldingsSeries {
@@ -833,6 +835,7 @@ interface RawHoldingsSeries {
     points?: RawHoldingsPoint[];
     hasBasis?: boolean;
     anchor?: unknown;
+    returnAnchor?: unknown;
     liveAt?: unknown;
 }
 
@@ -3351,6 +3354,8 @@ function decodeHoldingsPoint(raw: RawHoldingsPoint | undefined, context: string)
         label: raw.label,
         marketValue: decodeDec(raw.marketValue, `${context} marketValue`),
         basis: decodeOptDec(raw.basis, `${context} basis`),
+        flow: decodeDec(raw.flow, `${context} flow`),
+        returnPct: decodeReturnPct(raw.returnPct, `${context} returnPct`),
     });
 }
 
@@ -3384,6 +3389,30 @@ function decodeAnchor(raw: unknown, context: string): HoldingsSeries["anchor"] {
     return Object.freeze({min: toNumber(decodeDec(min, `${context} min`)), max: toNumber(decodeDec(max, `${context} max`))});
 }
 
+// Plan 47 A1's additions: the same always-present rule. A return is a plain
+// JSON number (a fraction, 0.123 = +12.3 %), never a Dec — it only ever places
+// a line on a percent axis, like `gainPct` only ever labels one.
+
+/** `returnPct` (a series or benchmark point): a finite fraction, or null before anything is held. */
+function decodeReturnPct(raw: unknown, context: string): number | null {
+    const value = present(raw, context);
+    if (value === null) return null;
+    if (typeof value !== "number" || !Number.isFinite(value)) throw new ApiShapeError(`${context}: expected a fraction or null`);
+    return value;
+}
+
+/** `returnAnchor`: the Performance axis horizon's unpadded min/max (fractions), or null. */
+function decodeReturnAnchor(raw: unknown, context: string): HoldingsSeries["returnAnchor"] {
+    const value = present(raw, context);
+    if (value === null) return null;
+    if (typeof value !== "object") throw new ApiShapeError(`${context}: expected {min, max} or null`);
+    const {min, max} = value as {min?: unknown; max?: unknown};
+    if (typeof min !== "number" || !Number.isFinite(min) || typeof max !== "number" || !Number.isFinite(max)) {
+        throw new ApiShapeError(`${context}: expected numeric min/max`);
+    }
+    return Object.freeze({min, max});
+}
+
 export function decodeHoldingsSeries(raw: unknown): HoldingsSeries {
     const series = raw as RawHoldingsSeries;
     if (typeof series !== "object" || series === null || typeof series.base !== "string" || !Array.isArray(series.points)) {
@@ -3394,6 +3423,7 @@ export function decodeHoldingsSeries(raw: unknown): HoldingsSeries {
         points: frozen(series.points.map((point, i) => decodeHoldingsPoint(point, `series point #${i}`))),
         hasBasis: series.hasBasis === true,
         anchor: decodeAnchor(series.anchor, "holdings series anchor"),
+        returnAnchor: decodeReturnAnchor(series.returnAnchor, "holdings series returnAnchor"),
         liveAt: decodeLiveAt(series.liveAt, "holdings series liveAt"),
     });
 }
@@ -3409,6 +3439,7 @@ export function decodeHoldingsSeries(raw: unknown): HoldingsSeries {
 interface RawBenchmarkPoint {
     date?: unknown;
     value?: unknown;
+    returnPct?: unknown;
 }
 
 interface RawBenchmarkLine {
@@ -3427,6 +3458,7 @@ function decodeBenchmarkLine(raw: RawBenchmarkLine | undefined, context: string)
             date: str(point?.date, `${context} point #${i} date`) as ISODate,
             // A gap is an explicit null; anything else must be a real number.
             value: point?.value === null ? null : num(point?.value, `${context} point #${i} value`),
+            returnPct: decodeReturnPct(point?.returnPct, `${context} point #${i} returnPct`),
         })
     );
     return Object.freeze({

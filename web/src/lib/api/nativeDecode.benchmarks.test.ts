@@ -15,9 +15,9 @@ const WIRE = {
             label: "S&P 500 (SPY)",
             slot: 0,
             points: [
-                {date: "2025-01-31", value: 1100},
-                {date: "2025-02-28", value: 1210},
-                {date: "2025-03-31", value: 2112},
+                {date: "2025-01-31", value: 1100, returnPct: 0},
+                {date: "2025-02-28", value: 1210, returnPct: 0.1},
+                {date: "2025-03-31", value: 2112, returnPct: 0.155},
             ],
             stale: false,
             error: null,
@@ -27,9 +27,9 @@ const WIRE = {
             label: "Gold (GLD)",
             slot: 7,
             points: [
-                {date: "2025-01-31", value: null},
-                {date: "2025-02-28", value: null},
-                {date: "2025-03-31", value: null},
+                {date: "2025-01-31", value: null, returnPct: null},
+                {date: "2025-02-28", value: null, returnPct: null},
+                {date: "2025-03-31", value: null, returnPct: null},
             ],
             stale: true,
             error: "No GLD price history covers this window.",
@@ -44,6 +44,8 @@ describe("UNIT decodeBenchmarks", () => {
         expect(decoded.benchmarks[0].points.map((p) => p.value)).toEqual([1100, 1210, 2112]);
         expect(decoded.benchmarks[0].error).toBeNull();
         expect(decoded.benchmarks[1].points.map((p) => p.value)).toEqual([null, null, null]);
+        expect(decoded.benchmarks[0].points.map((p) => p.returnPct)).toEqual([0, 0.1, 0.155]);
+        expect(decoded.benchmarks[1].points.map((p) => p.returnPct)).toEqual([null, null, null]);
         expect(decoded.benchmarks[1]).toMatchObject({stale: true, error: "No GLD price history covers this window."});
     });
 
@@ -65,8 +67,19 @@ describe("UNIT decodeBenchmarks", () => {
         expect(() => decodeBenchmarks(bad)).toThrow(ApiShapeError);
         const absent = {benchmarks: [{...WIRE.benchmarks[0], points: [{date: "2025-01-31"}]}]};
         expect(() => decodeBenchmarks(absent)).toThrow(ApiShapeError);
-        const missingDate = {benchmarks: [{...WIRE.benchmarks[0], points: [{value: 1}]}]};
+        const missingDate = {benchmarks: [{...WIRE.benchmarks[0], points: [{value: 1, returnPct: 0}]}]};
         expect(() => decodeBenchmarks(missingDate)).toThrow(ApiShapeError);
+    });
+
+    // Plan 47 A1d: the Performance chart draws `returnPct`. Always on the wire
+    // (null where the benchmark has no price), so a missing key is a renamed one.
+    it("refuses a point without returnPct, or with one that is not a finite fraction", () => {
+        const point = (extra: Record<string, unknown>) => ({benchmarks: [{...WIRE.benchmarks[0], points: [{date: "2025-01-31", value: 1100, ...extra}]}]});
+        expect(decodeBenchmarks(point({returnPct: -0.25})).benchmarks[0].points[0].returnPct).toBe(-0.25);
+        const absent = {benchmarks: [{...WIRE.benchmarks[0], points: [{date: "2025-01-31", value: 1100}]}]};
+        expect(() => decodeBenchmarks(absent)).toThrow(ApiShapeError);
+        expect(() => decodeBenchmarks(point({returnPct: "0.1"}))).toThrow(ApiShapeError);
+        expect(() => decodeBenchmarks(point({returnPct: Number.POSITIVE_INFINITY}))).toThrow(ApiShapeError);
     });
 
     it.each([

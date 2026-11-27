@@ -1,15 +1,18 @@
 ---
 title: Comparing against a benchmark
-description: "Draw what your portfolio would be worth had the same cash flows gone into an index fund, with dividends included."
+description: "Draw an index fund's total return beside your own on the Performance chart, with dividends included."
 order: 40
 tags: [holdings, prices]
 ---
 
 # Comparing against a benchmark
 
-The Stocks tab's *Value over time* chart can draw what your portfolio would be
-worth had the same money gone into an index fund instead. Open **Compare** in
-the chart's heading and tick any of:
+The Stocks tab's chart can draw an index fund's return beside your own. Open
+**Compare** in the chart's heading and tick any of the funds below. Comparisons
+are drawn on the **Performance** view only (see
+[Value or Performance](index.md#the-value-over-time-chart)). Pressing Compare
+while the chart shows Value switches it to Performance and opens the list.
+Switching back to Value hides the benchmark lines; your ticks are kept.
 
 | Box                    | Fund |
 |------------------------|------|
@@ -27,28 +30,23 @@ colour, whichever others are showing — and the legend under the chart names
 it. Ledgeline saves your choices with your other view settings (see [Settings files](../settings/settings-files.md)). None are ticked by default.
 
 When the chart is narrowed to some holdings (see
-[the Holdings menu](index.md#the-value-over-time-chart)), each benchmark is
-seeded from those holdings' money alone. That makes "how did my tech stocks do
-against the Nasdaq-100" a fair comparison.
+[the Holdings menu](index.md#the-value-over-time-chart)), your line is the
+return of those holdings alone. That makes "how did my tech stocks do against
+the Nasdaq-100" a fair comparison.
 
 ## What the line means
 
-It is **the same cash flows, on the same dates, into that fund**. Every buy in
-the current scope is money that could have bought the fund that day; every sale
-or return of capital is money taken out of it that day. Moves between your own
-accounts and stock splits are not cash flows and are ignored — exactly the rules
-the windowed gain already uses to tell a contribution from a gain.
+Each benchmark line is **the fund's total return since the chart's first
+point**, in percent, with dividends reinvested. Your own line is your
+time-weighted return over the same points, which buying and selling do not
+move. All the lines start at 0 % at the chart's left edge, so at any point the
+question is "had I held this fund instead, over the same stretch, would I be
+ahead?". A fund younger than the window (VXUS began trading in 2011) starts at
+the first point it has a price for.
 
-The two lines **start together** at the chart's left edge: the benchmark account
-is seeded with your portfolio's actual market value on the first point, then
-only the flows after that are replayed. So over 12 months the question is "given
-what I had a year ago and what I have put in and taken out since, would I be
-ahead in the fund?". A fund younger than the window (VXUS began trading in 2011)
-starts at the first point it has a price for.
-
-A withdrawal larger than the simulated account holds empties it rather than
-driving it below zero. A share movement with neither a cost nor a market price
-on its date cannot be valued, so it is left out of the simulation.
+Your line counts a cash dividend as value that left your holdings, while the
+fund's line reinvests its dividends. A holding that pays cash dividends
+therefore reads slightly behind a fund that returned the same.
 
 The comparison needs holdings valued in US dollars (`$` or `USD`), because the
 funds are priced in dollars. In any other base currency the box explains that
@@ -70,8 +68,8 @@ Ledgeline server, in one request (the page itself never contacts Yahoo), and
 their lines appear when it arrives. Ticking another box fetches just that one.
 If Yahoo cannot be reached for a benchmark, its box says so, with a retry, and
 the rest of the chart is unaffected. Refreshing, updating prices or editing the
-journal redraws the portfolio line and re-requests the benchmark lines, because
-each one starts from the portfolio's value.
+journal redraws the portfolio line and requests the benchmark lines again with
+it. Nothing is fetched while the chart shows Value.
 
 Fetched history is kept in **`benchmarks.prices.journal`, beside your main
 journal**, as ordinary hledger price directives:

@@ -57,6 +57,59 @@ describe("UNIT nativeDecode — holdings series anchor (plan 47 D1)", () => {
     });
 });
 
+// Amendment A1's additions, on LITERALS (the goldens gain them with the engine
+// change): each point's `flow` (a Dec) and `returnPct` (a fraction or null),
+// and the series' `returnAnchor` (fractions or null). All always present.
+describe("UNIT nativeDecode — holdings series flow, returnPct and returnAnchor (plan 47 A1)", () => {
+    const POINT = {
+        date: "2026-05-31",
+        bucket: "2026-05",
+        label: "May 2026",
+        marketValue: dec("10045300", 3),
+        basis: null,
+        flow: dec("1200000", 2),
+        returnPct: 0.123,
+    };
+    const SERIES = {base: "$", points: [POINT], hasBasis: false, anchor: null, returnAnchor: {min: -0.05, max: 0.2}, liveAt: null};
+
+    it("decodes the flow as a Dec and the returns as plain fractions", () => {
+        const decoded = decodeHoldingsSeries(SERIES);
+        expect(decoded.points[0].flow).toEqual({m: 1200000n, p: 2});
+        expect(decoded.points[0].returnPct).toBe(0.123);
+        expect(decoded.returnAnchor).toEqual({min: -0.05, max: 0.2});
+    });
+
+    it("keeps a null return and a null returnAnchor null", () => {
+        const decoded = decodeHoldingsSeries({...SERIES, points: [{...POINT, returnPct: null}], returnAnchor: null});
+        expect(decoded.points[0].returnPct).toBeNull();
+        expect(decoded.returnAnchor).toBeNull();
+    });
+
+    it.each(["flow", "returnPct"])("refuses a point without %s (a renamed key must not be absorbed)", (key) => {
+        expect(() => decodeHoldingsSeries({...SERIES, points: [without(POINT, key)]})).toThrow(ApiShapeError);
+    });
+
+    it("refuses a series without returnAnchor", () => {
+        expect(() => decodeHoldingsSeries(without(SERIES, "returnAnchor"))).toThrow(ApiShapeError);
+    });
+
+    it.each([
+        ["a flow that is a bare number", {flow: 12000}],
+        ["a return that is a string", {returnPct: "12.3%"}],
+        ["a return that is not finite", {returnPct: Number.NaN}],
+    ])("refuses %s", (_, bad) => {
+        expect(() => decodeHoldingsSeries({...SERIES, points: [{...POINT, ...bad}]})).toThrow(ApiShapeError);
+    });
+
+    it.each([
+        ["Dec bounds (returns are fractions, not money)", {min: dec("1", 2), max: dec("2", 2)}],
+        ["a missing bound", {min: 0}],
+        ["a non-object", "0..1"],
+    ])("refuses a returnAnchor of %s", (_, returnAnchor) => {
+        expect(() => decodeHoldingsSeries({...SERIES, returnAnchor})).toThrow(ApiShapeError);
+    });
+});
+
 describe("UNIT nativeDecode — holdings reports' liveAt (plan 47 D10)", () => {
     it("is null when null, the number when sent, and an error when missing, on both tabs' reports", () => {
         const stocks = golden("holdings");

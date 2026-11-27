@@ -60,7 +60,10 @@
        `yDomain` replaces the computed y-domain outright — `includeZero` and
        `extent` are then the caller's business — and switches off `yNice`, so
        a domain padded on purpose is not rounded out again. For a chart whose
-       axis is anchored on something wider than what it shows.
+       axis is anchored on something wider than what it shows. `includeZero`
+       beside a `yDomain` still draws its zero rule (the domain is the caller's
+       to make contain 0); `zeroIsData` draws an all-zero line instead of the
+       `empty` sentence, for a chart where 0 is a reading (a 0 % return).
 
      The legend is `ChartLegend`, not layerchart's built-in one — see there. -->
 <script lang="ts" module>
@@ -100,6 +103,7 @@
         onPeriodClick,
         trend = null,
         yDomain: yDomainOverride = null,
+        zeroIsData = false,
     }: {
         /** Names what is plotted. A single series relies on this instead of a legend. */
         heading: string;
@@ -143,6 +147,12 @@
         trend?: "up" | "down" | "flat" | null;
         /** Use this y-domain verbatim (no zero seeding, no extent, no nice rounding). Null computes one. */
         yDomain?: readonly [number, number] | null;
+        /**
+         * Draw a series of zeroes rather than the `empty` sentence. For a line
+         * where 0 is a reading, not an absence — a return of 0 % is "nothing
+         * moved", and the chart must say so. Only all-gaps is then empty.
+         */
+        zeroIsData?: boolean;
     } = $props();
 
     /** Unique per instance: the hero's gradient is referenced by id, and two charts on a page must not share one. */
@@ -168,7 +178,7 @@
 
     // A plot of nothing but zeroes (and gaps) is a flat line on the axis that
     // says less than a sentence does, and an empty bucket list draws nothing.
-    const nothingToDraw = $derived(rows.length === 0 || rows.every((r) => r.v.every((n) => n === null || n === 0)));
+    const nothingToDraw = $derived(rows.length === 0 || rows.every((r) => r.v.every((n) => n === null || (n === 0 && !zeroIsData))));
 
     /** The tooltip's formatter: a gap reads as an em-dash, never as "$0.00" or "NaN". */
     const tooltipFormat = $derived((n: number | null | undefined): string => (typeof n === "number" && Number.isFinite(n) ? formatValue(n) : "—"));

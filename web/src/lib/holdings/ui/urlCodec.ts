@@ -2,9 +2,10 @@
 // Svelte/DOM/$app imports so the round-trip is unit-testable under node; browser
 // glue lives in urlSync.ts.
 //
-// Scheme: `?asof=&acct=&mode=&gain=&hold=&tab=` (plans/10, plans/14, plan 47).
+// Scheme: `?asof=&acct=&mode=&gain=&hold=&tab=&view=` (plans/10, plans/14, plan 47).
 // Absent params ALWAYS mean the fresh-visit defaults — asOf today, no accounts,
-// include mode, the last 12 months, no holdings filter, Stocks tab — never a
+// include mode, the last 12 months, no holdings filter, Stocks tab, the Value
+// chart — never a
 // remembered date, so `today` is threaded through both directions (injectable
 // for tests). Account names and `hold` keys (symbols, or account names on the
 // Other tab) are individually percent-encoded before the comma join so names
@@ -16,9 +17,10 @@
 // race it, and whichever debounce fired last would erase the other's keys. So
 // the tab travels with the scope through `stateToSearch`, while staying OUT of
 // `HoldingsScope` itself — scope is the report resource's refetch key, and a tab
-// in it would refetch the stock report on every tab click.
+// in it would refetch the stock report on every tab click. The chart's
+// Value / Performance switch (`view`, plan 47 A1b) travels the same way.
 import type {ISODate} from "#lib/domain/types.js";
-import {isTab, TAB_ORDER, type HoldingsTab} from "#lib/holdings/params.js";
+import {DEFAULT_CHART_VIEW, isChartView, isTab, TAB_ORDER, type ChartView, type HoldingsTab} from "#lib/holdings/params.js";
 import type {GainPeriod, HoldingsScope} from "#lib/holdings/types.js";
 import {DEFAULT_GAIN_PERIOD, isGainPeriod} from "./gainPeriod";
 import {safeDecode} from "#lib/url/safeDecode.js";
@@ -32,6 +34,8 @@ const DEFAULT_TAB: HoldingsTab = TAB_ORDER[0];
 export interface HoldingsUrlState {
     scope: HoldingsScope;
     tab: HoldingsTab;
+    /** What the Stocks chart plots. */
+    view: ChartView;
 }
 
 /** The scope half, as params, so the tab can join it without a second codec re-encoding anything. */
@@ -68,7 +72,7 @@ export function scopeToSearch(scope: HoldingsScope, today: ISODate): string {
 }
 
 /**
- * Serialize scope AND tab — the one function the URL sync writes through.
+ * Serialize scope, tab and chart view — the one function the URL sync writes through.
  *
  * `tab` is omitted on the default, exactly like every other param here: a link
  * to the screen everyone opens on should not carry a key naming it, and a
@@ -77,6 +81,7 @@ export function scopeToSearch(scope: HoldingsScope, today: ISODate): string {
 export function stateToSearch(state: HoldingsUrlState, today: ISODate): string {
     const params = scopeParams(state.scope, today);
     if (state.tab !== DEFAULT_TAB) params.set("tab", state.tab);
+    if (state.view !== DEFAULT_CHART_VIEW) params.set("view", state.view);
     return params.toString();
 }
 
@@ -96,13 +101,18 @@ export function searchToScope(search: string, today: ISODate): HoldingsScope {
 }
 
 /**
- * Parse scope AND tab. An absent, empty or unknown `tab` opens Stocks rather
+ * Parse scope, tab and chart view. An absent, empty or unknown `tab` opens Stocks rather
  * than stranding the page on a blank sub-screen — the same refusal `isTab`
  * exists for, and the reason a stale link from another surface cannot break this
- * one.
+ * one. An unknown `view` opens the Value chart, for the same reason.
  */
 export function searchToState(search: string, today: ISODate): HoldingsUrlState {
     const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
     const tab = params.get("tab");
-    return {scope: searchToScope(search, today), tab: tab !== null && isTab(tab) ? tab : DEFAULT_TAB};
+    const view = params.get("view");
+    return {
+        scope: searchToScope(search, today),
+        tab: tab !== null && isTab(tab) ? tab : DEFAULT_TAB,
+        view: view !== null && isChartView(view) ? view : DEFAULT_CHART_VIEW,
+    };
 }

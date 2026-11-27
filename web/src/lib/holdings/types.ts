@@ -195,6 +195,20 @@ export interface HoldingsPoint {
     marketValue: Dec;
     /** Total cost basis at `date`, null when any held lot is tainted or unpriced (same refusal as HoldingsReport.totals.basis). */
     basis: Dec | null;
+    /**
+     * Net money INTO the scoped holdings during the bucket ending at this point
+     * (plan 47 A1): buys at cost paid, sells at proceeds (negative), transfers
+     * in or out of scope. Zero on the first point. Drives the Value chart's
+     * bought/sold markers.
+     */
+    flow: Dec;
+    /**
+     * Cumulative time-weighted return since the window's first point, as a
+     * fraction (0.123 = +12.3 %), Modified Dietz per bucket, chain-linked; null
+     * before anything is held. Buying and selling do not move it (A1b). A plain
+     * number: it only ever places a line on a percent axis.
+     */
+    returnPct: number | null;
 }
 
 export interface HoldingsSeries {
@@ -214,6 +228,13 @@ export interface HoldingsSeries {
      * labels one — no total is computed from it.
      */
     anchor: {min: number; max: number} | null;
+    /**
+     * The Performance chart's anchor (plan 47 A1c): min and max of the return
+     * index over the same horizon as `anchor`, REBASED to the window's first
+     * point, as fractions. Unpadded. Null when the request carried no anchor or
+     * nothing in the horizon had a return.
+     */
+    returnAnchor: {min: number; max: number} | null;
     /** As `HoldingsReport.liveAt`: the newest intraday quote the last point was valued with. */
     liveAt: number | null;
 }

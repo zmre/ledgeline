@@ -1173,9 +1173,10 @@ describe("UNIT nativeDecode — HoldingsSeries over the holdings-series golden",
     it("keeps a null basis null", () => {
         const series = decodeHoldingsSeries({
             base: "$",
-            points: [{date: "2026-05-31", bucket: "2026-05", label: "May 2026", marketValue: dec(10045300, 3), basis: null}],
+            points: [{date: "2026-05-31", bucket: "2026-05", label: "May 2026", marketValue: dec(10045300, 3), basis: null, flow: dec(0, 0), returnPct: null}],
             hasBasis: false,
             anchor: null,
+            returnAnchor: null,
             liveAt: null,
         });
         expect(series.points[0].basis).toBeNull();
