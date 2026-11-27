@@ -403,6 +403,13 @@ async fn accounts_summary_and_unbilled() {
             .as_array()
             .is_some_and(|rows| rows.iter().any(|r| r["key"][0] == "email"))
     );
+    // Entries' billing state and search narrow a summary too.
+    let searched = ok(
+        &app,
+        authed("/api/time/summary?from=2026-11-01&to=2026-11-30&q=email&billed=unbilled"),
+    )
+    .await;
+    assert_eq!(searched["rows"][0]["entries"], 2);
     let tree = ok(&app, authed("/api/time/summary?view=tree")).await;
     assert_eq!(tree["tree"][0]["account"], "clients");
     let (status, _) = json_of(&app, authed("/api/time/summary?group=colour")).await;

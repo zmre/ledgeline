@@ -86,6 +86,11 @@ pub struct SummaryQuery<'a> {
     pub top: Option<usize>,
     /// A per-row series by this interval.
     pub series: Option<Interval>,
+    /// Entries' billing state (`unbilled`, `invoiced`, `nobill`,
+    /// `not-billable`, `billed`), as [`super::entries::Billed::matches`].
+    pub billed: Option<&'a str>,
+    /// Text in the note or account, as Entries' search.
+    pub q: Option<&'a str>,
 }
 
 /// One row of a summary.
@@ -159,7 +164,16 @@ pub fn summary(book: &TimeBook, query: &SummaryQuery<'_>) -> Summary {
     let mut rows: BTreeMap<Vec<String>, Acc> = BTreeMap::new();
     let mut buckets: BTreeSet<String> = BTreeSet::new();
     let mut total = TimeQty::ZERO;
-    for (_, entry) in query::entries(book, &query.filter) {
+    let needle = query.q.map(str::to_lowercase);
+    let kept = query::entries(book, &query.filter).filter(|(_, entry)| {
+        query
+            .billed
+            .is_none_or(|wanted| super::entries::Billed::of(book, entry).matches(wanted))
+            && needle
+                .as_deref()
+                .is_none_or(|needle| super::entries::has_text(entry, needle))
+    });
+    for (_, entry) in kept {
         let key: Vec<String> = query
             .group
             .iter()

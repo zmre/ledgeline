@@ -16,7 +16,7 @@
 //! | `POST /api/time/entries/bulk`           | `{ids, op, …}`: billable, nobill, move, person.                          |
 //! | `GET /api/time/accounts`                | The account tree, tags resolved with their source, hours.               |
 //! | `POST /api/time/accounts/{declare,set-tag,archive,rename}` | The Accounts page's actions.                         |
-//! | `GET /api/time/summary`                 | Time by any groupings (note too), depth, top N, a period series; the roll-up's `file`. |
+//! | `GET /api/time/summary`                 | Time by any groupings (note too), Entries' filters (billing state and search too), depth, top N, a period series; the roll-up's `file`. |
 //! | `GET /api/time/unbilled`                | Per customer, with suggested periods; needs-a-customer; orphan tags.    |
 //! | `POST /api/time/bill`                   | Preview (`preview: true`) or create an invoice draft from time.         |
 //! | `POST /api/time/release`                | `{invoice, how}`: take `invoice: N` off its time (or make it nobill), refused (`invoice-exists`) while N is a draft or sent and not void; `{bill, how}`: void AP bill `bill` and unlock its time. |
@@ -841,6 +841,11 @@ struct SummaryParams {
     customer: Option<String>,
     billable: Option<bool>,
     account: Option<String>,
+    /// Entries' billing state: `unbilled`, `invoiced`, `nobill`,
+    /// `not-billable`, `billed`.
+    billed: Option<String>,
+    /// Text in the note or account.
+    q: Option<String>,
     /// `account,person`: one or more of account, branch, customer, person,
     /// billable, billed, note, day, week, month, quarter, year.
     group: Option<String>,
@@ -901,6 +906,8 @@ async fn summary(State(state): State<AppState>, Query(params): Query<SummaryPara
                 depth: params.depth,
                 top: params.top,
                 series,
+                billed: params.billed.as_deref().filter(|b| !b.is_empty()),
+                q: params.q.as_deref().map(str::trim).filter(|q| !q.is_empty()),
             },
         ))?;
         // The roll-up, for the `hledger -f …` commands the dashboard shows.
