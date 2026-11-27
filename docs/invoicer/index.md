@@ -19,6 +19,7 @@ Every invoice is a markdown file in your books folder, and so is every customer.
 - Notes on each invoice whether it has been paid, partly paid or not, by reading the payments in your books.
 - Exports a PDF through a template you can change, and keeps a copy of every final PDF it exports.
 - Shows what you are owed on a [dashboard](dashboard.md): what is overdue, how old it is, and what came in recently.
+- Tracks your time in hledger timedot files and bills it. See [Time tracking](../time/index.md).
 - Does almost everything from the [command line](cli.md) too, so you can [script it](scripting.md).
 
 ## Getting it
@@ -56,7 +57,7 @@ The invoicer shares its theme and text size with Ledgeline: change them in eithe
 
 ## Getting around
 
-The sidebar has six sections:
+The sidebar has six sections, and a **Time** group below them:
 
 | Section   | What it holds                                                                                     |
 |-----------|---------------------------------------------------------------------------------------------------|
@@ -66,6 +67,7 @@ The sidebar has six sections:
 | Catalog   | Products and services you bill often, with their rate and the account each one books to.          |
 | Snippets  | Reusable text such as payment instructions and terms, copied into an invoice when you insert one. |
 | Templates | How invoices look on screen and on paper. See [Templates](templates.md).                          |
+| Time      | Time tracking: Dashboard, Entries, Track and Accounts. See [Time tracking](../time/index.md).     |
 
 **Settings**, at the foot of the sidebar, holds these books' settings and the appearance. <kbd>g</kbd> <kbd>,</kbd> or <kbd>Cmd</kbd>+<kbd>,</kbd> opens it too. See [Settings](settings.md).
 
@@ -92,3 +94,4 @@ A sent invoice can still be edited. Saving it re-books it to match, unless its d
 - [Keyboard shortcuts](keyboard.md): every key, page by page.
 - [Command line](cli.md): every command and option.
 - [Scripting recipes](scripting.md): `grep`, `hledger` and the command line working on your invoices.
+- [Time tracking](../time/index.md): tracking hours and billing them, in its own section.

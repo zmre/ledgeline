@@ -151,6 +151,10 @@ The invoicer writes this table only when you press Save on its Settings page:
 
 Your comments, the order of the keys, `[ui]`, `[books]`, `[sync]` and keys it doesn't know stay as they are.
 
+### `[time]`
+
+[Time tracking](../time/index.md) keeps the names and places of its files under `[time]`, with `[time.tags]` and `[time.words]` for tag names and the words it writes. Only you, or **Use existing…** in its setup, write there. [Time file settings](../time/formats.md#book-settings) lists the keys. Your own time choices, such as your name in the time files, go under `[time]` in `ui-prefs.toml`.
+
 ### It travels with the ledger
 
 If your books are in a git repository or a shared folder, `ledgeline.toml` goes wherever the journal goes. Since Ledgeline never writes keys you didn't put there, the file only changes when someone changes one of its own settings. That makes it reasonable to commit, so everyone who opens the ledger gets the same layout.
