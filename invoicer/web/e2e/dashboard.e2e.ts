@@ -123,13 +123,13 @@ const listed = (page: Page) => page.getByTestId("invoice-row").evaluateAll((rows
 test.describe("the dashboard over the accrual fixture (:5199)", () => {
     test("is the app's home and the sidebar's first section", async ({page}) => {
         await open(page);
-        await expect(page.getByRole("heading", {name: "Dashboard", exact: true})).toBeVisible();
+        await expect(page.getByRole("heading", {name: "Home", exact: true})).toBeVisible();
         // No New invoice button of its own: the sidebar's New is the one (R13).
         await expect(page.getByTestId("dashboard-new")).toHaveCount(0);
         await expect(page.getByTestId("dashboard").getByRole("link", {name: "New invoice", exact: true})).toHaveCount(0);
         const sections = page.getByTestId("sidebar").getByRole("navigation", {name: "Sections"}).getByRole("link");
         // Section names carry their counts for screen readers ("Invoices 2 overdue …"): a prefix match.
-        await expect(sections.first()).toHaveText(/^Dashboard/);
+        await expect(sections.first()).toHaveText(/^Home/);
         await expect(sections.first()).toHaveAttribute("aria-current", "page");
         await expect(page.getByTestId("sidebar-invoices")).not.toHaveAttribute("aria-current", "page");
     });
@@ -321,7 +321,7 @@ test.describe("the dashboard over the accrual fixture (:5199)", () => {
         await expect(page).toHaveURL(/\/app\/invoices\?aged=current$/);
         // The period selector is reachable by Tab from the page's heading.
         await open(page);
-        await page.getByRole("heading", {name: "Dashboard", exact: true}).click();
+        await page.getByRole("heading", {name: "Home", exact: true}).click();
         const select = page.getByTestId("paid-window");
         for (let i = 0; i < 40 && !(await select.evaluate((el) => el === document.activeElement)); i++) await page.keyboard.press("Tab");
         await expect(select).toBeFocused();

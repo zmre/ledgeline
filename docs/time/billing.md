@@ -1,6 +1,6 @@
 ---
 title: Billing time
-description: "Billing tracked time in Ledgeline Invoicer: the Unbilled view and its suggested periods, billing time onto an invoice draft with rates, rounding and a timesheet table, releasing time when a draft is deleted or an invoice voided, and paying contractors for their time through accounts payable."
+description: "Billing tracked time in Ledgeline Invoicer: the To bill page and its suggested periods, billing time onto an invoice draft with rates, rounding and a timesheet table, releasing time when a draft is deleted or an invoice voided, and paying contractors for their time through accounts payable."
 order: 40
 tags: [invoicer, time, accrual]
 ---
@@ -19,15 +19,18 @@ A line of time is unbilled when all of these hold:
 - its account has a customer (`customer:` on it or a parent);
 - it has no `invoice:` tag and no `nobill:` tag.
 
-**Time → Unbilled** (<kbd>g</kbd> <kbd>u</kbd>) lists the time waiting to be billed or paid. Its sidebar link shows how many customers have unbilled time, and the Invoicer's home page shows the total, as money at each account's rate, with **Bill…** to this page ([Dashboard](../invoicer/dashboard.md#time)). The page has these parts:
+**To bill**, in the sidebar (<kbd>g</kbd> <kbd>u</kbd>), lists the time waiting to be billed or paid. Its sidebar link shows how many customers have unbilled time, and the Invoicer's home page shows the total, as money at each account's rate, with **Bill…** to this page ([Home](../invoicer/dashboard.md#time)). The page has two tabs, each showing how many it lists: **To bill**, for your customers, and **To pay** (`/to-bill?tab=pay`), for your contractors. <kbd>1</kbd> and <kbd>2</kbd> switch between them. The **To bill** tab has these parts:
 
 | Part | Shows |
 |------|-------|
 | The banner | A sum-up, such as *3 customers have unbilled time through October: Acme Corp 50m · Globex 3h · Initech Inc 40m*, with **Bill all…**. |
-| **To bill** | A card per customer: its unbilled hours, an estimate of what they'd bill, how often it's billed, a **Bill…** button for each suggested period, and **Everything unbilled** with its own **Bill…**. **See the entries** opens them in Entries. |
+| A card per customer | Its unbilled hours, an estimate of what they'd bill, how often it's billed, a **Bill…** button for each suggested period, and **Everything unbilled** with its own **Bill…**. **See the entries** opens them in Entries. |
 | **Needs a customer** | Billable time on an account that isn't linked to a customer, with **Link a customer on Accounts**. |
 | **On an invoice that no longer exists** | Lines whose `invoice:` tag names an invoice that's in neither the files nor the books, with **Release** to make them unbilled again. |
-| **To pay** | Each timekeeper's unpaid time, with **Create bill…**. See [Paying a contractor](#paying-a-contractor). |
+
+The **To pay** tab lists each timekeeper's unpaid time, with **Create bill…**. See [Paying a contractor](#paying-a-contractor).
+
+The page used to be **Time → Unbilled**. Its old address, `/time/unbilled`, still opens it.
 
 How a customer's periods are picked depends on its note's `cadence:`:
 
@@ -39,7 +42,7 @@ How a customer's periods are picked depends on its note's `cadence:`:
 
 The period you're in now isn't suggested until it's over, so a month's time is billed once.
 
-**Bill all…** (<kbd>Shift</kbd>+<kbd>B</kbd>) opens the Bill dialog for each customer's main suggestion in turn, marked *1 of 3* and so on. **Skip** moves on to the next customer, and Cancel stops. At the end, the page lists the drafts it made, each a link to its editor.
+**Bill all…** (<kbd>Shift</kbd>+<kbd>B</kbd>, from either tab) opens the Bill dialog for each customer's main suggestion in turn, marked *1 of 3* and so on. **Bill time…** in the sidebar's **New** menu, there once time tracking is set up, opens To bill and starts it. **Skip** moves on to the next customer, and Cancel stops. At the end, the page lists the drafts it made, each a link to its editor.
 
 ## Billing a customer
 
@@ -71,7 +74,7 @@ The columns are **Date**, **Who**, **Work** and **Hours**. The notes on your tim
 
 **5. The invoice.** **Date**, **Number**, **Terms (days)** and **Reference** default to the usual: today, the next number, the customer's terms, and none.
 
-**6. Create draft.** This writes the draft and tags every line it bills with `invoice:` and the new invoice's number. The time leaves Unbilled at once, and the draft opens in its editor. Change it as you like, and send it when it's ready.
+**6. Create draft.** This writes the draft and tags every line it bills with `invoice:` and the new invoice's number. The time leaves To bill at once, and the draft opens in its editor. Change it as you like, and send it when it's ready.
 
 A November bill for the sample customer Acme Corp, grouped by account, makes this draft:
 
@@ -144,8 +147,8 @@ For different rates per person on one account, group by account and person and g
 
 Time on an invoice stays tagged as long as the invoice needs it:
 
-- **Deleting a draft** takes its `invoice:` tags off. **Delete draft…** in the invoice editor says how much, such as *Its 8.4 hours of time go back to Unbilled.*
-- **Voiding a sent invoice** asks what happens to its time. **Release it: back to Unbilled, to bill again** is the default. **Mark it not billed (written off)** replaces each `invoice: 108` with `nobill: invoice 108 void`.
+- **Deleting a draft** takes its `invoice:` tags off. **Delete draft…** in the invoice editor says how much, such as *Its 8.4 hours of time go back to To bill.*
+- **Voiding a sent invoice** asks what happens to its time. **Release it: back to To bill, to bill again** is the default. **Mark it not billed (written off)** replaces each `invoice: 108` with `nobill: invoice 108 void`.
 - **Editing and re-booking** a sent invoice leaves the time tags alone. The invoice decides what was billed, not the time file.
 
 A line on a sent invoice is read-only in Entries until the invoice is voided.
@@ -156,11 +159,11 @@ From the command line, `void` takes `--time release` (the default) or `--time no
 ledgeline-invoicer void 108 --time nobill
 ```
 
-`time release 108` (and **Release** on the Unbilled page) is for tags left behind by an invoice that no longer exists, such as one whose file you deleted by hand. `--nobill` writes the time off instead. It's refused while invoice 108 is still a draft or a sent invoice that isn't void, since the same hours would then be billed twice. Delete the draft or void the invoice instead, which releases the time itself.
+`time release 108` (and **Release** on the To bill page) is for tags left behind by an invoice that no longer exists, such as one whose file you deleted by hand. `--nobill` writes the time off instead. It's refused while invoice 108 is still a draft or a sent invoice that isn't void, since the same hours would then be billed twice. Delete the draft or void the invoice instead, which releases the time itself.
 
 ## Writing time off
 
-To keep time from ever being billed, mark it **not billable** in Entries (**Mark not billable…**, with an optional reason). That adds `nobill:` to each line, and the time leaves Unbilled. **Mark billable** takes it off again. Time on an account that isn't billable at all never shows as unbilled, so this is for single lines on billable accounts.
+To keep time from ever being billed, mark it **not billable** in Entries (**Mark not billable…**, with an optional reason). That adds `nobill:` to each line, and the time leaves To bill. **Mark billable** takes it off again. Time on an account that isn't billable at all never shows as unbilled, so this is for single lines on billable accounts.
 
 ## Paying a contractor
 
@@ -193,7 +196,7 @@ Everything but the title and the tag is optional. `payable_account` can be left 
 
 ### Making the bill
 
-**To pay**, on the Unbilled page, lists each timekeeper's time that isn't on a bill yet, billable or not. **Create bill…** on a person, or on one of their periods, opens the Pay dialog. It shows who is paid, the lines with their hours and amounts, and the total with its due date.
+The **To pay** tab, on the To bill page, lists each timekeeper's time that isn't on a bill yet, billable or not. **Create bill…** on a person, or on one of their periods, opens the Pay dialog. It shows who is paid, the lines with their hours and amounts, and the total with its due date.
 
 - Anything the note doesn't give is an empty field, and the first takes focus: **Hourly rate**, **Expense account**, and **Payable account** if your books have more than one. **Terms (days)**, **Date** and **Reference** can be changed too.
 - **Save to Sam Lee's note**, ticked by default, writes your answers into the note's frontmatter, so the next bill doesn't ask. Untick it to use them for this bill only.

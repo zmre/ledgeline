@@ -55,6 +55,21 @@ describe("COMPONENT UiPrefs", () => {
         expect(api.patch).toHaveBeenCalledWith({settlementLeadDays: 6});
     });
 
+    it("loads and saves whether the sidebar's Library is open, at once", async () => {
+        const api = fakeApi();
+        api.load.mockResolvedValueOnce({prefs: {sidebarLibraryOpen: true}, storage: "files", localKeys: [], issues: []});
+        const prefs = new UiPrefs(api, 400);
+        expect(prefs.libraryOpen).toBe(false);
+        await prefs.load();
+        expect(prefs.libraryOpen).toBe(true);
+        prefs.libraryOpen = false;
+        await vi.advanceTimersByTimeAsync(0);
+        expect(api.patch).toHaveBeenCalledWith({sidebarLibraryOpen: false});
+        prefs.libraryOpen = false;
+        await vi.advanceTimersByTimeAsync(0);
+        expect(api.patch).toHaveBeenCalledTimes(1);
+    });
+
     it("saves the theme at once and the text size after a zoom burst settles", async () => {
         const api = fakeApi();
         const prefs = new UiPrefs(api, 400);

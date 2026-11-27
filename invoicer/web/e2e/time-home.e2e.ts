@@ -61,9 +61,8 @@ test.describe("time on Home", () => {
         await expect(page.getByTestId("time-dashboard")).toBeVisible();
         await page.goBack();
 
-        // Bill… goes to To bill (Time → Unbilled until /to-bill lands).
         await page.getByTestId("home-time-bill").click();
-        await expect(page).toHaveURL(/\/app\/(to-bill|time\/unbilled)/);
+        await expect(page).toHaveURL(/\/app\/to-bill$/);
     });
 });
 

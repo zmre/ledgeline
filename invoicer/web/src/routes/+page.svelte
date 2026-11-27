@@ -97,10 +97,8 @@
     const listBase = resolve("/invoices");
     const invoiceHref = (number: string): string => resolve("/invoices/[number]", {number});
 
-    // Where Bill… goes: the To bill page. It replaces /time/unbilled in a
-    // parallel branch; until that merges the typed resolve() only knows
-    // this one. After the merge: resolve("/to-bill").
-    const TO_BILL = resolve("/time/unbilled");
+    // Where Bill… goes: the To bill page.
+    const TO_BILL = resolve("/to-bill");
     const overview = resolve("/time");
     const timeLinks: HomeTimeLinks = {
         hours: `${overview}?period=this-week`,
@@ -112,11 +110,11 @@
 </script>
 
 <svelte:head>
-    <title>Dashboard · Ledgeline Invoicer</title>
+    <title>Home · Ledgeline Invoicer</title>
 </svelte:head>
 
 <div class="@container mx-auto flex max-w-6xl flex-col gap-4">
-    <h1 class="text-2xl font-semibold tracking-tight">Dashboard</h1>
+    <h1 class="text-2xl font-semibold tracking-tight">Home</h1>
     <AsyncSection {view} value={dashboard} {error} testid="dashboard-error" label="the dashboard" loadingLabel="Loading the dashboard" onRetry={retry}>
         {#snippet children(d)}
             {#if d.invoices === 0 && d.commodities.length === 0}

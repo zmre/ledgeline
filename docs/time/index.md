@@ -13,17 +13,17 @@ Time is not money, so the hours stay out of your journal. They sit under their o
 
 ## Where it lives
 
-Time tracking is the **Time** group in the Invoicer's sidebar, with five pages:
+Time tracking has three places in the Invoicer's sidebar: **Time**, **To bill**, and **Time accounts** in the **Library**. They hold five pages:
 
-| Page      | What it is for                                                                                                     | Keys                      |
-|-----------|--------------------------------------------------------------------------------------------------------------------|---------------------------|
-| Overview | Where your time went: totals, billable share, hours over time, the account tree and top lists. See [Overview](dashboard.md). | <kbd>g</kbd> <kbd>w</kbd> |
-| Entries   | Every line of time, by day, by week or by account, to add, change and correct. See [Entries and accounts](entries-and-accounts.md). | <kbd>g</kbd> <kbd>e</kbd> |
-| Track     | Ten slots, one key each, to start and stop the clock. See [Tracking time](tracking.md).                          | <kbd>g</kbd> <kbd>r</kbd> |
-| Accounts  | The time account tree: which customer each bills, whether it's billable, what it bills as. See [Entries and accounts](entries-and-accounts.md#accounts). | <kbd>g</kbd> <kbd>a</kbd> |
-| Unbilled  | Time to bill, by customer, and contractor time to pay. Its link shows how many customers have unbilled time. See [Billing time](billing.md). | <kbd>g</kbd> <kbd>u</kbd> |
+| Page          | Where in the sidebar | What it is for                                                                                                     | Keys                      |
+|---------------|----------------------|--------------------------------------------------------------------------------------------------------------------|---------------------------|
+| Overview      | Time                 | Where your time went: totals, billable share, hours over time, the account tree and top lists. See [Overview](dashboard.md). | <kbd>g</kbd> <kbd>w</kbd> |
+| Entries       | Time                 | Every line of time, by day, by week or by account, to add, change and correct. See [Entries and accounts](entries-and-accounts.md). | <kbd>g</kbd> <kbd>e</kbd> |
+| Track         | Time, and the light  | Ten slots, one key each, to start and stop the clock. See [Tracking time](tracking.md).                          | <kbd>g</kbd> <kbd>r</kbd> |
+| Time accounts | Library              | The time account tree: which customer each bills, whether it's billable, what it bills as. See [Entries and accounts](entries-and-accounts.md#accounts). | <kbd>g</kbd> <kbd>a</kbd> |
+| To bill       | To bill              | Time to bill, by customer, and contractor time to pay, in two tabs. Its link shows how many customers have unbilled time. See [Billing time](billing.md). | <kbd>g</kbd> <kbd>u</kbd> |
 
-Track is <kbd>g</kbd> <kbd>r</kbd> (r for recording) because <kbd>g</kbd> <kbd>t</kbd> already goes to Templates.
+The sidebar's **Time** link is lit on the Overview, Entries and Track. Track is <kbd>g</kbd> <kbd>r</kbd> (r for recording) because <kbd>g</kbd> <kbd>t</kbd> already goes to Templates.
 
 Time shows up outside the Time group too:
 

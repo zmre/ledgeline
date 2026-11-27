@@ -3,7 +3,7 @@
 // books by name, with the basis as plain text.
 import {fireEvent, render, screen, within} from "@testing-library/svelte";
 import {createRawSnippet, type ComponentProps} from "svelte";
-import {describe, expect, it} from "vitest";
+import {describe, expect, it, vi} from "vitest";
 import Sidebar from "./Sidebar.svelte";
 
 // Plain `tsc` sees a .svelte module's default export only, so the type comes from the props.
@@ -145,44 +145,70 @@ describe("COMPONENT Sidebar", () => {
         expect(settings.getAttribute("aria-current")).toBe("page");
     });
 
-    it("puts a group's links under its heading, before Settings, and the lamp above them all (plan 46)", () => {
-        const groups = [
-            {
-                id: "time",
-                title: "Time",
-                links: [
-                    {id: "time-overview", href: "/app/time", label: "Overview", narrowLabel: "Time", ariaLabel: "Time overview", active: false},
-                    {id: "time-track", href: "/app/time/track", label: "Track", ariaLabel: "Track time", active: true},
-                ],
-            },
-        ];
+    it("puts a plain group's links under its heading, before Settings, and the lamp above them all (plan 46)", () => {
+        const groups = [{id: "more", title: "More", links: [{id: "extra", href: "/app/extra", label: "Extra", narrowLabel: "More extra", active: true}]}];
         const lamp = createRawSnippet(() => ({render: () => '<div data-testid="lamp-probe">lamp</div>'}));
         render(Sidebar, {links, books, groups, lamp, settings: {id: "settings", href: "/app/settings", label: "Settings", active: false}});
-        expect(screen.getByTestId("sidebar-group-time").textContent).toBe("Time");
+        expect(screen.getByTestId("sidebar-group-more").textContent).toBe("More");
         const all = screen.getAllByRole("link").map((a) => a.dataset.testid);
-        expect(all).toEqual(["sidebar-invoices", "sidebar-customers", "sidebar-catalog", "sidebar-time-overview", "sidebar-time-track", "sidebar-settings"]);
-        expect(screen.getByTestId("sidebar-time-track").getAttribute("aria-current")).toBe("page");
-        // The narrow bar has no headings: the time dashboard says "Time" there.
-        expect(screen.getByTestId("sidebar-time-overview").textContent?.trim()).toBe("TimeOverview");
+        expect(all).toEqual(["sidebar-invoices", "sidebar-customers", "sidebar-catalog", "sidebar-extra", "sidebar-settings"]);
+        expect(screen.getByTestId("sidebar-extra").getAttribute("aria-current")).toBe("page");
+        // The narrow bar has no headings: a link may say more there.
+        expect(screen.getByTestId("sidebar-extra").textContent?.trim()).toBe("More extraExtra");
         const probe = screen.getByTestId("lamp-probe");
         const nav = screen.getByRole("navigation", {name: "Sections"});
         expect(probe.compareDocumentPosition(nav) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
-    it("names time's links apart from the books' (Dashboard twice on screen)", () => {
-        const groups = [
-            {
-                id: "time",
-                title: "Time",
-                links: [
-                    {id: "time-overview", href: "/app/time", label: "Overview", ariaLabel: "Time overview", active: false},
-                    {id: "time-track", href: "/app/time/track", label: "Track", ariaLabel: "Track time", active: false},
-                ],
-            },
-        ];
-        render(Sidebar, {links: [{id: "dashboard", href: "/app/", label: "Dashboard", active: false}], books, groups});
-        expect(screen.getAllByRole("link", {name: "Dashboard"})).toHaveLength(1);
-        expect(screen.getByRole("link", {name: "Time overview"}).getAttribute("href")).toBe("/app/time");
-        expect(screen.getByRole("link", {name: "Track time"}).getAttribute("href")).toBe("/app/time/track");
+    describe("a collapsible group (the Library)", () => {
+        const library = (open: boolean, active: string | null = null, onToggle = vi.fn()) => ({
+            id: "library",
+            title: "Library",
+            open,
+            onToggle,
+            links: [
+                {id: "snippets", href: "/app/snippets", label: "Snippets", active: active === "snippets", counts: [{id: "count", value: 2, label: "snippets"}]},
+                {id: "time-accounts", href: "/app/time/accounts", label: "Time accounts", active: active === "time-accounts"},
+            ],
+        });
+        const toggle = () => screen.getByRole("button", {name: "Library"});
+        const shown = () => screen.queryAllByRole("link").map((a) => a.dataset.testid);
+
+        it("is a button saying whether it is open; closed, its links are hidden", async () => {
+            const onToggle = vi.fn();
+            const {rerender} = render(Sidebar, {links, books, groups: [library(false, null, onToggle)]});
+            expect(toggle().getAttribute("aria-expanded")).toBe("false");
+            expect(toggle().dataset.testid).toBe("sidebar-group-library");
+            expect(shown()).toEqual(["sidebar-invoices", "sidebar-customers", "sidebar-catalog"]);
+            // aria-controls names every link it shows or hides.
+            for (const id of (toggle().getAttribute("aria-controls") ?? "").split(" ")) expect(document.getElementById(id)?.hidden).toBe(true);
+
+            await fireEvent.click(toggle());
+            expect(onToggle).toHaveBeenLastCalledWith(true);
+            await rerender({links, books, groups: [library(true, null, onToggle)]});
+            expect(toggle().getAttribute("aria-expanded")).toBe("true");
+            expect(shown()).toEqual(["sidebar-invoices", "sidebar-customers", "sidebar-catalog", "sidebar-snippets", "sidebar-time-accounts"]);
+            expect(screen.getByTestId("sidebar-snippets-count").textContent).toBe("2 snippets");
+
+            // Pressed again, it closes.
+            await fireEvent.click(toggle());
+            expect(onToggle).toHaveBeenLastCalledWith(false);
+        });
+
+        it("opens by itself while one of its pages is current, and stays closed there once closed", async () => {
+            const onToggle = vi.fn();
+            const {rerender} = render(Sidebar, {links, books, groups: [library(false, "time-accounts", onToggle)]});
+            expect(toggle().getAttribute("aria-expanded")).toBe("true");
+            expect(screen.getByTestId("sidebar-time-accounts").getAttribute("aria-current")).toBe("page");
+
+            await fireEvent.click(toggle());
+            expect(onToggle).toHaveBeenLastCalledWith(false);
+            expect(toggle().getAttribute("aria-expanded")).toBe("false");
+            expect(screen.queryByTestId("sidebar-time-accounts")?.closest("li")?.hidden).toBe(true);
+
+            // Another of its pages opens it again.
+            await rerender({links, books, groups: [library(false, "snippets", onToggle)]});
+            expect(toggle().getAttribute("aria-expanded")).toBe("true");
+        });
     });
 });

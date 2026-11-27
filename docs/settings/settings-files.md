@@ -16,7 +16,7 @@ Ledgeline keeps its own settings in TOML files, and so does [Ledgeline Invoicer]
 
 View settings are the choices Ledgeline remembers as you work: the theme and interface scale, which journal columns show, which panels are open, the Review and Find Matches numbers, the benchmark lines on the Stocks chart, and the like.
 
-Ledgeline Invoicer reads and writes the same `ui-prefs.toml` for the settings it shares with Ledgeline: the theme, the interface scale and the three invoice matching settings.
+Ledgeline Invoicer reads and writes the same `ui-prefs.toml` for the settings it shares with Ledgeline: the theme, the interface scale and the three invoice matching settings. It also keeps a few of its own there, which Ledgeline leaves alone, such as `sidebarLibraryOpen`: whether its sidebar's Library is open.
 
 The list of recently opened journals stays in `recent.json`, in the same config folder.
 

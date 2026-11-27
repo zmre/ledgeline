@@ -23,11 +23,11 @@ describe("COMPONENT the invoice's time on delete and void", () => {
         api.del.mockResolvedValue({deleted: "invoices/x.md", number: "102", time: {released: 1, how: "release"}});
     });
 
-    it("deleting a draft with time says its hours go back to Unbilled", async () => {
+    it("deleting a draft with time says its hours go back to To bill", async () => {
         api.entries.mockResolvedValue(list([entry({quantity: qty(300), invoice: "102", billed: "invoiced"})]));
         const onDeleted = vi.fn();
         render(DeleteDraftDialog, {number: "102", onDeleted, onCancel: vi.fn()});
-        expect((await screen.findByTestId("confirm-delete-draft-time")).textContent).toBe("Its 5 hours of time go back to Unbilled.");
+        expect((await screen.findByTestId("confirm-delete-draft-time")).textContent).toBe("Its 5 hours of time go back to To bill.");
         expect(api.entries).toHaveBeenCalledWith("invoice=102");
         await fireEvent.click(screen.getByTestId("confirm-delete-draft-confirm"));
         await waitFor(() => expect(onDeleted).toHaveBeenCalledWith(1));

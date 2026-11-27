@@ -1,13 +1,13 @@
 ---
-title: Dashboard
-description: "The Ledgeline Invoicer dashboard: drafts, what is outstanding and what was paid recently, the aging of what you are owed, recently updated invoices, days sales outstanding, average days to pay, and the settings that change them."
+title: Home
+description: "The Ledgeline Invoicer home page: drafts, what is outstanding and what was paid recently, the aging of what you are owed, recently updated invoices, days sales outstanding, average days to pay, and the settings that change them."
 order: 40
 tags: [invoicer]
 ---
 
-# Dashboard
+# Home
 
-The dashboard is the app's home page. It answers three questions: what is waiting to be sent, what you are owed, and what came in recently. Every figure on it is a link to the invoices behind it.
+Home is the app's first page. It answers three questions: what is waiting to be sent, what you are owed, and what came in recently. Every figure on it is a link to the invoices behind it.
 
 What you are owed comes from your books, the same figures Ledgeline shows. In accrual books that means every receivable still open, including ones booked without an invoice file, such as an opening balance. In cash books it means sent invoices less the payments applied to them.
 
@@ -46,7 +46,7 @@ The large figure beside the bar is the total outstanding. Next to it, the aging 
 
 Each row opens the invoices in it. The Aging ranges [setting](settings.md#dashboard) changes the ranges.
 
-If some of what is owed was booked without an invoice file in these books, a line under the bar says how much and how many items. The invoice list can only show invoices that have files, so those items appear on the dashboard but not in the list.
+If some of what is owed was booked without an invoice file in these books, a line under the bar says how much and how many items. The invoice list can only show invoices that have files, so those items appear on Home but not in the list.
 
 With more than one currency, each gets its own panel.
 
@@ -98,7 +98,7 @@ dso-days = 30
 paid-window-days = 90
 ```
 
-The aging ranges apply to the dashboard only. `ledgeline-invoicer receivables` and Ledgeline keep the fixed ranges in the table above.
+The aging ranges apply to Home only. `ledgeline-invoicer receivables` and Ledgeline keep the fixed ranges in the table above.
 
 ## Keys
 

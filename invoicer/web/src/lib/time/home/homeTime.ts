@@ -14,7 +14,7 @@
 import {EditorApiError} from "#lib/editorApi.js";
 import {fetchUnbilled, type Unbilled} from "../api/billing.js";
 import {fetchSummary, type Summary} from "../api/summary.js";
-import {presetRange, previousRange, type Range} from "../dashboard/query.js";
+import {presetRange, previousRange, type Range} from "../filters/query.js";
 
 /** One week's figures, in seconds. */
 export interface WeekFigures {

@@ -57,21 +57,28 @@ The invoicer shares its theme and text size with Ledgeline: change them in eithe
 
 ## Getting around
 
-The sidebar has six sections, and a **Time** group below them:
+The sidebar has five sections, and a **Library** below them:
 
 | Section   | What it holds                                                                                     |
 |-----------|---------------------------------------------------------------------------------------------------|
-| Dashboard | What you are owed, what is overdue, what was paid recently. See [Dashboard](dashboard.md).        |
+| Home      | What you are owed, what is overdue, what was paid recently. See [Dashboard](dashboard.md).        |
 | Invoices  | Every invoice, with filters for status, customer, dates and how late it is.                       |
-| Customers | The people and organizations you bill, what each owes, their open purchase orders and, if you track time, their time accounts. |
-| Catalog   | Products and services you bill often, with their rate and the account each one books to.          |
-| Snippets  | Reusable text such as payment instructions and terms, copied into an invoice when you insert one. |
-| Templates | How invoices look on screen and on paper. See [Templates](templates.md).                          |
-| Time      | Time tracking: Dashboard, Entries, Track, Accounts and Unbilled. See [Time tracking](../time/index.md).     |
+| To bill   | Tracked time to bill, by customer, and contractor time to pay. Its link shows how many customers have unbilled time. See [Billing time](../time/billing.md). |
+| Time      | Time tracking: the overview, every entry, and Track. See [Time tracking](../time/index.md).        |
+| Customers | The people and organizations you bill, what each owes, and their open purchase orders and, if you track time, their time accounts. |
+
+The **Library** holds what invoices are made from. Click it to open or close it. It opens by itself on any of its pages, and remembers whether you left it open, in the same `ui-prefs.toml` as the theme.
+
+| In the Library | What it holds                                                                                     |
+|----------------|---------------------------------------------------------------------------------------------------|
+| Catalog        | Products and services you bill often, with their rate and the account each one books to.          |
+| Snippets       | Reusable text such as payment instructions and terms, copied into an invoice when you insert one. |
+| Templates      | How invoices look on screen and on paper. See [Templates](templates.md).                          |
+| Time accounts  | The time account tree, linking time to customers. See [Entries and accounts](../time/entries-and-accounts.md#accounts). |
 
 **Settings**, at the foot of the sidebar, holds these books' settings and the appearance. <kbd>g</kbd> <kbd>,</kbd> or <kbd>Cmd</kbd>+<kbd>,</kbd> opens it too. See [Settings](settings.md).
 
-The **New** button at the top of the sidebar starts a new invoice. Its menu also offers a new customer, catalog item, snippet or template. Press <kbd>?</kbd> anywhere to see the [keyboard shortcuts](keyboard.md) for the page you are on.
+The **New** button at the top of the sidebar starts a new invoice. Its menu also offers a new customer, catalog item, snippet or template, and, once time tracking is set up, **Bill time…**, which opens To bill and starts **Bill all…**. Press <kbd>?</kbd> anywhere to see the [keyboard shortcuts](keyboard.md) for the page you are on.
 
 Web and email links in notes and invoices open in your browser and mail app.
 
