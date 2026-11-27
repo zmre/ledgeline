@@ -19,6 +19,8 @@
 // The second feedback pass (PLAN F9–F11) adds "Use this template", the
 // recalculation of an edited draft, the totals notice and phone numbers.
 //
+// PLAN D18 adds drafts following the company note and Update from company.
+//
 // Written in 3b and 3c and NOT run by the agents that wrote it (agents never
 // run Playwright); the lead runs it.
 
@@ -33,6 +35,7 @@ const BOOKS = resolve(import.meta.dirname, "..", COPY);
 const INVOICE_105 = "invoices/2026-11-10 Customer X Invoice 105.md";
 const INVOICE_106 = "invoices/2026-08-01 Wingtip Invoice 106.md";
 const INVOICE_108 = "invoices/2026-11-17 Customer X Invoice 108.md";
+const COMPANY = "company/My Company.md";
 
 const read = (file: string): string => readFileSync(resolve(BOOKS, file), "utf8");
 
@@ -351,6 +354,53 @@ test.describe("the invoicer over the accrual fixture (:5199)", () => {
             writeFileSync(resolve(BOOKS, INVOICE_105), original);
         }
         await expect(page.getByTestId("totals-notice")).toHaveCount(0, {timeout: 5_000});
+    });
+
+    test("a draft follows the company note; a sent invoice offers Update from company", async ({page}) => {
+        // PLAN D18: the company moves and gains nothing else; 108 was drafted
+        // before its logo. Put back after: the company note, 105 and 108.
+        const company = read(COMPANY);
+        const original105 = read(INVOICE_105);
+        const original108 = read(INVOICE_108);
+        try {
+            writeFileSync(resolve(BOOKS, COMPANY), company.replace("1234 Background Blvd.", "77 Harbor Way"));
+            writeFileSync(resolve(BOOKS, INVOICE_108), original108.replace("invoicer_logo: /company/logo.png\n", ""));
+            await open(page);
+
+            // The draft shows the company as it is now, logo included, and its file is untouched.
+            await page.goto("/app/invoices/108");
+            await expect(frame(page).getByText("77 Harbor Way")).toBeVisible({timeout: 5_000});
+            await expect(frame(page).locator("img.logo")).toBeVisible();
+            await expect(page.getByTestId("company-notice")).toHaveCount(0);
+            expect(read(INVOICE_108)).toContain("1234 Background Blvd.");
+
+            // The sent invoice keeps what was sent, with a quiet line offering the update.
+            await page.goto("/app/invoices/105");
+            await expect(frame(page).getByText("1234 Background Blvd.")).toBeVisible();
+            const notice = page.getByTestId("company-notice");
+            await expect(notice).toContainText("Your company's details have changed since this invoice was sent.");
+            await page.keyboard.press("?");
+            await expect(page.getByTestId("key-help")).toContainText("Update from your company…");
+            await page.keyboard.press("Escape");
+            // By key: the question (it re-books), the safe choice focused; Escape cancels.
+            await page.keyboard.press("u");
+            const dialog = page.getByRole("alertdialog");
+            await expect(dialog).toContainText("Update invoice 105 from your company?");
+            await expect(dialog.getByRole("button", {name: "Cancel"})).toBeFocused();
+            await page.keyboard.press("Escape");
+            await expect(dialog).toHaveCount(0);
+            expect(read(INVOICE_105)).toBe(original105);
+
+            await page.getByTestId("company-update").click();
+            await page.getByTestId("company-confirm-confirm").click();
+            await expect(notice).toHaveCount(0, {timeout: 5_000});
+            await expect(frame(page).getByText("77 Harbor Way")).toBeVisible();
+            expect(read(INVOICE_105)).toBe(original105.replace("  1234 Background Blvd.\n", "  77 Harbor Way\n"));
+        } finally {
+            writeFileSync(resolve(BOOKS, COMPANY), company);
+            writeFileSync(resolve(BOOKS, INVOICE_105), original105);
+            writeFileSync(resolve(BOOKS, INVOICE_108), original108);
+        }
     });
 
     // LAST in this file: it sends the draft 108, which the tests above expect
