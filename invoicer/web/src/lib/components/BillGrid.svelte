@@ -590,7 +590,7 @@
     {#if depositsOpen}
         <div class="rounded-box border border-base-300 bg-base-200 p-3 text-sm" role="region" aria-label="Open deposits" data-testid="deposits">
             {#if depositsError !== null}
-                <p class="text-error">{depositsError}</p>
+                <p class="text-error-text">{depositsError}</p>
             {:else if deposits === null}
                 <span class="loading loading-sm loading-spinner" aria-label="Loading deposits"></span>
             {:else if deposits.deposits.length === 0}

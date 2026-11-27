@@ -148,3 +148,63 @@
 @utility text-muted {
     color: var(--color-muted);
 }
+
+/*
+ * Primary and error as TEXT, legible in every theme: `text-primary-text` and
+ * `text-error-text` (opacity modifiers work too). By default each is the
+ * theme's own primary or error. Where that colour is under WCAG 4.5:1 as text
+ * on base-100 or base-200, a text-only shade overrides it: the same OKLab
+ * hue and chroma, lightness moved the least that clears 4.5:1 on both. The
+ * fills (`btn-primary`, `badge-error`, `bg-error`, …) keep the theme's colour,
+ * so the default themes stay daisyUI's own. Checked by
+ * theme/textContrast.test.ts.
+ */
+@theme inline {
+    --color-primary-text: var(--primary-text);
+    --color-error-text: var(--error-text);
+}
+@layer base {
+    :root,
+    [data-theme] {
+        --primary-text: var(--color-primary);
+        --error-text: var(--color-error);
+    }
+    :root:not([data-theme]),
+    [data-theme="default-dark"] {
+        --primary-text: #777bff;
+    }
+    [data-theme="default-light"] {
+        --error-text: #d23357;
+    }
+    [data-theme="gruvbox-light"] {
+        --error-text: #c81f19;
+    }
+    [data-theme="gruvbox-dark"] {
+        --error-text: #fa5647;
+    }
+    [data-theme="catppuccin-latte"] {
+        --primary-text: #8637ed;
+        --error-text: #d00937;
+    }
+    [data-theme="nord"] {
+        --error-text: #e28088;
+    }
+    [data-theme="monokai"] {
+        --error-text: #ff4586;
+    }
+    [data-theme="one-dark-pro"] {
+        --error-text: #e47266;
+    }
+    [data-theme="solarized-light"] {
+        --primary-text: #006bb0;
+        --error-text: #cc1d20;
+    }
+    [data-theme="solarized-dark"] {
+        --primary-text: #3194db;
+        --error-text: #fb5249;
+    }
+    [data-theme="tokyo-night-day"] {
+        --primary-text: #0057c0;
+        --error-text: #ac292e;
+    }
+}

@@ -62,7 +62,7 @@
 
 <div class="flex flex-col gap-2 text-sm" data-testid="accrual-settlement-picker">
     {#if error !== null}
-        <p class="text-xs text-error" role="alert">{error}</p>
+        <p class="text-xs text-error-text" role="alert">{error}</p>
     {/if}
     {#if view === null}
         <span class="loading loading-xs loading-spinner" aria-label="Loading invoice candidates"></span>

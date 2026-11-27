@@ -256,7 +256,7 @@
                     role="option"
                     aria-selected={at === highlighted}
                     class="block w-full truncate px-2 py-1 text-left text-sm {at === highlighted ? 'bg-primary/25' : ''} {entry.kind === 'add'
-                        ? 'font-medium text-primary'
+                        ? 'font-medium text-primary-text'
                         : ''}"
                     tabindex="-1"
                     onpointerdown={() => choosing.press()}

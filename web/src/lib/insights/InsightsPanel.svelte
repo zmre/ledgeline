@@ -166,7 +166,7 @@
                 {#if balancesView !== null}
                     <BalancesView view={balancesView} trend={runningSeries.value} {trendError} />
                 {:else if cashBalances.status === "error"}
-                    <p class="py-6 text-center text-sm text-error">Couldn't load balances: {cashBalances.error?.message ?? "unknown error"}</p>
+                    <p class="py-6 text-center text-sm text-error-text">Couldn't load balances: {cashBalances.error?.message ?? "unknown error"}</p>
                 {:else}
                     <div class="flex justify-center py-6" aria-label="Loading balances"><span class="loading loading-spinner"></span></div>
                 {/if}

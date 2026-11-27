@@ -1,7 +1,7 @@
 <!-- Spreadsheet-style report table (WP-07): sticky header row + sticky account
      column (daisyUI table-pin-rows/pin-cols), zebra rows, depth-indented
      accounts with single-child chain compression, right-aligned exact amounts
-     (negatives in text-error), emphasized subtotal/total rows. Handles both
+     (negatives in text-error-text), emphasized subtotal/total rows. Handles both
      SectionedReport (bs/is — engine rows arrive pre-sign-flipped, rendered
      as-is) and PeriodReport (cf/nw — one column per bucket, horizontal scroll
      on mobile, plus a Total column when the report carries one: cash flow
@@ -90,7 +90,7 @@
         <span class="text-muted">0</span>
     {:else}
         {#each lines as line (line.text)}
-            <div class={line.negative ? "text-error" : ""}>{line.text}</div>
+            <div class={line.negative ? "text-error-text" : ""}>{line.text}</div>
         {/each}
     {/if}
 {/snippet}

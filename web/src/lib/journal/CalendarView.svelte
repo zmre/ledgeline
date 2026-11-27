@@ -104,7 +104,7 @@
     });
 
     const DOT = {error: "bg-error", warning: "bg-warning", info: "bg-info"} as const;
-    const TONE = {positive: "text-success", negative: "text-error", neutral: "text-muted"} as const;
+    const TONE = {positive: "text-success", negative: "text-error-text", neutral: "text-muted"} as const;
 </script>
 
 {#snippet line(item: CalendarItem)}

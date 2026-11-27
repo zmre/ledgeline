@@ -28,7 +28,7 @@ export function signClass(value: number | bigint | null): string {
     if (value === null) return NEUTRAL_CLASS;
     const positive = typeof value === "bigint" ? value > 0n : value > 0;
     const negative = typeof value === "bigint" ? value < 0n : value < 0;
-    return positive ? "text-success" : negative ? "text-error" : NEUTRAL_CLASS;
+    return positive ? "text-success" : negative ? "text-error-text" : NEUTRAL_CLASS;
 }
 
 /**
@@ -43,5 +43,5 @@ export function sentimentClass(value: number | bigint | null, goodWhenUp: boolea
     const positive = typeof value === "bigint" ? value > 0n : value > 0;
     const negative = typeof value === "bigint" ? value < 0n : value < 0;
     if (!positive && !negative) return NEUTRAL_CLASS;
-    return positive === goodWhenUp ? "text-success" : "text-error";
+    return positive === goodWhenUp ? "text-success" : "text-error-text";
 }

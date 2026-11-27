@@ -97,7 +97,7 @@
             }}
             data-testid="sync-folder"
         />
-        <span class="text-xs {folderOk ? 'text-muted' : 'text-error'}">
+        <span class="text-xs {folderOk ? 'text-muted' : 'text-error-text'}">
             {folderOk ? "Relative to your journal's folder." : "Use a folder inside your journal's folder, like imports/sync."}
         </span>
     </label>

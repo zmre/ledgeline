@@ -240,7 +240,7 @@
      one `·`-joined run: a run of three is wider than a period column, and the
      boxes' columns then stop lining up with each other. -->
 {#snippet amount(c: AmountCell, size: string)}
-    <span class="{size} {c.negative ? 'text-error' : ''}">{c.text}</span>
+    <span class="{size} {c.negative ? 'text-error-text' : ''}">{c.text}</span>
     {#if c.extras.length > 0}
         {#if multi}
             {#each c.extras as extra (extra)}
@@ -396,7 +396,7 @@
                                                 {#if row.expandable}
                                                     <button
                                                         type="button"
-                                                        class="flex cursor-pointer items-center gap-1.5 text-left font-medium hover:text-primary"
+                                                        class="flex cursor-pointer items-center gap-1.5 text-left font-medium hover:text-primary-text"
                                                         aria-expanded={row.expanded}
                                                         onclick={() => toggle(row.key)}
                                                     >

@@ -249,7 +249,7 @@
                                         </button>
                                         <button
                                             type="button"
-                                            class="btn btn-ghost text-error btn-xs"
+                                            class="btn btn-ghost text-error-text btn-xs"
                                             disabled={busy}
                                             onclick={() => onRemove(row.file.journalId, row.goal)}
                                         >

@@ -146,7 +146,7 @@
     />
 </div>
 {#if invalid}
-    <p class="mt-1 text-xs text-error" role="alert">A tag is <code>name:value</code>; the name has no spaces, and neither has a comma.</p>
+    <p class="mt-1 text-xs text-error-text" role="alert">A tag is <code>name:value</code>; the name has no spaces, and neither has a comma.</p>
 {/if}
 
 {#if open && matches.length > 0}

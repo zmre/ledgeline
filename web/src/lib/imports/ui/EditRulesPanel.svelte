@@ -452,7 +452,7 @@
 
                             {#if clientErrors.length > 0}
                                 <ul
-                                    class="list-inside list-disc text-sm text-error"
+                                    class="list-inside list-disc text-sm text-error-text"
                                     role="alert"
                                     use:reveal={{arm, key: clientErrors}}
                                     data-testid="imports-client-errors"

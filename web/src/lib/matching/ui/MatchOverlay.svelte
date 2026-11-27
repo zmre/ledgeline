@@ -470,7 +470,7 @@
             {:else if page === null}
                 <div class="{PANEL} flex items-center justify-center gap-2 py-16 text-sm text-muted" role="status">
                     {#if matches.error !== null}
-                        <span class="text-error">Couldn't find matches: {matches.error}</span>
+                        <span class="text-error-text">Couldn't find matches: {matches.error}</span>
                     {:else}
                         <span class="loading loading-sm loading-spinner"></span> Finding matches…
                     {/if}

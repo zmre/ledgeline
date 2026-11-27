@@ -537,7 +537,7 @@
                         {:else if preview === undefined}
                             <span class="loading loading-xs loading-spinner" aria-label="Loading the preview"></span>
                         {:else if preview.error !== null}
-                            <p class="text-xs text-error" role="alert" data-testid="accrual-preview-error">{preview.error}</p>
+                            <p class="text-xs text-error-text" role="alert" data-testid="accrual-preview-error">{preview.error}</p>
                         {:else if preview.restatement !== null}
                             <RestatementPreview
                                 restatement={preview.restatement}

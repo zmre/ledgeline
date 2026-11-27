@@ -319,9 +319,9 @@
                 {/if}
                 {#if editor.computed !== null && (editor.computed.table_error !== null || editor.computed.problems.length > 0)}
                     <ul class="flex flex-col gap-1 text-sm" aria-label="Problems" data-testid="editor-problems">
-                        {#if editor.computed.table_error !== null}<li class="text-error">{friendlyMessage(editor.computed.table_error)}</li>{/if}
+                        {#if editor.computed.table_error !== null}<li class="text-error-text">{friendlyMessage(editor.computed.table_error)}</li>{/if}
                         {#each editor.computed.problems as problem, p (p)}
-                            <li class={problem.severity === "error" ? "text-error" : "text-warning"}>{friendlyMessage(problem.message)}</li>
+                            <li class={problem.severity === "error" ? "text-error-text" : "text-warning"}>{friendlyMessage(problem.message)}</li>
                         {/each}
                     </ul>
                 {/if}

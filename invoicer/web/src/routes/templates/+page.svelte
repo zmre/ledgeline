@@ -115,7 +115,7 @@
             </label>
             <button type="submit" class="btn btn-primary btn-sm" disabled={busy || newName.trim() === ""} data-testid="create-template">Create</button>
             <button type="button" class="btn btn-ghost btn-sm" onclick={() => (creating = false)}>Cancel</button>
-            {#if createError !== null}<p role="alert" class="w-full text-sm text-error" data-testid="new-template-error">{createError}</p>{/if}
+            {#if createError !== null}<p role="alert" class="w-full text-sm text-error-text" data-testid="new-template-error">{createError}</p>{/if}
         </form>
     {/if}
 

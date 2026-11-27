@@ -229,7 +229,7 @@
                         {#if accountsStore.creating}<span class="loading loading-xs loading-spinner"></span>{/if}
                         Create {loaded.createFileName}
                     </button>
-                    {#if createError !== null}<span class="text-error">{createError}</span>{/if}
+                    {#if createError !== null}<span class="text-error-text">{createError}</span>{/if}
                 </div>
             {/if}
 

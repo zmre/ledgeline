@@ -264,7 +264,7 @@
                             {#if !row.deleted}
                                 {@const problems = validateForm({...form, rows: [row]})}
                                 {#if problems.length > 0}
-                                    <ul class="list-inside list-disc text-xs text-error">
+                                    <ul class="list-inside list-disc text-xs text-error-text">
                                         {#each problems as problem (problem)}
                                             <li>{problem.replace(/^Alias 1: /, "")}</li>
                                         {/each}

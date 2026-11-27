@@ -44,7 +44,7 @@
         <span class="whitespace-nowrap text-muted">Visible Journal Total</span>
         <span class="text-right font-mono font-semibold tabular-nums">
             {#each total as amount (amount.commodity)}
-                <span class={["block whitespace-nowrap", amount.qty.m < 0n && "text-error"]}>{formatAmount(amount)}</span>
+                <span class={["block whitespace-nowrap", amount.qty.m < 0n && "text-error-text"]}>{formatAmount(amount)}</span>
             {:else}
                 <span class="block text-muted">&mdash;</span>
             {/each}

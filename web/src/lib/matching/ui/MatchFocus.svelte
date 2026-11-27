@@ -336,7 +336,7 @@
         </div>
     {:else if data === null}
         <div class="flex flex-col items-center gap-3 py-14 text-sm" role="alert" data-testid="match-focus-error">
-            <span class="text-error">Couldn't find matches: {focus.error}</span>
+            <span class="text-error-text">Couldn't find matches: {focus.error}</span>
             <span class="flex gap-2">
                 <button type="button" class="btn btn-sm" onclick={() => void matches.reloadFocus()}>Try again</button>
                 <button type="button" class="btn btn-ghost btn-sm" onclick={onClose}>Close</button>

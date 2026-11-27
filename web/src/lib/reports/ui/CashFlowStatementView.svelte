@@ -135,7 +135,7 @@
 </script>
 
 {#snippet amount(c: AmountCell, size: string)}
-    <span class="{size} {c.negative ? 'text-error' : ''}">{c.text}</span>
+    <span class="{size} {c.negative ? 'text-error-text' : ''}">{c.text}</span>
     {#if c.extras.length > 0}
         <span class="block text-xs font-normal text-muted">{c.extras.join(" · ")}</span>
     {/if}
@@ -193,7 +193,7 @@
             {#if row.expandable}
                 <button
                     type="button"
-                    class="flex cursor-pointer items-center gap-1.5 text-left font-medium hover:text-primary"
+                    class="flex cursor-pointer items-center gap-1.5 text-left font-medium hover:text-primary-text"
                     aria-expanded={row.expanded}
                     onclick={() => toggle(row)}
                 >

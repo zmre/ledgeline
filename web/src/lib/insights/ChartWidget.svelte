@@ -212,7 +212,7 @@
     {#if loading}
         <div class="flex justify-center py-10" aria-label="Loading chart"><span class="loading loading-spinner"></span></div>
     {:else if chartError !== null}
-        <p class="py-10 text-center text-sm text-error">Couldn't draw the chart: {chartError}</p>
+        <p class="py-10 text-center text-sm text-error-text">Couldn't draw the chart: {chartError}</p>
     {:else if mode === "pie"}
         {#if pieSlices.length === 0}
             <p class="py-10 text-center text-sm text-muted">

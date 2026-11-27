@@ -85,7 +85,7 @@
         <span class="text-base-content/30">{delta ? `${DELTA} 0` : "0"}</span>
     {:else}
         {#each lines as line (line.text)}
-            <div class={line.negative ? "text-error" : ""}>{delta ? `${DELTA} ${line.text}` : line.text}</div>
+            <div class={line.negative ? "text-error-text" : ""}>{delta ? `${DELTA} ${line.text}` : line.text}</div>
         {/each}
     {/if}
 {/snippet}
@@ -166,7 +166,7 @@
                                         {#if parent}
                                             <button
                                                 type="button"
-                                                class="flex cursor-pointer items-center gap-1 text-left hover:text-primary"
+                                                class="flex cursor-pointer items-center gap-1 text-left hover:text-primary-text"
                                                 aria-expanded={expanded}
                                                 onclick={() => toggle(display.row.account)}
                                             >

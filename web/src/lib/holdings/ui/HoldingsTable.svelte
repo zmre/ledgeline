@@ -11,7 +11,7 @@
      forces overflow-y to auto per CSS). The wrapper scrolls horizontally
      only, for small screens — vertical scrolling belongs to the page.
      Right-aligned numerics via the exact domain formatters (2dp display
-     cap), em-dash for null cells, negatives in text-error (gain cells
+     cap), em-dash for null cells, negatives in text-error-text (gain cells
      additionally show positives in text-success), "inferred" badge when the
      price came from a cost annotation instead of a P directive. A tfoot
      totals row (always below the body, whatever the sort) shows the ENGINE's
@@ -112,7 +112,7 @@
     {#if v === null}
         <span class="text-muted">{EM_DASH}</span>
     {:else}
-        <span class={toNumber(v) < 0 ? "text-error" : ""}>{format(v)}</span>
+        <span class={toNumber(v) < 0 ? "text-error-text" : ""}>{format(v)}</span>
     {/if}
 {/snippet}
 

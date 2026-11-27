@@ -182,7 +182,7 @@
                 <p id="mark-sent-title" class="font-medium">Mark invoice {delivery.number} as sent?</p>
                 <p class="mt-1 text-sm text-base-content/70">Sending books it, and its PDF is kept in {delivery.pdf_dir}. A draft PDF is only a look.</p>
                 {#if blocker !== null}
-                    <p class="mt-2 text-sm text-error" data-testid="send-blocker">{blocker}</p>
+                    <p class="mt-2 text-sm text-error-text" data-testid="send-blocker">{blocker}</p>
                 {/if}
                 <label class="mt-2 flex items-center gap-2 text-sm">
                     <span class="text-base-content/70">Sent by</span>

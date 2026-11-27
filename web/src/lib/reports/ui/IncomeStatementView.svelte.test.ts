@@ -278,7 +278,7 @@ describe("COMPONENT IncomeStatementView", () => {
             const other = screen.getByTestId("is-section-other");
 
             expect(other.textContent).toContain("$-15,000.00");
-            expect(other.querySelector("tfoot .text-error")).not.toBeNull();
+            expect(other.querySelector("tfoot .text-error-text")).not.toBeNull();
         });
 
         it("uses ONE minus character for the amount and the percentage on the same row", () => {
@@ -418,7 +418,7 @@ describe("COMPONENT IncomeStatementView", () => {
             mount(loss);
 
             expect(screen.getByTestId("is-net-income").textContent).toContain("$-500.00");
-            expect(screen.getByTestId("is-net-income").querySelector(".text-error")).not.toBeNull();
+            expect(screen.getByTestId("is-net-income").querySelector(".text-error-text")).not.toBeNull();
         });
     });
 

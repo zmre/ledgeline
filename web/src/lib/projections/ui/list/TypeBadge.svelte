@@ -31,7 +31,7 @@
         income: "bg-(--chart-in)/12 text-(--chart-in)",
         expense: "bg-(--chart-out)/14 text-(--chart-out)",
         asset: "bg-info/12 text-info",
-        cash: "bg-primary/16 text-primary",
+        cash: "bg-primary/16 text-primary-text",
         liability: "bg-warning/12 text-warning",
         equity: "bg-secondary/14 text-secondary",
         gain: "bg-base-content/10 text-muted",

@@ -128,7 +128,7 @@
      */
     function remainingClass(bar: BudgetBarView): string {
         if (bar.health === null) return "text-muted";
-        if (bar.labelKind === "over") return "text-error";
+        if (bar.labelKind === "over") return "text-error-text";
         return bar.health === "healthy" ? "text-success" : "text-warning";
     }
 
@@ -203,7 +203,7 @@
             {@const ref = cell.ref}
             <button
                 type="button"
-                class="inline-flex cursor-pointer items-center gap-1.5 font-mono text-primary tabular-nums hover:underline"
+                class="inline-flex cursor-pointer items-center gap-1.5 font-mono text-primary-text tabular-nums hover:underline"
                 disabled={busy}
                 title="Edit this goal ({ref.goal.account})"
                 aria-label="Edit budget for {b.account}"

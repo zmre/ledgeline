@@ -35,7 +35,7 @@ describe("COMPONENT InvoiceList", () => {
 
         const overdue = within(rows[1]);
         expect(overdue.getByTestId("status-badge").textContent).toBe("Overdue");
-        expect(overdue.getByText("2026-08-31").className).toContain("text-error");
+        expect(overdue.getByText("2026-08-31").className).toContain("text-error-text");
 
         const draft = within(rows[2]);
         expect(draft.getByTestId("status-badge").textContent).toBe("Draft");

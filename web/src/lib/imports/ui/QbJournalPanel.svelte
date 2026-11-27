@@ -305,7 +305,7 @@
                                             </p>
                                         {/if}
                                         {#if qbJournalStore.sortErrorFor(file.journalId) !== null}
-                                            <p class="text-sm text-error" role="alert" use:reveal={{arm}} data-testid="qb-sort-error">
+                                            <p class="text-sm text-error-text" role="alert" use:reveal={{arm}} data-testid="qb-sort-error">
                                                 {qbJournalStore.sortErrorFor(file.journalId)}
                                             </p>
                                         {/if}

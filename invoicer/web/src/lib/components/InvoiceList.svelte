@@ -123,7 +123,7 @@
                         </td>
                         <td>{doc.invoicee.name ?? "—"}</td>
                         <td class="whitespace-nowrap tabular-nums">{doc.date ?? "—"}</td>
-                        <td class="whitespace-nowrap tabular-nums {doc.overdue ? 'font-medium text-error' : ''}">{doc.due_date ?? "—"}</td>
+                        <td class="whitespace-nowrap tabular-nums {doc.overdue ? 'font-medium text-error-text' : ''}">{doc.due_date ?? "—"}</td>
                         <td class="text-right whitespace-nowrap tabular-nums">{doc.total ?? "—"}</td>
                         <td>
                             <StatusBadge {doc} />

@@ -112,7 +112,7 @@
              sentence, verbatim — it is the one that says whether the name was
              taken, the upload expired, or something else. -->
         <div class="flex flex-col items-start gap-2" data-testid="imports-create-error">
-            <p class="text-sm text-error" role="alert">{error ?? "Ledgeline could not draft a rules file for this data."}</p>
+            <p class="text-sm text-error-text" role="alert">{error ?? "Ledgeline could not draft a rules file for this data."}</p>
             <button type="button" class="btn btn-sm" onclick={onRetry} data-testid="imports-create-retry">Try again</button>
         </div>
     {:else}
@@ -231,7 +231,7 @@
             </div>
 
             {#if error !== null}
-                <p class="text-sm text-error" role="alert" data-testid="imports-create-save-error">{error}</p>
+                <p class="text-sm text-error-text" role="alert" data-testid="imports-create-save-error">{error}</p>
             {/if}
 
             <div class="flex flex-wrap items-center gap-3">

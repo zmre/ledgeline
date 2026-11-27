@@ -35,7 +35,7 @@
         {#if spans.actual > 0}
             <th colspan={spans.actual} class="text-center font-normal text-muted">Actual</th>
         {/if}
-        <th colspan={spans.projected} class="border-l-2 border-l-primary/50 text-center font-semibold text-primary" data-testid="projected-label"
+        <th colspan={spans.projected} class="border-l-2 border-l-primary/50 text-center font-semibold text-primary-text" data-testid="projected-label"
             >{compareLabel ?? projectedLabel}</th
         >
         {#if trailing > 0}

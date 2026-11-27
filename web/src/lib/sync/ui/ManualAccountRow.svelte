@@ -77,7 +77,7 @@
             </label>
             <button type="submit" class="btn btn-primary btn-xs" disabled={saving}>Save</button>
             <button type="button" class="btn btn-ghost btn-xs" disabled={saving} onclick={() => (editing = false)}>Cancel</button>
-            {#if error !== null}<span class="text-xs text-error" role="alert">{error}</span>{/if}
+            {#if error !== null}<span class="text-xs text-error-text" role="alert">{error}</span>{/if}
         </form>
     {:else}
         <div class="flex flex-wrap justify-end gap-2">
@@ -100,6 +100,6 @@
                 <button type="button" class="btn btn-ghost btn-xs" onclick={edit}>Edit</button>
             {/if}
         </div>
-        {#if error !== null}<span class="self-end text-xs text-error" role="alert">{error}</span>{/if}
+        {#if error !== null}<span class="self-end text-xs text-error-text" role="alert">{error}</span>{/if}
     {/if}
 </li>

@@ -88,7 +88,7 @@
                 </p>
             {/if}
             {#if sortError !== null}
-                <p class="text-sm text-error" role="alert" use:reveal={{arm}} data-testid="imports-sort-error">{sortError}</p>
+                <p class="text-sm text-error-text" role="alert" use:reveal={{arm}} data-testid="imports-sort-error">{sortError}</p>
             {/if}
         </section>
     {/snippet}
