@@ -2,12 +2,13 @@
 // Svelte/DOM/$app imports so the round-trip is unit-testable under node; browser
 // glue lives in urlSync.ts.
 //
-// Scheme: `?asof=&acct=&mode=&gain=&tab=` (plans/10, plans/14). Absent params
-// ALWAYS mean the fresh-visit defaults — asOf today, no accounts, include mode,
-// all-time gain, Stocks tab — never a remembered date, so `today` is threaded
-// through both directions (injectable for tests). Account names are individually
-// percent-encoded before the comma join so names containing commas survive (same
-// as filters/urlCodec).
+// Scheme: `?asof=&acct=&mode=&gain=&hold=&tab=` (plans/10, plans/14, plan 47).
+// Absent params ALWAYS mean the fresh-visit defaults — asOf today, no accounts,
+// include mode, all-time gain, no holdings filter, Stocks tab — never a
+// remembered date, so `today` is threaded through both directions (injectable
+// for tests). Account names and `hold` keys (symbols, or account names on the
+// Other tab) are individually percent-encoded before the comma join so names
+// containing commas survive (same as filters/urlCodec).
 //
 // `tab` is here rather than in a params module of its own because this screen
 // must have exactly ONE writer to its query string. The scope is mirrored by a
@@ -37,10 +38,28 @@ export interface HoldingsUrlState {
 function scopeParams(scope: HoldingsScope, today: ISODate): URLSearchParams {
     const params = new URLSearchParams();
     if (scope.asOf !== today) params.set("asof", scope.asOf);
-    if (scope.accounts.size > 0) params.set("acct", [...scope.accounts].sort().map(encodeURIComponent).join(","));
+    if (scope.accounts.size > 0) params.set("acct", joinList(scope.accounts));
     if (scope.mode !== "include") params.set("mode", scope.mode);
     if (scope.gainPeriod !== "all") params.set("gain", scope.gainPeriod);
+    if (scope.holdings.size > 0) params.set("hold", joinList(scope.holdings));
     return params;
+}
+
+/** A set as one comma list: sorted (so equal sets are equal URLs), each item percent-encoded. */
+function joinList(items: ReadonlySet<string>): string {
+    return [...items].sort().map(encodeURIComponent).join(",");
+}
+
+/** The inverse of `joinList`; absent or empty → the empty set. Never throws: `?acct=%` must not break the mount (SEC-12). */
+function splitList(raw: string | null): Set<string> {
+    return raw === null || raw === ""
+        ? new Set<string>()
+        : new Set(
+              raw
+                  .split(",")
+                  .filter((s) => s !== "")
+                  .map(safeDecode)
+          );
 }
 
 /** Serialize to a query string ("" when everything is the default for `today`). No leading "?". */
@@ -65,23 +84,14 @@ export function stateToSearch(state: HoldingsUrlState, today: ISODate): string {
 export function searchToScope(search: string, today: ISODate): HoldingsScope {
     const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
     const asof = params.get("asof");
-    const acct = params.get("acct");
-    const accounts =
-        acct === null || acct === ""
-            ? new Set<string>()
-            : new Set(
-                  acct
-                      .split(",")
-                      .filter((s) => s !== "")
-                      .map(safeDecode) // never throws: `?acct=%` must not break the mount (SEC-12)
-              );
     const gain = params.get("gain");
     const gainPeriod: GainPeriod = isGainPeriod(gain) ? gain : "all";
     return {
         asOf: asof !== null && ISO_DATE.test(asof) ? asof : today,
-        accounts,
+        accounts: splitList(params.get("acct")),
         mode: params.get("mode") === "exclude" ? "exclude" : "include",
         gainPeriod,
+        holdings: splitList(params.get("hold")),
     };
 }
 

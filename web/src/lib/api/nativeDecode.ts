@@ -30,7 +30,7 @@ import {CONF_SECTIONS, DEPTH_COMMANDS} from "#lib/settings/hledgerConfTypes.js";
 import type {ConfOrigin, ConfSection, DepthCommand, DepthSpec, HledgerConf} from "#lib/settings/hledgerConfTypes.js";
 import type {AccountReference, BudgetFile, BudgetGoal, BudgetListing, BudgetRule, CreatedBudgetFile, RulePeriod} from "#lib/budget/types.js";
 import type {AccountClass, AccountClasses, AccountType} from "#lib/domain/accountClass.js";
-import type {Dec, MixedAmount} from "#lib/domain/money.js";
+import {toNumber, type Dec, type MixedAmount} from "#lib/domain/money.js";
 import type {ISODate} from "#lib/domain/types.js";
 import type {
     Holding,
@@ -53,6 +53,7 @@ import {
     type PricesFile,
     type PricesStatus,
     type PricesUpdateResponse,
+    type IntradayResponse,
 } from "#lib/holdings/pricesTypes.js";
 import {CATEGORY_DIMENSIONS, PIE_DIMENSIONS} from "#lib/holdings/profileTypes.js";
 import {
@@ -782,6 +783,7 @@ interface RawHoldingsReport {
     topGainers?: RawHolding[];
     topLosers?: RawHolding[];
     warnings?: RawWarning[];
+    liveAt?: unknown;
 }
 
 interface RawOtherHolding {
@@ -815,6 +817,7 @@ interface RawOtherHoldingsReport {
     accounts?: unknown[];
     totals?: RawOtherHoldingsTotals;
     warnings?: RawOtherWarning[];
+    liveAt?: unknown;
 }
 
 interface RawHoldingsPoint {
@@ -829,6 +832,8 @@ interface RawHoldingsSeries {
     base?: string;
     points?: RawHoldingsPoint[];
     hasBasis?: boolean;
+    anchor?: unknown;
+    liveAt?: unknown;
 }
 
 interface RawMetricDelta {
@@ -3242,6 +3247,7 @@ export function decodeHoldingsReport(raw: unknown): HoldingsReport {
         topGainers: frozen((report.topGainers ?? []).map((holding, i) => decodeHolding(holding, `topGainer #${i}`))),
         topLosers: frozen((report.topLosers ?? []).map((holding, i) => decodeHolding(holding, `topLoser #${i}`))),
         warnings: frozen((report.warnings ?? []).map((warning, i) => decodeWarning(warning, `warning #${i}`))),
+        liveAt: decodeLiveAt(report.liveAt, "holdings report liveAt"),
     });
 }
 
@@ -3331,6 +3337,7 @@ export function decodeOtherHoldingsReport(raw: unknown): OtherHoldingsReport {
         accounts: frozen(decodeStrings(report.accounts, "other holdings accounts")),
         totals: decodeOtherHoldingsTotals(report.totals, "other holdings totals"),
         warnings: frozen(report.warnings.map((warning, i) => decodeOtherWarning(warning, `other holdings warning #${i}`))),
+        liveAt: decodeLiveAt(report.liveAt, "other holdings report liveAt"),
     });
 }
 
@@ -3347,6 +3354,42 @@ function decodeHoldingsPoint(raw: RawHoldingsPoint | undefined, context: string)
     });
 }
 
+// Plan 47's additions to the holdings wire. Both are OPTIONAL on the wire — an
+// engine from before plan 47 sends neither, and the page must keep working
+// against it (no anchor ⇒ the chart's own domain, no liveAt ⇒ saved prices) —
+// so absent and null decode alike. A value that IS present must still be the
+// right shape: a misread anchor would place the axis wrong without a word.
+
+/** `liveAt`: unix seconds of the newest intraday quote used, or null. */
+function decodeLiveAt(raw: unknown, context: string): number | null {
+    if (raw === undefined || raw === null) return null;
+    if (typeof raw !== "number" || !Number.isFinite(raw)) throw new ApiShapeError(`${context}: expected unix seconds or null`);
+    return raw;
+}
+
+/**
+ * A plan-47 decimal (an anchor bound, an intraday price) as a display number.
+ * The contract names decimal strings ("1234.56"); the `{mantissa, places}`
+ * Dec every other money field uses is accepted too, so the engine may pick
+ * either without breaking the page. Also accepts a plain JSON number.
+ */
+function decimalNumber(raw: unknown, context: string): number {
+    if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+    if (typeof raw === "string") {
+        if (!/^-?\d+(\.\d+)?$/.test(raw.trim())) throw new ApiShapeError(`${context}: ${JSON.stringify(raw)} is not a decimal`);
+        return Number(raw);
+    }
+    return toNumber(decodeDec(raw as RawDec | undefined, context));
+}
+
+/** `anchor`: the y-axis horizon's unpadded min/max, or null. */
+function decodeAnchor(raw: unknown, context: string): HoldingsSeries["anchor"] {
+    if (raw === undefined || raw === null) return null;
+    if (typeof raw !== "object") throw new ApiShapeError(`${context}: expected {min, max} or null`);
+    const {min, max} = raw as {min?: unknown; max?: unknown};
+    return Object.freeze({min: decimalNumber(min, `${context} min`), max: decimalNumber(max, `${context} max`)});
+}
+
 export function decodeHoldingsSeries(raw: unknown): HoldingsSeries {
     const series = raw as RawHoldingsSeries;
     if (typeof series !== "object" || series === null || typeof series.base !== "string" || !Array.isArray(series.points)) {
@@ -3356,6 +3399,8 @@ export function decodeHoldingsSeries(raw: unknown): HoldingsSeries {
         base: series.base,
         points: frozen(series.points.map((point, i) => decodeHoldingsPoint(point, `series point #${i}`))),
         hasBasis: series.hasBasis === true,
+        anchor: decodeAnchor(series.anchor, "holdings series anchor"),
+        liveAt: decodeLiveAt(series.liveAt, "holdings series liveAt"),
     });
 }
 
@@ -5432,6 +5477,29 @@ export function decodePricesUpdateResponse(raw: unknown): PricesUpdateResponse {
     return Object.freeze({
         file: decodePricesFile(response.file, "prices update file"),
         results: frozen(response.results.map((result, i) => decodePriceResult(result, `prices update results[${i}]`))),
+    });
+}
+
+/**
+ * `POST /api/prices/intraday` → which quotes the engine now holds. Only
+ * `rateLimited` and the presence of quotes steer the page, but every field is
+ * checked: a quote the SPA cannot read is a reply it should not act on.
+ */
+export function decodeIntradayResponse(raw: unknown): IntradayResponse {
+    const body = raw as {quotes?: unknown; skipped?: unknown; rateLimited?: unknown} | null;
+    if (typeof body !== "object" || body === null || !Array.isArray(body.quotes)) throw new ApiShapeError("intraday: expected a quotes array");
+    const quotes = (body.quotes as {symbol?: unknown; price?: unknown; time?: unknown; currency?: unknown}[]).map((quote, i) =>
+        Object.freeze({
+            symbol: str(quote?.symbol, `intraday quotes[${i}] symbol`),
+            price: decimalNumber(quote?.price, `intraday quotes[${i}] price`),
+            time: num(quote?.time, `intraday quotes[${i}] time`),
+            currency: str(quote?.currency, `intraday quotes[${i}] currency`),
+        })
+    );
+    return Object.freeze({
+        quotes: frozen(quotes),
+        skipped: frozen(decodeStrings(Array.isArray(body.skipped) ? body.skipped : [], "intraday skipped")),
+        rateLimited: body.rateLimited === true,
     });
 }
 

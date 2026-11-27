@@ -1,7 +1,7 @@
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import type {GainPeriod, HoldingsScope} from "#lib/holdings/types.js";
 import {localToday} from "./filters.svelte";
-import {defaultScope, holdingsData, holdingsScope, otherHoldingsData, trendQuery} from "./holdings.svelte";
+import {defaultScope, holdingsData, holdingsScope, holdingsTab, liveFor, otherHoldingsData, trendQuery} from "./holdings.svelte";
 
 describe("UNIT holdings scope store (module state, reset between tests)", () => {
     beforeEach(() => {
@@ -61,17 +61,131 @@ describe("UNIT holdings scope store (module state, reset between tests)", () => 
 
     it("replace swaps the whole scope and copies the account set", () => {
         const accounts = new Set(["assets:broker"]);
-        holdingsScope.replace({accounts, mode: "exclude", asOf: "2024-12-31", gainPeriod: "ytd"});
+        holdingsScope.replace({accounts, mode: "exclude", asOf: "2024-12-31", gainPeriod: "ytd", holdings: new Set(["VTI"])});
         accounts.add("expenses"); // caller mutation must not leak in
         expect([...holdingsScope.value.accounts]).toEqual(["assets:broker"]);
         expect(holdingsScope.value.mode).toBe("exclude");
         expect(holdingsScope.value.asOf).toBe("2024-12-31");
         expect(holdingsScope.value.gainPeriod).toBe("ytd");
+        expect([...holdingsScope.value.holdings]).toEqual(["VTI"]);
+    });
+});
+
+describe("UNIT holdings filter (plan 47 D6/D7)", () => {
+    beforeEach(() => {
+        holdingsTab.value = "stocks";
+        holdingsScope.replace(defaultScope());
+    });
+
+    it("toggles one row in and out, keeping the rest of the scope", () => {
+        holdingsScope.toggleAccount("assets:broker");
+        holdingsScope.toggleHolding("VTI");
+        holdingsScope.toggleHolding("AAPL");
+        expect([...holdingsScope.value.holdings].sort()).toEqual(["AAPL", "VTI"]);
+        holdingsScope.toggleHolding("VTI");
+        expect([...holdingsScope.value.holdings]).toEqual(["AAPL"]);
+        expect([...holdingsScope.value.accounts]).toEqual(["assets:broker"]);
+    });
+
+    it("a click selects exactly its holdings, and the same click clears them", () => {
+        holdingsScope.toggleHolding("AAPL");
+        holdingsScope.selectHoldings(["VTI"]);
+        expect([...holdingsScope.value.holdings]).toEqual(["VTI"]);
+        holdingsScope.selectHoldings(["VTI"]);
+        expect(holdingsScope.value.holdings.size).toBe(0);
+    });
+
+    it("switching tab clears it: symbols are no filter for the Other tab's accounts", () => {
+        holdingsScope.selectHoldings(["VTI"]);
+        holdingsTab.value = "other";
+        expect(holdingsScope.value.holdings.size).toBe(0);
+    });
+
+    it("re-setting the same tab keeps it", () => {
+        holdingsScope.selectHoldings(["VTI"]);
+        holdingsTab.value = "stocks";
+        expect([...holdingsScope.value.holdings]).toEqual(["VTI"]);
+    });
+
+    it("the other tab's view of the scope has no filter, and keeps its identity while unchanged", () => {
+        const before = holdingsScope.forTab("other");
+        holdingsScope.selectHoldings(["VTI"]);
+        expect([...holdingsScope.forTab("stocks").holdings]).toEqual(["VTI"]);
+        expect(holdingsScope.forTab("other")).toBe(before);
+        holdingsScope.setAsOf("2025-01-01");
+        expect(holdingsScope.forTab("other")).not.toBe(before);
+    });
+
+    it("live only for a 1wk/1mo window ending today (plan 47 D10)", () => {
+        expect(liveFor({...defaultScope(), gainPeriod: "1wk"})).toBe(true);
+        expect(liveFor({...defaultScope(), gainPeriod: "12mo"})).toBe(false);
+        expect(liveFor({...defaultScope(), gainPeriod: "1mo", asOf: "2020-01-01"})).toBe(false);
+    });
+});
+
+describe("UNIT holdings requests under a filter (plan 47 wire contract)", () => {
+    let urls: URL[] = [];
+
+    beforeEach(() => {
+        urls = [];
+        holdingsTab.value = "stocks";
+        vi.stubGlobal("fetch", (input: unknown) => {
+            urls.push(new URL(String(input)));
+            return Promise.resolve(new Response("not wired", {status: 404}));
+        });
+    });
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    const today = (overrides: Partial<HoldingsScope>): HoldingsScope => ({...defaultScope(), ...overrides});
+    const reportUrls = (path: string): URL[] => urls.filter((url) => url.pathname === path);
+
+    it("asks for the full report (the table), a filtered one (the tiles) and a filtered, anchored series", async () => {
+        await holdingsData.load("http://engine.test", today({gainPeriod: "3mo", holdings: new Set(["VTI", "AAPL"])}));
+        const reports = reportUrls("/api/holdings");
+        const [series] = reportUrls("/api/holdings/series");
+
+        expect(reports.map((url) => url.searchParams.get("symbols"))).toEqual([null, "AAPL,VTI"]);
+        expect(series.searchParams.get("symbols")).toBe("AAPL,VTI");
+        expect(series.searchParams.get("anchor")).toBe("1yr");
+        expect(series.searchParams.get("live")).toBeNull(); // 3mo is not an intraday window
+    });
+
+    it("sends no filtered report when nothing is selected", async () => {
+        await holdingsData.load("http://engine.test", today({gainPeriod: "5yr"}));
+        expect(reportUrls("/api/holdings")).toHaveLength(1);
+        expect(reportUrls("/api/holdings/series")[0].searchParams.get("anchor")).toBe("5yr");
+    });
+
+    it("sends live=1 on every read of a 1wk window ending today", async () => {
+        await holdingsData.load("http://engine.test", today({gainPeriod: "1wk"}));
+        expect(urls.map((url) => url.searchParams.get("live"))).toEqual(["1", "1"]);
+    });
+
+    it("filters the Other series by rows=, never its table, and only while Other is on screen", async () => {
+        holdingsTab.value = "other";
+        await otherHoldingsData.load("http://engine.test", today({gainPeriod: "all", holdings: new Set(["assets:van"])}));
+        expect(reportUrls("/api/holdings/other")[0].searchParams.get("rows")).toBeNull();
+        expect(reportUrls("/api/holdings/other/series")[0].searchParams.get("rows")).toBe("assets:van");
+        expect(reportUrls("/api/holdings/other/series")[0].searchParams.get("anchor")).toBe("all");
+
+        urls = [];
+        holdingsTab.value = "stocks";
+        await otherHoldingsData.load("http://engine.test", today({gainPeriod: "all", holdings: new Set(["VTI"])}));
+        expect(reportUrls("/api/holdings/other/series")[0].searchParams.get("rows")).toBeNull();
     });
 });
 
 describe("UNIT holdings trend window follows the gain period", () => {
-    const at = (gainPeriod: GainPeriod): HoldingsScope => ({accounts: new Set(["assets:broker"]), mode: "exclude", asOf: "2026-09-28", gainPeriod});
+    const at = (gainPeriod: GainPeriod): HoldingsScope => ({
+        accounts: new Set(["assets:broker"]),
+        mode: "exclude",
+        asOf: "2026-09-28",
+        gainPeriod,
+        holdings: new Set(),
+    });
 
     it("starts the twelve-month chart at the twelve-month gain's own reference date", () => {
         expect(trendQuery(at("12mo"))).toEqual({asOf: "2026-09-28", accounts: "assets:broker", mode: "exclude", interval: "monthly", since: "2025-09-28"});

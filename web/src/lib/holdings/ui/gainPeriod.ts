@@ -50,6 +50,14 @@ function yearsBefore(asOf: ISODate, years: number): ISODate {
     return addDays(`${Number(asOf.slice(0, 4)) - years}${asOf.slice(4, 8)}01`, Number(asOf.slice(8, 10)) - 1);
 }
 
+/**
+ * The horizon the chart's y-axis is anchored on (plan 47 D1): at least as long
+ * as the shown window, so a quiet week is drawn against the year it sits in
+ * rather than stretched to fill the plot. Sent as `anchor=` on the series
+ * requests; the engine answers with that horizon's min/max.
+ */
+export type AnchorHorizon = "1yr" | "5yr" | "all";
+
 /** Everything that differs by period, in one place. */
 interface PeriodFacts {
     /** The selector option. */
@@ -62,17 +70,53 @@ interface PeriodFacts {
     interval: TrendWindow["interval"];
     /** The `gainSince` date for `asOf`, or undefined for all-time. */
     since: (asOf: ISODate) => ISODate | undefined;
+    /** The y-axis anchor horizon (D1): every window under a year anchors on the last year. */
+    anchor: AnchorHorizon;
+    /** Whether today's point may be valued with an intraday quote (D10): the two short windows only. */
+    intraday: boolean;
 }
 
 /** In display order, shortest window first. The default is "all" (see `defaultScope`). */
 const PERIODS: Record<GainPeriod, PeriodFacts> = {
-    "1wk": {label: "1 week", suffix: " (1wk)", note: "last 7 days", interval: "daily", since: (asOf) => addDays(asOf, -7)},
-    "1mo": {label: "1 month", suffix: " (1mo)", note: "last month", interval: "daily", since: (asOf) => addMonths(asOf, -1)},
-    "3mo": {label: "3 months", suffix: " (3mo)", note: "last 3 months", interval: "weekly", since: (asOf) => addMonths(asOf, -3)},
-    ytd: {label: "Year to date", suffix: " (YTD)", note: "year to date", interval: "auto", since: (asOf) => `${Number(asOf.slice(0, 4)) - 1}-12-31`},
-    "12mo": {label: "12 months", suffix: " (12mo)", note: "last 12 months", interval: "monthly", since: (asOf) => yearsBefore(asOf, 1)},
-    "5yr": {label: "5 years", suffix: " (5yr)", note: "last 5 years", interval: "monthly", since: (asOf) => yearsBefore(asOf, 5)},
-    all: {label: "All time", suffix: "", note: "all time", interval: "auto", since: () => undefined},
+    "1wk": {label: "1 week", suffix: " (1wk)", note: "last 7 days", interval: "daily", since: (asOf) => addDays(asOf, -7), anchor: "1yr", intraday: true},
+    "1mo": {label: "1 month", suffix: " (1mo)", note: "last month", interval: "daily", since: (asOf) => addMonths(asOf, -1), anchor: "1yr", intraday: true},
+    "3mo": {
+        label: "3 months",
+        suffix: " (3mo)",
+        note: "last 3 months",
+        interval: "weekly",
+        since: (asOf) => addMonths(asOf, -3),
+        anchor: "1yr",
+        intraday: false,
+    },
+    ytd: {
+        label: "Year to date",
+        suffix: " (YTD)",
+        note: "year to date",
+        interval: "auto",
+        since: (asOf) => `${Number(asOf.slice(0, 4)) - 1}-12-31`,
+        anchor: "1yr",
+        intraday: false,
+    },
+    "12mo": {
+        label: "12 months",
+        suffix: " (12mo)",
+        note: "last 12 months",
+        interval: "monthly",
+        since: (asOf) => yearsBefore(asOf, 1),
+        anchor: "1yr",
+        intraday: false,
+    },
+    "5yr": {
+        label: "5 years",
+        suffix: " (5yr)",
+        note: "last 5 years",
+        interval: "monthly",
+        since: (asOf) => yearsBefore(asOf, 5),
+        anchor: "5yr",
+        intraday: false,
+    },
+    all: {label: "All time", suffix: "", note: "all time", interval: "auto", since: () => undefined, anchor: "all", intraday: false},
 };
 
 /** Selector options in display order, shortest window first. */
@@ -107,4 +151,18 @@ export function trendWindowFor(period: GainPeriod, asOf: ISODate): TrendWindow {
 /** The muted qualifier beside the chart heading, naming its window in words. */
 export function trendWindowNote(period: GainPeriod): string {
     return PERIODS[period].note;
+}
+
+/** The y-axis anchor horizon for `period` (plan 47 D1), sent as the series requests' `anchor=`. */
+export function anchorFor(period: GainPeriod): AnchorHorizon {
+    return PERIODS[period].anchor;
+}
+
+/**
+ * Whether a scope shows intraday quotes (plan 47 D10): a 1-week or 1-month
+ * window ending TODAY. A past asOf is history, and a longer window's last point
+ * is one of dozens — a delayed quote there answers a question nobody asked.
+ */
+export function isIntradayWindow(period: GainPeriod, asOf: ISODate, today: ISODate): boolean {
+    return PERIODS[period].intraday && asOf === today;
 }

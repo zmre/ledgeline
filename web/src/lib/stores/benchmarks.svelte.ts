@@ -11,7 +11,7 @@
 // index shows its hint beside that box and never blanks the others.
 //
 // Everything is keyed by the BASE SERIES the lines overlay: its window (the
-// exact series query, `trendQuery`) and its identity. A scope, date or
+// exact series query, `trendQuery`), its holdings filter, and its identity. A scope, date or
 // gain-period change drops every held line, and so does anything that reloads
 // the base series for the same window — Refresh, Update prices, a journal edit
 // — because a line is seeded from the portfolio's value, and a line seeded from
@@ -22,6 +22,7 @@ import {LedgelineApi} from "#lib/api/native.js";
 import {decodeBenchmarkCatalog, decodeBenchmarks} from "#lib/api/nativeDecode.js";
 import type {BenchmarkCatalog, BenchmarkLine} from "#lib/holdings/benchmarks.js";
 import type {HoldingsScope} from "#lib/holdings/types.js";
+import {filterParam} from "#lib/holdings/ui/selection.js";
 import {trendQuery} from "./holdings.svelte";
 
 /** One benchmark's overlay state. */
@@ -33,8 +34,17 @@ let baseSeries: object | null = null;
 let generation = 0;
 let entries = $state.raw<ReadonlyMap<string, BenchmarkState>>(new Map());
 
+/**
+ * The holdings filter, as the benchmark route takes it (D8): the line is seeded
+ * from the SELECTED holdings' own flows, so "VTI vs SPY" compares the money that
+ * went into VTI. Undefined (every holding) when nothing is selected.
+ */
+function filterOf(scope: HoldingsScope): string | undefined {
+    return filterParam(scope.holdings);
+}
+
 function keyOf(serverUrl: string, scope: HoldingsScope): string {
-    return JSON.stringify([serverUrl, trendQuery(scope)]);
+    return JSON.stringify([serverUrl, trendQuery(scope), filterOf(scope) ?? ""]);
 }
 
 function setAll(symbols: readonly string[], stateOf: (symbol: string) => BenchmarkState): void {
@@ -55,7 +65,9 @@ async function fetchBatch(serverUrl: string, scope: HoldingsScope, symbols: read
     const mine = generation;
     setAll(symbols, () => ({status: "loading"}));
     try {
-        const response = decodeBenchmarks(await new LedgelineApi(serverUrl).holdingsBenchmarks({...trendQuery(scope), symbols: symbols.join(",")}));
+        const response = decodeBenchmarks(
+            await new LedgelineApi(serverUrl).holdingsBenchmarks({...trendQuery(scope), symbols: symbols.join(","), holdings: filterOf(scope)})
+        );
         if (generation !== mine) return; // superseded by a newer base series
         setAll(symbols, (symbol) => stateFor(response.benchmarks, symbol));
     } catch (cause) {

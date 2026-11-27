@@ -5,7 +5,10 @@
      history loads, a short error hint (and a retry) when it could not be had —
      so one unreachable index never hides the others' status. The button shows
      how many are ticked, so a closed dropdown still says the chart has more on
-     it than the portfolio; the legend under the chart names them. -->
+     it than the portfolio; the legend under the chart names them.
+
+     The button is a PRIMARY button (plan 47 D5). It was a ghost one and read as
+     a label beside the heading — nobody guessed it opened anything. -->
 <script lang="ts">
     import type {BenchmarkCatalog} from "#lib/holdings/benchmarks.js";
     import type {BenchmarkState} from "#lib/stores/benchmarks.svelte.js";
@@ -34,7 +37,7 @@
      `relative` row), not from the button, so it stays on screen wherever the
      row wrapped the button to. -->
 <details class="dropdown static dropdown-end" data-testid="benchmark-picker">
-    <summary class="btn gap-1 btn-ghost font-normal btn-xs" title="Compare against what the same money would have done in an index fund">
+    <summary class="btn gap-1 btn-primary btn-xs" title="Compare against what the same money would have done in an index fund" data-testid="benchmark-compare">
         Compare
         {#if picked.length > 0}<span class="badge badge-xs badge-neutral">{picked.length}</span>{/if}
         {#if failing > 0}<span class="text-warning" aria-label="{failing} comparison could not load">!</span>{/if}

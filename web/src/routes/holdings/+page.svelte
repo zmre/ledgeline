@@ -15,7 +15,14 @@
     // in the URL (?asof=&acct=&mode=&gain=&tab=) via the WP-04 replaceState
     // pattern, through ONE writer — see holdings/ui/urlCodec.ts. Display styles
     // for the base commodity come from the engine's journal metadata (reportStyles).
-    import {onMount} from "svelte";
+    //
+    // Plan 47: the scope also carries a HOLDINGS filter (`?hold=`), set from the
+    // scope bar's dropdown or by clicking a row, a wedge or a gainer. It narrows
+    // the chart and the stat tiles only; the table, pie and gainers/losers keep
+    // every row and highlight the chosen ones. On a 1wk/1mo window ending today
+    // the page also asks the engine for intraday quotes once the normal load has
+    // landed, and reloads when any arrived (`intraday`).
+    import {onMount, untrack} from "svelte";
     import AsyncSection from "#ui/components/AsyncSection.svelte";
     import ErrorToast from "#ui/components/ErrorToast.svelte";
     import {formatAmount, type Dec} from "#lib/domain/money.js";
@@ -26,17 +33,18 @@
     import HoldingsStats from "#lib/holdings/ui/HoldingsStats.svelte";
     import HoldingsTable from "#lib/holdings/ui/HoldingsTable.svelte";
     import HoldingsTabs from "#lib/holdings/ui/HoldingsTabs.svelte";
-    import {chartColors} from "#lib/format/chartColors.svelte.js";
     import HoldingsTrend from "#lib/holdings/ui/HoldingsTrend.svelte";
     import StocksTrend from "#lib/holdings/ui/StocksTrend.svelte";
     import OtherHoldingsTable from "#lib/holdings/ui/OtherHoldingsTable.svelte";
     import ScopeBar from "#lib/holdings/ui/ScopeBar.svelte";
+    import type {HoldingOption} from "#lib/holdings/ui/selection.js";
     import UpdatePricesButton from "#lib/holdings/ui/UpdatePricesButton.svelte";
     import {startHoldingsUrlSync} from "#lib/holdings/ui/urlSync.js";
     import {formatUnitsWith, partitionShortPositions, shortPositionNote} from "#lib/holdings/ui/view.js";
     import {formatChartValue, formatCompactChartValue} from "#lib/insights/series.js";
     import ExportButton from "#lib/reports/ui/ExportButton.svelte";
-    import {holdingsData, holdingsScope, holdingsTab, otherHoldingsData} from "#lib/stores/holdings.svelte.js";
+    import {holdingsData, holdingsScope, holdingsTab, liveFor, otherHoldingsData} from "#lib/stores/holdings.svelte.js";
+    import {intraday} from "#lib/stores/intraday.svelte.js";
     import {journal} from "#lib/stores/journal.svelte.js";
     import {pricesStore} from "#lib/stores/prices.svelte.js";
     import {loadJournalWhenReady} from "#lib/stores/serverWatch.svelte.js";
@@ -60,7 +68,15 @@
     // never retried after one (FE-5d). The TAB is deliberately absent from this
     // key: it is not part of the scope, so clicking a tab refetches nothing.
     // `journal.changes`: a refresh or a change on disk redraws what is on screen.
-    const loadKey = $derived({url: settings.serverUrl, nonce: settings.serverNonce, changes: journal.changes, scope: holdingsScope.value});
+    //
+    // Each tab keys on ITS OWN view of the scope (`forTab`): the holdings filter
+    // belongs to the tab on screen, and `forTab` keeps an unchanged scope's
+    // identity, so clicking a stock refetches the Stocks report and chart but
+    // not the Other ones it cannot affect.
+    const stockScope = $derived(holdingsScope.forTab("stocks"));
+    const otherScope = $derived(holdingsScope.forTab("other"));
+    const loadKey = $derived({url: settings.serverUrl, nonce: settings.serverNonce, changes: journal.changes, scope: stockScope});
+    const otherLoadKey = $derived({url: settings.serverUrl, nonce: settings.serverNonce, changes: journal.changes, scope: otherScope});
     $effect(() => {
         const {url, scope} = loadKey;
         if (url !== null) void holdingsData.load(url, scope);
@@ -90,9 +106,33 @@
         if (holdingsTab.value === "other") otherOpened = true;
     });
     $effect(() => {
-        const {url, scope} = loadKey;
+        const {url, scope} = otherLoadKey;
         if (url !== null && otherOpened) void otherHoldingsData.load(url, scope);
     });
+
+    // Intraday (plan 47 D10): once a 1wk/1mo, as-of-today Stocks load has
+    // landed, ask the engine to refresh its delayed quotes, and reload — the
+    // loads already carry `live=1` for such a scope — only if any came back.
+    // `intraday.refresh` paces itself (one POST per server per few minutes, one
+    // in flight), so the reload this triggers asks again and is refused. A
+    // journal with no stock to quote is not asked at all.
+    $effect(() => {
+        const url = settings.serverUrl;
+        const loaded = holdingsData.scope;
+        const ready = holdingsData.status === "ready";
+        const symbols = pricesStore.status.value?.symbols;
+        if (url === null || !ready || loaded === null || !liveFor(loaded) || symbols?.length === 0) return;
+        untrack(() => {
+            void intraday.refresh(url).then((fresh) => {
+                const now = holdingsScope.value;
+                if (!fresh || settings.serverUrl !== url || !liveFor(now)) return;
+                void holdingsData.load(url, now);
+                if (otherOpened) void otherHoldingsData.load(url, now);
+            });
+        });
+    });
+    // A muted aside on the chart when a live quote was wanted and Yahoo refused.
+    const liveHint = $derived(intraday.rateLimited && liveFor(holdingsScope.value) ? "live quotes paused (rate limited)" : null);
 
     const report = $derived(holdingsData.report);
     const trend = $derived(holdingsData.trend);
@@ -136,13 +176,29 @@
     const positions = $derived(partitionShortPositions(report?.holdings ?? []));
     const hiddenNote = $derived(shortPositionNote(positions.hidden, format));
 
+    // The stat tiles read the FILTERED report while a holdings filter is set:
+    // the engine's own totals over just those holdings, never a sum taken here.
+    const filtered = $derived(holdingsData.filtered);
+    const filteredShown = $derived(filtered === null ? null : partitionShortPositions(filtered.holdings).shown);
+
+    // The Holdings dropdown's options: the tab's own report rows, for the same
+    // reason the account list is per tab — a symbol is no filter for a house.
+    const holdingOptions = $derived<HoldingOption[]>(
+        holdingsTab.value === "stocks"
+            ? positions.shown.map((h) => ({key: h.symbol, label: h.symbol, detail: h.name === h.symbol ? null : h.name}))
+            : (otherReport?.holdings ?? []).map((h) => ({key: h.account, label: h.name, detail: h.account}))
+    );
+    /** What is chosen NOW — highlighting follows the click, not the reload it starts. */
+    const selected = $derived(holdingsScope.value.holdings);
+    const selectOne = (key: string): void => holdingsScope.selectHoldings([key]);
+
     let insightsOpen = $state(true);
 </script>
 
 <svelte:head><title>Ledgeline — Holdings</title></svelte:head>
 
 <div class="flex flex-col gap-3">
-    <ScopeBar {accountNames} />
+    <ScopeBar {accountNames} {holdingOptions} holdingNoun={holdingsTab.value === "stocks" ? "holdings" : "assets"} />
     <div class="flex flex-wrap items-center justify-between gap-2">
         <HoldingsTabs bind:tab={holdingsTab.value} />
         {#if holdingsTab.value === "stocks"}
@@ -182,12 +238,17 @@
                                 </span>
                             </div>
                             <div class="collapse-content flex flex-col gap-4">
-                                <HoldingsStats totals={report.totals} holdings={positions.shown} {format} {gainPeriod} />
+                                <HoldingsStats totals={(filtered ?? report).totals} holdings={filteredShown ?? positions.shown} {format} {gainPeriod} />
                                 <div class="grid grid-cols-1 items-center gap-4 lg:grid-cols-2">
                                     <div>
-                                        <HoldingsPie holdings={positions.shown} {format} />
+                                        <HoldingsPie
+                                            holdings={positions.shown}
+                                            {format}
+                                            {selected}
+                                            onSelect={(symbols) => holdingsScope.selectHoldings(symbols)}
+                                        />
                                     </div>
-                                    <GainersLosers {report} {format} />
+                                    <GainersLosers {report} {format} {selected} onSelect={selectOne} />
                                 </div>
                                 {#if trend !== null}
                                     <StocksTrend
@@ -196,6 +257,7 @@
                                         serverUrl={settings.serverUrl}
                                         formatValue={formatTrendValue}
                                         formatAxis={formatTrendAxis}
+                                        {liveHint}
                                     />
                                 {/if}
                             </div>
@@ -228,7 +290,7 @@
                                 run={() => exportHoldingsXlsx(report, {title: "Holdings", params: `As of ${report.asOf}`}, `holdings-${report.asOf}.xlsx`)}
                             />
                         </div>
-                        <HoldingsTable holdings={positions.shown} totals={report.totals} {format} {gainPeriod} />
+                        <HoldingsTable holdings={positions.shown} totals={report.totals} {format} {gainPeriod} {selected} onSelect={selectOne} />
                     {/if}
                     <!-- Why the visible rows do not add up to the totals row above them. -->
                     {#if hiddenNote !== null}
@@ -256,17 +318,25 @@
                          the stock series' wire shape byte for byte, which is exactly
                          why the engine reuses it. -->
                         {#if otherTrend !== null}
-                            <!-- The palette's first colour: this tab has no benchmark
-                                 lines competing for it, unlike Stocks. -->
+                            <!-- Coloured by its direction, like Stocks (plan 47 D9). -->
                             <HoldingsTrend
                                 trend={otherTrend}
-                                color={chartColors.categorical[0]}
                                 period={otherHoldingsData.scope?.gainPeriod ?? gainPeriod}
                                 formatValue={formatTrendValue}
                                 formatAxis={formatTrendAxis}
+                                {liveHint}
                             />
                         {/if}
-                        <OtherHoldingsTable holdings={report.holdings} totals={report.totals} base={report.base} {format} {formatUnits} {gainPeriod} />
+                        <OtherHoldingsTable
+                            holdings={report.holdings}
+                            totals={report.totals}
+                            base={report.base}
+                            {format}
+                            {formatUnits}
+                            {gainPeriod}
+                            {selected}
+                            onSelect={selectOne}
+                        />
                     {/if}
 
                     <!-- Below the table, not above it: an unpriced asset is a row that

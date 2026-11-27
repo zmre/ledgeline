@@ -823,6 +823,22 @@ function queryString(values: Record<string, QueryValue>): string {
     return encoded === "" ? "" : `?${encoded}`;
 }
 
+/** `live=1` when set, nothing otherwise (an absent flag is the engine's default). */
+const liveParam = (live: boolean | undefined): string | undefined => (live === true ? "1" : undefined);
+
+/** The window + scope every holdings series route (and the benchmark overlay drawn over one) shares. */
+function seriesParams(query: HoldingsSeriesQuery): Record<string, QueryValue> {
+    return {asOf: query.asOf, accounts: query.accounts, mode: query.mode, interval: query.interval, count: query.count, since: query.since};
+}
+
+/**
+ * The benchmark route's name for the holdings filter. NOT `symbols`: that key
+ * already names the BENCHMARKS on this route (`symbols=SPY,QQQ`), and the
+ * engine reads both off one query string. Plan 47's wire contract writes
+ * `symbols=` for all three stock routes; on this one it cannot mean both.
+ */
+export const BENCHMARK_HOLDINGS_PARAM = "holdings";
+
 /** The journal filter as the windowed routes take it (the journal filter bar's value). */
 export interface JournalQueryFilter {
     from: string | null;
@@ -1251,6 +1267,19 @@ export interface HoldingsQuery {
      * (marketValue − value-at-gainSince); the response JSON keys are unchanged.
      */
     gainSince?: string;
+    /**
+     * The holdings filter (plan 47 D6), comma-separated: commodity symbols on
+     * the stock routes (wire `symbols=`), account names on the Other routes
+     * (wire `rows=`). Empty/absent = every row. The table's request never
+     * sends it; the stat tiles' and the chart's do.
+     */
+    holdings?: string;
+    /**
+     * Value today's point with the engine's cached intraday quotes (plan 47
+     * D10, wire `live=1`). The engine ignores it unless asOf is today, and
+     * never reaches the network for it — `refreshIntraday` is what fetches.
+     */
+    live?: boolean;
 }
 export interface HoldingsSeriesQuery extends HoldingsQuery {
     /** `daily|weekly|monthly|quarterly|yearly`, or `auto` alongside `since`. */
@@ -1262,6 +1291,8 @@ export interface HoldingsSeriesQuery extends HoldingsQuery {
      * with `count`.
      */
     since?: string;
+    /** The y-axis anchor horizon (plan 47 D1): the response then carries `anchor: {min, max}`. */
+    anchor?: "1yr" | "5yr" | "all";
 }
 /**
  * The Other-holdings query (plans/14): the stock query's params, verbatim, plus
@@ -1670,12 +1701,14 @@ export class LedgelineApi {
     }
 
     holdings(query: HoldingsQuery = {}): Promise<unknown> {
-        return this.getJson(`/api/holdings${queryString({asOf: query.asOf, accounts: query.accounts, mode: query.mode, gainSince: query.gainSince})}`);
+        return this.getJson(
+            `/api/holdings${queryString({asOf: query.asOf, accounts: query.accounts, mode: query.mode, gainSince: query.gainSince, symbols: query.holdings, live: liveParam(query.live)})}`
+        );
     }
 
     holdingsSeries(query: HoldingsSeriesQuery = {}): Promise<unknown> {
         return this.getJson(
-            `/api/holdings/series${queryString({asOf: query.asOf, accounts: query.accounts, mode: query.mode, interval: query.interval, count: query.count, since: query.since})}`
+            `/api/holdings/series${queryString({...seriesParams(query), symbols: query.holdings, anchor: query.anchor, live: liveParam(query.live)})}`
         );
     }
 
@@ -1691,14 +1724,14 @@ export class LedgelineApi {
 
     holdingsBenchmarks(query: HoldingsBenchmarksQuery): Promise<unknown> {
         return this.getJson(
-            `/api/holdings/benchmarks${queryString({symbols: query.symbols, asOf: query.asOf, accounts: query.accounts, mode: query.mode, interval: query.interval, count: query.count, since: query.since})}`
+            `/api/holdings/benchmarks${queryString({symbols: query.symbols, ...seriesParams(query), [BENCHMARK_HOLDINGS_PARAM]: query.holdings})}`
         );
     }
 
     /** Non-stock, non-cash assets — a house, a van, a partnership (decode with `decodeOtherHoldingsReport`). */
     otherHoldings(query: OtherHoldingsQuery = {}): Promise<unknown> {
         return this.getJson(
-            `/api/holdings/other${queryString({asOf: query.asOf, accounts: query.accounts, mode: query.mode, gainSince: query.gainSince, valueIn: query.valueIn})}`
+            `/api/holdings/other${queryString({asOf: query.asOf, accounts: query.accounts, mode: query.mode, gainSince: query.gainSince, valueIn: query.valueIn, rows: query.holdings, live: liveParam(query.live)})}`
         );
     }
 
@@ -1714,7 +1747,7 @@ export class LedgelineApi {
      */
     otherHoldingsSeries(query: OtherHoldingsSeriesQuery = {}): Promise<unknown> {
         return this.getJson(
-            `/api/holdings/other/series${queryString({asOf: query.asOf, accounts: query.accounts, mode: query.mode, interval: query.interval, count: query.count, since: query.since, valueIn: query.valueIn})}`
+            `/api/holdings/other/series${queryString({...seriesParams(query), valueIn: query.valueIn, rows: query.holdings, anchor: query.anchor, live: liveParam(query.live)})}`
         );
     }
 
@@ -1914,6 +1947,17 @@ export class LedgelineApi {
     /** Which currently-held stock symbols need a quote, and where prices can go (decode with `decodePricesStatus`). */
     getPricesStatus(): Promise<unknown> {
         return this.getJson("/api/prices/status");
+    }
+
+    /**
+     * Refresh the engine's in-memory intraday quotes (plan 47 D10/D11) for
+     * every held stock symbol, or just `symbols`. → 200 (decode with
+     * `decodeIntradayResponse`). The engine skips a symbol quoted in the last
+     * 15 minutes and stops the round on a rate limit; nothing is written to any
+     * file. A following `live=1` read is what shows the quotes.
+     */
+    refreshIntraday(symbols?: readonly string[]): Promise<unknown> {
+        return this.mutate<unknown>("POST", "/api/prices/intraday", 200, symbols === undefined ? {} : {symbols});
     }
 
     /**

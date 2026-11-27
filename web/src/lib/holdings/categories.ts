@@ -54,6 +54,11 @@ export interface CategorySlice {
     amount: Dec;
     /** How many holdings contribute any value to this slice. */
     holdings: number;
+    /**
+     * Those holdings' symbols, sorted — what a click on the wedge selects
+     * (plan 47 D7): every holding with ANY share in it, at its whole value.
+     */
+    symbols: string[];
 }
 
 /**
@@ -157,11 +162,21 @@ export function categorySlices(
         value: bucket.value,
         amount: toAmount(bucket.value),
         holdings: bucket.holdings.size,
+        symbols: [...bucket.holdings].sort(),
     }));
     if (tail.length > 0) {
         const value = tail.reduce((sum, [, bucket]) => sum + bucket.value, 0);
         const contributors = new Set(tail.flatMap(([, bucket]) => [...bucket.holdings]));
-        slices.push({key: "other", label: OTHER_LABEL, kind: "other", slot: null, value, amount: toAmount(value), holdings: contributors.size});
+        slices.push({
+            key: "other",
+            label: OTHER_LABEL,
+            kind: "other",
+            slot: null,
+            value,
+            amount: toAmount(value),
+            holdings: contributors.size,
+            symbols: [...contributors].sort(),
+        });
     }
     if (unclassified > 0) {
         slices.push({
@@ -172,6 +187,7 @@ export function categorySlices(
             value: unclassified,
             amount: toAmount(unclassified),
             holdings: unclassifiedHoldings.size,
+            symbols: [...unclassifiedHoldings].sort(),
         });
     }
     const total = slices.reduce((sum, slice) => sum + slice.value, 0);

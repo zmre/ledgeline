@@ -10,7 +10,7 @@
 // column association at all. jsdom computes ARIA roles without a layout engine,
 // which is exactly the half of the claim it can hold.
 
-import {render, screen} from "@testing-library/svelte";
+import {fireEvent, render, screen} from "@testing-library/svelte";
 import {tick} from "svelte";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {dec, formatDec, type Dec} from "#lib/domain/money.js";
@@ -103,5 +103,50 @@ describe("COMPONENT HoldingsTable", () => {
 
         // Exactly one column carries a state; the rest stay silent.
         expect(screen.getByTestId("holdings-table").querySelectorAll("[aria-sort]")).toHaveLength(1);
+    });
+
+    describe("click-to-filter (plan 47 D7)", () => {
+        const mountSelectable = (selected: ReadonlySet<string> = new Set()) => {
+            const onSelect = vi.fn();
+            render(HoldingsTable, {holdings: [AAPL, GLD], totals: TOTALS, format, selected, onSelect});
+            return onSelect;
+        };
+
+        it("a click anywhere on a row filters the chart to that symbol", async () => {
+            const onSelect = mountSelectable();
+            await fireEvent.click(screen.getByTestId("shares-GLD"));
+
+            expect(onSelect).toHaveBeenCalledWith("GLD");
+            expect(screen.getByTestId("holding-GLD").getAttribute("aria-current")).toBe("true");
+        });
+
+        it("the basis tooltip's button keeps doing only its own thing", async () => {
+            const onSelect = mountSelectable();
+            await fireEvent.click(screen.getByRole("button", {name: "$1,500.00"}));
+
+            expect(onSelect).not.toHaveBeenCalled();
+        });
+
+        it("`f` filters to the cursor row", async () => {
+            const onSelect = mountSelectable();
+            keymap.handle(new KeyboardEvent("keydown", {key: "j", cancelable: true}));
+            keymap.handle(new KeyboardEvent("keydown", {key: "f", cancelable: true}));
+            await tick();
+
+            expect(onSelect).toHaveBeenCalledWith("AAPL");
+        });
+
+        it("highlights the selected rows and keeps every row", () => {
+            mountSelectable(new Set(["AAPL"]));
+
+            expect(screen.getByTestId("holding-AAPL").getAttribute("data-selected")).toBe("true");
+            expect(screen.getByTestId("holding-GLD").getAttribute("data-selected")).toBeNull();
+            expect(screen.getByTestId("holding-AAPL").className).toContain("bg-primary/10");
+        });
+
+        it("rows are not clickable when nothing listens", () => {
+            mount();
+            expect(screen.getByTestId("holding-AAPL").className).not.toContain("cursor-pointer");
+        });
     });
 });

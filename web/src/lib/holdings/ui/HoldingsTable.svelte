@@ -34,7 +34,18 @@
         totals,
         format,
         gainPeriod = "all",
-    }: {holdings: Holding[]; totals: HoldingsReport["totals"]; format: (v: Dec) => string; gainPeriod?: GainPeriod} = $props();
+        selected = new Set<string>(),
+        onSelect,
+    }: {
+        holdings: Holding[];
+        totals: HoldingsReport["totals"];
+        format: (v: Dec) => string;
+        gainPeriod?: GainPeriod;
+        /** The holdings filter (plan 47): these rows are highlighted. Every row is still listed. */
+        selected?: ReadonlySet<string>;
+        /** A row was clicked (or `f` pressed on the cursor row): filter the chart to that symbol. */
+        onSelect?: (symbol: string) => void;
+    } = $props();
 
     // Window tag on the Gain header so a YTD/12mo gain number isn't read as all-time.
     const gainHeader = $derived(`Gain${gainWindowSuffix(gainPeriod)}`);
@@ -84,6 +95,15 @@
             {keys: "G", label: "Last holding", group: "Holdings", run: () => (cursor.last(), move(0))},
             {keys: "Escape", label: "Clear the cursor", group: "Holdings", run: () => cursor.clear()},
             {
+                keys: "f",
+                label: "Chart only this holding (again: all)",
+                group: "Holdings",
+                run: () => {
+                    const holding = cursor.item;
+                    if (holding !== null) onSelect?.(holding.symbol);
+                },
+            },
+            {
                 keys: "Enter",
                 label: "Show this holding in the journal",
                 group: "Holdings",
@@ -100,6 +120,18 @@
             },
         ],
     });
+
+    /**
+     * A click anywhere on a row filters the chart to it (plan 47 D7) and puts
+     * the keyboard cursor there — except a click on a control inside the row
+     * (the basis tooltip's button), which keeps doing only its own thing.
+     */
+    function clickRow(event: MouseEvent, symbol: string): void {
+        if (onSelect === undefined) return;
+        if (event.target instanceof Element && event.target.closest("button, a, input, select") !== null) return;
+        cursor.to(rows.findIndex((h) => h.symbol === symbol));
+        onSelect(symbol);
+    }
 </script>
 
 {#snippet sortButton(key: SortKey, label: string)}
@@ -149,10 +181,13 @@
         </thead>
         <tbody>
             {#each rows as h (h.symbol)}
+                {@const chosen = selected.has(h.symbol)}
                 <tr
                     data-testid="holding-{h.symbol}"
-                    class={cursor.key === h.symbol ? "bg-primary/25" : ""}
+                    class={[cursor.key === h.symbol ? "bg-primary/25" : chosen && "bg-primary/10", onSelect !== undefined && "cursor-pointer"]}
                     aria-current={cursor.key === h.symbol ? "true" : undefined}
+                    data-selected={chosen ? "true" : undefined}
+                    onclick={(event) => clickRow(event, h.symbol)}
                 >
                     <th class="min-w-32 font-normal whitespace-normal md:whitespace-nowrap" title={h.accounts.join(", ")}>
                         {h.name}{#if h.name !== h.symbol}<span class="block text-xs font-medium text-muted md:hidden">{h.symbol}</span>{/if}

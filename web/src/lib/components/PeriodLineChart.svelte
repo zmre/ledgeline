@@ -47,6 +47,21 @@
        in the tooltip; `onPeriodClick` makes a bucket clickable (the tooltip's
        hovered bucket, so the whole column is the target, not a 6px dot).
 
+     - A HERO MAY CARRY ITS TREND, AND THE AXIS MAY BE THE CALLER'S. Both opt-in
+       (plan 47). `trend` ("up" | "down" | "flat") paints the `hero` series in
+       the theme's in/out/net ink — `chartColors.flowIn` green for up,
+       `flowOut` red for down, `flowNet` foreground for flat, so every theme,
+       light and dark, gets its own — and fills the area under that one line
+       with a vertical gradient of the same colour, about 40 % at the line
+       fading to nothing at the plot's floor (Apple Stocks). Only the hero is
+       filled: an overlay beside it stays a bare line, dashed if it says so,
+       because two fills read as a stack. The direction is the caller's to
+       decide (`holdings/ui/yAxis.ts trendOf`); this file only draws it.
+       `yDomain` replaces the computed y-domain outright — `includeZero` and
+       `extent` are then the caller's business — and switches off `yNice`, so
+       a domain padded on purpose is not rounded out again. For a chart whose
+       axis is anchored on something wider than what it shows.
+
      The legend is `ChartLegend`, not layerchart's built-in one — see there. -->
 <script lang="ts" module>
     // Declared in a plain .ts file so .ts modules can import it too (tsc cannot
@@ -83,6 +98,8 @@
         extent = [],
         tooltipLines,
         onPeriodClick,
+        trend = null,
+        yDomain: yDomainOverride = null,
     }: {
         /** Names what is plotted. A single series relies on this instead of a legend. */
         heading: string;
@@ -122,7 +139,15 @@
         tooltipLines?: (index: number) => readonly string[];
         /** Called with the bucket index when the plot is clicked over a bucket. */
         onPeriodClick?: (index: number) => void;
+        /** The hero series' direction: colours it and fills the area under it. Null draws it as before. */
+        trend?: "up" | "down" | "flat" | null;
+        /** Use this y-domain verbatim (no zero seeding, no extent, no nice rounding). Null computes one. */
+        yDomain?: readonly [number, number] | null;
     } = $props();
+
+    /** Unique per instance: the hero's gradient is referenced by id, and two charts on a page must not share one. */
+    const uid = $props.id();
+    const gradientId = `period-line-trend-${uid}`;
 
     /** The chart's scales, in the plot layer's own coordinates. */
     interface PlotScales {
@@ -165,6 +190,7 @@
      * layerchart's own domain exactly as it was.
      */
     const yDomain = $derived.by<[number, number] | undefined>(() => {
+        if (yDomainOverride !== null) return [yDomainOverride[0], yDomainOverride[1]];
         const extra = extent.filter((n) => Number.isFinite(n));
         if (!includeZero && extra.length === 0) return undefined;
         let lo = includeZero ? 0 : Infinity;
@@ -208,6 +234,36 @@
         return {};
     };
 
+    /** The trend's ink: the theme's own in/out/net tokens, so it follows every theme. */
+    const trendColor = $derived(trend === "up" ? chartColors.flowIn : trend === "down" ? chartColors.flowOut : chartColors.flowNet);
+    /** The series the trend styles: the hero, and only when a trend is given. */
+    const trendIndex = $derived(trend === null ? -1 : series.findIndex((s) => s.hero === true));
+
+    /**
+     * The area under the hero line, in plot coordinates: one closed shape per
+     * run of non-null values, dropped to `floor` (the plot's bottom edge) at
+     * both ends. A gap ends a run, exactly as it breaks the line above it.
+     */
+    function areaPath(k: number, x: (i: number) => number, y: (n: number) => number, floor: number): string {
+        const runs: string[] = [];
+        let run: [number, number][] = [];
+        const close = (): void => {
+            if (run.length > 0) {
+                const [x0] = run[0];
+                const [x1] = run[run.length - 1];
+                runs.push(`M${x0},${floor}L${run.map(([px, py]) => `${px},${py}`).join("L")}L${x1},${floor}Z`);
+            }
+            run = [];
+        };
+        for (const row of rows) {
+            const v = row.v[k];
+            if (v === null || !Number.isFinite(v)) close();
+            else run.push([x(row.i), y(v)]);
+        }
+        close();
+        return runs.join("");
+    }
+
     const chartSeries = $derived(
         series.map((s, k) => ({
             // Keyed by slot, not by name: two series may legitimately share a
@@ -215,7 +271,7 @@
             // would silently collapse them into one line.
             key: String(k),
             label: s.name,
-            color: s.color ?? chartColors.colorAt(s.slot ?? k),
+            color: k === trendIndex ? trendColor : (s.color ?? chartColors.colorAt(s.slot ?? k)),
             // `null` (not 0) where the series has a gap: layerchart's default
             // `defined` breaks the line there and its points skip the marker.
             value: (d: Row) => d.v[k] ?? null,
@@ -265,7 +321,7 @@
                 points={rows.length <= maxPoints}
                 brush={false}
                 {yDomain}
-                yNice={includeZero || extent.length > 0}
+                yNice={yDomainOverride === null && (includeZero || extent.length > 0)}
                 onTooltipClick={onPeriodClick === undefined ? undefined : clickPeriod}
                 tooltip={tooltipLines === undefined ? undefined : linesTooltip}
                 {padding}
@@ -276,7 +332,28 @@
                     tooltip: {header: {format: labelOf}, item: {format: tooltipFormat}},
                 }}
             >
-                {#snippet belowMarks()}
+                {#snippet belowMarks({context})}
+                    <!-- The hero's trend fill, first so every rule and line sits on it. -->
+                    {#if trendIndex >= 0}
+                        <defs>
+                            <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0" stop-color={trendColor} stop-opacity="0.4" />
+                                <stop offset="1" stop-color={trendColor} stop-opacity="0" />
+                            </linearGradient>
+                        </defs>
+                        <path
+                            d={areaPath(
+                                trendIndex,
+                                (i) => context.xScale(i),
+                                (n) => context.yScale(n),
+                                Math.max(...context.yScale.range())
+                            )}
+                            fill="url(#{gradientId})"
+                            stroke="none"
+                            pointer-events="none"
+                            data-trend-area={trend}
+                        />
+                    {/if}
                     <!-- Under the marks, so the data is never read through a rule.
                          The `data-rule` attributes are passed straight through to
                          the SVG `<line>`: layerchart gives its own baseline the

@@ -2,11 +2,11 @@ import {describe, expect, it} from "vitest";
 import {dec} from "#lib/domain/money.js";
 import type {BenchmarkLine} from "#lib/holdings/benchmarks.js";
 import type {HoldingsPoint, HoldingsSeries} from "#lib/holdings/types.js";
-import {benchmarkOverlays, trendLabels} from "./trendView";
+import {benchmarkOverlays, liveNote, trendLabels} from "./trendView";
 
 const point = (bucket: string, date: string, label = bucket): HoldingsPoint => ({date, bucket, label, marketValue: dec(100, 0), basis: null});
 
-const series = (points: HoldingsPoint[]): HoldingsSeries => ({base: "$", points, hasBasis: false});
+const series = (points: HoldingsPoint[]): HoldingsSeries => ({base: "$", points, hasBasis: false, anchor: null, liveAt: null});
 
 describe("UNIT holdings trendView", () => {
     describe("trendLabels", () => {
@@ -64,6 +64,22 @@ describe("UNIT holdings trendView", () => {
 
         it("skips a ticked benchmark that has no line yet", () => {
             expect(benchmarkOverlays(trend, ["DIA", "SPY"], lookup).map((s) => s.name)).toEqual(["S&P 500 (SPY)"]);
+        });
+    });
+
+    describe("liveNote (plan 47 D10)", () => {
+        it("says nothing while every price is a saved one", () => {
+            expect(liveNote(null)).toBe("");
+        });
+
+        it("names the quote's time, local, and that it is delayed", () => {
+            const seen: number[] = [];
+            const note = liveNote(1_795_000_000, (date) => {
+                seen.push(date.getTime());
+                return "2:35 PM";
+            });
+            expect(note).toBe(" · live 2:35 PM (delayed)");
+            expect(seen).toEqual([1_795_000_000_000]);
         });
     });
 });

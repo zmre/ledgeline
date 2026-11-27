@@ -14,7 +14,8 @@ import type {ISODate} from "#lib/domain/types.js";
 import {toggleSubtreeRoot} from "#lib/filters/treeSelect.js";
 import {TAB_ORDER, type HoldingsTab} from "#lib/holdings/params.js";
 import type {GainPeriod, HoldingsReport, HoldingsScope, HoldingsSeries, OtherHoldingsReport} from "#lib/holdings/types.js";
-import {gainSinceFor, trendWindowFor} from "#lib/holdings/ui/gainPeriod.js";
+import {anchorFor, gainSinceFor, isIntradayWindow, trendWindowFor} from "#lib/holdings/ui/gainPeriod.js";
+import {filterParam, sameScope, toggledSelection} from "#lib/holdings/ui/selection.js";
 import type {HoldingsUrlState} from "#lib/holdings/ui/urlCodec.js";
 import {localToday} from "./filters.svelte";
 import type {DataView, LoadStatus} from "./loadState";
@@ -38,9 +39,9 @@ export function trendQuery(scope: HoldingsScope): {
     return {asOf: scope.asOf, accounts: [...scope.accounts].join(","), mode: scope.mode, ...window};
 }
 
-/** Fresh-visit default: everything included, as of today, all-time gain (recomputed per call, never remembered). */
+/** Fresh-visit default: everything included, as of today, all-time gain, no holdings filter (recomputed per call, never remembered). */
 export function defaultScope(): HoldingsScope {
-    return {accounts: new Set<string>(), mode: "include", asOf: localToday(), gainPeriod: "all"};
+    return {accounts: new Set<string>(), mode: "include", asOf: localToday(), gainPeriod: "all", holdings: new Set<string>()};
 }
 
 let value = $state<HoldingsScope>(defaultScope());
@@ -65,10 +66,30 @@ export const holdingsTab = {
     get value(): HoldingsTab {
         return tab;
     },
+    /**
+     * Switching tab clears the holdings filter (plan 47): it names SYMBOLS on
+     * Stocks and ACCOUNTS on Other, so carried across it would filter the new
+     * tab's chart to rows that cannot exist there.
+     */
     set value(next: HoldingsTab) {
+        if (next === tab) return;
         tab = next;
+        if (value.holdings.size > 0) value = {...value, holdings: new Set<string>()};
     },
 };
+
+/**
+ * The scope as `forTab`'s report should be fetched for it: the holdings filter
+ * belongs to the tab on screen, so the other tab's report is asked for with
+ * none. Applied inside each resource's `load`, so every caller (the page, the
+ * global Refresh, Update prices) gets it right without knowing the rule.
+ */
+function scopeForTab(scope: HoldingsScope, forTab: HoldingsTab): HoldingsScope {
+    return tab === forTab || scope.holdings.size === 0 ? scope : {...scope, holdings: new Set<string>()};
+}
+
+/** The last scope `holdingsScope.forTab` returned per tab, so an unchanged one keeps its identity. */
+const lastForTab: Partial<Record<HoldingsTab, HoldingsScope>> = {};
 
 /**
  * Observe everything the holdings screen mirrors into the query string —
@@ -114,7 +135,38 @@ export const holdingsScope = {
     },
     /** Replace the whole scope at once (URL-sync startup restore). */
     replace(s: HoldingsScope): void {
-        value = {accounts: new Set(s.accounts), mode: s.mode, asOf: s.asOf, gainPeriod: s.gainPeriod};
+        value = {accounts: new Set(s.accounts), mode: s.mode, asOf: s.asOf, gainPeriod: s.gainPeriod, holdings: new Set(s.holdings)};
+    },
+    /** Add or remove one row (a symbol on Stocks, an account on Other) from the holdings filter — the dropdown's checkbox. */
+    toggleHolding(key: string): void {
+        const next = new Set(value.holdings);
+        if (!next.delete(key)) next.add(key);
+        value = {...value, holdings: next};
+    },
+    /**
+     * Filter to exactly `keys` — a click on a table row, a wedge or a gainer
+     * (D7). Clicking what is ALREADY exactly the filter clears it, so the same
+     * click undoes itself and the chart goes back to every row.
+     */
+    selectHoldings(keys: readonly string[]): void {
+        value = {...value, holdings: toggledSelection(value.holdings, keys)};
+    },
+    /** Drop the holdings filter (back to every row); everything else is kept. */
+    clearHoldings(): void {
+        if (value.holdings.size > 0) value = {...value, holdings: new Set<string>()};
+    },
+    /**
+     * The scope `forTab`'s report is fetched for (see `scopeForTab`), with a
+     * STABLE identity: the same object back for as long as it is unchanged. A
+     * page effect keyed on it therefore does not re-run when only the other
+     * tab's filter moved — clicking a stock must not refetch the Other report.
+     */
+    forTab(forTab: HoldingsTab): HoldingsScope {
+        const next = scopeForTab(value, forTab);
+        const last = lastForTab[forTab];
+        if (last !== undefined && sameScope(last, next)) return last;
+        lastForTab[forTab] = next;
+        return next;
     },
 };
 
@@ -128,8 +180,31 @@ export const holdingsScope = {
  * assignment or neither does.
  */
 interface HoldingsPayload {
+    /** EVERY row in scope — the table, pie and gainers/losers, whatever the holdings filter says (D6). */
     report: HoldingsReport;
+    /**
+     * The same report narrowed to the holdings filter, for the stat tiles; null
+     * when there is no filter (the tiles then read `report`). A second request
+     * rather than a sum over the selected rows: totals are the ENGINE's, never
+     * recomputed here.
+     */
+    filtered: HoldingsReport | null;
+    /** The chart, narrowed to the holdings filter. */
     trend: HoldingsSeries;
+}
+
+/**
+ * Whether `scope` reads intraday quotes (`live=1`): a 1wk/1mo window ending
+ * today (D10). Always sent when it does — the GET never reaches the network,
+ * and with no cached quote the engine answers exactly as without it.
+ */
+export function liveFor(scope: HoldingsScope): boolean {
+    return isIntradayWindow(scope.gainPeriod, scope.asOf, localToday());
+}
+
+/** The series request for `scope` on either tab: the window, the y-axis anchor, the filter and the live flag. */
+function seriesQuery(scope: HoldingsScope): ReturnType<typeof trendQuery> & {anchor: ReturnType<typeof anchorFor>; holdings?: string; live: boolean} {
+    return {...trendQuery(scope), anchor: anchorFor(scope.gainPeriod), holdings: filterParam(scope.holdings), live: liveFor(scope)};
 }
 
 const resource = createResource<HoldingsScope, HoldingsPayload>(async (serverUrl, scope) => {
@@ -137,17 +212,28 @@ const resource = createResource<HoldingsScope, HoldingsPayload>(async (serverUrl
     const accounts = [...scope.accounts].join(",");
     // The gain period narrows the report's gain AND sets the chart's window.
     const gainSince = gainSinceFor(scope.gainPeriod, scope.asOf);
-    const [rawReport, rawSeries] = await Promise.all([
-        api.holdings({asOf: scope.asOf, accounts, mode: scope.mode, gainSince}),
-        api.holdingsSeries(trendQuery(scope)),
+    const live = liveFor(scope);
+    const holdings = filterParam(scope.holdings);
+    const [rawReport, rawFiltered, rawSeries] = await Promise.all([
+        api.holdings({asOf: scope.asOf, accounts, mode: scope.mode, gainSince, live}),
+        holdings === undefined ? Promise.resolve(null) : api.holdings({asOf: scope.asOf, accounts, mode: scope.mode, gainSince, live, holdings}),
+        api.holdingsSeries(seriesQuery(scope)),
     ]);
-    return {report: decodeHoldingsReport(rawReport), trend: decodeHoldingsSeries(rawSeries)};
+    return {
+        report: decodeHoldingsReport(rawReport),
+        filtered: rawFiltered === null ? null : decodeHoldingsReport(rawFiltered),
+        trend: decodeHoldingsSeries(rawSeries),
+    };
 });
 
 export const holdingsData = {
     /** The decoded holdings report for the last loaded scope, or null before the first load. */
     get report(): HoldingsReport | null {
         return resource.value?.report ?? null;
+    },
+    /** The report narrowed to the holdings filter (the stat tiles), or null when no filter was set. */
+    get filtered(): HoldingsReport | null {
+        return resource.value?.filtered ?? null;
     },
     /** The value-over-time series for the last loaded scope, or null before the first load. */
     get trend(): HoldingsSeries | null {
@@ -167,8 +253,12 @@ export const holdingsData = {
     get view(): DataView {
         return resource.view;
     },
-    /** Fetch + decode the report and trend for `scope`; stale responses (superseded by a newer load) are discarded. */
-    load: resource.load,
+    /**
+     * Fetch + decode the report and trend for `scope`; stale responses
+     * (superseded by a newer load) are discarded. A holdings filter is sent
+     * only while Stocks is the tab on screen (see `scopeForTab`).
+     */
+    load: (serverUrl: string, scope: HoldingsScope): Promise<void> => resource.load(serverUrl, scopeForTab(scope, "stocks")),
 };
 
 /** The Other tab's payload. One value for the same reason `HoldingsPayload` is one — see its comment. */
@@ -195,9 +285,10 @@ const otherResource = createResource<HoldingsScope, OtherHoldingsPayload>(async 
     const accounts = [...scope.accounts].join(",");
     // The gain period narrows the change column AND sets the chart's window — the same control, meaning the same thing, on both tabs.
     const gainSince = gainSinceFor(scope.gainPeriod, scope.asOf);
+    // The holdings filter narrows the chart only (D9): the table keeps every row.
     const [rawReport, rawSeries] = await Promise.all([
-        api.otherHoldings({asOf: scope.asOf, accounts, mode: scope.mode, gainSince}),
-        api.otherHoldingsSeries(trendQuery(scope)),
+        api.otherHoldings({asOf: scope.asOf, accounts, mode: scope.mode, gainSince, live: liveFor(scope)}),
+        api.otherHoldingsSeries(seriesQuery(scope)),
     ]);
     // The series wire shape is the stock series', byte for byte — hence no second decoder.
     return {report: decodeOtherHoldingsReport(rawReport), trend: decodeHoldingsSeries(rawSeries)};
@@ -226,6 +317,6 @@ export const otherHoldingsData = {
     get view(): DataView {
         return otherResource.view;
     },
-    /** Fetch + decode the report and trend for `scope`; stale responses (superseded by a newer load) are discarded. */
-    load: otherResource.load,
+    /** Fetch + decode the report and trend for `scope`; stale responses are discarded. A filter is sent only while Other is on screen. */
+    load: (serverUrl: string, scope: HoldingsScope): Promise<void> => otherResource.load(serverUrl, scopeForTab(scope, "other")),
 };

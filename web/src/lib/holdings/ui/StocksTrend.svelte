@@ -29,6 +29,7 @@
         serverUrl,
         formatValue,
         formatAxis,
+        liveHint = null,
     }: {
         trend: HoldingsSeries;
         /** The scope `trend` was fetched for. */
@@ -36,6 +37,8 @@
         serverUrl: string | null;
         formatValue: (n: number) => string;
         formatAxis?: (n: number) => string;
+        /** HoldingsTrend's `liveHint`. */
+        liveHint?: string | null;
     } = $props();
 
     // The engine owns the catalog; until it arrives nothing is requested, and a
@@ -67,7 +70,7 @@
     );
 </script>
 
-<HoldingsTrend {trend} period={scope.gainPeriod} {formatValue} {formatAxis} {overlays}>
+<HoldingsTrend {trend} period={scope.gainPeriod} {formatValue} {formatAxis} {overlays} {liveHint}>
     {#snippet controls()}
         <BenchmarkPicker
             {catalog}
